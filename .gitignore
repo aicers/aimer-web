@@ -1,0 +1,7 @@
+/target
+/apps/home/dist
+/apps/admin/dist
+/apps/aimer/dist
+**/*.rs.bk
+**/.DS_Store
+**/.vscode
