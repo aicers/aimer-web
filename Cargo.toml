@@ -1,5 +1,13 @@
 [workspace]
-members = ["apps/admin", "apps/aimer", "apps/home", "shared"]
+members = [
+    "csr/admin",
+    "csr/home",
+    "csr/user",
+    "ssr/admin",
+    "ssr/home",
+    "ssr/user",
+    "shared",
+]
 resolver = "2"
 
 [workspace.package]
@@ -12,3 +20,24 @@ codegen-units = 1
 lto = true
 opt-level = 'z'
 panic = 'abort'
+
+[[workspace.metadata.leptos]]
+name = "admin-ssr"
+bin-package = "admin-ssr"
+lib-package = "admin-ssr"
+output-name = "admin-ssr"
+env = "PROD"
+
+[[workspace.metadata.leptos]]
+name = "user-ssr"
+bin-package = "user-ssr"
+lib-package = "user-ssr"
+output-name = "user-ssr"
+env = "PROD"
+
+[[workspace.metadata.leptos]]
+name = "home-ssr"
+bin-package = "home-ssr"
+lib-package = "home-ssr"
+output-name = "home-ssr"
+env = "PROD"

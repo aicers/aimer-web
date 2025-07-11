@@ -1,9 +1,12 @@
 [package]
-name = "home"
+name = "user-ssr"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
+leptos = { version = "0.8", features = ["ssr"] }
 shared = { path = "../../shared" }
-yew = { version = "0.21", features = ["csr"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]

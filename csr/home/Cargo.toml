@@ -1,0 +1,13 @@
+[package]
+name = "home-csr"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+shared = { path = "../../shared" }
+
+[[bin]]
+name = "home-csr"
+path = "src/main.rs"

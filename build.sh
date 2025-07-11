@@ -2,69 +2,104 @@
 
 set -e
 
-APPS=("home" "aimer" "admin")
-TARGETS=()
-RELEASE=""
-TARGET_DIR=""
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
+MODE=""
+TARGET_DIR=""
+APPS=()
+ALL_APPS=("home" "admin" "user")
+RELEASE=""
+
+# ────────────── Parse arguments ──────────────
 while [[ $# -gt 0 ]]; do
     case $1 in
-        home|aimer|admin)
-            TARGETS+=("$1")
-            shift
-            ;;
-        --release)
-            RELEASE="--release"
-            shift
+        --mode)
+            MODE="$2"
+            shift 2
             ;;
         --target-dir)
             TARGET_DIR="$2"
             shift 2
             ;;
+        --app)
+            shift
+            while [[ $# -gt 0 && ! $1 =~ ^-- ]]; do
+                APPS+=("$1")
+                shift
+            done
+            ;;
+        --release)
+            RELEASE="--release"
+            shift
+            ;;
         *)
-            echo "Unknown argument: $1"
-            echo "Usage: $0 [home|aimer|admin] --target-dir PATH [--release]"
+            echo "❗ Unknown argument: $1"
             exit 1
             ;;
     esac
 done
 
+# ────────────── Validate ──────────────
 if [ -z "$TARGET_DIR" ]; then
-    echo "Missing required argument: --target-dir PATH"
-    echo "Usage: $0 [home|aimer|admin] --target-dir PATH [--release]"
+    echo "❗ Missing required argument: --target-dir PATH"
     exit 1
 fi
 
-if [ -d "$TARGET_DIR" ]; then
-    echo "🧹 Cleaning directory: $TARGET_DIR"
-    rm -rf "$TARGET_DIR"/*
-else
-    echo "📁 Creating target directory: $TARGET_DIR"
+if [ ${#APPS[@]} -eq 0 ]; then
+    APPS=("${ALL_APPS[@]}")
+fi
+
+# ────────────── Clean target directories ──────────────
+if [[ "$MODE" != "csr" && "$MODE" != "ssr" && -z "$MODE" ]]; then
+    echo "🧹 Cleaning entire target directory: $TARGET_DIR"
+    rm -rf "$TARGET_DIR"
     mkdir -p "$TARGET_DIR"
 fi
 
-if [ ${#TARGETS[@]} -eq 0 ]; then
-    TARGETS=("${APPS[@]}")
-fi
+# ────────────── SSR build function ──────────────
+build_ssr() {
+    local app=$1
+    local pkg="${app}-ssr"
+    local outdir="${TARGET_DIR}/ssr/${app}"
 
-for app in "${TARGETS[@]}"; do
-    echo "🔨 Building $app..."
+    echo "🛠️  Building SSR for $app (package: $pkg)..."
+    mkdir -p "$outdir"
 
-    cd "apps/$app"
+    LEPTOS_OUTPUT_NAME="$pkg" \
+    LEPTOS_SITE_ROOT="$outdir" \
+    LEPTOS_SITE_PKG_DIR="." \
+    cargo leptos build -p "$pkg" $RELEASE
+}
 
-    case $app in
-        home)
-            trunk build $RELEASE --dist "$TARGET_DIR/home"
-            ;;
-        aimer)
-            trunk build $RELEASE --dist "$TARGET_DIR/aimer" --public-url /aimer/
-            ;;
-        admin)
-            trunk build $RELEASE --dist "$TARGET_DIR/admin" --public-url /admin/
-            ;;
-    esac
+# ────────────── CSR build function ──────────────
+build_csr() {
+    local app=$1
+    local outdir="${TARGET_DIR}/csr/${app}"
+    local public_url="/csr/${app}/"
 
-    cd - > /dev/null
+    if [[ "$app" == "home" ]]; then
+        public_url="/csr/"
+    fi
+
+    echo "🛠️  Building CSR for $app..."
+    mkdir -p "$outdir"
+    (cd "csr/$app" && trunk build $RELEASE --dist "$outdir" --public-url="$public_url")
+}
+
+# ────────────── Build apps ──────────────
+for app in "${APPS[@]}"; do
+    if [[ -n "$MODE" ]]; then
+        echo "🧹 Cleaning $MODE/$app target directory..."
+        rm -rf "${TARGET_DIR}/${MODE}/${app}"
+    fi
+
+    if [[ "$MODE" == "ssr" || -z "$MODE" ]]; then
+        build_ssr "$app"
+    fi
+
+    if [[ "$MODE" == "csr" || -z "$MODE" ]]; then
+        build_csr "$app"
+    fi
 done
 
-echo "Build complete!"
+echo "✅ All builds complete."
