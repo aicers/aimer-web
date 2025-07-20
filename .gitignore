@@ -1,7 +1,6 @@
-/target
-/apps/home/dist
-/apps/admin/dist
-/apps/aimer/dist
-**/*.rs.bk
-**/.DS_Store
-**/.vscode
+/target/
+.DS_Store
+.vscode/
+/shared/frontary-leptos-tailwind/
+/shared/node_modules/
+/shared/package-lock.json

@@ -56,6 +56,17 @@ if [[ "$MODE" != "csr" && "$MODE" != "ssr" && -z "$MODE" ]]; then
     mkdir -p "$TARGET_DIR"
 fi
 
+# ────────────── Tailwind CSS build ──────────────
+echo "🎨 Building Tailwind CSS (shared)..."
+(
+    cd shared
+    npx tailwindcss -i input.css -o static/output.css --config tailwind.config.js
+)
+
+STATIC_TARGET_DIR="${TARGET_DIR}/static"
+mkdir -p "$STATIC_TARGET_DIR"
+cp shared/static/output.css "$STATIC_TARGET_DIR/"
+
 # ────────────── SSR build function ──────────────
 build_ssr() {
     local app=$1
