@@ -1,4 +1,4 @@
-use frontary_leptos::Button;
+use frontary_leptos::sample::Button;
 #[allow(unused_imports)]
 use leptos::prelude::IntoMaybeErased;
 use leptos::{IntoView, component, prelude::ElementChild, view};

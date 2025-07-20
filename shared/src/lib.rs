@@ -3,7 +3,7 @@ mod home;
 mod user;
 pub use admin::app::AdminApp;
 pub use home::app::HomeApp;
-use leptos::prelude::*;
+use leptos::{IntoView, component, prelude::ElementChild, view};
 pub use user::app::UserApp;
 
 // According to https://github.com/leptos-rs/leptos/issues/3172,

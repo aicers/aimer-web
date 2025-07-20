@@ -1,3 +1,6 @@
+use leptos::{mount::hydrate_body, view};
+use shared::HomeApp;
+
 fn main() {
-    // This is a placeholder binary for cargo-leptos, meaning it is not used in SSR mode.
+    hydrate_body(|| view! { <HomeApp prefix="" /> });
 }

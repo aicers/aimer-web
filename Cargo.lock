@@ -342,7 +342,7 @@ dependencies = [
 [[package]]
 name = "frontary-leptos"
 version = "0.1.0"
-source = "git+https://github.com/aicers/frontary-leptos.git?rev=f484270a5#f484270a5e04a325b68eebf52af19cafe717e7bd"
+source = "git+https://github.com/aicers/frontary-leptos.git?rev=15692ac6#15692ac6f81dcff6ce5acfd3b41e83b33d6214bb"
 dependencies = [
  "leptos",
 ]
@@ -683,15 +683,6 @@ name = "interpolator"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71dd52191aae121e8611f1e8dc3e324dd0dd1dee1e6dd91d10ee07a3cfb4d9d8"
-
-[[package]]
-name = "inventory"
-version = "0.3.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab08d7cd2c5897f2c949e5383ea7c7db03fb19130ffcfbf7eda795137ae3cb83"
-dependencies = [
- "rustversion",
-]
 
 [[package]]
 name = "itertools"
@@ -1363,7 +1354,6 @@ dependencies = [
  "futures",
  "gloo-net",
  "http",
- "inventory",
  "js-sys",
  "pin-project-lite",
  "rustc_version",

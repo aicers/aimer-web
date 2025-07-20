@@ -82,6 +82,78 @@ modularity, maintainability, and a more stable development workflow.
 All application UIs (`HomeApp`, `AdminApp`, `UserApp`) are defined in the `shared/`
 crate and reused across SSR and CSR targets to reduce duplication and ensure consistency.
 
+## Tailwind CSS
+
+This project relies exclusively on Tailwind CSS for modern styling. To use these
+styles, you must install the necessary Tailwind tools and follow the steps below
+to generate the final Tailwind output.
+
+### Install Node (if you haven't already)
+
+#### macOS
+
+```bash
+brew install node
+```
+
+#### Linux (Debian/Ubuntu)
+
+```bash
+sudo apt install nodejs npm
+```
+
+### Install Tailwind in `shared`
+
+```bash
+cd shared
+npm install -D tailwindcss@3 postcss autoprefixer
+```
+
+> ⚠️ You must install these dependencies inside `shared` because they are not used
+  globally. Install them locally in each directory where you generate Tailwind CSS.
+> ⚠️ We use Tailwind CSS v3 because newer versions (e.g. v4) may cause compatibility
+  issues.
+
+A `package.json` is already included, so you **do not** need to run `npm init`.
+(Running `npm init -y` to generate a `package.json` is the usual first step, but
+this has already been done for you.)
+
+### Use Styles from `frontary-leptos`
+
+Specify the desired version of `frontary-leptos` in `shared/Cargo.toml`. When you
+update this dependency, `shared/build.rs` will automatically run and copy the required
+files from `frontary-leptos` into the `shared/frontary-leptos-tailwind` directory:
+
+```text
+shared/frontary-leptos-tailwind/input.frontary.css
+shared/frontary-leptos-tailwind/tailwind.frontary.safelist.json
+shared/frontary-leptos-tailwind/tailwind.frontary.theme.json
+```
+
+These files must be referenced correctly to generate the final Tailwind CSS output.
+See `shared/input.css` and `shared/tailwind.config.js` for examples of how to include
+them.
+
+### Customize Tailwind Styles
+
+To customize your styles, add your desired utility classes, components, or theme
+extensions to `input.css` and `tailwind.config.js` in the `shared` directory. If
+you use any classes dynamically (e.g., generated at runtime), be sure to include
+them in the `safelist` section of `tailwind.config.js` so they are not purged during
+the build process.
+
+### Generate Tailwind CSS
+
+```bash
+cd shared
+npx tailwindcss -i input.css -o static/output.css --config tailwind.config.js
+```
+
+This command compiles Tailwind CSS using the `frontary-leptos` theme and outputs
+the result to `static/output.css`, which is used by both CSR and SSR builds. You
+can run this manually if needed, but typically `build.sh` will handle it for you.
+It's usually sufficient to rely on `build.sh` for this step.
+
 ## Build Script: `build.sh`
 
 You can build the apps using the provided script. The script supports:
@@ -136,6 +208,9 @@ aimer-web/
 ├── README.md
 ├── shared
 │   ├── Cargo.toml
+│   ├── build.rs
+│   ├── static
+│   │   └── output.css
 │   └── src
 │       ├── admin
 │       │   └── app.rs
