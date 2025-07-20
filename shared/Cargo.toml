@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 leptos = { version = "0.8", features = ["ssr"] }
+
+[lints.clippy]
+pedantic = "warn"

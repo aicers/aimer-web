@@ -1,3 +1,5 @@
+#[allow(unused_imports)]
+use leptos::prelude::IntoMaybeErased;
 use leptos::{IntoView, component, prelude::ElementChild, view};
 
 use crate::Nav;
