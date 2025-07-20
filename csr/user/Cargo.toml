@@ -11,3 +11,6 @@ shared = { path = "../../shared" }
 [[bin]]
 name = "user-csr"
 path = "src/main.rs"
+
+[lints.clippy]
+pedantic = "warn"
