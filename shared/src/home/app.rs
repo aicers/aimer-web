@@ -1,3 +1,4 @@
+use frontary_leptos::Button;
 #[allow(unused_imports)]
 use leptos::prelude::IntoMaybeErased;
 use leptos::{IntoView, component, prelude::ElementChild, view};
@@ -10,6 +11,7 @@ pub fn HomeApp<'a>(prefix: &'a str) -> impl IntoView {
         <Nav prefix />
         <div>
             <h1>"Home App"</h1>
+            <Button label="Click Me" />
         </div>
     }
 }
