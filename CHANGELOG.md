@@ -9,4 +9,4 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Set up a initial structure to provide both SSR for deployment and CSR for
   development using Leptos.
 
-[Unreleased]: https://github.com/aicers/aimer/tree/HEAD
+[Unreleased]: https://github.com/aicers/aimer-web/tree/HEAD
