@@ -45,6 +45,19 @@ if [ -z "$TARGET_DIR" ]; then
     exit 1
 fi
 
+# ────────────── Convert to absolute path ──────────────
+if [[ "$TARGET_DIR" = /* ]]; then
+    : # Already absolute
+elif [[ "$TARGET_DIR" = ~* ]]; then
+    # Expand ~ to $HOME
+    TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
+    echo "📌 Expanded ~ to absolute path: $TARGET_DIR"
+else
+    TARGET_DIR="$(pwd)/$TARGET_DIR"
+    echo "📌 Converted relative to absolute: $TARGET_DIR"
+fi
+
+# ────────────── If no specific apps are provided, default to all ──────────────
 if [ ${#APPS[@]} -eq 0 ]; then
     APPS=("${ALL_APPS[@]}")
 fi
@@ -55,6 +68,54 @@ if [ "$MODE" == "both" ] && [ ${#APPS[@]} -eq ${#ALL_APPS[@]} ]; then
     rm -rf "$TARGET_DIR"
     mkdir -p "$TARGET_DIR"
 fi
+
+# ────────── Ensure target directory exists if not present ──────────
+if [ ! -d "$TARGET_DIR" ]; then
+    echo "📁 Target directory $TARGET_DIR does not exist. Creating..."
+    mkdir -p "$TARGET_DIR"
+fi
+
+# ────────────── Run build.rs (via cargo check) ──────────────
+echo "🧪 Running build.rs via cargo check..."
+cargo check -p shared
+
+# ────────────── Extract OUT_DIR from build script output ──────────────
+echo "📦 Extracting OUT_DIR from cargo build metadata..."
+
+OUT_DIR=$(cargo build -p shared --message-format=json \
+  | grep '"reason":"build-script-executed"' \
+  | sed -n 's/.*"out_dir":"\([^"]*\)".*/\1/p' \
+  | tail -n1)
+
+if [ -z "$OUT_DIR" ]; then
+    echo "❗ Failed to extract OUT_DIR from cargo build output."
+    exit 1
+fi
+
+echo "📁 OUT_DIR: $OUT_DIR"
+
+# ────────────── Copy the generated frontary-leptos-tailwind directory ──────────────
+if [ ! -d "$OUT_DIR/frontary-leptos-tailwind" ]; then
+    echo "❗ frontary-leptos-tailwind not found in OUT_DIR: $OUT_DIR"
+    exit 1
+fi
+
+rm -rf shared/frontary-leptos-tailwind
+cp -r "$OUT_DIR/frontary-leptos-tailwind" shared/frontary-leptos-tailwind
+echo "✅ Copied to shared/frontary-leptos-tailwind"
+
+# ────────────── Tailwind CSS install ──────────────
+echo "📦 Checking Tailwind CSS installation in shared/..."
+(
+    cd shared
+
+    if [ ! -d "node_modules" ] || [ ! -d "node_modules/tailwindcss" ]; then
+        echo "📦 Installing Tailwind CSS dependencies..."
+        npm install -D tailwindcss@3 postcss autoprefixer
+    else
+        echo "✅ Tailwind CSS already installed. Skipping npm install."
+    fi
+)
 
 # ────────────── Tailwind CSS build ──────────────
 echo "🎨 Building Tailwind CSS (shared)..."
@@ -109,7 +170,12 @@ build_csr_app() {
 
     echo "🛠️  Building CSR for $app..."
     mkdir -p "$csr_outdir"
-    (cd "csr/$app" && trunk build $RELEASE --dist "$csr_outdir" --public-url="$public_url_csr")
+    echo "📁 Trunk build for $app: dist=$csr_outdir, public-url=$public_url_csr"
+    ls -al "csr/$app" || echo "⚠️ csr/$app not found"
+    (cd "csr/$app" && trunk build $RELEASE --dist "$csr_outdir" --public-url="$public_url_csr") || {
+        echo "❌ Trunk CSR build failed for $app"
+        exit 1
+    }
 }
 
 # ────────────── Build SSR app ──────────────
@@ -124,8 +190,12 @@ build_ssr_app() {
     mkdir -p "$ssr_outdir"
     generate_trunk_toml "ssr/${app}" false
     generate_dummy_html "ssr/${app}" "$bin_name"
-    (cd "ssr/$app" && trunk build $RELEASE --dist "$ssr_outdir" --public-url="$public_url_ssr")
-    echo "🧽 Removing SSR index.html for $app..."
+    ls -al "ssr/$app" || echo "⚠️ ssr/$app not found"
+    (cd "ssr/$app" && trunk build $RELEASE --dist "$ssr_outdir" --public-url="$public_url_ssr") || {
+        echo "❌ Trunk SSR build failed for $app"
+        exit 1
+    }
+    echo "🧽 Removing SSR index.html and Trunk.toml for $app..."
     rm -f "ssr/${app}/index.html"
     rm -f "ssr/${app}/Trunk.toml"
 }

@@ -342,7 +342,7 @@ dependencies = [
 [[package]]
 name = "frontary-leptos"
 version = "0.1.0"
-source = "git+https://github.com/aicers/frontary-leptos.git?rev=15692ac6#15692ac6f81dcff6ce5acfd3b41e83b33d6214bb"
+source = "git+https://github.com/aicers/frontary-leptos.git?rev=837321f#837321ff50ce8dfa102ddeb5c416ca2405f1fd5b"
 dependencies = [
  "leptos",
 ]
