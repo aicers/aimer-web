@@ -1,0 +1,146 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install leptosfmt
+        run: cargo install --locked leptosfmt
+
+      - name: Check formatting (cargo fmt)
+        run: cargo fmt --all -- --check --config group_imports=StdExternalCrate
+
+      - name: Check formatting (leptosfmt on all workspace members)
+        run: |
+          for member in $(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].manifest_path' \
+            | xargs -n1 dirname \
+            | sort -u); do
+            echo "🔍 Running leptosfmt in $member"
+            leptosfmt --check "$member"
+          done
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: markdownlint
+        uses: articulate/actions-markdownlint@v1
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macOS-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Trunk
+        run: cargo install --locked trunk
+
+      - name: Confirm Node.js and npm are available
+        run: |
+          node -v
+          npm -v
+
+      - name: Install Tailwind CSS tools locally in shared/
+        run: |
+          cd shared
+          npm install -D tailwindcss@3 postcss autoprefixer
+
+      - name: Let `build.rs` run to import frontary-leptos' Tailwind config
+        run: cargo check -p shared
+
+      - name: Make build.sh executable
+        run: chmod +x build.sh
+
+      - name: Run build script
+        run: ./build.sh --target-dir web-dist
+
+      - name: Show web-dist directory tree
+        run: |
+          echo "🌲 Dumping web-dist directory structure:"
+          find web-dist -type f | sort
+
+      - name: Check build output structure
+        run: |
+          echo "🎯 Verifying web-dist layout and build outputs..."
+
+          # Check Tailwind output
+          test -f web-dist/static/output.css
+
+          # Check CSR and SSR files per app
+          shopt -s nullglob
+
+          for app in home admin user; do
+            echo "🔍 Checking CSR for $app..."
+            CSR_DIR="web-dist/csr/$app"
+
+            # Check index.html
+            if [ ! -f "$CSR_DIR/index.html" ]; then
+              echo "❌ Missing $CSR_DIR/index.html"
+              exit 1
+            fi
+
+            # Check exactly one CSR wasm per app
+            wasm_files=("$CSR_DIR/${app}-csr-"*_bg.wasm)
+            if [ ${#wasm_files[@]} -ne 1 ]; then
+              echo "❌ Expected 1 wasm in $CSR_DIR, found ${#wasm_files[@]}"
+              exit 1
+            else
+              echo "✅ CSR wasm found: ${wasm_files[0]}"
+            fi
+
+            # Check exactly one CSR js per app
+            js_files=("$CSR_DIR/${app}-csr-"*.js)
+            if [ ${#js_files[@]} -ne 1 ]; then
+              echo "❌ Expected 1 JS in $CSR_DIR, found ${#js_files[@]}"
+              exit 1
+            else
+              echo "✅ CSR JS found: ${js_files[0]}"
+            fi
+
+            echo "🔍 Checking SSR for $app..."
+            SSR_DIR="web-dist/ssr/$app"
+
+            # Check exactly one SSR wasm per app
+            ssr_wasm_files=("$SSR_DIR/${app}-ssr_bg.wasm")
+            if [ ${#ssr_wasm_files[@]} -ne 1 ]; then
+              echo "❌ Expected 1 SSR wasm in $SSR_DIR, found ${#ssr_wasm_files[@]}"
+              exit 1
+            else
+              echo "✅ SSR wasm found: ${ssr_wasm_files[0]}"
+            fi
+
+            # Check exactly one SSR js per app
+            ssr_js_files=("$SSR_DIR/${app}-ssr.js")
+            if [ ${#ssr_js_files[@]} -ne 1 ]; then
+              echo "❌ Expected 1 SSR JS in $SSR_DIR, found ${#ssr_js_files[@]}"
+              exit 1
+            else
+              echo "✅ SSR JS found: ${ssr_js_files[0]}"
+            fi
+          done
+
+          echo "✅ All expected build artifacts found."
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --verbose
