@@ -120,14 +120,17 @@ this has already been done for you.)
 
 ### Use Styles from `frontary-leptos`
 
-Specify the desired version of `frontary-leptos` in `shared/Cargo.toml`. When you
-update this dependency, `shared/build.rs` will automatically run and copy the required
-files from `frontary-leptos` into the `shared/frontary-leptos-tailwind` directory:
+When you specify the desired version of `frontary-leptos` in `shared/Cargo.toml`,
+`shared/build.rs` will run as needed (using caching so it only executes when required)
+and generate the necessary static files under the `target` directory. You must
+then copy these files from `target` to `shared/frontary-leptos-static`. This can
+be done manually, or you can let the `build.sh` script handle it automatically
+during the build process.
 
 ```text
-shared/frontary-leptos-tailwind/input.frontary.css
-shared/frontary-leptos-tailwind/tailwind.frontary.safelist.json
-shared/frontary-leptos-tailwind/tailwind.frontary.theme.json
+shared/frontary-leptos-static/input.frontary.css
+shared/frontary-leptos-static/tailwind.frontary.safelist.json
+shared/frontary-leptos-static/tailwind.frontary.theme.json
 ```
 
 These files must be referenced correctly to generate the final Tailwind CSS output.
