@@ -1,6 +1,6 @@
 /target/
 .DS_Store
 .vscode/
-/shared/frontary-leptos-tailwind/
+/shared/frontary-leptos-static/
 /shared/node_modules/
 /shared/package-lock.json

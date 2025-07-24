@@ -79,8 +79,8 @@ fi
 echo "🧪 Running build.rs via cargo check..."
 cargo check -p shared
 
-# ────────────── Extract OUT_DIR from build script output ──────────────
-echo "📦 Extracting OUT_DIR from cargo build metadata..."
+# ────────────── Copy frontary-leptos static assets from OUT_DIR ──────────────
+echo "📤 Copying frontary-leptos static files from OUT_DIR..."
 
 OUT_DIR=$(cargo build -p shared --message-format=json \
   | grep '"reason":"build-script-executed"' \
@@ -88,21 +88,18 @@ OUT_DIR=$(cargo build -p shared --message-format=json \
   | tail -n1)
 
 if [ -z "$OUT_DIR" ]; then
-    echo "❗ Failed to extract OUT_DIR from cargo build output."
+    echo "❗ Failed to determine OUT_DIR from cargo build output."
     exit 1
 fi
 
-echo "📁 OUT_DIR: $OUT_DIR"
-
-# ────────────── Copy the generated frontary-leptos-tailwind directory ──────────────
-if [ ! -d "$OUT_DIR/frontary-leptos-tailwind" ]; then
-    echo "❗ frontary-leptos-tailwind not found in OUT_DIR: $OUT_DIR"
+if [ ! -d "$OUT_DIR/frontary-leptos-static" ]; then
+    echo "❗ frontary-leptos-static not found in OUT_DIR: $OUT_DIR"
     exit 1
 fi
 
-rm -rf shared/frontary-leptos-tailwind
-cp -r "$OUT_DIR/frontary-leptos-tailwind" shared/frontary-leptos-tailwind
-echo "✅ Copied to shared/frontary-leptos-tailwind"
+rm -rf shared/frontary-leptos-static
+cp -r "$OUT_DIR/frontary-leptos-static" shared/frontary-leptos-static
+echo "✅ Copied to shared/frontary-leptos-static"
 
 # ────────────── Tailwind CSS install ──────────────
 echo "📦 Checking Tailwind CSS installation in shared/..."

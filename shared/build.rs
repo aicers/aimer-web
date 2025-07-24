@@ -8,13 +8,13 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=../../frontary-leptos");
 
-    // Use Cargo's OUT_DIR as the build output location
+    // OUT_DIR path to hold generated static files
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    let output_dir = out_dir.join("frontary-leptos-tailwind");
+    let output_dir = out_dir.join("frontary-leptos-static");
 
-    // Clean and recreate the output directory
+    // Clean and recreate output directory
     if output_dir.exists() {
-        println!("cargo:warning=♻️ Cleaning OUT_DIR/frontary-leptos-tailwind...");
+        println!("cargo:warning=♻️ Cleaning OUT_DIR/frontary-leptos-static...");
         if let Err(e) = fs::remove_dir_all(&output_dir) {
             eprintln!("❗ Failed to remove output dir: {e}");
             exit(1);
@@ -25,7 +25,7 @@ fn main() {
         exit(1);
     }
 
-    // Generate static files into OUT_DIR
+    // Export static files to OUT_DIR
     let files = static_files();
     for (name, content) in files {
         let path = output_dir.join(name);

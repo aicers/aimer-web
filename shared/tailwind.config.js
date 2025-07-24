@@ -1,5 +1,5 @@
-const frontaryTheme = require("./frontary-leptos-tailwind/tailwind.frontary.theme.json");
-const frontarySafelist = require("./frontary-leptos-tailwind/tailwind.frontary.safelist.json");
+const frontaryTheme = require("./frontary-leptos-static/tailwind.frontary.theme.json");
+const frontarySafelist = require("./frontary-leptos-static/tailwind.frontary.safelist.json");
 
 module.exports = {
     content: [

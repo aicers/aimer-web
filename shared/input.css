@@ -1,5 +1,5 @@
 /* === Import frontary-leptos base styles === */
-@import "frontary-leptos-tailwind/input.frontary.css";
+@import "frontary-leptos-static/input.frontary.css";
 
 /* === Tailwind base layers (redundant if already included above, but safe) === */
 @tailwind base;
