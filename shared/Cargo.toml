@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "050313f" }
+frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "2e8c1982" }
 leptos = { version = "0.8", default-features = false, features = ["hydrate"] }
 
 [build-dependencies]
-frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "050313f" }
+frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "2e8c1982" }
 
 [lints.clippy]
 pedantic = "warn"
