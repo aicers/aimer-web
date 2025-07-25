@@ -143,7 +143,7 @@ generate_dummy_html() {
     local html_path="$dir/index.html"
 
     if [[ ! -f "$html_path" ]]; then
-        echo "📄 Generating dummy index.html with data-bin=$bin_name..."
+        echo "📄 Generating dummy index.html..."
         cat > "$html_path" <<EOF
 <!DOCTYPE html>
 <html lang="und">
@@ -151,7 +151,7 @@ generate_dummy_html() {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SSR Dummy</title>
-  <link data-trunk rel="rust" data-bin="$bin_name" />
+  <link data-trunk rel="rust" />
 </head>
 <body></body></html>
 EOF

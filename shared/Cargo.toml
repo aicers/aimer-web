@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "050313f" }
 leptos = { version = "0.8", default-features = false, features = ["hydrate"] }
+leptos_router = "0.8"
 
 [build-dependencies]
 frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "050313f" }
