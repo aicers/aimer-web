@@ -1,0 +1,4 @@
+attr_value_brace_style = "Preserve"
+
+[attr_values]
+class = "Tailwind"

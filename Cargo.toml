@@ -1,22 +1,75 @@
-[workspace]
-members = [
-    "csr/admin",
-    "csr/home",
-    "csr/user",
-    "ssr/admin",
-    "ssr/home",
-    "ssr/user",
-    "shared",
-]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "aimer-web"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
+[dependencies]
+axum = { version = "0.8", optional = true }
+console_error_panic_hook = "0.1"
+# console_log = "1"
+frontary-leptos = { git = "https://github.com/aicers/frontary-leptos.git", rev = "0df08c41", optional = true }
+leptos = { version = "0.8.6", features = ["tracing"] }
+leptos_axum = { version = "0.8.5", optional = true }
+leptos_meta = "0.8.5"
+leptos_router = "0.8.5"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+], optional = true }
+tower-http = "0.6"
+wasm-bindgen = "0.2"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+hydrate = ["leptos/hydrate", "frontary-leptos/hydrate"]
+ssr = [
+    "dep:axum",
+    "dep:tokio",
+    "leptos/ssr",
+    "leptos_meta/ssr",
+    "dep:leptos_axum",
+    "leptos_router/ssr",
+    "frontary-leptos/ssr",
+]
+# csr = [
+#     "dep:axum",
+#     "dep:tokio",
+#     "leptos/csr",
+#     "dep:leptos_axum",
+#     "frontary-leptos/hydrate",
+# ]
+
+# [[bin]]
+# name = "aimer-web"
+# features = ["hydrate"]
+# path = "src/main.rs"
+
 [profile.release]
-codegen-units = 1
-lto = true
 opt-level = 'z'
+lto = true
+codegen-units = 1
 panic = 'abort'
+
+# [package.metadata.cargo-all-features]
+# denylist = ["axum", "tower", "tower-http", "tokio", "sqlx", "leptos_axum"]
+# skip_feature_sets = [["ssr", "csr", "hydrate"]]
+
+[package.metadata.leptos]
+output-name = "aimer"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+browserquery = "defaults"
+watch = false
+env = "DEV"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+
+[lints.clippy]
+pedantic = "warn"
