@@ -12,5 +12,5 @@ shared = { path = "../../shared" }
 name = "home-csr"
 path = "src/main.rs"
 
-[lints.clippy]
-pedantic = "warn"
+[lints]
+workspace = true

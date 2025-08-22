@@ -9,7 +9,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../frontary-leptos");
 
     // OUT_DIR path to hold generated static files
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR environment variable should be set by Cargo"));
     let output_dir = out_dir.join("frontary-leptos-static");
 
     // Clean and recreate output directory
