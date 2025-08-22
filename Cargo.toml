@@ -15,6 +15,10 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[workspace.lints.clippy]
+pedantic = "warn"
+unwrap_used = "warn"
+
 [profile.release]
 codegen-units = 1
 lto = true

@@ -11,5 +11,5 @@ shared = { path = "../../shared" }
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[lints.clippy]
-pedantic = "warn"
+[lints]
+workspace = true
