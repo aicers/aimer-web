@@ -9,10 +9,10 @@ export default function HomePage() {
       <h1 className="text-3xl font-bold">Welcome to Aimer Web</h1>
       <div className="flex gap-4">
         <Button asChild>
-          <Link href="/login?mode=user">User Login</Link>
+          <Link href="/signin?mode=user">User Sign In</Link>
         </Button>
         <Button variant="outline" asChild>
-          <Link href="/login?mode=admin">Admin Login</Link>
+          <Link href="/signin?mode=admin">Admin Sign In</Link>
         </Button>
       </div>
     </main>

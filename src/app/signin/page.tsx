@@ -1,12 +1,14 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useSearchParams } from "next/navigation";
-import { useMemo } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+// biome-ignore lint/correctness/noUnusedImports: needed for JSX
+import React, { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { signInRequest } from "@/lib/graphql";
 
 const schema = z.object({
   id: z.string().min(1, "ID is required"),
@@ -18,6 +20,8 @@ type FormValues = z.infer<typeof schema>;
 export default function LoginPage() {
   const searchParams = useSearchParams();
   const mode = searchParams.get("mode") ?? "user";
+  const router = useRouter();
+  const [formError, setFormError] = useState<string | null>(null);
 
   const resolver = useMemo(() => zodResolver(schema), []);
   const {
@@ -26,14 +30,26 @@ export default function LoginPage() {
     formState: { errors, isSubmitting },
   } = useForm<FormValues>({ resolver, mode: "onBlur" });
 
-  const onSubmit = (data: FormValues) => {
-    alert(`Login mode: ${mode}\nID: ${data.id}\nPW: ${data.pw}`);
+  const onSubmit = async (data: FormValues) => {
+    setFormError(null);
+    try {
+      const res = await signInRequest({ username: data.id, password: data.pw });
+      if (!res?.token) throw new Error("Invalid response: missing token");
+      // Store token (basic demo). Consider secure cookies for production.
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("aimer_token", res.token);
+      }
+      router.push(mode === "admin" ? "/admin" : "/user");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sign-in failed";
+      setFormError(message);
+    }
   };
 
   return (
     <main className="flex flex-col items-center justify-center min-h-screen p-6">
       <h1 className="text-2xl font-semibold mb-4">
-        {mode === "admin" ? "Admin" : "User"} Login
+        {mode === "admin" ? "Admin" : "User"} Sign In
       </h1>
       <form
         onSubmit={handleSubmit(onSubmit)}
@@ -62,9 +78,14 @@ export default function LoginPage() {
           )}
         </div>
         <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Logging in..." : "Login"}
+          {isSubmitting ? "Signing in..." : "Sign In"}
         </Button>
       </form>
+      {formError && (
+        <p className="mt-3 text-sm text-red-600" role="alert">
+          {formError}
+        </p>
+      )}
     </main>
   );
 }
