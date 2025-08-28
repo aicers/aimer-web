@@ -1,13 +1,13 @@
-'use client';
+"use client";
 
-import { useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { useSearchParams } from "next/navigation";
+import { useState } from "react";
 
 export default function LoginPage() {
   const searchParams = useSearchParams();
-  const mode = searchParams.get('mode') ?? 'user';
-  const [id, setId] = useState('');
-  const [pw, setPw] = useState('');
+  const mode = searchParams.get("mode") ?? "user";
+  const [id, setId] = useState("");
+  const [pw, setPw] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,7 +16,9 @@ export default function LoginPage() {
 
   return (
     <main className="flex flex-col items-center justify-center min-h-screen p-6">
-      <h1 className="text-2xl font-semibold mb-4">{mode === 'admin' ? 'Admin' : 'User'} Login</h1>
+      <h1 className="text-2xl font-semibold mb-4">
+        {mode === "admin" ? "Admin" : "User"} Login
+      </h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-2 w-64">
         <input
           className="border p-2 rounded"

@@ -1,5 +1,5 @@
 // biome-ignore lint/correctness/noUnusedImports: needed for JSX
-import React from 'react';
+import React from "react";
 
 export default function UserAppPage() {
   return (

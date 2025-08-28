@@ -1,1 +1,1 @@
-export * from 'next-router-mock';
+export * from "next-router-mock";
