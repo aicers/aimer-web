@@ -2,6 +2,8 @@
 
 import { useSearchParams } from "next/navigation";
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export default function LoginPage() {
   const searchParams = useSearchParams();
@@ -20,23 +22,19 @@ export default function LoginPage() {
         {mode === "admin" ? "Admin" : "User"} Login
       </h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-2 w-64">
-        <input
-          className="border p-2 rounded"
+        <Input
           type="text"
           placeholder="ID"
           value={id}
           onChange={(e) => setId(e.target.value)}
         />
-        <input
-          className="border p-2 rounded"
+        <Input
           type="password"
           placeholder="Password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
         />
-        <button className="bg-blue-600 text-white p-2 rounded" type="submit">
-          Login
-        </button>
+        <Button type="submit">Login</Button>
       </form>
     </main>
   );
