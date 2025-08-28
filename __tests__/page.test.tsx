@@ -1,15 +1,15 @@
- // biome-ignore lint/correctness/noUnusedImports: needed for JSX
-import React from 'react';
-import { render, screen } from '@testing-library/react';
-import HomePage from '../src/app/page';
-import '@testing-library/jest-dom';
+import { render, screen } from "@testing-library/react";
+// biome-ignore lint/correctness/noUnusedImports: needed for JSX in Vitest
+import React from "react";
+import HomePage from "../src/app/page";
+import "@testing-library/jest-dom";
 
 // useRouter mocking
-vi.mock('next/navigation');
+vi.mock("next/navigation");
 
-test('renders welcome message and buttons', () => {
+test("renders welcome message and buttons", () => {
   render(<HomePage />);
-  expect(screen.getByText('Welcome to Aimer Web')).toBeInTheDocument();
-  expect(screen.getByText('User Login')).toBeInTheDocument();
-  expect(screen.getByText('Admin Login')).toBeInTheDocument();
+  expect(screen.getByText("Welcome to Aimer Web")).toBeInTheDocument();
+  expect(screen.getByText("User Login")).toBeInTheDocument();
+  expect(screen.getByText("Admin Login")).toBeInTheDocument();
 });

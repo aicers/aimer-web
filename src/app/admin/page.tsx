@@ -1,5 +1,5 @@
- // biome-ignore lint/correctness/noUnusedImports: needed for JSX
-import React from 'react';
+// biome-ignore lint/correctness/noUnusedImports: needed for JSX
+import React from "react";
 
 export default function AdminAppPage() {
   return (
