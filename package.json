@@ -2,11 +2,12 @@
     "name": "aimer-web",
     "version": "0.1.0",
     "private": true,
-    "scripts": {
+  "scripts": {
         "dev": "next dev",
         "build": "next build",
         "start": "next start",
         "test": "vitest",
+        "typecheck": "tsc --noEmit",
         "lint": "biome check",
         "format": "biome format --write"
     },
