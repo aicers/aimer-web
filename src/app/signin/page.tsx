@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter, useSearchParams } from "next/navigation";
 // biome-ignore lint/correctness/noUnusedImports: needed for JSX
-import React, { useMemo, useState } from "react";
+import React, { Suspense, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
@@ -12,12 +12,12 @@ import { signInRequest } from "@/lib/graphql";
 
 const schema = z.object({
   id: z.string().min(1, "ID is required"),
-  pw: z.string().min(6, "Password must be at least 6 characters"),
+  pw: z.string().min(3, "Password must be at least 3 characters"),
 });
 
 type FormValues = z.infer<typeof schema>;
 
-export default function LoginPage() {
+function SignInInner() {
   const searchParams = useSearchParams();
   const mode = searchParams.get("mode") ?? "user";
   const router = useRouter();
@@ -35,7 +35,6 @@ export default function LoginPage() {
     try {
       const res = await signInRequest({ username: data.id, password: data.pw });
       if (!res?.token) throw new Error("Invalid response: missing token");
-      // Store token (basic demo). Consider secure cookies for production.
       if (typeof window !== "undefined") {
         window.localStorage.setItem("aimer_token", res.token);
       }
@@ -87,5 +86,13 @@ export default function LoginPage() {
         </p>
       )}
     </main>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={<main className="p-6">Loading…</main>}>
+      <SignInInner />
+    </Suspense>
   );
 }
