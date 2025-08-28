@@ -1,0 +1,20 @@
+[Unit]
+Description=Aimer Web (Next.js) Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aimer-web
+ExecStart=/usr/bin/npm start
+Environment=NODE_ENV=production
+Environment=NEXT_PUBLIC_GRAPHQL_ENDPOINT=https://api.example.com/graphql
+Restart=on-failure
+RestartSec=5
+
+# Adjust user/group to a non-root system user
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
+

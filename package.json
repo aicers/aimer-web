@@ -11,6 +11,7 @@
     "lint": "biome check",
     "lint:fix": "biome check --write",
     "format": "biome format --write",
+    "format:check": "biome check",
     "test:int": "vitest -c vitest.int.config.ts --run"
   },
   "dependencies": {
@@ -28,7 +29,7 @@
     "zod": "^4.1.4"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.2.0",
+    "@biomejs/biome": "2.2.2",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.8.0",
     "@testing-library/react": "^16.3.0",
