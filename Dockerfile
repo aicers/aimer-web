@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- Builder ----
-FROM node:20-alpine AS builder
+FROM node:22-slim AS builder
 WORKDIR /app
 
 # Install deps including devDependencies required for build (e.g., TypeScript)
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # ---- Runner ----
-FROM node:20-alpine AS runner
+FROM node:22-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
