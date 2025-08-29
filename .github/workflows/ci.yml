@@ -36,6 +36,7 @@ jobs:
         run: markdownlint *.md
 
   test:
+    needs: check
     runs-on: [self-hosted]
 
     steps:

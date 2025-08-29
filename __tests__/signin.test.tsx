@@ -18,9 +18,17 @@ import LoginPage from "../src/app/signin/page";
 
 // Mock fetch used to set the HttpOnly cookie
 beforeEach(() => {
-  // mock global fetch for cookie API call
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (global as any).fetch = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+  // mock global fetch for cookie API call without using `any`
+  const mockFetch: typeof fetch = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(null, { status: 204 }),
+    ) as unknown as typeof fetch;
+  Object.defineProperty(globalThis, "fetch", {
+    value: mockFetch,
+    configurable: true,
+    writable: true,
+  });
 });
 afterEach(() => {
   // Preserve mock implementations, only clear call history
