@@ -16,6 +16,17 @@ vi.mock("@/lib/graphql", () => ({
 
 import LoginPage from "../src/app/signin/page";
 
+// Mock fetch used to set the HttpOnly cookie
+beforeEach(() => {
+  // mock global fetch for cookie API call
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (global as any).fetch = vi.fn().mockResolvedValue({ ok: true, status: 204 });
+});
+afterEach(() => {
+  // Preserve mock implementations, only clear call history
+  vi.clearAllMocks();
+});
+
 function fillAndSubmit(id: string, pw: string) {
   const idInput = screen.getByPlaceholderText("ID");
   const pwInput = screen.getByPlaceholderText("Password");
@@ -31,7 +42,10 @@ test("signs in and navigates to /admin when mode=admin", async () => {
   fillAndSubmit("user", "password123");
 
   await waitFor(() =>
-    expect(window.localStorage.getItem("aimer_token")).toBe("jwt-token"),
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/auth/set-cookie",
+      expect.objectContaining({ method: "POST" }),
+    ),
   );
   await waitFor(() => expect(mockRouter.asPath).toBe("/admin"));
   expect(mockSignIn).toHaveBeenCalledWith({
@@ -47,7 +61,10 @@ test("signs in and navigates to /user when mode=user (default)", async () => {
   fillAndSubmit("user", "password123");
 
   await waitFor(() =>
-    expect(window.localStorage.getItem("aimer_token")).toBe("jwt-token"),
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/auth/set-cookie",
+      expect.objectContaining({ method: "POST" }),
+    ),
   );
   await waitFor(() => expect(mockRouter.asPath).toBe("/user"));
 });

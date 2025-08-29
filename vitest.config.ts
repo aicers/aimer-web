@@ -12,5 +12,12 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["__tests__/**/*.test.tsx"],
+    // Force single-threaded runs to avoid worker kill issues (EPERM)
+    pool: "threads",
+    poolOptions: {
+      threads: {
+        singleThread: true,
+      },
+    },
   },
 });

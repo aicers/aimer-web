@@ -35,9 +35,13 @@ function SignInInner() {
     try {
       const res = await signInRequest({ username: data.id, password: data.pw });
       if (!res?.token) throw new Error("Invalid response: missing token");
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("aimer_token", res.token);
-      }
+      // Store token into HttpOnly cookie via API route so that
+      // server components/routes can authenticate using cookies.
+      await fetch("/api/auth/set-cookie", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: res.token }),
+      });
       router.push(mode === "admin" ? "/admin" : "/user");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign-in failed";
