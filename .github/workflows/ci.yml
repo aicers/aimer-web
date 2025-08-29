@@ -19,7 +19,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -46,7 +46,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -55,3 +55,75 @@ jobs:
 
       - name: Test (Vitest)
         run: npm test -- --run
+
+  web-build:
+    needs: check
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (Next.js)
+        env:
+          NEXT_PUBLIC_GRAPHQL_ENDPOINT: /api/graphql
+        run: npm run build
+
+  image-build:
+    needs: check
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Docker version
+        run: |
+          docker version
+          docker info
+
+      - name: Build image
+        run: |
+          docker build \
+            -t aimer-web:ci \
+            --build-arg NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql \
+            .
+
+      - name: Smoke run (container starts)
+        run: |
+          cid=$(docker run -d -p 0:3000 --rm --name aimer-web-ci \
+            -e NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql \
+            -e AIMER_GRAPHQL_ENDPOINT=https://example.com/graphql \
+            aimer-web:ci)
+          # Give Next.js a moment to boot, then print logs
+          sleep 5
+          docker logs --tail 100 aimer-web-ci || true
+          # Clean up
+          docker stop "$cid"
+
+  nginx-config-check:
+    needs: check
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate nginx HTTP config
+        run: |
+          docker run --rm \
+            -v "$PWD/docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:1.29 nginx -t
+
+      - name: Validate nginx HTTPS config
+        run: |
+          docker run --rm \
+            -v "$PWD/docker/nginx/default-ssl.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:1.29 nginx -t

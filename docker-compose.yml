@@ -16,7 +16,7 @@ services:
       - NEXT_PUBLIC_GRAPHQL_ENDPOINT=${NEXT_PUBLIC_GRAPHQL_ENDPOINT}
     restart: unless-stopped
   nginx-http:
-    image: nginx:1.27
+    image: nginx:1.29
     profiles: ["http"]
     depends_on:
       - web
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   nginx-https:
-    image: nginx:1.27
+    image: nginx:1.29
     profiles: ["https"]
     depends_on:
       - web
