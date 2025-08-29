@@ -1,11 +1,21 @@
 # aimer-web
 
-Frontend for Aimer built with Next.js (App Router), React, Tailwind, Vitest, and
-Biome.
+Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
+
+## Prerequisites
+
+- Node 22: Use Node.js 22.x. Do not use Node 24 — Next.js 15.5.0 is more stable
+  and better supported on Node 22.
+  - nvm example: `nvm install 22 && nvm use 22`
+  - macOS (Homebrew):
+    - `brew update && brew install node@22`
+    - Link it: `brew link --overwrite --force node@22`
+    - Verify: `node -v` should print v22.x.y
+- npm: Use the npm bundled with Node 22 (or npm 10+).
+- Docker: Install Docker (Docker Desktop or Docker Engine)
 
 ## Quick Start
 
-- Prereqs: Node 20+, npm 10+
 - Install: `npm install`
 - Configure env: create `.env.local` with:
   - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql` (client → built-in proxy)
@@ -189,11 +199,31 @@ Terminate TLS at Nginx and proxy to the Next.js app.
 
 GitHub Actions workflow runs on push and PR:
 
-- Biome check: style/lint
-- Type check: `tsc --noEmit`
+- Biome check: style/lint/format (fails on mismatch)
+- Type check: `tsc --noEmit` with strict options
 - Tests: Vitest (unit/component tests)
 
 Workflow file: `.github/workflows/ci.yml`
+
+## Quality Checks (AI‑Assisted Coding)
+
+Because we will generate code frequently via AI agents, this project enforces
+strong, automated checks to keep quality high and regressions low:
+
+- Biome: one tool for lint + format
+  - Local: `npm run format:check` (or `npm run lint`), auto‑fix: `npm run lint:fix`
+    / `npm run format`
+  - CI: fails if formatting or lint rules are violated
+- TypeScript: strict + extra safety flags
+  - `strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`
+  - Local: `npm run typecheck` (runs `tsc --noEmit`)
+- Tests: Vitest + React Testing Library
+  - Local: `npm test` (single‑thread pool configured for stability)
+  - Integration (opt‑in): `npm run test:int` (calls real GraphQL if env vars present)
+- Markdown: `markdownlint` checks docs consistency
+- CI gating: tests run only after checks pass (`needs: check`)
+- Build validation: CI builds the Next.js app and Docker image, and verifies Nginx
+  configs with `nginx -t`
 
 ## Integration Test (Real Server)
 
