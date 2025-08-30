@@ -1,6 +1,4 @@
 import { render, screen } from "@testing-library/react";
-// biome-ignore lint/correctness/noUnusedImports: needed for JSX in Vitest
-import React from "react";
 import HomePage from "../src/app/page";
 import "@testing-library/jest-dom";
 

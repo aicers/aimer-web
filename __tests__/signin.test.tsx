@@ -1,6 +1,4 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-// biome-ignore lint/correctness/noUnusedImports: needed for JSX in Vitest
-import React from "react";
 import "@testing-library/jest-dom";
 
 // Mock Next.js navigation hooks with next-router-mock
