@@ -9,6 +9,7 @@ import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { signInRequest } from "@/lib/graphql";
+import { friendlyError } from "@/lib/utils";
 
 const schema = z.object({
   id: z.string().min(1, "ID is required"),
@@ -44,8 +45,7 @@ function SignInInner() {
       });
       router.push(mode === "admin" ? "/admin" : "/user");
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Sign-in failed";
-      setFormError(message);
+      setFormError(friendlyError(err));
     }
   };
 
