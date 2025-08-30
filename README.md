@@ -14,7 +14,7 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
 - npm: Use the npm bundled with Node 22 (or npm 10+).
 - Docker: Install Docker (Docker Desktop or Docker Engine)
 
-## Quick Start
+## Development
 
 - Install: `npm install`
 - Configure env: create `.env.local` with:
@@ -22,7 +22,14 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
     - Example for local dev: `https://127.0.0.1:8445/graphql`
   - Optionally `INSECURE_TLS=1` for local self‑signed upstream
+  - See `.env.local.example`
 - Run dev: `npm run dev` then open `http://localhost:8446`
+
+## Notes
+
+- If your Aimer backend uses a different port than the default 8445, update the
+  configuration accordingly.
+- By default, aimer-web runs on port 8446. You can change this port if necessary.
 
 ## Deployment
 
@@ -88,10 +95,14 @@ dedicated HTTPS profile with your own certificate files.
 - Configure env (`.env` in repo root):
   - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql` (client → built‑in proxy)
   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
+    - If your GraphQL server runs on the host, set
+      `AIMER_GRAPHQL_ENDPOINT=https://host.docker.internal:8445/graphql` in `.env`.
+      On Linux, this works via `extra_hosts: ["host.docker.internal:host-gateway"]`
+      (already configured).
   - Optional (local/self‑signed upstream): `INSECURE_TLS=1`
   - Tip: copy from `.env.docker.example`
 
-- Start:
+- Build and start:
   - `docker compose --profile http up --build -d`
 
 - Access:
@@ -103,17 +114,6 @@ dedicated HTTPS profile with your own certificate files.
 
 - Notes:
   - Nginx config: `docker/nginx/default.conf` (proxies to `web:3000`)
-  - If your GraphQL server runs on the host, set
-    `AIMER_GRAPHQL_ENDPOINT=https://host.docker.internal:<port>/graphql` in `.env`.
-    On Linux, this works via `extra_hosts: ["host.docker.internal:host-gateway"]`
-    (already configured).
-
-#### Systemd + Nginx (example)
-
-- Systemd unit example: `infrastructure/systemd/aimer-web.service.example`
-  - Place app at `/opt/aimer-web`, run `sudo systemctl enable --now aimer-web`
-- Nginx reverse proxy example: `infrastructure/nginx/aimer-web.conf.example`
-  - Proxy to upstream `127.0.0.1:8446`
 
 ### Service Deployments
 
@@ -123,13 +123,13 @@ dedicated HTTPS profile with your own certificate files.
 
 Terminate TLS at Nginx and proxy to the Next.js app.
 
-- Prereqs:
-  - Docker + Docker Compose v2
-  - Valid TLS certificate/key (or self‑signed for testing)
-
 - Configure env (`.env` in repo root):
   - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql`
   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql`
+    - If your GraphQL server runs on the host, set
+      `AIMER_GRAPHQL_ENDPOINT=https://host.docker.internal:8445/graphql` in `.env`.
+      On Linux, this works via `extra_hosts: ["host.docker.internal:host-gateway"]`
+      (already configured).
   - Optional (local/self‑signed upstream): `INSECURE_TLS=1`
 
 - Place certificates:
@@ -172,7 +172,7 @@ Terminate TLS at Nginx and proxy to the Next.js app.
     - For real domains, prefer valid public CAs (or the Let’s Encrypt setup below)
       over self‑signed certs.
 
-- Start:
+- Build and start:
   - `docker compose --profile https up --build -d`
 
 - Access:
