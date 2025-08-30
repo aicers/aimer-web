@@ -14,6 +14,86 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
 - npm: Use the npm bundled with Node 22 (or npm 10+).
 - Docker: Install Docker (Docker Desktop or Docker Engine)
 
+## Port Configuration
+
+- If your Aimer backend uses a different port than the default 8445, update the
+  configuration accordingly.
+- By default, aimer-web runs on port 8446. You can change this port if necessary.
+
+## Networking & GraphQL Proxy
+
+### Architecture
+
+This project can run with an optional edge proxy (Nginx) in front of the app,
+resulting in a two-layer reverse proxy model. If Nginx is not used, only the
+in‑app proxy (Next.js API route) is active.
+
+- Edge proxy (if used): Nginx
+  - HTTPS (production):
+    - Host → container: `8446 → 443` (TLS terminated at Nginx)
+    - Nginx: `listen 443 ssl;` → `proxy_pass http://web:3000`
+    - Use the `https` profile; production must serve HTTPS.
+  - HTTP (development):
+    - Host → container: `8446 → 8080`
+    - Nginx: `listen 8080;` → `proxy_pass http://web:3000`
+    - You may also skip Nginx entirely and access the app directly.
+  - Purpose: stable external port, HTTPS termination for production, keep the app
+    container private.
+  - Note: when Nginx is used, the Next.js app (service `web`) listens on
+    internal port `3000` and Nginx proxies to `web:3000`. When accessing Next.js
+    directly without Nginx in local development, it listens on `8446`
+    (`npm run dev -p 8446`).
+- In-app proxy: Next.js API route
+  - Route: `/api/graphql` at `src/app/api/graphql/route.ts`.
+  - Role: receive browser requests and forward them server-side to the real
+    GraphQL upstream (`AIMER_GRAPHQL_ENDPOINT`).
+  - Auth: reads the HttpOnly cookie `aimer_token` and attaches
+    `Authorization: Bearer <token>` to the upstream call.
+
+Flow overview
+
+- Browser → (optional Nginx) → Next.js → `/api/graphql` → Aimer GraphQL upstream
+- Without Nginx, the browser talks directly to the Next.js app; the `/api/graphql`
+  behavior is the same.
+
+Port behavior by scenario
+
+- Local development (no Nginx): `npm run dev -p 8446` → Next.js listens on 8446 directly.
+- Docker single container (no Nginx): Next.js listens on 3000 in the container;
+  host maps `8446:3000`.
+- Docker Compose with Nginx:
+  - HTTP profile: host 8446 → Nginx 8080 → Next.js `web:3000`.
+  - HTTPS profile: host 8446 → Nginx 443 (TLS) → Next.js `web:3000`.
+
+Why this matters
+
+- CORS simplicity: the browser calls same-origin `/api/graphql`, so CORS doesn’t
+  trigger.
+- Security: token stays in an HttpOnly cookie; only the server attaches it to upstream
+  requests.
+
+### GraphQL Endpoint Policy
+
+- Required (current design): set `NEXT_PUBLIC_GRAPHQL_ENDPOINT` to `/api/graphql`
+  only.
+  - Rationale: ensures the browser always hits the in-app proxy so the server can
+    read the HttpOnly cookie and add `Authorization` securely.
+- What if you set an absolute URL (e.g., `https://api.example.com/graphql`)?
+  - Behavior: the browser calls the upstream directly, bypassing the in-app proxy.
+    In that case `AIMER_GRAPHQL_ENDPOINT` is not used.
+  - To make this work correctly, additional changes are required on both sides:
+    - On Aimer (upstream):
+      - CORS: allow your app’s origin explicitly, and if cookies are used, set
+        `Access-Control-Allow-Credentials: true` (no wildcard origin).
+      - Cookies (if using cookie auth): issue cookies with `Domain=.example.com`,
+        `SameSite=None; Secure` so cross-site cookies can be sent.
+    - On aimer-web (this app):
+      - Client fetch: use `credentials: 'include'` for cookie-based auth; or
+      - Switch to a JS-managed bearer token (less secure than HttpOnly), and ensure
+        the API allows the `Authorization` header.
+  - Status: this absolute-URL mode is not enabled by default. We may consider it
+    later; for now, use `/api/graphql`.
+
 ## Development
 
 - Install: `npm install`
@@ -22,14 +102,8 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
     - Example for local dev: `https://127.0.0.1:8445/graphql`
   - Optionally `INSECURE_TLS=1` for local self‑signed upstream
-  - See `.env.local.example`
+  - Tip: copy from `.env.local.example`
 - Run dev: `npm run dev` then open `http://localhost:8446`
-
-## Notes
-
-- If your Aimer backend uses a different port than the default 8445, update the
-  configuration accordingly.
-- By default, aimer-web runs on port 8446. You can change this port if necessary.
 
 ## Deployment
 
@@ -169,8 +243,7 @@ Terminate TLS at Nginx and proxy to the Next.js app.
 
   - Notes:
     - `*.pem` files are ignored by Git (see `.gitignore`). Do not commit secrets.
-    - For real domains, prefer valid public CAs (or the Let’s Encrypt setup below)
-      over self‑signed certs.
+    - For real domains, prefer valid public CAs over self‑signed certs.
 
 - Build and start:
   - `docker compose --profile https up --build -d`
