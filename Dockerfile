@@ -12,6 +12,8 @@ COPY package*.json ./
 RUN npm ci --include=dev
 
 COPY . .
+# Ensure public/ exists even when repo has no static assets
+RUN mkdir -p public
 RUN npm run build
 
 # ---- Runner ----
