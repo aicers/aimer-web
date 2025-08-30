@@ -174,7 +174,7 @@ dedicated HTTPS profile with your own certificate files.
       On Linux, this works via `extra_hosts: ["host.docker.internal:host-gateway"]`
       (already configured).
   - Optional (local/self‑signed upstream): `INSECURE_TLS=1`
-  - Tip: copy from `.env.docker.example`
+  - Tip: copy from `.env.example`
 
 - Build and start:
   - `docker compose --profile http up --build -d`
