@@ -1,5 +1,28 @@
 import { cookies } from "next/headers";
 
+type GraphQLPayload =
+  | { query?: string; operationName?: string | null }
+  | Array<{ query?: string; operationName?: string | null }>;
+
+function isSignInOperation(body: unknown): boolean {
+  try {
+    const payload = body as GraphQLPayload;
+    const check = (op?: { query?: string; operationName?: string | null }) => {
+      const opName = (op?.operationName || "").toString();
+      if (opName === "SignIn") return true;
+      const q = (op?.query || "").toString();
+      // Heuristic: look for a mutation operation explicitly named SignIn
+      // e.g., "mutation SignIn($u: String!) { signIn ... }"
+      if (/mutation\s+SignIn\b/i.test(q)) return true;
+      return false;
+    };
+    if (Array.isArray(payload)) return payload.some((op) => check(op));
+    return check(payload as { query?: string; operationName?: string | null });
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(req: Request) {
   const raw = await req.text();
 
@@ -20,12 +43,23 @@ export async function POST(req: Request) {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   }
 
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aimer_token")?.value;
+  // Decide whether to attach Authorization based on the operation.
+  let attachAuth = true;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isSignInOperation(parsed)) attachAuth = false;
+  } catch {
+    // If body is not JSON, fall back to default behavior (attach if present)
+  }
+
   const headers: Record<string, string> = {
     "content-type": "application/json",
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (attachAuth) {
+    const cookieStore = await cookies();
+    const token = cookieStore.get("aimer_token")?.value;
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
 
   const upstreamResp = await fetch(upstream, {
     method: "POST",
