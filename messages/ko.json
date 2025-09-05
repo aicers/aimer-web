@@ -1,0 +1,32 @@
+{
+  "common": {
+    "welcome": "Aimer Web에 오신 것을 환영합니다",
+    "loading": "로딩 중…",
+    "signingIn": "로그인 중...",
+    "signIn": "로그인"
+  },
+  "home": {
+    "userSignIn": "사용자 로그인",
+    "adminSignIn": "관리자 로그인"
+  },
+  "signin": {
+    "title": "{mode, select, admin {관리자} other {사용자}} 로그인",
+    "idPlaceholder": "아이디",
+    "passwordPlaceholder": "비밀번호",
+    "idRequired": "아이디를 입력해주세요",
+    "passwordMinLength": "비밀번호는 최소 {minLength}자 이상이어야 합니다"
+  },
+  "language": {
+    "english": "English",
+    "korean": "한국어",
+    "switchLanguage": "언어 변경"
+  },
+  "user": {
+    "title": "사용자 앱",
+    "welcome": "사용자 영역에 오신 것을 환영합니다."
+  },
+  "admin": {
+    "title": "관리자 앱",
+    "welcome": "관리자 영역에 오신 것을 환영합니다."
+  }
+}

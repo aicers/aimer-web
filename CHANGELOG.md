@@ -8,6 +8,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- Internationalization (i18n) support with `next-intl` for English and Korean
+- Locale-based routing using `/[locale]/` directory structure
+- Language switcher component with dynamic URL switching
+- Message files for English (`messages/en.json`) and Korean (`messages/ko.json`)
 - User and Admin app routes (`/user`, `/admin`) and a sign‑in screen/flow (`/signin`).
 - Auth via HttpOnly cookie with cookie management routes (`/api/auth/set-cookie`,
   `/api/auth/signout`); sign-in sets the cookie via the API.

@@ -1,0 +1,32 @@
+{
+  "common": {
+    "welcome": "Welcome to Aimer Web",
+    "loading": "Loading…",
+    "signingIn": "Signing in...",
+    "signIn": "Sign In"
+  },
+  "home": {
+    "userSignIn": "User Sign In",
+    "adminSignIn": "Admin Sign In"
+  },
+  "signin": {
+    "title": "{mode, select, admin {Admin} other {User}} Sign In",
+    "idPlaceholder": "ID",
+    "passwordPlaceholder": "Password",
+    "idRequired": "ID is required",
+    "passwordMinLength": "Password must be at least {minLength} characters"
+  },
+  "language": {
+    "english": "English",
+    "korean": "한국어",
+    "switchLanguage": "Switch Language"
+  },
+  "user": {
+    "title": "User App",
+    "welcome": "Welcome to the user area."
+  },
+  "admin": {
+    "title": "Admin App",
+    "welcome": "Welcome to the admin area."
+  }
+}

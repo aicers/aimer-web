@@ -3,6 +3,12 @@ import "@testing-library/jest-dom";
 
 // Mock Next.js navigation hooks with next-router-mock
 vi.mock("next/navigation");
+// Mock next-intl
+vi.mock("next-intl");
+// Mock LanguageSwitcher component
+vi.mock("@/components/language-switcher", () => ({
+  default: () => <button type="button">Language</button>,
+}));
 
 import mockRouter from "next-router-mock";
 
@@ -12,7 +18,7 @@ vi.mock("@/lib/graphql", () => ({
   signInRequest: (...args: unknown[]) => mockSignIn(...args),
 }));
 
-import LoginPage from "../src/app/signin/page";
+import LoginPage from "../src/app/[locale]/signin/page";
 
 // Mock fetch used to set the HttpOnly cookie
 beforeEach(() => {
@@ -53,7 +59,7 @@ test("signs in and navigates to /admin when mode=admin", async () => {
       expect.objectContaining({ method: "POST" }),
     ),
   );
-  await waitFor(() => expect(mockRouter.asPath).toBe("/admin"));
+  await waitFor(() => expect(mockRouter.asPath).toBe("/en/admin"));
   expect(mockSignIn).toHaveBeenCalledWith({
     username: "user",
     password: "password123",
@@ -72,5 +78,5 @@ test("signs in and navigates to /user when mode=user (default)", async () => {
       expect.objectContaining({ method: "POST" }),
     ),
   );
-  await waitFor(() => expect(mockRouter.asPath).toBe("/user"));
+  await waitFor(() => expect(mockRouter.asPath).toBe("/en/user"));
 });
