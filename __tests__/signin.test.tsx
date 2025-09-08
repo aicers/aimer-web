@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import "@testing-library/jest-dom";
 
 // Mock Next.js navigation hooks with next-router-mock
@@ -37,6 +43,8 @@ beforeEach(() => {
 afterEach(() => {
   // Preserve mock implementations, only clear call history
   vi.clearAllMocks();
+  // Clean up DOM
+  cleanup();
 });
 
 function fillAndSubmit(id: string, pw: string) {
