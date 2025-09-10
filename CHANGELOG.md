@@ -8,7 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- User and Admin app routes (`/user`, `/admin`) and a sign‑in screen/flow (`/signin`).
+- User and Admin app routes (`/[locale]/user`, `/[locale]/admin`) and a sign‑in
+  screen/flow (`/[locale]/signin`).
 - Auth via HttpOnly cookie with cookie management routes (`/api/auth/set-cookie`,
   `/api/auth/signout`); sign-in sets the cookie via the API.
 - Reusable `friendlyError` util for concise user-facing error messages

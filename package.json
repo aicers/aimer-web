@@ -21,6 +21,7 @@
     "clsx": "^2.1.1",
     "graphql": "^16.11.0",
     "graphql-request": "^7.2.0",
+    "next-intl": "^3.16.2",
     "next": "15.5.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",

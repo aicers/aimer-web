@@ -2,8 +2,8 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter, useSearchParams } from "next/navigation";
-// biome-ignore lint/correctness/noUnusedImports: needed for JSX
-import React, { Suspense, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
+import { Suspense, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
@@ -11,20 +11,25 @@ import { Input } from "@/components/ui/input";
 import { signInRequest } from "@/lib/graphql";
 import { friendlyError } from "@/lib/utils";
 
-const schema = z.object({
-  id: z.string().min(1, "ID is required"),
-  pw: z.string().min(3, "Password must be at least 3 characters"),
-});
-
-type FormValues = z.infer<typeof schema>;
+type FormValues = { id: string; pw: string };
 
 function SignInInner() {
+  const t = useTranslations();
   const searchParams = useSearchParams();
-  const mode = searchParams.get("mode") ?? "user";
+  const mode = (searchParams.get("mode") ?? "user") as "user" | "admin";
   const router = useRouter();
   const [formError, setFormError] = useState<string | null>(null);
 
-  const resolver = useMemo(() => zodResolver(schema), []);
+  const schema = useMemo(
+    () =>
+      z.object({
+        id: z.string().min(1, t("signin.validation.idRequired")),
+        pw: z.string().min(3, t("signin.validation.pwMin", { count: 3 })),
+      }),
+    [t],
+  );
+
+  const resolver = useMemo(() => zodResolver(schema), [schema]);
   const {
     register,
     handleSubmit,
@@ -36,8 +41,6 @@ function SignInInner() {
     try {
       const res = await signInRequest({ username: data.id, password: data.pw });
       if (!res?.token) throw new Error("Invalid response: missing token");
-      // Store token into HttpOnly cookie via API route so that
-      // server components/routes can authenticate using cookies.
       await fetch("/api/auth/set-cookie", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -52,7 +55,7 @@ function SignInInner() {
   return (
     <main className="flex flex-col items-center justify-center min-h-screen p-6">
       <h1 className="text-2xl font-semibold mb-4">
-        {mode === "admin" ? "Admin" : "User"} Sign In
+        {t("signin.title", { mode })}
       </h1>
       <form
         onSubmit={handleSubmit(onSubmit)}
@@ -61,7 +64,7 @@ function SignInInner() {
         <div>
           <Input
             type="text"
-            placeholder="ID"
+            placeholder={t("signin.idPlaceholder")}
             aria-invalid={!!errors.id}
             {...register("id")}
           />
@@ -72,7 +75,7 @@ function SignInInner() {
         <div>
           <Input
             type="password"
-            placeholder="Password"
+            placeholder={t("signin.passwordPlaceholder")}
             aria-invalid={!!errors.pw}
             {...register("pw")}
           />
@@ -81,7 +84,7 @@ function SignInInner() {
           )}
         </div>
         <Button type="submit" disabled={isSubmitting}>
-          {isSubmitting ? "Signing in..." : "Sign In"}
+          {isSubmitting ? t("signin.submitting") : t("signin.submit")}
         </Button>
       </form>
       {formError && (
@@ -94,8 +97,9 @@ function SignInInner() {
 }
 
 export default function SignInPage() {
+  const t = useTranslations();
   return (
-    <Suspense fallback={<main className="p-6">Loading…</main>}>
+    <Suspense fallback={<main className="p-6">{t("signin.loading")}</main>}>
       <SignInInner />
     </Suspense>
   );

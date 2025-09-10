@@ -2,6 +2,28 @@
 
 Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
 
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Port Configuration](#port-configuration)
+- [Networking & GraphQL Proxy](#networking--graphql-proxy)
+  - [Architecture](#architecture)
+  - [GraphQL Endpoint Policy](#graphql-endpoint-policy)
+- [Development](#development)
+- [Deployment](#deployment)
+  - [Test Deployments](#test-deployments)
+  - [Service Deployments](#service-deployments)
+- [Scripts](#scripts)
+- [CI](#ci)
+- [Quality Checks (AI‑Assisted Coding)](#quality-checks-aiassisted-coding)
+- [Integration Test (Real Server)](#integration-test-real-server)
+- [Internationalization (next-intl)](#internationalization-next-intl)
+  - [Quick usage](#quick-usage)
+  - [Examples](#examples)
+  - [Testing notes](#testing-notes)
+  - [Authoring Messages (Flat JSON)](#authoring-messages-flat-json)
+- [Tech Highlights](#tech-highlights)
+
 ## Prerequisites
 
 - Node 22: Use Node.js 22.x. Do not use Node 24 — Next.js 15.5.0 is more stable
@@ -313,8 +335,108 @@ Notes:
 - The integration test setup (`__tests__/setup.int.ts`) disables TLS verification
   only for this test run to make local/self‑signed endpoints workable. Do not use
   this in production.
-- For browser sign‑in at `/signin`, use a valid certificate or a proxy route; browsers
+- For browser sign‑in at `/[locale]/signin` (e.g., `/en/signin`), use a valid certificate
+  or a proxy route; browsers
   cannot bypass TLS verification programmatically.
+
+## Internationalization (next-intl)
+
+- URL locales: `/en/...` and `/ko/...` using `app/[locale]/` routing.
+- Middleware: `src/middleware.ts` redirects bare paths to the preferred `/<locale>/...`
+  based on Accept-Language.
+- Provider: `src/app/[locale]/layout.tsx` wraps the tree with `NextIntlClientProvider`
+  using `getMessages()` and `getLocale()`.
+- Messages: flat JSON at project root `messages/en.json`, `messages/ko.json` for
+  AI‑friendly editing.
+  - At request time, flat keys are converted to nested objects via `src/i18n/messages.ts#nestMessages`
+    (required by next‑intl/use‑intl). Loader: `src/i18n/request.ts`.
+- Server components: use `await getTranslations()`; Client components: use `useTranslations()`.
+- Language switcher: `src/components/LanguageSwitcher.tsx` updates the locale segment
+  in the current URL while preserving the query string.
+- Navigation helpers: `src/i18n/navigation.ts` exports `{Link, useRouter, usePathname}`
+  from `createSharedPathnamesNavigation({locales: ['en','ko']})`. Use these for
+  locale-aware internal links (URLs include the current locale without relying on
+  middleware redirects).
+
+### Quick usage
+
+- Add/modify messages in `messages/en.json` and `messages/ko.json` with flat keys
+  like `signin.title`.
+- Access in components:
+  - Server: `const t = await getTranslations(); t('signin.title')`
+  - Client: `const t = useTranslations(); t('signin.title')`
+- Links: `import {Link} from '@/i18n/navigation'` and use `<Link href="/signin" />`
+  to get locale-prefixed URLs automatically.
+
+### Examples
+
+```tsx
+// Localized Link (client or server component)
+import {Link} from "@/i18n/navigation";
+
+export function Actions() {
+  return (
+    <div>
+      <Link href="/signin?mode=user">User Sign In</Link>
+      <Link href="/signin?mode=admin">Admin Sign In</Link>
+    </div>
+  );
+}
+```
+
+<!-- markdownlint-disable MD013 -->
+```tsx
+// Language switcher in layout
+// Note: LanguageSwitcher is a Client Component that reads `useTranslations()` internally.
+import {LanguageSwitcher} from "@/components/LanguageSwitcher";
+
+export default function LocaleLayout({children}: {children: React.ReactNode}) {
+  return (
+    <html>
+      <body>
+        <header>
+          <LanguageSwitcher />
+        </header>
+        {children}
+      </body>
+    </html>
+  );
+}
+```
+<!-- markdownlint-enable MD013 -->
+
+- Routes: visit `/en/signin` or `/ko/signin` to see translated UI.
+
+### Testing notes
+
+- The unit tests demonstrate both client and server i18n usage:
+  - Client: `__tests__/i18n.client.test.tsx` wraps components with `NextIntlClientProvider`
+    using `nestMessages(en)`.
+  - Server: `__tests__/i18n.server.test.tsx` mocks `next-intl/server` and feeds
+    nested messages derived from the flat JSON.
+  - Routes: `__tests__/i18n.routes.test.tsx` verifies locale-prefixed links and
+    localized rendering for `/en` and `/ko` pages (home and sign-in).
+
+### Authoring Messages (Flat JSON)
+
+- Rationale: Given the current scope and pace of this app, minimizing complexity
+  outweighs the benefits of deeply nested message files. Flat keys are simpler to
+  scan, easier to diff/review, and AI-friendly to generate and edit. The runtime
+  converts them to the nested shape that next-intl expects.
+- Edit locations: Only update `messages/en.json` and `messages/ko.json`.
+- Key format: Use flat, sectioned keys (e.g., `signin.title`, `profile.greeting`).
+- No mixing: Avoid conflicting paths such as using both `a.b` and `a.b.c` in the
+  same file.
+- Values: Must be strings (objects/arrays are not supported as message values).
+- ICU: Use ICU placeholders for variables and plurals (e.g., `{name}`, `{count}`).
+- Runtime nesting: Flat keys are transformed at request time via `src/i18n/messages.ts#nestMessages`
+  (loader: `src/i18n/request.ts`). No separate nested files are maintained.
+- Example:
+  - en.json / ko.json
+    - `"profile.greeting": "Hello, {name}!"`
+    - `"profile.greeting": "안녕하세요, {name}!"`
+  - Server: `const t = await getTranslations(); t('profile.greeting', { name })`
+  - Client: `const t = useTranslations(); t('profile.greeting', { name })`
 
 ## Tech Highlights
 

@@ -1,0 +1,24 @@
+{
+  "app.title": "Aimer Web",
+  "home.title": "Welcome to Aimer Web",
+  "home.userSignIn": "User Sign In",
+  "home.adminSignIn": "Admin Sign In",
+
+  "nav.language": "Language",
+  "lang.en": "English",
+  "lang.ko": "Korean",
+
+  "signin.title": "{mode, select, admin {Admin} other {User}} Sign In",
+  "signin.idPlaceholder": "ID",
+  "signin.passwordPlaceholder": "Password",
+  "signin.submit": "Sign In",
+  "signin.submitting": "Signing in...",
+  "signin.validation.idRequired": "ID is required",
+  "signin.validation.pwMin": "Password must be at least {count} characters",
+  "signin.loading": "Loading…",
+
+  "admin.title": "Admin App",
+  "admin.welcome": "Welcome to the admin area.",
+  "user.title": "User App",
+  "user.welcome": "Welcome to the user area."
+}
