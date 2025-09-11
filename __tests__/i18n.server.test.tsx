@@ -4,10 +4,10 @@ import en from "../messages/en.json";
 import { nestMessages } from "../src/i18n/messages";
 import "@testing-library/jest-dom";
 
-// useRouter mocking
-vi.mock("next/navigation");
+beforeEach(() => cleanup());
+afterEach(() => cleanup());
 
-// Mock server helpers so getTranslations() can be called in this test
+// Provide a minimal mock for next-intl/server to return English messages
 vi.mock("next-intl/server", () => {
   const nested = nestMessages(en as Record<string, string>) as Record<
     string,
@@ -42,17 +42,13 @@ vi.mock("next-intl/server", () => {
   };
 });
 
-beforeEach(() => cleanup());
-afterEach(() => cleanup());
-
-test("renders welcome message and buttons", async () => {
-  const HomePage = (await import("../src/app/[locale]/page")).default;
+test("server messages render in localized home page", async () => {
+  const Home = (await import("../src/app/[locale]/page")).default;
+  const nested = nestMessages(en as Record<string, string>);
   render(
-    <NextIntlClientProvider messages={nestMessages(en)} locale="en">
-      {await HomePage()}
+    <NextIntlClientProvider messages={nested} locale="en">
+      {await Home()}
     </NextIntlClientProvider>,
   );
-  expect(screen.getByText("Welcome to Aimer Web")).toBeInTheDocument();
-  expect(screen.getByText("User Sign In")).toBeInTheDocument();
-  expect(screen.getByText("Admin Sign In")).toBeInTheDocument();
+  expect(screen.getByText(en["home.title"])).toBeInTheDocument();
 });

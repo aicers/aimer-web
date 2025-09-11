@@ -1,5 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import "@testing-library/jest-dom";
+import { NextIntlClientProvider } from "next-intl";
+import en from "../messages/en.json";
+import { nestMessages } from "../src/i18n/messages";
 
 // Mock Next.js navigation hooks with next-router-mock
 vi.mock("next/navigation");
@@ -12,7 +21,7 @@ vi.mock("@/lib/graphql", () => ({
   signInRequest: (...args: unknown[]) => mockSignIn(...args),
 }));
 
-import LoginPage from "../src/app/signin/page";
+import LoginPage from "../src/app/[locale]/signin/page";
 
 // Mock fetch used to set the HttpOnly cookie
 beforeEach(() => {
@@ -33,6 +42,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+beforeEach(() => cleanup());
+afterEach(() => cleanup());
+
 function fillAndSubmit(id: string, pw: string) {
   const idInput = screen.getByPlaceholderText("ID");
   const pwInput = screen.getByPlaceholderText("Password");
@@ -42,9 +54,13 @@ function fillAndSubmit(id: string, pw: string) {
 }
 
 test("signs in and navigates to /admin when mode=admin", async () => {
-  mockRouter.push("/signin?mode=admin");
+  mockRouter.push("/en/signin?mode=admin");
 
-  render(<LoginPage />);
+  render(
+    <NextIntlClientProvider messages={nestMessages(en)} locale="en">
+      <LoginPage />
+    </NextIntlClientProvider>,
+  );
   fillAndSubmit("user", "password123");
 
   await waitFor(() =>
@@ -61,9 +77,13 @@ test("signs in and navigates to /admin when mode=admin", async () => {
 });
 
 test("signs in and navigates to /user when mode=user (default)", async () => {
-  mockRouter.push("/signin"); // no mode param → defaults to user
+  mockRouter.push("/en/signin"); // no mode param → defaults to user
 
-  render(<LoginPage />);
+  render(
+    <NextIntlClientProvider messages={nestMessages(en)} locale="en">
+      <LoginPage />
+    </NextIntlClientProvider>,
+  );
   fillAndSubmit("user", "password123");
 
   await waitFor(() =>
