@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    groups:
+      next-runtime:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+      tooling:
+        patterns:
+          - "@biomejs/*"
+          - "typescript"
+          - "vitest"
+          - "@testing-library/*"
+          - "next-router-mock"
+          - "tailwind*"
+          - "jsdom"
+          - "@types/*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
