@@ -31,7 +31,8 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
   - nvm example: `nvm install 22 && nvm use 22`
   - macOS (Homebrew):
     - `brew update && brew install node@22`
-    - Link it: `brew link --overwrite --force node@22`
+    - Unlink the previous version: `brew unlink node`
+    - Link 22: `brew link --overwrite --force node@22`
     - Verify: `node -v` should print v22.x.y
 - npm: Use the npm bundled with Node 22 (or npm 10+).
 - Docker: Install Docker (Docker Desktop or Docker Engine)
