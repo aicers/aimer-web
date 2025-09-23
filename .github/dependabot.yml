@@ -12,7 +12,6 @@ updates:
           - "react-dom"
       tooling:
         patterns:
-          - "@biomejs/*"
           - "typescript"
           - "vitest"
           - "@testing-library/*"
