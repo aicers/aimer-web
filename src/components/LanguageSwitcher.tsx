@@ -1,38 +1,30 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useTransition } from "react";
 import { locales, usePathname, useRouter } from "@/i18n/navigation";
 
 export function LanguageSwitcher() {
   const t = useTranslations();
+  const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
-  const firstSegment = pathname.split("/")[1] ?? "";
-  const currentLocale = (locales as readonly string[]).includes(firstSegment)
-    ? (firstSegment as (typeof locales)[number])
-    : locales[0];
 
   return (
     <label className="text-sm flex items-center gap-2">
       <span className="opacity-80">{t("nav.language")}</span>
       <select
         className="border rounded px-2 py-1"
-        defaultValue={currentLocale}
+        value={locale}
         onChange={(e) => {
           const locale = e.target.value as (typeof locales)[number];
           startTransition(() => {
-            const segments = pathname.split("/");
-            // ['', 'en', '...']
-            if (segments.length > 1) {
-              segments[1] = locale;
-            }
-            const nextPath = segments.join("/") || `/${locale}`;
             const qs = searchParams.toString();
-            router.replace(qs ? `${nextPath}?${qs}` : nextPath);
+            const href = pathname && pathname.length > 0 ? pathname : "/";
+            router.replace(qs ? `${href}?${qs}` : href, { locale });
           });
         }}
         disabled={isPending}
