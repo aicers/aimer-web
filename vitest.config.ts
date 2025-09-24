@@ -15,6 +15,12 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     include: ["__tests__/**/*.test.tsx"],
+    setupFiles: ["./vitest.setup.ts"],
+    server: {
+      deps: {
+        inline: ["next-intl"],
+      },
+    },
     // Force single-threaded runs to avoid worker kill issues (EPERM)
     pool: "threads",
     poolOptions: {
