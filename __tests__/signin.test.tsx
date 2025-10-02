@@ -46,12 +46,14 @@ afterEach(() => {
 beforeEach(() => cleanup());
 afterEach(() => cleanup());
 
-function fillAndSubmit(id: string, pw: string) {
-  const idInput = screen.getByPlaceholderText("ID");
-  const pwInput = screen.getByPlaceholderText("Password");
+async function fillAndSubmit(id: string, pw: string) {
+  const idInput = screen.getByPlaceholderText(en["signin.idPlaceholder"]);
+  const pwInput = screen.getByPlaceholderText(en["signin.passwordPlaceholder"]);
   fireEvent.change(idInput, { target: { value: id } });
   fireEvent.change(pwInput, { target: { value: pw } });
-  fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+  const submit = screen.getByRole("button", { name: en["signin.submit"] });
+  await waitFor(() => expect(submit).not.toBeDisabled());
+  fireEvent.click(submit);
 }
 
 function createToken(payload: Record<string, unknown>): string {
@@ -77,7 +79,7 @@ test("signs in and navigates to /en/admin when role=administrator", async () => 
       <LoginPage />
     </NextIntlClientProvider>,
   );
-  fillAndSubmit("user", "password123");
+  await fillAndSubmit("user", "password123");
 
   await waitFor(() =>
     expect(global.fetch).toHaveBeenCalledWith(
@@ -103,7 +105,7 @@ test("signs in and navigates to /en/user when role=user", async () => {
       <LoginPage />
     </NextIntlClientProvider>,
   );
-  fillAndSubmit("user", "password123");
+  await fillAndSubmit("user", "password123");
 
   await waitFor(() =>
     expect(global.fetch).toHaveBeenCalledWith(
@@ -125,7 +127,7 @@ test("routes to the error screen when role is unsupported", async () => {
       <LoginPage />
     </NextIntlClientProvider>,
   );
-  fillAndSubmit("user", "password123");
+  await fillAndSubmit("user", "password123");
 
   await waitFor(() => expect(mockRouter.asPath).toBe("/en/signin/error"));
   expect(global.fetch).not.toHaveBeenCalled();
