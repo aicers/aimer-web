@@ -378,8 +378,7 @@ import {Link} from "@/i18n/navigation";
 export function Actions() {
   return (
     <div>
-      <Link href="/signin?mode=user">User Sign In</Link>
-      <Link href="/signin?mode=admin">Admin Sign In</Link>
+      <Link href="/signin">Sign In</Link>
     </div>
   );
 }

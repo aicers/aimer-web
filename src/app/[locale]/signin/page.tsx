@@ -1,23 +1,22 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useRouter, useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
 import { Suspense, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { signInRequest } from "@/lib/graphql";
-import { friendlyError } from "@/lib/utils";
+import { friendlyError, getRoleFromToken } from "@/lib/utils";
 
 type FormValues = { id: string; pw: string };
 
 function SignInInner() {
   const t = useTranslations();
-  const searchParams = useSearchParams();
-  const mode = (searchParams.get("mode") ?? "user") as "user" | "admin";
   const router = useRouter();
+  const locale = useLocale();
   const [formError, setFormError] = useState<string | null>(null);
 
   const schema = useMemo(
@@ -41,12 +40,17 @@ function SignInInner() {
     try {
       const res = await signInRequest({ username: data.id, password: data.pw });
       if (!res?.token) throw new Error("Invalid response: missing token");
+      const role = getRoleFromToken(res.token);
+      if (role !== "administrator" && role !== "user") {
+        router.push(`/${locale}/signin/error`);
+        return;
+      }
       await fetch("/api/auth/set-cookie", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ token: res.token }),
       });
-      router.push(mode === "admin" ? "/admin" : "/user");
+      router.push(`/${locale}/${role === "administrator" ? "admin" : "user"}`);
     } catch (err) {
       setFormError(friendlyError(err));
     }
@@ -54,9 +58,7 @@ function SignInInner() {
 
   return (
     <main className="flex flex-col items-center justify-center min-h-screen p-6">
-      <h1 className="text-2xl font-semibold mb-4">
-        {t("signin.title", { mode })}
-      </h1>
+      <h1 className="text-2xl font-semibold mb-4">{t("signin.title")}</h1>
       <form
         onSubmit={handleSubmit(onSubmit)}
         className="flex flex-col gap-2 w-64"

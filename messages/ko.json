@@ -1,14 +1,13 @@
 {
   "app.title": "Aimer Web",
   "home.title": "Aimer Web에 오신 것을 환영합니다",
-  "home.userSignIn": "사용자 로그인",
-  "home.adminSignIn": "관리자 로그인",
+  "home.signIn": "로그인",
 
   "nav.language": "언어",
   "lang.en": "영어",
   "lang.ko": "한국어",
 
-  "signin.title": "{mode, select, admin {관리자} other {사용자}} 로그인",
+  "signin.title": "로그인",
   "signin.idPlaceholder": "아이디",
   "signin.passwordPlaceholder": "비밀번호",
   "signin.submit": "로그인",
@@ -16,6 +15,9 @@
   "signin.validation.idRequired": "아이디를 입력해주세요",
   "signin.validation.pwMin": "비밀번호는 최소 {count}자 이상이어야 합니다",
   "signin.loading": "로딩 중…",
+  "signin.unsupportedRoleTitle": "지원되지 않는 역할",
+  "signin.unsupportedRoleMessage": "지원되지 않는 역할로 인해 로그인할 수 없습니다.",
+  "signin.back": "로그인으로 돌아가기",
 
   "admin.title": "관리자 앱",
   "admin.welcome": "관리자 영역에 오신 것을 환영합니다.",

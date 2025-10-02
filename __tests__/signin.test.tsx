@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import {
   cleanup,
   fireEvent,
@@ -16,7 +17,7 @@ vi.mock("next/navigation");
 import mockRouter from "next-router-mock";
 
 // Mock GraphQL signInRequest to avoid real network
-const mockSignIn = vi.fn().mockResolvedValue({ token: "jwt-token" });
+const mockSignIn = vi.fn();
 vi.mock("@/lib/graphql", () => ({
   signInRequest: (...args: unknown[]) => mockSignIn(...args),
 }));
@@ -53,8 +54,23 @@ function fillAndSubmit(id: string, pw: string) {
   fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
 }
 
-test("signs in and navigates to /admin when mode=admin", async () => {
-  mockRouter.push("/en/signin?mode=admin");
+function createToken(payload: Record<string, unknown>): string {
+  const encode = (value: Record<string, unknown>) =>
+    Buffer.from(JSON.stringify(value), "utf-8")
+      .toString("base64")
+      .replace(/=+$/u, "")
+      .replace(/\+/gu, "-")
+      .replace(/\//gu, "_");
+  const header = encode({ alg: "HS256", typ: "JWT" });
+  const body = encode(payload);
+  return `${header}.${body}.signature`;
+}
+
+test("signs in and navigates to /en/admin when role=administrator", async () => {
+  mockRouter.push("/en/signin");
+  mockSignIn.mockResolvedValueOnce({
+    token: createToken({ role: "administrator" }),
+  });
 
   render(
     <NextIntlClientProvider messages={nestMessages(en)} locale="en">
@@ -69,15 +85,18 @@ test("signs in and navigates to /admin when mode=admin", async () => {
       expect.objectContaining({ method: "POST" }),
     ),
   );
-  await waitFor(() => expect(mockRouter.asPath).toBe("/admin"));
+  await waitFor(() => expect(mockRouter.asPath).toBe("/en/admin"));
   expect(mockSignIn).toHaveBeenCalledWith({
     username: "user",
     password: "password123",
   });
 });
 
-test("signs in and navigates to /user when mode=user (default)", async () => {
-  mockRouter.push("/en/signin"); // no mode param → defaults to user
+test("signs in and navigates to /en/user when role=user", async () => {
+  mockRouter.push("/en/signin");
+  mockSignIn.mockResolvedValueOnce({
+    token: createToken({ role: "user" }),
+  });
 
   render(
     <NextIntlClientProvider messages={nestMessages(en)} locale="en">
@@ -92,5 +111,22 @@ test("signs in and navigates to /user when mode=user (default)", async () => {
       expect.objectContaining({ method: "POST" }),
     ),
   );
-  await waitFor(() => expect(mockRouter.asPath).toBe("/user"));
+  await waitFor(() => expect(mockRouter.asPath).toBe("/en/user"));
+});
+
+test("routes to the error screen when role is unsupported", async () => {
+  mockRouter.push("/en/signin");
+  mockSignIn.mockResolvedValueOnce({
+    token: createToken({ role: "guest" }),
+  });
+
+  render(
+    <NextIntlClientProvider messages={nestMessages(en)} locale="en">
+      <LoginPage />
+    </NextIntlClientProvider>,
+  );
+  fillAndSubmit("user", "password123");
+
+  await waitFor(() => expect(mockRouter.asPath).toBe("/en/signin/error"));
+  expect(global.fetch).not.toHaveBeenCalled();
 });

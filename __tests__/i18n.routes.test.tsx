@@ -43,7 +43,7 @@ vi.mock("next-intl/server", () => {
   };
 });
 
-test("home links render with /en prefix and English text", async () => {
+test("home link renders with /en prefix and English text", async () => {
   const Home = (await import("../src/app/[locale]/page")).default;
   (globalThis as unknown as Record<string, unknown>).__TEST_MESSAGES__ =
     nestMessages(en) as unknown as Record<string, unknown>;
@@ -54,13 +54,11 @@ test("home links render with /en prefix and English text", async () => {
   );
 
   expect(screen.getByText(en["home.title"])).toBeInTheDocument();
-  const user = screen.getByRole("link", { name: en["home.userSignIn"] });
-  const admin = screen.getByRole("link", { name: en["home.adminSignIn"] });
-  expect(user.getAttribute("href")).toContain("/en/signin?mode=user");
-  expect(admin.getAttribute("href")).toContain("/en/signin?mode=admin");
+  const signIn = screen.getByRole("link", { name: en["home.signIn"] });
+  expect(signIn.getAttribute("href")).toContain("/en/signin");
 });
 
-test("home links render with /ko prefix and Korean text", async () => {
+test("home link renders with /ko prefix and Korean text", async () => {
   const Home = (await import("../src/app/[locale]/page")).default;
   (globalThis as unknown as Record<string, unknown>).__TEST_MESSAGES__ =
     nestMessages(ko) as unknown as Record<string, unknown>;
@@ -71,10 +69,8 @@ test("home links render with /ko prefix and Korean text", async () => {
   );
 
   expect(screen.getByText(ko["home.title"])).toBeInTheDocument();
-  const user = screen.getByRole("link", { name: ko["home.userSignIn"] });
-  const admin = screen.getByRole("link", { name: ko["home.adminSignIn"] });
-  expect(user.getAttribute("href")).toContain("/ko/signin?mode=user");
-  expect(admin.getAttribute("href")).toContain("/ko/signin?mode=admin");
+  const signIn = screen.getByRole("link", { name: ko["home.signIn"] });
+  expect(signIn.getAttribute("href")).toContain("/ko/signin");
 });
 
 // The sign-in page is a client component that uses next/navigation hooks.

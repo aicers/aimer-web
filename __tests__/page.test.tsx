@@ -45,7 +45,7 @@ vi.mock("next-intl/server", () => {
 beforeEach(() => cleanup());
 afterEach(() => cleanup());
 
-test("renders welcome message and buttons", async () => {
+test("renders welcome message and sign-in link", async () => {
   const HomePage = (await import("../src/app/[locale]/page")).default;
   render(
     <NextIntlClientProvider messages={nestMessages(en)} locale="en">
@@ -53,6 +53,5 @@ test("renders welcome message and buttons", async () => {
     </NextIntlClientProvider>,
   );
   expect(screen.getByText("Welcome to Aimer Web")).toBeInTheDocument();
-  expect(screen.getByText("User Sign In")).toBeInTheDocument();
-  expect(screen.getByText("Admin Sign In")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Sign In" })).toBeInTheDocument();
 });
