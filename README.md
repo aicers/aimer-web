@@ -34,7 +34,9 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
     - Unlink the previous version: `brew unlink node`
     - Link 22: `brew link --overwrite --force node@22`
     - Verify: `node -v` should print v22.x.y
-- npm: Use the npm bundled with Node 22 (or npm 10+).
+- pnpm: Use pnpm 10+ (via Corepack recommended).
+  - Enable: `corepack enable`
+  - Activate: `corepack prepare pnpm@10.26.1 --activate`
 - Docker: Install Docker (Docker Desktop or Docker Engine)
 
 ## Port Configuration
@@ -65,7 +67,7 @@ in‑app proxy (Next.js API route) is active.
   - Note: when Nginx is used, the Next.js app (service `web`) listens on
     internal port `3000` and Nginx proxies to `web:3000`. When accessing Next.js
     directly without Nginx in local development, it listens on `8446`
-    (`npm run dev -p 8446`).
+    (`pnpm dev -p 8446`).
 - In-app proxy: Next.js API route
   - Route: `/api/graphql` at `src/app/api/graphql/route.ts`.
   - Role: receive browser requests and forward them server-side to the real
@@ -81,7 +83,7 @@ Flow overview
 
 Port behavior by scenario
 
-- Local development (no Nginx): `npm run dev -p 8446` → Next.js listens on 8446 directly.
+- Local development (no Nginx): `pnpm dev -p 8446` → Next.js listens on 8446 directly.
 - Docker single container (no Nginx): Next.js listens on 3000 in the container;
   host maps `8446:3000`.
 - Docker Compose with Nginx:
@@ -119,14 +121,14 @@ Why this matters
 
 ## Development
 
-- Install: `npm install`
+- Install: `pnpm install`
 - Configure env: create `.env.local` with:
   - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql` (client → built-in proxy)
   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
     - Example for local dev: `https://127.0.0.1:8445/graphql`
   - Optionally `INSECURE_TLS=1` for local self‑signed upstream
   - Tip: copy from `.env.local.example`
-- Run dev: `npm run dev` then open `http://localhost:8446`
+- Run dev: `pnpm dev` then open `http://localhost:8446`
 
 ## Deployment
 
@@ -283,13 +285,13 @@ Terminate TLS at Nginx and proxy to the Next.js app.
 
 ## Scripts
 
-- `npm run dev`: Run Next.js dev server
-- `npm run build` / `npm start`: Production build and start
-- `npm run lint`: Check code style with Biome
-- `npm run format`: Auto‑format with Biome
-- `npm run typecheck`: TypeScript check only (`tsc --noEmit`)
-- `npm test`: Unit/component tests with Vitest (jsdom)
-- `npm run test:int`: Integration test for GraphQL sign‑in (see below)
+- `pnpm dev`: Run Next.js dev server
+- `pnpm build` / `pnpm start`: Production build and start
+- `pnpm lint`: Check code style with Biome
+- `pnpm format`: Auto‑format with Biome
+- `pnpm typecheck`: TypeScript check only (`tsc --noEmit`)
+- `pnpm test`: Unit/component tests with Vitest (jsdom)
+- `pnpm run test:int`: Integration test for GraphQL sign‑in (see below)
 
 ## CI
 
@@ -307,15 +309,15 @@ Because we will generate code frequently via AI agents, this project enforces
 strong, automated checks to keep quality high and regressions low:
 
 - Biome: one tool for lint + format
-  - Local: `npm run format:check` (or `npm run lint`), auto‑fix: `npm run lint:fix`
-    / `npm run format`
+  - Local: `pnpm run format:check` (or `pnpm lint`), auto‑fix: `pnpm run lint:fix`
+    / `pnpm format`
   - CI: fails if formatting or lint rules are violated
 - TypeScript: strict + extra safety flags
   - `strict: true`, `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`
-  - Local: `npm run typecheck` (runs `tsc --noEmit`)
+  - Local: `pnpm typecheck` (runs `tsc --noEmit`)
 - Tests: Vitest + React Testing Library
-  - Local: `npm test` (single‑thread pool configured for stability)
-  - Integration (opt‑in): `npm run test:int` (calls real GraphQL if env vars present)
+  - Local: `pnpm test` (single‑thread pool configured for stability)
+  - Integration (opt‑in): `pnpm run test:int` (calls real GraphQL if env vars present)
 - Markdown: `markdownlint` checks docs consistency
 - CI gating: tests run only after checks pass (`needs: check`)
 - Build validation: CI builds the Next.js app and Docker image, and verifies Nginx
@@ -328,7 +330,7 @@ There is an opt‑in sign‑in integration test that calls your real GraphQL API
 - Test file: `__tests__/signin.int.test.ts`
 - Dedicated config: `vitest.int.config.ts`
 <!-- markdownlint-disable MD013 -->
-- Run (macOS/Linux): `NEXT_PUBLIC_GRAPHQL_ENDPOINT=https://<host>/graphql TEST_USERNAME=<u> TEST_PASSWORD=<p> npm run test:int`
+- Run (macOS/Linux): `NEXT_PUBLIC_GRAPHQL_ENDPOINT=https://<host>/graphql TEST_USERNAME=<u> TEST_PASSWORD=<p> pnpm run test:int`
 <!-- markdownlint-enable MD013 -->
 
 Notes:
@@ -366,8 +368,8 @@ Notes:
 - Access in components:
   - Server: `const t = await getTranslations(); t('signin.title')`
   - Client: `const t = useTranslations(); t('signin.title')`
-- Links: `import {Link} from '@/i18n/navigation'` and use `<Link href="/signin" />`
-  to get locale-prefixed URLs automatically.
+- Links: `import {Link} from '@/i18n/navigation'` and use `<Link href="/signin"
+  />` to get locale-prefixed URLs automatically.
 
 ### Examples
 
