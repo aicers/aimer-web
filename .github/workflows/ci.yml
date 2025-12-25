@@ -10,14 +10,19 @@ on:
 
 jobs:
   check:
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -40,18 +45,25 @@ jobs:
         run: biome ci --error-on-warnings .
 
       - name: markdownlint
-        run: markdownlint *.md
+        uses: DavidAnson/markdownlint-cli2-action@v22
+        with:
+          globs: "**/*.md"
 
   test:
     needs: check
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -63,14 +75,14 @@ jobs:
           pnpm install --frozen-lockfile
 
       - name: Test (Vitest)
-        run: pnpm test -- --run
+        run: pnpm run test
 
   image-build:
     needs: check
-    runs-on: [self-hosted]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Docker version
         run: |
