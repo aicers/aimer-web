@@ -36,7 +36,7 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
     - Verify: `node -v` should print v22.x.y
 - pnpm: Use pnpm 10+ (via Corepack recommended).
   - Enable: `corepack enable`
-  - Activate: `corepack prepare pnpm@10.26.1 --activate`
+  - Activate: `corepack prepare pnpm@10 --activate`
 - Docker: Install Docker (Docker Desktop or Docker Engine)
 
 ## Port Configuration

@@ -2,7 +2,6 @@
   "name": "aimer-web",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.26.1",
   "scripts": {
     "dev": "next dev -p 8446",
     "build": "next build",
