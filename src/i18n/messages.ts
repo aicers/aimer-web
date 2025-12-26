@@ -1,4 +1,4 @@
-import type { AbstractIntlMessages } from "use-intl";
+import type { AbstractIntlMessages } from "next-intl";
 
 export type FlatMessages = Record<string, string>;
 export type NestedMessages = AbstractIntlMessages;
