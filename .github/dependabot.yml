@@ -19,7 +19,22 @@ updates:
           - "tailwind*"
           - "jsdom"
           - "@types/*"
+    ignore:
+      - dependency-name: "next"
+        versions:
+          - ">=16"
+      - dependency-name: "@types/node"
+        versions:
+          - ">=23"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    ignore:
+      - dependency-name: "docker.io/library/node"
+        versions:
+          - ">=23"
