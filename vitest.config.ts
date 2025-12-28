@@ -23,10 +23,7 @@ export default defineConfig({
     },
     // Force single-threaded runs to avoid worker kill issues (EPERM)
     pool: "threads",
-    poolOptions: {
-      threads: {
-        singleThread: true,
-      },
-    },
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });
