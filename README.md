@@ -26,8 +26,7 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
 
 ## Prerequisites
 
-- Node 22: Use Node.js 22.x. Do not use Node 24 — Next.js 15.5.0 is more stable
-  and better supported on Node 22.
+- Node 22: Use Node.js 22.x. **Do not use Node 24.**
   - nvm example: `nvm install 22 && nvm use 22`
   - macOS (Homebrew):
     - `brew update && brew install node@22`
@@ -43,7 +42,12 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
   - Windows (Corepack with Node 22):
     - `corepack enable`
     - `corepack prepare pnpm@10 --activate`
-- Docker: Install Docker (Docker Desktop or Docker Engine)
+- Next.js: Use 15 (latest patch) for Node 22 compatibility; **do not use 16.**
+  Installed via `pnpm install`.
+- Docker: Install Docker (Docker Desktop or Docker Engine).
+- Biome CLI 2.x (Rust binary) available on your `PATH` – download a release
+  build and place `biome` somewhere executable, or compile it yourself via Cargo
+  following the Biome documentation.
 
 ## Port Configuration
 
@@ -126,6 +130,12 @@ Why this matters
     later; for now, use `/api/graphql`.
 
 ## Development
+
+1. Use a shared pnpm store across repos:
+
+   ```bash
+   pnpm config set store-dir ~/.pnpm-store --global
+   ```
 
 1. Install dependencies:
 
