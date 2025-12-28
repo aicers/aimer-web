@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- Builder ----
-FROM node:22-slim AS builder
+FROM node:22.21.1-bookworm-slim@sha256:773413f36941ce1e4baf74b4a6110c03dcc4f968daffc389d4caef3f01412d2a AS builder
 WORKDIR /app
 
 # Install deps including devDependencies required for build (e.g., TypeScript)
@@ -18,7 +18,7 @@ RUN mkdir -p public
 RUN pnpm run build
 
 # ---- Runner ----
-FROM node:22-slim AS runner
+FROM node:22.21.1-bookworm-slim@sha256:773413f36941ce1e4baf74b4a6110c03dcc4f968daffc389d4caef3f01412d2a AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
