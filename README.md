@@ -34,9 +34,15 @@ Next.js‑based frontend for Aimer. Provides two apps: Admin and User.
     - Unlink the previous version: `brew unlink node`
     - Link 22: `brew link --overwrite --force node@22`
     - Verify: `node -v` should print v22.x.y
-- pnpm: Use pnpm 10+ (via Corepack recommended).
-  - Enable: `corepack enable`
-  - Activate: `corepack prepare pnpm@10 --activate`
+- pnpm: Use pnpm 10+.
+  - macOS (Homebrew):
+    - `brew install pnpm`
+  - Linux (Corepack with Node 22):
+    - `corepack enable`
+    - `corepack prepare pnpm@10 --activate`
+  - Windows (Corepack with Node 22):
+    - `corepack enable`
+    - `corepack prepare pnpm@10 --activate`
 - Docker: Install Docker (Docker Desktop or Docker Engine)
 
 ## Port Configuration
@@ -121,14 +127,40 @@ Why this matters
 
 ## Development
 
-- Install: `pnpm install`
-- Configure env: create `.env.local` with:
-  - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql` (client → built-in proxy)
-  - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
-    - Example for local dev: `https://127.0.0.1:8445/graphql`
-  - Optionally `INSECURE_TLS=1` for local self‑signed upstream
-  - Tip: copy from `.env.local.example`
-- Run dev: `pnpm dev` then open `http://localhost:8446`
+1. Install dependencies:
+
+   ```bash
+   pnpm install
+   ```
+
+1. **(Important)** Approve build scripts (required for pnpm v9+):
+
+   ```bash
+   pnpm approve-builds
+   ```
+
+1. Install Playwright browsers (one-time per machine):
+
+   ```bash
+   pnpm exec playwright install --with-deps
+   ```
+
+   - Linux (e.g., CI runners): `--with-deps` also installs required system
+     packages so browsers run out of the box.
+   - macOS: the flag is effectively a no-op; it only downloads the browser
+     binaries, so leaving it on is harmless.
+
+1. Provide environment variables (`pnpm run dev` reads from `.env.local` or the
+   current shell). Copy `.env.local.example` to `.env.local` and replace the
+   placeholders:
+   - `NEXT_PUBLIC_GRAPHQL_ENDPOINT=/api/graphql` (client → built-in proxy)
+   - `AIMER_GRAPHQL_ENDPOINT=https://<your-graphql-host>/graphql` (upstream)
+     - Example for local dev: `https://127.0.0.1:8445/graphql`
+   - Optionally `INSECURE_TLS=1` for local self‑signed upstream
+
+1. Run dev: `pnpm dev` then open `http://localhost:8446`
+   - Note: `pnpm dev` is shorthand for `pnpm run dev`. pnpm treats script names
+     as direct commands, so both execute the same `dev` script from `package.json`.
 
 ## Deployment
 
