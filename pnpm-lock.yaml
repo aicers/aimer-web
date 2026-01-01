@@ -70,8 +70,8 @@ importers:
         specifier: ^27.4.0
         version: 27.4.0
       next-router-mock:
-        specifier: ^1.0.2
-        version: 1.0.4(next@16.1.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
+        specifier: ^1.0.5
+        version: 1.0.5(next@16.1.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
       tailwindcss:
         specifier: ^4.1.13
         version: 4.1.18
@@ -1327,8 +1327,8 @@ packages:
       typescript:
         optional: true
 
-  next-router-mock@1.0.4:
-    resolution: {integrity: sha512-EBOd/J2PxgZ9WH732ppfEojZgSTSOkjEz0DgQn+9c/PELKnc9P19PAcmQUi7fSlk3LAKbMGzl5DEOb40x7l8kA==}
+  next-router-mock@1.0.5:
+    resolution: {integrity: sha512-mEndN1KdRlofR1Hf+FvfHogabpx1SQ8cbXYENCm3SA1W5Bj3UlaIW814DA6vg5gmPF6tBw5E1rX2JY4ogN9aaQ==}
     peerDependencies:
       next: '>=10.0.0'
       react: '>=17.0.0'
@@ -2636,7 +2636,7 @@ snapshots:
     transitivePeerDependencies:
       - '@swc/helpers'
 
-  next-router-mock@1.0.4(next@16.1.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3):
+  next-router-mock@1.0.5(next@16.1.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3):
     dependencies:
       next: 16.1.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       react: 19.2.3
