@@ -1,0 +1,46 @@
+site_name: Aimer Web Manual
+site_description: Aimer Web user manual
+repo_url: https://github.com/aicers/aimer-web
+site_url: https://example.invalid/aimer-web
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.tracking
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+  - i18n:
+      docs_structure: folder
+      languages:
+        - locale: en
+          name: English
+          build: true
+          default: true
+          nav:
+            - Overview: index.md
+            - Getting Started: getting-started.md
+            - Configuration: configuration.md
+            - Usage: usage.md
+        - locale: ko
+          name: 한국어
+          build: true
+          nav:
+            - Overview: index.md
+            - Getting Started: getting-started.md
+            - Configuration: configuration.md
+            - Usage: usage.md
+          nav_translations:
+            Overview: 개요
+            Getting Started: 시작하기
+            Configuration: 설정
+            Usage: 사용법
+
+extra_css:
+  - styles/lists.css
+  - styles/pdf.css
