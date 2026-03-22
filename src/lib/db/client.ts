@@ -1,8 +1,12 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
-// Lazy-initialized pools
+// Lazy-initialized pools — runtime (application queries)
 let authPool: Pool | null = null;
 let auditPool: Pool | null = null;
+
+// Lazy-initialized pools — migration runner (owner role)
+let migrationAuthPool: Pool | null = null;
+let migrationAuditPool: Pool | null = null;
 
 export function getAuthPool(): Pool {
   if (!authPool) {
@@ -16,6 +20,25 @@ export function getAuditPool(): Pool {
     auditPool = new Pool({ connectionString: process.env.AUDIT_DATABASE_URL });
   }
   return auditPool;
+}
+
+export function getMigrationAuthPool(): Pool {
+  if (!migrationAuthPool) {
+    const url =
+      process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
+    migrationAuthPool = new Pool({ connectionString: url });
+  }
+  return migrationAuthPool;
+}
+
+export function getMigrationAuditPool(): Pool {
+  if (!migrationAuditPool) {
+    const url =
+      process.env.AUDIT_DATABASE_MIGRATION_URL ??
+      process.env.AUDIT_DATABASE_URL;
+    migrationAuditPool = new Pool({ connectionString: url });
+  }
+  return migrationAuditPool;
 }
 
 export async function query<T extends QueryResultRow>(

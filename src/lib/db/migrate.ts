@@ -187,20 +187,22 @@ export async function runMigrations(
 }
 
 export async function runStartupMigrations(): Promise<void> {
-  const { getAuthPool, getAuditPool } = await import("./client");
+  const { getMigrationAuthPool, getMigrationAuditPool } = await import(
+    "./client"
+  );
 
   const migrationsRoot = join(process.cwd(), "migrations");
 
   console.log("Running auth_db migrations...");
   await runMigrations(
-    getAuthPool(),
+    getMigrationAuthPool(),
     join(migrationsRoot, "auth"),
     LOCK_ID_AUTH,
   );
 
   console.log("Running audit_db migrations...");
   await runMigrations(
-    getAuditPool(),
+    getMigrationAuditPool(),
     join(migrationsRoot, "audit"),
     LOCK_ID_AUDIT,
   );

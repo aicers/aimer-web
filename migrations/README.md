@@ -76,6 +76,23 @@ if an applied migration has been modified.
 4. Test locally by running the application (auth/audit migrations run on
    startup) or `pnpm migrate:customers` for customer migrations.
 
+## Database Roles
+
+Each database uses two PostgreSQL roles to enforce least-privilege access:
+
+| Role | Example | Used by | Privileges |
+| --- | --- | --- | --- |
+| Owner | `aimer_auth_owner` | Migration runner | Full DDL + DML (CREATE, ALTER, DROP, INSERT, UPDATE, DELETE) |
+| Runtime | `aimer_auth` | Application | Minimum required privileges (SELECT, INSERT, UPDATE, DELETE on granted tables) |
+
+For the audit database the runtime role (`audit_writer`) is restricted to
+INSERT + SELECT only — it cannot UPDATE or DELETE audit records.
+
+The migration runner reads `DATABASE_MIGRATION_URL` /
+`AUDIT_DATABASE_MIGRATION_URL` (falling back to `DATABASE_URL` /
+`AUDIT_DATABASE_URL` when unset). The application runtime always uses
+`DATABASE_URL` / `AUDIT_DATABASE_URL`.
+
 ## Concurrency Safety
 
 The migration runner acquires a PostgreSQL advisory lock before running.
