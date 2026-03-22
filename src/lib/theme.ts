@@ -5,5 +5,6 @@ export const themeConfig = {
   attribute: "data-theme",
   defaultTheme: DEFAULT_THEME,
   themes: THEMES as unknown as string[],
+  enableSystem: true,
   disableTransitionOnChange: true,
 } as const;
