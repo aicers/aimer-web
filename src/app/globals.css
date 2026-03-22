@@ -1,0 +1,144 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable.css");
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap");
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  --radius: 6px;
+  --btn-primary-bg: #156ef2;
+  --btn-primary-fg: #ffffff;
+
+  /* shadcn/ui semantic aliases */
+  --background: var(--bg-canvas);
+  --foreground: var(--text-primary);
+  --card: var(--card-bg);
+  --card-foreground: var(--text-primary);
+  --popover: var(--card-bg);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--btn-primary-bg);
+  --primary-foreground: var(--btn-primary-fg);
+  --secondary: var(--control-bg);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--control-bg);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--control-bg);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--danger);
+  --destructive-foreground: #ffffff;
+  --border: rgba(97, 105, 116, 0.16);
+  --input: var(--control-bg);
+  --ring: var(--btn-primary-bg);
+}
+
+[data-theme="gray-light"] {
+  --bg-canvas: #f9fafa;
+  --card-bg: #ffffff;
+  --control-bg: rgba(97, 105, 116, 0.08);
+  --control-placeholder: #616974;
+  --text-primary: #212428;
+  --text-secondary: #474c55;
+  --btn-primary-bg-hover: #0d5fd8;
+  --btn-primary-bg-disabled: #c5e4f7;
+  --link: #0d5fd8;
+  --danger: #db1d03;
+  --danger-bg: #fff9f9;
+  --neutral-40: #7c8492;
+  --table-bg: #f9fafa;
+
+  /* Sidebar */
+  --sidebar-bg: #ffffff;
+  --sidebar-fg: #212428;
+  --sidebar-muted: #7c8492;
+  --sidebar-active: #156ef2;
+  --sidebar-account-bg: #f5f6f7;
+  --sidebar-border: rgba(97, 105, 116, 0.16);
+}
+
+[data-theme="gray-dark"] {
+  --bg-canvas: #1a1d20;
+  --card-bg: rgba(97, 105, 116, 0.08);
+  --control-bg: rgba(97, 105, 116, 0.24);
+  --control-placeholder: #616974;
+  --text-primary: #fafafa;
+  --text-secondary: #b4bbc6;
+  --btn-primary-bg-hover: #0d5fd8;
+  --btn-primary-bg-disabled: rgba(21, 110, 242, 0.3);
+  --link: #5a9cf5;
+  --danger: #fb2c10;
+  --danger-bg: rgba(219, 29, 3, 0.1);
+  --neutral-40: #7c8492;
+  --neutral-30: #8e97a5;
+  --table-bg: #1a1d20;
+  --border: rgba(97, 105, 116, 0.24);
+  --modal-overlay: rgba(0, 0, 0, 0.7);
+
+  /* Sidebar */
+  --sidebar-bg: #212428;
+  --sidebar-fg: #fafafa;
+  --sidebar-muted: #7c8492;
+  --sidebar-active: #156ef2;
+  --sidebar-account-bg: #2f333a;
+  --sidebar-border: rgba(97, 105, 116, 0.24);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-sans: "Pretendard Variable", "Pretendard", "Roboto", sans-serif;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --breakpoint-desktop: 1280px;
+  --breakpoint-wide: 2000px;
+}
+
+@custom-variant dark (&:where([data-theme$="-dark"], [data-theme$="-dark"] *));
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Focus indicators (WCAG 2.1 AA) */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* Skip to content link */
+.skip-to-content {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.skip-to-content:focus {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 1rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  z-index: 9999;
+}
