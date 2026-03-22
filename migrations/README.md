@@ -101,10 +101,8 @@ The migration runner reads `DATABASE_MIGRATION_URL` /
 `AUDIT_DATABASE_URL` when unset). The application runtime always uses
 `DATABASE_URL` / `AUDIT_DATABASE_URL`.
 
-For customer databases, the CLI reads the `database_migration_url` column
-from the `customers` table (falling back to `database_url` when null).
-This keeps DDL migrations running under the owner role while the
-application connects with the restricted runtime role.
+Customer DB owner/runtime role separation will be implemented alongside
+the customers table schema in #36.
 
 ## Concurrency Safety
 
