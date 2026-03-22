@@ -38,3 +38,28 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Guard against auth_context bypass: prevent changing a role to 'admin'
+-- when existing memberships or invitations reference it. Without this,
+-- an attacker could create a general membership and then flip the role
+-- to admin, projecting admin permissions into the general JWT.
+CREATE OR REPLACE FUNCTION check_roles_auth_context_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.auth_context = 'admin' AND OLD.auth_context = 'general' THEN
+    IF EXISTS (
+      SELECT 1 FROM account_customer_memberships WHERE role_id = NEW.id
+    ) THEN
+      RAISE EXCEPTION 'Cannot change auth_context to admin: role is referenced by account_customer_memberships';
+    END IF;
+    -- invitations table does not exist yet at this point in the migration
+    -- sequence, so the check is deferred to 0010_invitations.sql where
+    -- we replace this function with a version that checks both tables.
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_roles_auth_context_guard
+  BEFORE UPDATE OF auth_context ON roles
+  FOR EACH ROW EXECUTE FUNCTION check_roles_auth_context_change();

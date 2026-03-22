@@ -1,26 +1,12 @@
--- no-transaction
--- Audit database roles: owner for migrations/anonymization, runtime for INSERT/SELECT only.
+-- Grant table-level privileges to audit_db roles.
+-- Role creation is handled by infra/postgres/init-audit-db.sql
+-- (Docker entrypoint). This migration only assigns grants after
+-- the audit_logs table exists.
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_audit_owner') THEN
-    CREATE ROLE aimer_audit_owner WITH LOGIN PASSWORD 'changeme';
-  END IF;
-END
-$$;
-
-GRANT ALL ON SCHEMA public TO aimer_audit_owner;
+-- Owner: full access for migrations and anonymization
 GRANT ALL ON ALL TABLES IN SCHEMA public TO aimer_audit_owner;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO aimer_audit_owner;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_audit') THEN
-    CREATE ROLE aimer_audit WITH LOGIN PASSWORD 'changeme';
-  END IF;
-END
-$$;
-
-GRANT USAGE ON SCHEMA public TO aimer_audit;
+-- Runtime: INSERT/SELECT only (no UPDATE/DELETE — tamper resistance)
 GRANT SELECT, INSERT ON audit_logs TO aimer_audit;
 GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO aimer_audit;

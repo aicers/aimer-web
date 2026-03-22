@@ -29,6 +29,27 @@ CREATE TRIGGER trg_invitation_role_check
   BEFORE INSERT OR UPDATE OF role_id ON invitations
   FOR EACH ROW EXECUTE FUNCTION check_invitation_role_auth_context();
 
+-- Now that the invitations table exists, replace the auth_context guard
+-- function to also check invitations when a role changes to admin.
+CREATE OR REPLACE FUNCTION check_roles_auth_context_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.auth_context = 'admin' AND OLD.auth_context = 'general' THEN
+    IF EXISTS (
+      SELECT 1 FROM account_customer_memberships WHERE role_id = NEW.id
+    ) THEN
+      RAISE EXCEPTION 'Cannot change auth_context to admin: role is referenced by account_customer_memberships';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM invitations WHERE role_id = NEW.id
+    ) THEN
+      RAISE EXCEPTION 'Cannot change auth_context to admin: role is referenced by invitations';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Analyst invitations (separate flow from customer membership invitations)
 CREATE TABLE analyst_invitations (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
