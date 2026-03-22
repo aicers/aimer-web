@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       docs_only: ${{ steps.decide.outputs.docs_only }}
+      docs: ${{ steps.filter.outputs.docs }}
     steps:
       - uses: actions/checkout@v6
 
@@ -57,8 +58,27 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Downstream check/build/test jobs will be added by #26 (CI &
-  # Dependabot).  They should use:
+  docs-build:
+    name: Docs Build
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install MkDocs
+        run: python3 -m pip install --upgrade pip mkdocs-material mkdocs-static-i18n
+
+      - name: Build
+        run: mkdocs build --strict
+
+  # Downstream check/build/test jobs for code changes will be added
+  # by #26 (CI & Dependabot).  They should use:
   #   needs: changes
   #   if: needs.changes.outputs.docs_only != 'true'
   # so that docs-only PRs skip code validation.
