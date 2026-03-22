@@ -22,6 +22,9 @@ infra/certs/*.crt
 # Docker volumes
 pgdata/
 
+# Claude Code
+.claude/
+
 # IDE
 .vscode/
 .idea/
