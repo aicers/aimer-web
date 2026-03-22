@@ -15,6 +15,9 @@ export default function RootLayout({
   return (
     <html lang="ko" suppressHydrationWarning>
       <body>
+        <a href="#main-content" className="skip-to-content">
+          Skip to content
+        </a>
         <ThemeProvider {...themeConfig}>{children}</ThemeProvider>
       </body>
     </html>
