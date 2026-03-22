@@ -1,0 +1,42 @@
+name: Update Agent Skills
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: Update Skills
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Restore skills from lock file
+        run: npx -y skills experimental_install -y
+      - name: Update skills
+        run: npx -y skills update -y
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create pull request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: automated/update-skills
+          commit-message: "Update agent skills"
+          title: "Update agent skills"
+          body: |
+            Automated weekly update of agent skills via `npx skills update`.
+          labels: enhancement
