@@ -1,6 +1,7 @@
 {
   "realm": "aimer",
   "enabled": true,
+  "loginTheme": "aimer",
   "sslRequired": "external",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,

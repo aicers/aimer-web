@@ -54,6 +54,7 @@ services:
       - "8080:8080"
     volumes:
       - ./infra/keycloak/aimer-realm.json:/opt/keycloak/data/import/aimer-realm.json:ro
+      - ./infra/keycloak/themes/aimer:/opt/keycloak/themes/aimer:ro
     command: start-dev --import-realm --health-enabled=true
     depends_on:
       postgres:

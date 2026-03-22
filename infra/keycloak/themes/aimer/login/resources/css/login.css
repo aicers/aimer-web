@@ -1,0 +1,474 @@
+/* Aimer Keycloak Login Theme
+ * Design tokens from Discussion #15 */
+
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap');
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css');
+
+/* ── Light mode (default) ── */
+:root {
+  --aimer-bg-canvas: #f9fafa;
+  --aimer-card-bg: #ffffff;
+  --aimer-control-bg: rgba(97, 105, 116, 0.08);
+  --aimer-control-placeholder: #616974;
+  --aimer-text-primary: #212428;
+  --aimer-text-secondary: #474c55;
+  --aimer-btn-primary-bg: #156ef2;
+  --aimer-btn-primary-bg-hover: #0d5fd8;
+  --aimer-btn-primary-bg-disabled: #c5e4f7;
+  --aimer-btn-primary-fg: #ffffff;
+  --aimer-danger: #db1d03;
+  --aimer-danger-bg: #fff9f9;
+  --aimer-border: rgba(97, 105, 116, 0.16);
+  --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.04),
+    0 20px 25px rgba(0, 0, 0, 0.01);
+  --aimer-logo-color: #212428;
+}
+
+/* ── Dark mode via system preference ── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --aimer-bg-canvas: #1a1d20;
+    --aimer-card-bg: rgba(97, 105, 116, 0.08);
+    --aimer-control-bg: rgba(97, 105, 116, 0.24);
+    --aimer-control-placeholder: #616974;
+    --aimer-text-primary: #fafafa;
+    --aimer-text-secondary: #b4bbc6;
+    --aimer-btn-primary-bg: #156ef2;
+    --aimer-btn-primary-bg-hover: #0d5fd8;
+    --aimer-btn-primary-bg-disabled: rgba(21, 110, 242, 0.3);
+    --aimer-btn-primary-fg: #ffffff;
+    --aimer-danger: #fb2c10;
+    --aimer-danger-bg: rgba(219, 29, 3, 0.1);
+    --aimer-border: rgba(97, 105, 116, 0.24);
+    --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.12),
+      0 20px 25px rgba(0, 0, 0, 0.08);
+    --aimer-logo-color: #fafafa;
+  }
+}
+
+/* ── Dark mode via data attribute ── */
+[data-theme='dark'] {
+  --aimer-bg-canvas: #1a1d20;
+  --aimer-card-bg: rgba(97, 105, 116, 0.08);
+  --aimer-control-bg: rgba(97, 105, 116, 0.24);
+  --aimer-control-placeholder: #616974;
+  --aimer-text-primary: #fafafa;
+  --aimer-text-secondary: #b4bbc6;
+  --aimer-btn-primary-bg: #156ef2;
+  --aimer-btn-primary-bg-hover: #0d5fd8;
+  --aimer-btn-primary-bg-disabled: rgba(21, 110, 242, 0.3);
+  --aimer-btn-primary-fg: #ffffff;
+  --aimer-danger: #fb2c10;
+  --aimer-danger-bg: rgba(219, 29, 3, 0.1);
+  --aimer-border: rgba(97, 105, 116, 0.24);
+  --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.12),
+    0 20px 25px rgba(0, 0, 0, 0.08);
+  --aimer-logo-color: #fafafa;
+}
+
+/* ── Reset & base ── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body.aimer-login {
+  margin: 0;
+  padding: 0;
+  font-family: 'Pretendard', 'Roboto', system-ui, -apple-system, sans-serif;
+  background-color: var(--aimer-bg-canvas);
+  color: var(--aimer-text-primary);
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Layout container ── */
+.aimer-container {
+  width: 100%;
+  max-width: 448px;
+  padding: 16px;
+}
+
+/* ── Card ── */
+.aimer-card {
+  background: var(--aimer-card-bg);
+  border-radius: 6px;
+  box-shadow: var(--aimer-card-shadow);
+  padding: 40px 32px;
+  border: 1px solid var(--aimer-border);
+}
+
+/* ── Logo ── */
+.aimer-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 32px;
+}
+
+.aimer-logo svg,
+.aimer-logo img {
+  height: 32px;
+  width: auto;
+  color: var(--aimer-logo-color);
+}
+
+/* ── Typography ── */
+.aimer-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--aimer-text-primary);
+  text-align: center;
+  margin: 0 0 24px;
+}
+
+.aimer-subtitle {
+  font-size: 14px;
+  color: var(--aimer-text-secondary);
+  text-align: center;
+  margin: 0 0 24px;
+}
+
+/* ── Form elements ── */
+.aimer-form-group {
+  margin-bottom: 16px;
+}
+
+.aimer-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--aimer-text-secondary);
+  margin-bottom: 6px;
+  font-family: 'Roboto', sans-serif;
+}
+
+.aimer-input-wrapper {
+  position: relative;
+}
+
+.aimer-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-family: 'Pretendard', 'Roboto', system-ui, sans-serif;
+  color: var(--aimer-text-primary);
+  background: var(--aimer-control-bg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.aimer-input::placeholder {
+  color: var(--aimer-control-placeholder);
+}
+
+.aimer-input:focus {
+  border-color: var(--aimer-btn-primary-bg);
+}
+
+.aimer-input.has-error {
+  border-color: var(--aimer-danger);
+  background: var(--aimer-danger-bg);
+}
+
+/* ── Password toggle ── */
+.aimer-password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--aimer-control-placeholder);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aimer-password-toggle:hover {
+  color: var(--aimer-text-secondary);
+}
+
+.aimer-password-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.aimer-input-wrapper .aimer-input {
+  padding-right: 36px;
+}
+
+/* ── Error message ── */
+.aimer-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--aimer-danger);
+  font-family: 'Roboto', sans-serif;
+}
+
+.aimer-error-icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.aimer-alert {
+  background: var(--aimer-danger-bg);
+  border: 1px solid var(--aimer-danger);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--aimer-danger);
+}
+
+.aimer-alert-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+/* ── Buttons ── */
+.aimer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: 'Pretendard', 'Roboto', system-ui, sans-serif;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+  text-decoration: none;
+}
+
+.aimer-btn-primary {
+  width: 100%;
+  background: var(--aimer-btn-primary-bg);
+  color: var(--aimer-btn-primary-fg);
+}
+
+.aimer-btn-primary:hover:not(:disabled) {
+  background: var(--aimer-btn-primary-bg-hover);
+}
+
+.aimer-btn-primary:disabled {
+  background: var(--aimer-btn-primary-bg-disabled);
+  cursor: not-allowed;
+}
+
+.aimer-btn-secondary {
+  background: var(--aimer-control-bg);
+  color: var(--aimer-text-primary);
+}
+
+.aimer-btn-secondary:hover {
+  opacity: 0.8;
+}
+
+/* ── Links ── */
+.aimer-link {
+  color: var(--aimer-btn-primary-bg);
+  font-size: 13px;
+  text-decoration: none;
+  font-family: 'Roboto', sans-serif;
+}
+
+.aimer-link:hover {
+  text-decoration: underline;
+}
+
+.aimer-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 20px;
+}
+
+/* ── Divider ── */
+.aimer-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0;
+  font-size: 12px;
+  color: var(--aimer-control-placeholder);
+}
+
+.aimer-divider::before,
+.aimer-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--aimer-border);
+}
+
+/* ── Footer ── */
+.aimer-footer {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--aimer-text-secondary);
+}
+
+.aimer-footer a {
+  color: var(--aimer-btn-primary-bg);
+  text-decoration: none;
+}
+
+.aimer-footer a:hover {
+  text-decoration: underline;
+}
+
+/* ── Theme toggle ── */
+.aimer-theme-toggle {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--aimer-border);
+  background: var(--aimer-card-bg);
+  color: var(--aimer-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s ease;
+}
+
+.aimer-theme-toggle:hover {
+  opacity: 0.8;
+}
+
+.aimer-theme-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── Modal (for password recovery) ── */
+.aimer-modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  justify-content: center;
+  align-items: center;
+}
+
+.aimer-modal-overlay.is-open {
+  display: flex;
+}
+
+.aimer-modal {
+  background: var(--aimer-card-bg);
+  border-radius: 6px;
+  box-shadow: var(--aimer-card-shadow);
+  padding: 32px;
+  max-width: 400px;
+  width: calc(100% - 32px);
+  border: 1px solid var(--aimer-border);
+}
+
+.aimer-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--aimer-text-primary);
+  margin: 0 0 12px;
+}
+
+.aimer-modal-body {
+  font-size: 14px;
+  color: var(--aimer-text-secondary);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.aimer-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ── MFA / OTP styling ── */
+.aimer-otp-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 18px;
+  font-family: 'Roboto', monospace;
+  letter-spacing: 4px;
+  text-align: center;
+  color: var(--aimer-text-primary);
+  background: var(--aimer-control-bg);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.aimer-otp-input:focus {
+  border-color: var(--aimer-btn-primary-bg);
+}
+
+/* ── WebAuthn ── */
+.aimer-webauthn-icon {
+  display: flex;
+  justify-content: center;
+  margin: 24px 0;
+  color: var(--aimer-btn-primary-bg);
+}
+
+.aimer-webauthn-icon svg {
+  width: 64px;
+  height: 64px;
+}
+
+/* ── Info page ── */
+.aimer-info-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+  color: var(--aimer-btn-primary-bg);
+}
+
+.aimer-info-icon svg {
+  width: 48px;
+  height: 48px;
+}
+
+/* ── Responsive ── */
+@media (max-width: 480px) {
+  .aimer-container {
+    max-width: 100%;
+    padding: 12px;
+  }
+
+  .aimer-card {
+    padding: 32px 20px;
+    border-radius: 0;
+    box-shadow: none;
+    border-left: none;
+    border-right: none;
+  }
+}
