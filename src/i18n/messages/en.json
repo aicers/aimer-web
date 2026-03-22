@@ -6,7 +6,9 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "confirm": "Confirm",
-    "back": "Back"
+    "back": "Back",
+    "switchToKorean": "한국어",
+    "switchToEnglish": "English"
   },
   "auth": {
     "signIn": "Sign In",

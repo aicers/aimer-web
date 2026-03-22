@@ -1,12 +1,13 @@
 "use client";
 
-import { useLocale } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useRouter, usePathname } from "@/i18n/navigation";
 
 export function LocaleSwitcher() {
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
+  const t = useTranslations("common");
 
   function onChange(newLocale: string) {
     document.cookie = `NEXT_LOCALE=${newLocale};path=/;max-age=31536000`;
@@ -20,7 +21,7 @@ export function LocaleSwitcher() {
       onClick={() => onChange(locale === "ko" ? "en" : "ko")}
       className="text-sm"
     >
-      {locale === "ko" ? "English" : "한국어"}
+      {locale === "ko" ? t("switchToEnglish") : t("switchToKorean")}
     </button>
   );
 }
