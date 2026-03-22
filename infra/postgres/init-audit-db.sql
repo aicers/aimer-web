@@ -17,6 +17,6 @@ GRANT CONNECT ON DATABASE audit_db TO audit_writer;
 -- Switch to audit_db to grant schema-level privileges
 \connect audit_db
 
-GRANT USAGE ON SCHEMA public TO audit_writer;
+GRANT USAGE, CREATE ON SCHEMA public TO audit_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT ON TABLES TO audit_writer;
