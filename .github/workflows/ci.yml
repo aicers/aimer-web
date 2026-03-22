@@ -9,21 +9,50 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  change-filter:
+  changes:
     name: Change Filter
     runs-on: ubuntu-latest
     outputs:
-      docs_only: ${{ steps.filter.outputs.docs_only }}
+      docs_only: ${{ steps.decide.outputs.docs_only }}
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dorny/paths-filter@v3
+      - name: Filter Paths
         id: filter
+        uses: dorny/paths-filter@v3
         with:
           filters: |
-            docs_only:
-              - 'docs/**'
-              - '**/*.md'
-              - 'mkdocs.yml'
-              - '.markdownlint*'
+            docs:
+              - "docs/**"
+              - "**/*.md"
+              - "mkdocs.yml"
+              - ".markdownlint*"
+            code:
+              - "src/**"
+              - "e2e/**"
+              - "migrations/**"
+              - "scripts/**"
+              - "infra/**"
+              - "public/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "tsconfig*.json"
+              - "next.config.*"
+              - "biome.json"
+              - "Dockerfile*"
+              - "docker-compose.yml"
+              - ".github/workflows/**"
+
+      - name: Decide Docs-Only
+        id: decide
+        run: |
+          if [ "${{ steps.filter.outputs.docs }}" = "true" ] && [ "${{ steps.filter.outputs.code }}" != "true" ]; then
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          fi
