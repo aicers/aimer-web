@@ -8,7 +8,8 @@
     "confirm": "Confirm",
     "back": "Back",
     "switchToKorean": "한국어",
-    "switchToEnglish": "English"
+    "switchToEnglish": "English",
+    "skipToContent": "Skip to content"
   },
   "auth": {
     "signIn": "Sign In",
