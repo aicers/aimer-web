@@ -32,6 +32,14 @@
     "auditLog": "Audit Log",
     "settings": "Settings"
   },
+  "events": {
+    "title": "Events",
+    "approval": "Approval",
+    "upload": "Upload",
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected"
+  },
   "validation": {
     "required": "This field is required",
     "invalidEmail": "Please enter a valid email address",

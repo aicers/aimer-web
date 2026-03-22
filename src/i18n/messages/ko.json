@@ -32,6 +32,14 @@
     "auditLog": "감사 로그",
     "settings": "설정"
   },
+  "events": {
+    "title": "이벤트",
+    "approval": "승인",
+    "upload": "업로드",
+    "pending": "대기 중",
+    "approved": "승인됨",
+    "rejected": "거부됨"
+  },
   "validation": {
     "required": "필수 입력 항목입니다",
     "invalidEmail": "유효한 이메일 주소를 입력해 주세요",
