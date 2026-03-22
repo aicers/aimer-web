@@ -1,0 +1,41 @@
+{
+  "common": {
+    "loading": "로딩 중...",
+    "error": "오류가 발생했습니다",
+    "save": "저장",
+    "cancel": "취소",
+    "delete": "삭제",
+    "confirm": "확인",
+    "back": "뒤로"
+  },
+  "auth": {
+    "signIn": "로그인",
+    "signOut": "로그아웃",
+    "sessionExpired": "세션이 만료되었습니다. 다시 로그인해 주세요."
+  },
+  "nav": {
+    "home": "홈",
+    "events": "이벤트",
+    "analysis": "분석",
+    "reports": "보고서",
+    "dashboard": "대시보드",
+    "members": "멤버",
+    "customerSettings": "고객 설정",
+    "admin": "관리자"
+  },
+  "admin": {
+    "accounts": "계정",
+    "customers": "고객",
+    "environments": "환경",
+    "analysts": "분석가",
+    "trustRegistry": "신뢰 레지스트리",
+    "auditLog": "감사 로그",
+    "settings": "설정"
+  },
+  "validation": {
+    "required": "필수 입력 항목입니다",
+    "invalidEmail": "유효한 이메일 주소를 입력해 주세요",
+    "minLength": "최소 {min}자 이상 입력해 주세요",
+    "maxLength": "최대 {max}자까지 입력할 수 있습니다"
+  }
+}
