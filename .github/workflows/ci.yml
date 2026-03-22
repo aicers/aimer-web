@@ -56,3 +56,9 @@ jobs:
           else
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
+
+  # Downstream check/build/test jobs will be added by #26 (CI &
+  # Dependabot).  They should use:
+  #   needs: changes
+  #   if: needs.changes.outputs.docs_only != 'true'
+  # so that docs-only PRs skip code validation.
