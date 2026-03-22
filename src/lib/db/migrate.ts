@@ -11,6 +11,11 @@ interface MigrationRow {
   checksum: string;
 }
 
+export interface MigrationContext {
+  /** Decrypt a customer's DEK via OpenBao Transit. Available for customer_db DML migrations. */
+  decryptDek?: (wrappedDek: string) => Promise<Buffer>;
+}
+
 export interface MigrationFile {
   version: string;
   name: string;
@@ -97,6 +102,7 @@ async function applyTsMigration(
   client: PoolClient,
   migration: MigrationFile,
   checksum: string,
+  context?: MigrationContext,
 ): Promise<void> {
   const mod = await import(migration.path);
   if (typeof mod.default !== "function") {
@@ -107,7 +113,7 @@ async function applyTsMigration(
 
   await client.query("SAVEPOINT migration");
   try {
-    await mod.default(client);
+    await mod.default(client, context);
     await client.query("RELEASE SAVEPOINT migration");
   } catch (err) {
     await client.query("ROLLBACK TO SAVEPOINT migration");
@@ -124,6 +130,7 @@ export async function runMigrations(
   pool: Pool,
   migrationsDir: string,
   lockId: number,
+  context?: MigrationContext,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -165,7 +172,7 @@ export async function runMigrations(
             if (file.ext === "sql") {
               await applySqlMigration(client, file, content, checksum, false);
             } else {
-              await applyTsMigration(client, file, checksum);
+              await applyTsMigration(client, file, checksum, context);
             }
             await client.query("COMMIT");
           } catch (err) {

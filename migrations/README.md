@@ -35,15 +35,23 @@ line to opt out of the transaction wrapper (required for statements like
 `CREATE INDEX CONCURRENTLY`).
 
 **DML (.ts)** — Data migrations written in TypeScript. The file must
-`export default` an async function that receives a `PoolClient`:
+`export default` an async function that receives a `PoolClient` and an
+optional `MigrationContext`:
 
 ```ts
 import type { PoolClient } from "pg";
+import type { MigrationContext } from "@/lib/db/migrate";
 
-export default async function (client: PoolClient) {
+export default async function (client: PoolClient, context?: MigrationContext) {
   await client.query("UPDATE users SET active = true WHERE verified = true");
 }
 ```
+
+The `MigrationContext` object provides helpers that are only available for
+customer DB DML migrations. Currently planned:
+
+- `decryptDek` — Decrypt a customer's wrapped DEK via OpenBao Transit
+  (available after #52).
 
 ## Expand/Contract Pattern
 
@@ -92,6 +100,11 @@ The migration runner reads `DATABASE_MIGRATION_URL` /
 `AUDIT_DATABASE_MIGRATION_URL` (falling back to `DATABASE_URL` /
 `AUDIT_DATABASE_URL` when unset). The application runtime always uses
 `DATABASE_URL` / `AUDIT_DATABASE_URL`.
+
+For customer databases, the CLI reads the `database_migration_url` column
+from the `customers` table (falling back to `database_url` when null).
+This keeps DDL migrations running under the owner role while the
+application connects with the restricted runtime role.
 
 ## Concurrency Safety
 

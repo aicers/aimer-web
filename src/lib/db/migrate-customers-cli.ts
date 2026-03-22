@@ -17,13 +17,14 @@ async function main() {
     let customers: Array<{
       id: number;
       database_url: string;
+      database_migration_url: string | null;
       database_status: string;
     }>;
 
     if (targetCustomerId) {
       // Targeted mode: run regardless of database_status
       const result = await authPool.query(
-        "SELECT id, database_url, database_status FROM customers WHERE id = $1",
+        "SELECT id, database_url, database_migration_url, database_status FROM customers WHERE id = $1",
         [targetCustomerId],
       );
       customers = result.rows;
@@ -34,7 +35,7 @@ async function main() {
     } else {
       // Batch mode: only active customers
       const result = await authPool.query(
-        "SELECT id, database_url, database_status FROM customers WHERE database_status = 'active'",
+        "SELECT id, database_url, database_migration_url, database_status FROM customers WHERE database_status = 'active'",
       );
       customers = result.rows;
     }
@@ -46,7 +47,7 @@ async function main() {
         `Migrating customer ${customer.id} (status: ${customer.database_status})...`,
       );
       const customerPool = new Pool({
-        connectionString: customer.database_url,
+        connectionString: customer.database_migration_url ?? customer.database_url,
       });
       try {
         await runMigrations(
