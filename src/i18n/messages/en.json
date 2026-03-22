@@ -1,0 +1,52 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "An error occurred",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "confirm": "Confirm",
+    "back": "Back",
+    "switchToKorean": "한국어",
+    "switchToEnglish": "English",
+    "skipToContent": "Skip to content"
+  },
+  "auth": {
+    "signIn": "Sign In",
+    "signOut": "Sign Out",
+    "sessionExpired": "Your session has expired. Please sign in again."
+  },
+  "nav": {
+    "home": "Home",
+    "events": "Events",
+    "analysis": "Analysis",
+    "reports": "Reports",
+    "dashboard": "Dashboard",
+    "members": "Members",
+    "customerSettings": "Customer Settings",
+    "admin": "Admin"
+  },
+  "admin": {
+    "accounts": "Accounts",
+    "customers": "Customers",
+    "environments": "Environments",
+    "analysts": "Analysts",
+    "trustRegistry": "Trust Registry",
+    "auditLog": "Audit Log",
+    "settings": "Settings"
+  },
+  "events": {
+    "title": "Events",
+    "approval": "Approval",
+    "upload": "Upload",
+    "pending": "Pending",
+    "approved": "Approved",
+    "rejected": "Rejected"
+  },
+  "validation": {
+    "required": "This field is required",
+    "invalidEmail": "Please enter a valid email address",
+    "minLength": "Must be at least {min} characters",
+    "maxLength": "Must be at most {max} characters"
+  }
+}

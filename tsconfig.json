@@ -20,6 +20,10 @@
     "plugins": [
       {
         "name": "next"
+      },
+      {
+        "name": "next-intl/plugin",
+        "messageDir": "./src/i18n/messages"
       }
     ],
     "paths": {
