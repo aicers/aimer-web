@@ -6,6 +6,7 @@ export interface RotationResult {
   rotated: boolean;
   jwt?: string;
   csrfToken?: string;
+  iat?: number;
   expiresAt?: number;
 }
 
@@ -35,5 +36,5 @@ export async function maybeRotateSession(params: {
   const { token, iat, exp } = await signJwt(newClaims);
   const csrfToken = generateCsrf({ ctx, sid: claims.sid, iat });
 
-  return { rotated: true, jwt: token, csrfToken, expiresAt: exp };
+  return { rotated: true, jwt: token, csrfToken, iat, expiresAt: exp };
 }

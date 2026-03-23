@@ -105,16 +105,13 @@ export function withAuth(
     );
 
     const meta = extractRequestMeta(req);
-    const iat = rotation.rotated
-      ? (rotation.expiresAt ?? claims.exp) - (claims.exp - claims.iat)
-      : claims.iat;
 
     return handler(req, {
       accountId: claims.sub,
       sessionId: claims.sid,
       authContext: ctx,
       tokenVersion: claims.tv,
-      iat,
+      iat: rotation.rotated && rotation.iat ? rotation.iat : claims.iat,
       meta,
     });
   };
