@@ -13,6 +13,9 @@
     "check": "biome ci --error-on-warnings .",
     "typecheck": "next typegen && tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vitest run",
+    "test:unit": "vitest run --passWithNoTests 'unit.test'",
+    "test:db": "vitest run --passWithNoTests 'db.test'",
+    "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "migrate:customers": "tsx src/lib/db/migrate-customers-cli.ts"
   },
   "dependencies": {
@@ -39,6 +42,7 @@
     "tailwindcss": "^4",
     "tsx": "^4.19.0",
     "typescript": "^5",
+    "@playwright/test": "^1.52.0",
     "vitest": "^4.1.0"
   }
 }

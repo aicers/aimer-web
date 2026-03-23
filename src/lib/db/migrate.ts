@@ -58,10 +58,10 @@ export async function listMigrationFiles(
   }
 
   return entries
-    .filter((f) => /^\d{4}_.*\.(sql|ts)$/.test(f))
+    .filter((f) => /^\d{4}[a-z]?_.*\.(sql|ts)$/.test(f))
     .sort()
     .map((f) => {
-      const match = f.match(/^(\d{4})_(.+)\.(sql|ts)$/);
+      const match = f.match(/^(\d{4}[a-z]?)_(.+)\.(sql|ts)$/);
       if (!match) throw new Error(`Invalid migration filename: ${f}`);
       return {
         version: match[1],
@@ -147,7 +147,8 @@ export async function runMigrations(
         const checksum = computeChecksum(content);
 
         if (applied.has(file.version)) {
-          const storedChecksum = applied.get(file.version)!;
+          // Map.has() check above guarantees the value exists
+          const storedChecksum = applied.get(file.version) as string;
           if (storedChecksum !== checksum) {
             throw new Error(
               `Checksum mismatch for migration ${file.version}_${file.name}: ` +
