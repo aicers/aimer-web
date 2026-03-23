@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
 import { auditLog } from "@/lib/auth/audit-stub";
 import {
   clearOidcTempCookies,
@@ -12,6 +13,10 @@ import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
 import { validateIdToken } from "@/lib/auth/oidc-validate";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool, query, withTransaction } from "@/lib/db/client";
+
+function denyRedirect(request: NextRequest, reason: string): NextResponse {
+  return NextResponse.redirect(new URL(`/deny?reason=${reason}`, request.url));
+}
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = request.nextUrl;
@@ -30,24 +35,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   if (!code || !state) {
-    return NextResponse.redirect(
-      new URL("/deny?reason=missing_params", request.url),
-    );
+    return denyRedirect(request, "missing_params");
   }
 
   // Verify OIDC temp cookies
   const temp = await getOidcTempCookies();
   if (!temp) {
-    return NextResponse.redirect(
-      new URL("/deny?reason=session_expired", request.url),
-    );
+    return denyRedirect(request, "session_expired");
   }
 
   if (temp.state !== state) {
     await clearOidcTempCookies();
-    return NextResponse.redirect(
-      new URL("/deny?reason=state_mismatch", request.url),
-    );
+    return denyRedirect(request, "state_mismatch");
   }
 
   await clearOidcTempCookies();
@@ -75,9 +74,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       codeVerifier: temp.codeVerifier,
     });
   } catch {
-    return NextResponse.redirect(
-      new URL("/deny?reason=token_exchange_failed", request.url),
-    );
+    return denyRedirect(request, "token_exchange_failed");
   }
 
   // Validate ID token
@@ -91,41 +88,16 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       nonce: temp.nonce,
     });
   } catch {
-    return NextResponse.redirect(
-      new URL("/deny?reason=id_token_invalid", request.url),
-    );
+    return denyRedirect(request, "id_token_invalid");
   }
 
   const meta = extractRequestMeta(request);
+  const pool = getAuthPool();
 
   // Account upsert
-  const pool = getAuthPool();
-  const account = await withTransaction(pool, async (client) => {
-    const result = await client.query<{
-      id: string;
-      status: string;
-      token_version: number;
-      locale: string | null;
-    }>(
-      `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, email, last_sign_in_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET
-         username = EXCLUDED.username,
-         display_name = EXCLUDED.display_name,
-         email = EXCLUDED.email,
-         last_sign_in_at = NOW(),
-         updated_at = NOW()
-       RETURNING id, status, token_version, locale`,
-      [
-        issuerUrl,
-        idClaims.sub,
-        idClaims.preferred_username,
-        idClaims.name ?? idClaims.preferred_username,
-        idClaims.email ?? null,
-      ],
-    );
-    return result.rows[0];
-  });
+  const account = await withTransaction(pool, (client) =>
+    upsertAccount(client, issuerUrl, idClaims),
+  );
 
   // Status check
   if (account.status !== "active") {
@@ -138,9 +110,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       details: { reason: "account_inactive", status: account.status },
       ipAddress: meta.ipAddress,
     });
-    return NextResponse.redirect(
-      new URL("/deny?reason=account_inactive", request.url),
-    );
+    return denyRedirect(request, "account_inactive");
   }
 
   // Invitation stub (#51): check for invitation_token cookie
@@ -156,17 +126,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   // Standard check: count accessible customers
-  const accessRows = await query<{ total: number }>(
-    pool,
-    `SELECT COUNT(*)::int AS total FROM (
-       SELECT account_id FROM account_customer_memberships WHERE account_id = $1
-       UNION ALL
-       SELECT account_id FROM analyst_customer_assignments WHERE account_id = $1
-     ) AS combined`,
-    [account.id],
-  );
-
-  if (accessRows[0].total === 0) {
+  const total = await countAccessibleCustomers(pool, account.id);
+  if (total === 0) {
     await auditLog({
       actorId: account.id,
       authContext: "general",
@@ -176,9 +137,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       details: { reason: "no_customer_access" },
       ipAddress: meta.ipAddress,
     });
-    return NextResponse.redirect(
-      new URL("/deny?reason=no_access", request.url),
-    );
+    return denyRedirect(request, "no_access");
   }
 
   // Create session
@@ -191,18 +150,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   );
   const sid = sessionRows[0].sid;
 
-  // Sign JWT
+  // Sign JWT + CSRF + cookies
   const { token, iat, exp } = await signJwt({
     sub: account.id,
     sid,
     ctx: "general",
     tv: account.token_version,
   });
-
-  // Generate CSRF
   const csrfToken = generateCsrf({ ctx: "general", sid, iat });
-
-  // Set cookies
   await setAuthCookies("general", { jwt: token, csrfToken, expiresAt: exp });
 
   await auditLog({

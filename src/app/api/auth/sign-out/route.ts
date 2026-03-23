@@ -3,8 +3,7 @@ import { auditLog } from "@/lib/auth/audit-stub";
 import { clearAllAuthCookies } from "@/lib/auth/cookies";
 import { withLogoutAuth } from "@/lib/auth/guards";
 import { verifyJwtForLogout } from "@/lib/auth/jwt";
-import { getIssuerUrl } from "@/lib/auth/oidc";
-import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
+import { buildKeycloakLogoutUrl } from "@/lib/auth/keycloak-logout";
 import { getAuthPool, query } from "@/lib/db/client";
 
 export const POST = withLogoutAuth(async (req: NextRequest, auth) => {
@@ -44,15 +43,6 @@ export const POST = withLogoutAuth(async (req: NextRequest, auth) => {
     sid: auth.sessionId ?? undefined,
   });
 
-  // Build Keycloak logout URL
-  const issuerUrl = getIssuerUrl();
-  const discovery = await getOidcDiscovery(issuerUrl);
-  const clientId = process.env.OIDC_GENERAL_CLIENT_ID ?? "aimer-web";
-  const origin = req.nextUrl.origin;
-
-  const logoutUrl = new URL(discovery.end_session_endpoint);
-  logoutUrl.searchParams.set("client_id", clientId);
-  logoutUrl.searchParams.set("post_logout_redirect_uri", origin);
-
-  return Response.json({ logoutUrl: logoutUrl.toString() });
+  const logoutUrl = await buildKeycloakLogoutUrl(req.nextUrl.origin);
+  return Response.json({ logoutUrl });
 });

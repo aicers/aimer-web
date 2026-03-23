@@ -1,5 +1,5 @@
 import { jwtVerify } from "jose";
-import type { VerifiedJwt } from "./jwt";
+import { extractClaims, type VerifiedJwt } from "./jwt";
 import { getKeyPair } from "./jwt-keys";
 
 const ISSUER = "aimer-web";
@@ -16,12 +16,5 @@ export async function verifyJwtStateless(token: string): Promise<VerifiedJwt> {
     audience: AUDIENCE,
   });
 
-  return {
-    sub: payload.sub as string,
-    sid: payload.sid as string,
-    ctx: payload.ctx as string,
-    tv: payload.tv as number,
-    iat: payload.iat as number,
-    exp: payload.exp as number,
-  };
+  return extractClaims(payload as Record<string, unknown>);
 }

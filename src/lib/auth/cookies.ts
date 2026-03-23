@@ -81,6 +81,7 @@ export async function setAuthCookies(
   const names = cookieNames(ctx);
   const jar = await cookies();
   const strict = "strict" as const;
+  const maxAge = params.expiresAt - Math.floor(Date.now() / 1000);
 
   // JWT — HttpOnly
   jar.set(names.at, params.jwt, {
@@ -88,6 +89,7 @@ export async function setAuthCookies(
     secure: isSecure,
     sameSite: strict,
     path: "/",
+    maxAge,
   });
 
   // CSRF — NOT HttpOnly (client reads to send as X-CSRF-Token header)
@@ -96,6 +98,7 @@ export async function setAuthCookies(
     secure: isSecure,
     sameSite: strict,
     path: "/",
+    maxAge,
   });
 
   // Token expiry — NOT HttpOnly (client reads for UI countdown)
@@ -104,6 +107,7 @@ export async function setAuthCookies(
     secure: isSecure,
     sameSite: strict,
     path: "/",
+    maxAge,
   });
 }
 

@@ -60,6 +60,28 @@ export async function signJwt(claims: JwtClaims): Promise<{
 // Verify (stateless — signature + exp + iss + aud)
 // ---------------------------------------------------------------------------
 
+export function extractClaims(payload: Record<string, unknown>): VerifiedJwt {
+  const sub = payload.sub;
+  const sid = payload.sid;
+  const ctx = payload.ctx;
+  const tv = payload.tv;
+  const iat = payload.iat;
+  const exp = payload.exp;
+
+  if (
+    typeof sub !== "string" ||
+    typeof sid !== "string" ||
+    typeof ctx !== "string" ||
+    typeof tv !== "number" ||
+    typeof iat !== "number" ||
+    typeof exp !== "number"
+  ) {
+    throw new Error("JWT missing required claims");
+  }
+
+  return { sub, sid, ctx, tv, iat, exp };
+}
+
 async function verifyStateless(token: string): Promise<VerifiedJwt> {
   const { publicKey } = await getKeyPair();
   const { payload } = await jwtVerify(token, publicKey, {
@@ -67,14 +89,7 @@ async function verifyStateless(token: string): Promise<VerifiedJwt> {
     audience: AUDIENCE,
   });
 
-  return {
-    sub: payload.sub as string,
-    sid: payload.sid as string,
-    ctx: payload.ctx as string,
-    tv: payload.tv as number,
-    iat: payload.iat as number,
-    exp: payload.exp as number,
-  };
+  return extractClaims(payload as Record<string, unknown>);
 }
 
 // ---------------------------------------------------------------------------
@@ -136,14 +151,7 @@ export async function verifyJwtForLogout(
       clockTolerance: Number.MAX_SAFE_INTEGER,
     });
 
-    return {
-      sub: payload.sub as string,
-      sid: payload.sid as string,
-      ctx: payload.ctx as string,
-      tv: payload.tv as number,
-      iat: payload.iat as number,
-      exp: payload.exp as number,
-    };
+    return extractClaims(payload as Record<string, unknown>);
   } catch {
     // Signature verification failed — return null so caller can
     // proceed with cookie deletion only
