@@ -156,25 +156,27 @@ export function withLogoutAuth(
       });
     }
 
-    // CSRF verification (skip if signature failed)
+    // CSRF verification (required when claims are valid)
     const csrfHeader =
       ctx === "general"
         ? req.headers.get("x-csrf-token")
         : req.headers.get("x-csrf-token-admin");
 
-    if (csrfHeader) {
-      const valid = validateCsrf({
-        token: csrfHeader,
-        ctx,
-        sid: claims.sid,
-        iat: claims.iat,
-      });
-      if (!valid) {
-        return Response.json(
-          { error: "CSRF validation failed" },
-          { status: 403 },
-        );
-      }
+    if (!csrfHeader) {
+      return Response.json({ error: "CSRF token required" }, { status: 403 });
+    }
+
+    const valid = validateCsrf({
+      token: csrfHeader,
+      ctx,
+      sid: claims.sid,
+      iat: claims.iat,
+    });
+    if (!valid) {
+      return Response.json(
+        { error: "CSRF validation failed" },
+        { status: 403 },
+      );
     }
 
     return handler(req, {

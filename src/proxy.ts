@@ -21,6 +21,11 @@ export default async function proxy(
     return intlMiddleware(request);
   }
 
+  // Skip auth when Keycloak is not configured (e.g., CI without IdP)
+  if (!process.env.KEYCLOAK_URL || !process.env.KEYCLOAK_REALM) {
+    return intlMiddleware(request);
+  }
+
   // Check for auth cookie
   const token = request.cookies.get("at")?.value;
   if (!token) {
