@@ -70,3 +70,7 @@ END
 $$;
 
 GRANT ALL ON DATABASE keycloak_db TO keycloak;
+
+\connect keycloak_db
+
+GRANT ALL ON SCHEMA public TO keycloak;
