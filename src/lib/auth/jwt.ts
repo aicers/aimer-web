@@ -1,5 +1,6 @@
 import { jwtVerify, SignJWT } from "jose";
 import { getAuthPool, query } from "../db/client";
+import type { AuthContext } from "./cookies";
 import { getKeyPair } from "./jwt-keys";
 
 // ---------------------------------------------------------------------------
@@ -18,8 +19,18 @@ export interface VerifiedJwt extends JwtClaims {
   exp: number;
 }
 
-const ISSUER = "aimer-web";
-const AUDIENCE = "aimer-web";
+// ---------------------------------------------------------------------------
+// Issuer/audience mapping
+// ---------------------------------------------------------------------------
+
+const ISSUERS: Record<AuthContext, string> = {
+  general: "aimer-web",
+  admin: "aimer-web-admin",
+};
+
+export function issuerForContext(ctx: AuthContext): string {
+  return ISSUERS[ctx];
+}
 
 function getExpirationSeconds(): number {
   const minutes = Number(process.env.JWT_EXPIRATION_MINUTES) || 15;
@@ -30,7 +41,10 @@ function getExpirationSeconds(): number {
 // Sign
 // ---------------------------------------------------------------------------
 
-export async function signJwt(claims: JwtClaims): Promise<{
+export async function signJwt(
+  claims: JwtClaims,
+  ctx?: AuthContext,
+): Promise<{
   token: string;
   iat: number;
   exp: number;
@@ -39,6 +53,7 @@ export async function signJwt(claims: JwtClaims): Promise<{
   const expSeconds = getExpirationSeconds();
   const iat = Math.floor(Date.now() / 1000);
   const exp = iat + expSeconds;
+  const iss = issuerForContext(ctx ?? (claims.ctx as AuthContext));
 
   const token = await new SignJWT({
     sid: claims.sid,
@@ -47,8 +62,8 @@ export async function signJwt(claims: JwtClaims): Promise<{
   })
     .setProtectedHeader({ alg: "ES256", kid })
     .setSubject(claims.sub)
-    .setIssuer(ISSUER)
-    .setAudience(AUDIENCE)
+    .setIssuer(iss)
+    .setAudience(iss)
     .setIssuedAt(iat)
     .setExpirationTime(exp)
     .sign(privateKey);
@@ -82,22 +97,41 @@ export function extractClaims(payload: Record<string, unknown>): VerifiedJwt {
   return { sub, sid, ctx, tv, iat, exp };
 }
 
-async function verifyStateless(token: string): Promise<VerifiedJwt> {
+async function verifyStateless(
+  token: string,
+  ctx?: AuthContext,
+): Promise<VerifiedJwt> {
   const { publicKey } = await getKeyPair();
-  const { payload } = await jwtVerify(token, publicKey, {
-    issuer: ISSUER,
-    audience: AUDIENCE,
-  });
 
-  return extractClaims(payload as Record<string, unknown>);
+  // Try the specified context first, then fall back to trying both issuers.
+  // This allows verifyJwtForLogout to work when the context is unknown.
+  const contexts: AuthContext[] = ctx ? [ctx] : ["general", "admin"];
+
+  let lastError: unknown;
+  for (const c of contexts) {
+    try {
+      const iss = issuerForContext(c);
+      const { payload } = await jwtVerify(token, publicKey, {
+        issuer: iss,
+        audience: iss,
+      });
+      return extractClaims(payload as Record<string, unknown>);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 // ---------------------------------------------------------------------------
 // Verify full (stateless + DB lookup)
 // ---------------------------------------------------------------------------
 
-export async function verifyJwtFull(token: string): Promise<VerifiedJwt> {
-  const claims = await verifyStateless(token);
+export async function verifyJwtFull(
+  token: string,
+  ctx?: AuthContext,
+): Promise<VerifiedJwt> {
+  const claims = await verifyStateless(token, ctx);
 
   const rows = await query<{
     revoked: boolean;
@@ -142,19 +176,28 @@ export async function verifyJwtFull(token: string): Promise<VerifiedJwt> {
 
 export async function verifyJwtForLogout(
   token: string,
+  ctx?: AuthContext,
 ): Promise<VerifiedJwt | null> {
   try {
     const { publicKey } = await getKeyPair();
-    const { payload } = await jwtVerify(token, publicKey, {
-      issuer: ISSUER,
-      audience: AUDIENCE,
-      clockTolerance: Number.MAX_SAFE_INTEGER,
-    });
 
-    return extractClaims(payload as Record<string, unknown>);
+    const contexts: AuthContext[] = ctx ? [ctx] : ["general", "admin"];
+    let lastError: unknown;
+    for (const c of contexts) {
+      try {
+        const iss = issuerForContext(c);
+        const { payload } = await jwtVerify(token, publicKey, {
+          issuer: iss,
+          audience: iss,
+          clockTolerance: Number.MAX_SAFE_INTEGER,
+        });
+        return extractClaims(payload as Record<string, unknown>);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError;
   } catch {
-    // Signature verification failed — return null so caller can
-    // proceed with cookie deletion only
     return null;
   }
 }
