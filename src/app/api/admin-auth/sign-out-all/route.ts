@@ -35,7 +35,11 @@ export const POST = withLogoutAuth(
       sid: auth.sessionId ?? undefined,
     });
 
-    const logoutUrl = await buildKeycloakLogoutUrl(req.nextUrl.origin);
+    const adminClientId = process.env.OIDC_ADMIN_CLIENT_ID ?? "aimer-web-admin";
+    const logoutUrl = await buildKeycloakLogoutUrl(
+      req.nextUrl.origin,
+      adminClientId,
+    );
     return Response.json({ logoutUrl });
   },
   { cookieName: "at_admin" },

@@ -39,7 +39,11 @@ export const POST = withLogoutAuth(
     }
 
     // No general session — terminate Keycloak SSO
-    const logoutUrl = await buildKeycloakLogoutUrl(req.nextUrl.origin);
+    const adminClientId = process.env.OIDC_ADMIN_CLIENT_ID ?? "aimer-web-admin";
+    const logoutUrl = await buildKeycloakLogoutUrl(
+      req.nextUrl.origin,
+      adminClientId,
+    );
     return Response.json({ logoutUrl });
   },
   { cookieName: "at_admin" },
