@@ -138,6 +138,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
     expect(result.token.length).toBeGreaterThan(0);
     expect(result.expiresAt).toBeInstanceOf(Date);
     expect(result.expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(result.customerName).toBe("Test Customer");
 
     // Verify row exists in DB
     const row = await pool.query<{ status: string; invited_email: string }>(
@@ -315,6 +316,8 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
     expect(second.expiresAt.getTime()).toBeGreaterThanOrEqual(
       first.expiresAt.getTime(),
     );
+    // Customer name is preserved across refresh
+    expect(second.customerName).toBe("Test Customer");
 
     // Old token hash is replaced in DB
     const row = await pool.query<{ token_hash: string }>(

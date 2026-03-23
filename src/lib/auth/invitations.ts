@@ -16,6 +16,7 @@ export interface CreatedInvitation {
   id: string;
   token: string;
   expiresAt: Date;
+  customerName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,13 +93,15 @@ async function assertNotAlreadyMember(
 async function assertCustomerExists(
   client: PoolClient,
   customerId: string,
-): Promise<void> {
-  const result = await client.query(`SELECT 1 FROM customers WHERE id = $1`, [
-    customerId,
-  ]);
+): Promise<string> {
+  const result = await client.query<{ name: string }>(
+    `SELECT name FROM customers WHERE id = $1`,
+    [customerId],
+  );
   if (result.rows.length === 0) {
     throw new HttpError("Customer not found", 404);
   }
+  return result.rows[0].name;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +137,7 @@ export async function createInvitation(
   client: PoolClient,
   params: CreateInvitationParams,
 ): Promise<CreatedInvitation> {
-  await assertCustomerExists(client, params.customerId);
+  const customerName = await assertCustomerExists(client, params.customerId);
   await assertManagerPermission(client, params.accountId, params.customerId);
   await assertNotAlreadyMember(client, params.customerId, params.email);
 
@@ -162,6 +165,7 @@ export async function createInvitation(
       id: result.rows[0].id,
       token: raw,
       expiresAt: result.rows[0].expires_at,
+      customerName,
     };
   } catch (err: unknown) {
     const pgErr = err as {
