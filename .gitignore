@@ -22,6 +22,10 @@ infra/certs/*.crt
 # Docker volumes
 pgdata/
 
+# Playwright
+playwright-report/
+test-results/
+
 # Claude Code
 .claude/
 

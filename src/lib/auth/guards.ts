@@ -118,6 +118,60 @@ export function withAuth(
 }
 
 // ---------------------------------------------------------------------------
+// Shared mutation guards (origin + CSRF)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that the request Origin header matches the expected origin.
+ * Returns a 403 Response on mismatch, or null if the origin is valid.
+ */
+export function verifyOrigin(req: NextRequest): Response | null {
+  const origin = req.headers.get("origin");
+  const expectedOrigin = req.nextUrl.origin;
+  let originMatch = false;
+  if (origin) {
+    try {
+      originMatch = new URL(origin).origin === expectedOrigin;
+    } catch {
+      // Malformed Origin header
+    }
+  }
+  if (!originMatch) {
+    return Response.json({ error: "Origin mismatch" }, { status: 403 });
+  }
+  return null;
+}
+
+/**
+ * Verify the CSRF token from the request header.
+ * Returns a 403 Response on failure, or null if valid.
+ */
+export function verifyCsrf(
+  req: NextRequest,
+  params: { ctx: AuthContext; sid: string; iat: number },
+): Response | null {
+  const csrfHeader =
+    params.ctx === "general"
+      ? req.headers.get("x-csrf-token")
+      : req.headers.get("x-csrf-token-admin");
+
+  if (!csrfHeader) {
+    return Response.json({ error: "CSRF token required" }, { status: 403 });
+  }
+
+  const valid = validateCsrf({
+    token: csrfHeader,
+    ctx: params.ctx,
+    sid: params.sid,
+    iat: params.iat,
+  });
+  if (!valid) {
+    return Response.json({ error: "CSRF validation failed" }, { status: 403 });
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // withLogoutAuth — verify signature only (exp ignored), CSRF check
 // ---------------------------------------------------------------------------
 
@@ -131,21 +185,8 @@ export function withLogoutAuth(
   return async (req: NextRequest) => {
     const meta = extractRequestMeta(req);
 
-    // Origin/Referer verification (mandatory for mutations).
-    // Blocks cross-site POSTs regardless of token presence.
-    const origin = req.headers.get("origin");
-    const expectedOrigin = req.nextUrl.origin;
-    let originMatch = false;
-    if (origin) {
-      try {
-        originMatch = new URL(origin).origin === expectedOrigin;
-      } catch {
-        // Malformed Origin header
-      }
-    }
-    if (!originMatch) {
-      return Response.json({ error: "Origin mismatch" }, { status: 403 });
-    }
+    const originErr = verifyOrigin(req);
+    if (originErr) return originErr;
 
     const token = req.cookies.get(cookieName)?.value;
 
@@ -170,28 +211,12 @@ export function withLogoutAuth(
       });
     }
 
-    // CSRF verification (required when claims are valid)
-    const csrfHeader =
-      ctx === "general"
-        ? req.headers.get("x-csrf-token")
-        : req.headers.get("x-csrf-token-admin");
-
-    if (!csrfHeader) {
-      return Response.json({ error: "CSRF token required" }, { status: 403 });
-    }
-
-    const valid = validateCsrf({
-      token: csrfHeader,
+    const csrfErr = verifyCsrf(req, {
       ctx,
       sid: claims.sid,
       iat: claims.iat,
     });
-    if (!valid) {
-      return Response.json(
-        { error: "CSRF validation failed" },
-        { status: 403 },
-      );
-    }
+    if (csrfErr) return csrfErr;
 
     return handler(req, {
       sessionId: claims.sid,
