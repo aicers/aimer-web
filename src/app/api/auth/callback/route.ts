@@ -12,6 +12,7 @@ import { exchangeCodeForTokens, getIssuerUrl } from "@/lib/auth/oidc";
 import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
 import { validateIdToken } from "@/lib/auth/oidc-validate";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
+import { enforceSameAccount } from "@/lib/auth/same-account";
 import { getAuthPool, query, withTransaction } from "@/lib/db/client";
 
 function denyRedirect(request: NextRequest, reason: string): NextResponse {
@@ -139,6 +140,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     return denyRedirect(request, "no_access");
   }
+
+  // Same-account enforcement: only after all deny checks pass
+  await enforceSameAccount(request, account.id, "general", meta);
 
   // Create session
   const sessionRows = await query<{ sid: string }>(

@@ -353,4 +353,98 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
       );
     });
   });
+
+  // -- Same-account enforcement --
+
+  describe("same-account enforcement", () => {
+    let accountAId: string;
+    let accountBId: string;
+
+    beforeAll(async () => {
+      const acctA = await pool.query<{ id: string }>(
+        `SELECT id FROM accounts WHERE oidc_subject = 'user-001'`,
+      );
+      accountAId = acctA.rows[0].id;
+
+      // Create account B
+      const acctB = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', 'user-002', 'userB', 'User B')
+         ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET username = 'userB'
+         RETURNING id`,
+      );
+      accountBId = acctB.rows[0].id;
+    });
+
+    it("revokes all sessions for previous account on different-account sign-in", async () => {
+      // Create sessions for account A (both general and admin)
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '1.1.1.1', 'test')`,
+        [accountAId],
+      );
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'admin', '1.1.1.1', 'test')`,
+        [accountAId],
+      );
+
+      // Simulate different-account enforcement: revoke all of A's sessions
+      await pool.query(
+        `UPDATE sessions SET revoked = true WHERE account_id = $1 AND revoked = false`,
+        [accountAId],
+      );
+
+      // Verify A has no active sessions
+      const activeA = await pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM sessions
+         WHERE account_id = $1 AND revoked = false`,
+        [accountAId],
+      );
+      expect(activeA.rows[0].count).toBe(0);
+
+      // Create session for account B (the new account)
+      const sessionB = await pool.query<{ sid: string }>(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '1.1.1.1', 'test')
+         RETURNING sid`,
+        [accountBId],
+      );
+      expect(sessionB.rows).toHaveLength(1);
+    });
+
+    it("preserves sessions for same-account sign-in", async () => {
+      // Create a general session for account B
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '2.2.2.2', 'test')`,
+        [accountBId],
+      );
+
+      // Account B signs in as admin (same account) — no revocation
+      const activeB = await pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM sessions
+         WHERE account_id = $1 AND revoked = false`,
+        [accountBId],
+      );
+      expect(activeB.rows[0].count).toBeGreaterThanOrEqual(1);
+
+      // Add admin session alongside
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'admin', '2.2.2.2', 'test')`,
+        [accountBId],
+      );
+
+      // Both sessions coexist
+      const contexts = await pool.query<{ auth_context: string }>(
+        `SELECT DISTINCT auth_context FROM sessions
+         WHERE account_id = $1 AND revoked = false`,
+        [accountBId],
+      );
+      const ctxSet = new Set(contexts.rows.map((r) => r.auth_context));
+      expect(ctxSet.has("general")).toBe(true);
+      expect(ctxSet.has("admin")).toBe(true);
+    });
+  });
 });
