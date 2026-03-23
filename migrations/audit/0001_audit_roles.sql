@@ -1,5 +1,5 @@
 -- Grant table-level privileges to audit_db roles.
--- Role creation is handled by infra/postgres/init-audit-db.sql
+-- Role creation is handled by infra/postgres/init-databases.sql
 -- (Docker entrypoint). This migration only assigns grants after
 -- the audit_logs table exists.
 

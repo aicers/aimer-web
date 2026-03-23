@@ -360,7 +360,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
 
     beforeAll(async () => {
       // Grant aimer_auth the necessary privileges on the test database.
-      // The init-audit-db.sql only grants on the original auth_db, not
+      // The init-databases.sql only grants on the original auth_db, not
       // our test database. We must grant here.
       await pool.query(`GRANT CONNECT ON DATABASE ${dbName} TO aimer_auth`);
       await pool.query("GRANT USAGE ON SCHEMA public TO aimer_auth");

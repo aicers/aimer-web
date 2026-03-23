@@ -2,8 +2,8 @@
 -- This script runs automatically on first PostgreSQL startup
 -- via the docker-entrypoint-initdb.d mechanism.
 --
--- auth_db is created by POSTGRES_DB env var; only audit_db needs
--- explicit creation here.
+-- auth_db is created by POSTGRES_DB env var; audit_db and keycloak_db
+-- need explicit creation here.
 
 -- ---------------------------------------------------------------
 -- audit_db
@@ -55,3 +55,18 @@ GRANT CONNECT ON DATABASE audit_db TO aimer_audit;
 GRANT ALL ON SCHEMA public TO aimer_audit_owner;
 -- Runtime table-level grants are applied by migration 0001_audit_roles.sql.
 GRANT USAGE ON SCHEMA public TO aimer_audit;
+
+-- ---------------------------------------------------------------
+-- keycloak_db (used by production Keycloak with PostgreSQL backend)
+-- ---------------------------------------------------------------
+CREATE DATABASE keycloak_db;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'keycloak') THEN
+    CREATE ROLE keycloak WITH LOGIN PASSWORD 'changeme';
+  END IF;
+END
+$$;
+
+GRANT ALL ON DATABASE keycloak_db TO keycloak;
