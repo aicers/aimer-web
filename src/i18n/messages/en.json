@@ -14,7 +14,15 @@
   "auth": {
     "signIn": "Sign In",
     "signOut": "Sign Out",
-    "sessionExpired": "Your session has expired. Please sign in again."
+    "sessionExpired": "Your session has expired. Please sign in again.",
+    "deny": {
+      "title": "Access Denied",
+      "accountInactive": "Your account has been suspended or disabled. Please contact an administrator.",
+      "noAccess": "You do not have access to any customer workspace. Please request an invitation from a manager.",
+      "genericError": "An error occurred during sign-in. Please try again.",
+      "backToSignIn": "Back to Sign In",
+      "contactAdmin": "If you believe this is an error, please contact your system administrator."
+    }
   },
   "nav": {
     "home": "Home",
