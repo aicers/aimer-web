@@ -7,8 +7,7 @@ const AUTH_ADMIN_URL =
   process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL;
 // For audit: prefer a dedicated audit admin URL, otherwise fall back to
 // the auth admin URL (assumes same PostgreSQL instance).
-const AUDIT_ADMIN_URL =
-  process.env.AUDIT_DATABASE_ADMIN_URL ?? AUTH_ADMIN_URL;
+const AUDIT_ADMIN_URL = process.env.AUDIT_DATABASE_ADMIN_URL ?? AUTH_ADMIN_URL;
 
 /**
  * Whether PostgreSQL is available for integration tests.
