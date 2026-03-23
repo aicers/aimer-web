@@ -114,9 +114,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return denyRedirect(request, "account_inactive");
   }
 
-  // Same-account enforcement: revoke previous account's sessions if different
-  await enforceSameAccount(request, account.id, "general", meta);
-
   // Invitation stub (#51): check for invitation_token cookie
   const invitationToken = request.cookies.get("invitation_token")?.value;
   if (invitationToken) {
@@ -143,6 +140,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     return denyRedirect(request, "no_access");
   }
+
+  // Same-account enforcement: only after all deny checks pass
+  await enforceSameAccount(request, account.id, "general", meta);
 
   // Create session
   const sessionRows = await query<{ sid: string }>(

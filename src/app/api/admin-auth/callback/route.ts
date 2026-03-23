@@ -115,9 +115,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return denyRedirect(request, "account_inactive");
   }
 
-  // Same-account enforcement: revoke previous account's sessions if different
-  await enforceSameAccount(request, account.id, "admin", meta);
-
   // Admin-specific verification (acr, auth_time, role, admin_eligible)
   const denyReason = verifyAdminClaims(idClaims, account.admin_eligible);
   if (denyReason) {
@@ -132,6 +129,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     return denyRedirect(request, denyReason);
   }
+
+  // Same-account enforcement: only after all deny checks pass
+  await enforceSameAccount(request, account.id, "admin", meta);
 
   // Create admin session
   const sessionRows = await query<{ sid: string }>(
