@@ -6,6 +6,7 @@ export interface UpsertedAccount {
   id: string;
   status: string;
   token_version: number;
+  admin_eligible: boolean;
   locale: string | null;
 }
 
@@ -27,7 +28,7 @@ export async function upsertAccount(
        email = EXCLUDED.email,
        last_sign_in_at = NOW(),
        updated_at = NOW()
-     RETURNING id, status, token_version, locale`,
+     RETURNING id, status, token_version, admin_eligible, locale`,
     [
       issuerUrl,
       claims.sub,

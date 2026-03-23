@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
+import { upsertAccount } from "@/lib/auth/account";
+import { verifyAdminClaims } from "@/lib/auth/admin-verify";
 import { auditLog } from "@/lib/auth/audit-stub";
 import {
   clearOidcTempCookies,
@@ -38,30 +39,30 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return denyRedirect(request, "missing_params");
   }
 
-  // Verify OIDC temp cookies
-  const temp = await getOidcTempCookies("general");
+  // Verify OIDC temp cookies (admin-specific)
+  const temp = await getOidcTempCookies("admin");
   if (!temp) {
     return denyRedirect(request, "session_expired");
   }
 
   if (temp.state !== state) {
-    await clearOidcTempCookies("general");
+    await clearOidcTempCookies("admin");
     return denyRedirect(request, "state_mismatch");
   }
 
-  await clearOidcTempCookies("general");
+  await clearOidcTempCookies("admin");
 
   // Exchange code for tokens
   const issuerUrl = getIssuerUrl();
   const discovery = await getOidcDiscovery(issuerUrl);
-  const clientId = process.env.OIDC_GENERAL_CLIENT_ID ?? "aimer-web";
-  const clientSecret = process.env.OIDC_GENERAL_CLIENT_SECRET;
+  const clientId = process.env.OIDC_ADMIN_CLIENT_ID ?? "aimer-web-admin";
+  const clientSecret = process.env.OIDC_ADMIN_CLIENT_SECRET;
   if (!clientSecret) {
-    throw new Error("OIDC_GENERAL_CLIENT_SECRET must be set");
+    throw new Error("OIDC_ADMIN_CLIENT_SECRET must be set");
   }
 
   const origin = request.nextUrl.origin;
-  const redirectUri = `${origin}/api/auth/callback`;
+  const redirectUri = `${origin}/api/admin-auth/callback`;
 
   let tokens: Awaited<ReturnType<typeof exchangeCodeForTokens>>;
   try {
@@ -103,8 +104,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   if (account.status !== "active") {
     await auditLog({
       actorId: account.id,
-      authContext: "general",
-      action: "auth.sign_in_denied",
+      authContext: "admin",
+      action: "admin.auth.sign_in_denied",
       targetType: "account",
       targetId: account.id,
       details: { reason: "account_inactive", status: account.status },
@@ -113,62 +114,48 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return denyRedirect(request, "account_inactive");
   }
 
-  // Invitation stub (#51): check for invitation_token cookie
-  const invitationToken = request.cookies.get("invitation_token")?.value;
-  if (invitationToken) {
-    // TODO(#51): Process invitation acceptance
-  }
-
-  // Bridge stub (#33): check for connection_id cookie
-  const connectionId = request.cookies.get("connection_id")?.value;
-  if (connectionId) {
-    // TODO(#33): Process bridge flow
-  }
-
-  // Standard check: count accessible customers
-  const total = await countAccessibleCustomers(pool, account.id);
-  if (total === 0) {
+  // Admin-specific verification (acr, auth_time, role, admin_eligible)
+  const denyReason = verifyAdminClaims(idClaims, account.admin_eligible);
+  if (denyReason) {
     await auditLog({
       actorId: account.id,
-      authContext: "general",
-      action: "auth.sign_in_denied",
+      authContext: "admin",
+      action: "admin.auth.sign_in_denied",
       targetType: "account",
       targetId: account.id,
-      details: { reason: "no_customer_access" },
+      details: { reason: denyReason, acr: idClaims.acr },
       ipAddress: meta.ipAddress,
     });
-    return denyRedirect(request, "no_access");
+    return denyRedirect(request, denyReason);
   }
 
-  // Create session
+  // Create admin session
   const sessionRows = await query<{ sid: string }>(
     pool,
     `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
-     VALUES ($1, 'general', $2, $3)
+     VALUES ($1, 'admin', $2, $3)
      RETURNING sid`,
     [account.id, meta.ipAddress, meta.userAgent],
   );
   const sid = sessionRows[0].sid;
 
-  // Sign JWT + CSRF + cookies
-  const { token, iat, exp } = await signJwt({
-    sub: account.id,
-    sid,
-    ctx: "general",
-    tv: account.token_version,
-  });
-  const csrfToken = generateCsrf({ ctx: "general", sid, iat });
-  await setAuthCookies("general", { jwt: token, csrfToken, expiresAt: exp });
+  // Sign JWT with admin issuer
+  const { token, iat, exp } = await signJwt(
+    { sub: account.id, sid, ctx: "admin", tv: account.token_version },
+    "admin",
+  );
+  const csrfToken = generateCsrf({ ctx: "admin", sid, iat });
+  await setAuthCookies("admin", { jwt: token, csrfToken, expiresAt: exp });
 
   await auditLog({
     actorId: account.id,
-    authContext: "general",
-    action: "auth.sign_in",
+    authContext: "admin",
+    action: "admin.auth.sign_in",
     targetType: "session",
     targetId: sid,
     ipAddress: meta.ipAddress,
     sid,
   });
 
-  return NextResponse.redirect(new URL("/", request.url));
+  return NextResponse.redirect(new URL("/admin", request.url));
 }

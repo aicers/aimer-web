@@ -5,7 +5,7 @@ import { verifyJwtStateless } from "./lib/auth/jwt-verify-stateless";
 
 const intlMiddleware = createIntlMiddleware(routing);
 
-const PUBLIC_PATHS = ["/api/auth/", "/deny"];
+const PUBLIC_PATHS = ["/api/auth/", "/api/admin-auth/", "/deny"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname.includes(p));
