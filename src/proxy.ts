@@ -5,7 +5,7 @@ import { verifyJwtStateless } from "./lib/auth/jwt-verify-stateless";
 
 const intlMiddleware = createIntlMiddleware(routing);
 
-const PUBLIC_PATHS = ["/api/auth/", "/deny"];
+const PUBLIC_PATHS = ["/api/auth/", "/api/admin-auth/", "/deny"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname.includes(p));
@@ -30,18 +30,24 @@ export default async function proxy(
     return intlMiddleware(request);
   }
 
-  // Check for auth cookie
-  const token = request.cookies.get("at")?.value;
+  // Admin pages require admin cookie; other pages require general cookie.
+  // Admin page routes will live under /[locale]/admin/ (#43).
+  const isAdminPath = /\/admin(\/|$)/.test(pathname);
+  const cookieName = isAdminPath ? "at_admin" : "at";
+  const signInUrl = isAdminPath
+    ? "/api/admin-auth/sign-in"
+    : "/api/auth/sign-in";
+
+  const token = request.cookies.get(cookieName)?.value;
   if (!token) {
-    return NextResponse.redirect(new URL("/api/auth/sign-in", request.url));
+    return NextResponse.redirect(new URL(signInUrl, request.url));
   }
 
   try {
     await verifyJwtStateless(token);
     return intlMiddleware(request);
   } catch {
-    // Invalid or expired token — redirect to sign-in
-    return NextResponse.redirect(new URL("/api/auth/sign-in", request.url));
+    return NextResponse.redirect(new URL(signInUrl, request.url));
   }
 }
 

@@ -14,19 +14,22 @@ const isSecure = process.env.NODE_ENV === "production";
 // Temporary OIDC cookies (SameSite=Lax for cross-site redirect)
 // ---------------------------------------------------------------------------
 
-const OIDC_TEMP_NAMES = {
-  state: "oidc_state",
-  nonce: "oidc_nonce",
-  codeVerifier: "oidc_code_verifier",
-} as const;
+function oidcTempNames(ctx: AuthContext) {
+  const suffix = ctx === "admin" ? "_admin" : "";
+  return {
+    state: `oidc_state${suffix}`,
+    nonce: `oidc_nonce${suffix}`,
+    codeVerifier: `oidc_code_verifier${suffix}`,
+  };
+}
 
 const OIDC_TEMP_MAX_AGE = 300; // 5 minutes
 
-export async function setOidcTempCookies(params: {
-  state: string;
-  nonce: string;
-  codeVerifier: string;
-}): Promise<void> {
+export async function setOidcTempCookies(
+  ctx: AuthContext,
+  params: { state: string; nonce: string; codeVerifier: string },
+): Promise<void> {
+  const names = oidcTempNames(ctx);
   const jar = await cookies();
   const opts = {
     httpOnly: true,
@@ -35,27 +38,33 @@ export async function setOidcTempCookies(params: {
     path: "/",
     maxAge: OIDC_TEMP_MAX_AGE,
   };
-  jar.set(OIDC_TEMP_NAMES.state, params.state, opts);
-  jar.set(OIDC_TEMP_NAMES.nonce, params.nonce, opts);
-  jar.set(OIDC_TEMP_NAMES.codeVerifier, params.codeVerifier, opts);
+  jar.set(names.state, params.state, opts);
+  jar.set(names.nonce, params.nonce, opts);
+  jar.set(names.codeVerifier, params.codeVerifier, opts);
 }
 
-export async function getOidcTempCookies(): Promise<{
+export async function getOidcTempCookies(
+  ctx: AuthContext = "general",
+): Promise<{
   state: string;
   nonce: string;
   codeVerifier: string;
 } | null> {
+  const names = oidcTempNames(ctx);
   const jar = await cookies();
-  const state = jar.get(OIDC_TEMP_NAMES.state)?.value;
-  const nonce = jar.get(OIDC_TEMP_NAMES.nonce)?.value;
-  const codeVerifier = jar.get(OIDC_TEMP_NAMES.codeVerifier)?.value;
+  const state = jar.get(names.state)?.value;
+  const nonce = jar.get(names.nonce)?.value;
+  const codeVerifier = jar.get(names.codeVerifier)?.value;
   if (!state || !nonce || !codeVerifier) return null;
   return { state, nonce, codeVerifier };
 }
 
-export async function clearOidcTempCookies(): Promise<void> {
+export async function clearOidcTempCookies(
+  ctx: AuthContext = "general",
+): Promise<void> {
+  const names = oidcTempNames(ctx);
   const jar = await cookies();
-  for (const name of Object.values(OIDC_TEMP_NAMES)) {
+  for (const name of Object.values(names)) {
     jar.delete(name);
   }
 }

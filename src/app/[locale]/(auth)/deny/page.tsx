@@ -1,10 +1,21 @@
 import { getTranslations } from "next-intl/server";
 
-type DenyMessageKey = "accountInactive" | "noAccess" | "genericError";
+type DenyMessageKey =
+  | "accountInactive"
+  | "noAccess"
+  | "adminMfaRequired"
+  | "adminAuthTooOld"
+  | "adminRoleMissing"
+  | "adminNotEligible"
+  | "genericError";
 
 const REASON_KEYS: Record<string, DenyMessageKey> = {
   account_inactive: "accountInactive",
   no_access: "noAccess",
+  admin_mfa_required: "adminMfaRequired",
+  admin_auth_too_old: "adminAuthTooOld",
+  admin_role_missing: "adminRoleMissing",
+  admin_not_eligible: "adminNotEligible",
 };
 
 export default async function DenyPage({

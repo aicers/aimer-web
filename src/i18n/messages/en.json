@@ -20,6 +20,10 @@
       "accountInactive": "Your account has been suspended or disabled. Please contact an administrator.",
       "noAccess": "You do not have access to any customer workspace. Please request an invitation from a manager.",
       "genericError": "An error occurred during sign-in. Please try again.",
+      "adminMfaRequired": "Multi-factor authentication is required for System Admin access. Please configure TOTP or WebAuthn.",
+      "adminAuthTooOld": "Your authentication has expired. System Admin sign-in must be completed within 5 minutes.",
+      "adminRoleMissing": "You do not have the System Admin role. Contact an administrator to request access.",
+      "adminNotEligible": "Your account is not eligible for System Admin access.",
       "backToSignIn": "Back to Sign In",
       "contactAdmin": "If you believe this is an error, please contact your system administrator."
     }

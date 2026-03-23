@@ -47,7 +47,7 @@ export function withAuth(
 
     let claims: VerifiedJwt;
     try {
-      claims = await verifyJwtFull(token);
+      claims = await verifyJwtFull(token, ctx);
     } catch {
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -158,7 +158,7 @@ export function withLogoutAuth(
       });
     }
 
-    const claims = await verifyJwtForLogout(token);
+    const claims = await verifyJwtForLogout(token, ctx);
 
     if (!claims) {
       // Signature failed — proceed with cookie deletion only

@@ -23,16 +23,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
-  // Clean up stale temporary cookies from previous incomplete flows
-  await clearOidcTempCookies("general");
+  await clearOidcTempCookies("admin");
   await clearFlowCookies();
 
-  // Store OIDC parameters in cookies for callback verification
-  await setOidcTempCookies("general", { state, nonce, codeVerifier });
+  await setOidcTempCookies("admin", { state, nonce, codeVerifier });
 
-  const clientId = process.env.OIDC_GENERAL_CLIENT_ID ?? "aimer-web";
+  const clientId = process.env.OIDC_ADMIN_CLIENT_ID ?? "aimer-web-admin";
   const origin = request.nextUrl.origin;
-  const redirectUri = `${origin}/api/auth/callback`;
+  const redirectUri = `${origin}/api/admin-auth/callback`;
 
   const url = buildAuthorizationUrl({
     discovery,
@@ -41,6 +39,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     state,
     nonce,
     codeChallenge,
+    prompt: "login",
+    maxAge: 0,
   });
 
   return NextResponse.redirect(url);
