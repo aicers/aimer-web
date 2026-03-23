@@ -135,7 +135,15 @@ export function withLogoutAuth(
     // Blocks cross-site POSTs regardless of token presence.
     const origin = req.headers.get("origin");
     const expectedOrigin = req.nextUrl.origin;
-    if (!origin || new URL(origin).origin !== expectedOrigin) {
+    let originMatch = false;
+    if (origin) {
+      try {
+        originMatch = new URL(origin).origin === expectedOrigin;
+      } catch {
+        // Malformed Origin header
+      }
+    }
+    if (!originMatch) {
       return Response.json({ error: "Origin mismatch" }, { status: 403 });
     }
 
