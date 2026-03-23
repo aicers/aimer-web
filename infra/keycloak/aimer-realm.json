@@ -29,14 +29,8 @@
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
       "secret": "changeme-bff-secret",
-      "redirectUris": [
-        "https://localhost/*",
-        "http://localhost:3000/*"
-      ],
-      "webOrigins": [
-        "https://localhost",
-        "http://localhost:3000"
-      ],
+      "redirectUris": ["https://localhost/*", "http://localhost:3000/*"],
+      "webOrigins": ["https://localhost", "http://localhost:3000"],
       "protocol": "openid-connect",
       "publicClient": false,
       "standardFlowEnabled": true,

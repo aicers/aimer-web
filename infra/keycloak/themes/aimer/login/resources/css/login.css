@@ -1,8 +1,8 @@
 /* Aimer Keycloak Login Theme
  * Design tokens from Discussion #15 */
 
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap');
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css');
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap");
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css");
 
 /* ── Light mode (default) ── */
 :root {
@@ -19,14 +19,14 @@
   --aimer-danger: #db1d03;
   --aimer-danger-bg: #fff9f9;
   --aimer-border: rgba(97, 105, 116, 0.16);
-  --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.04),
-    0 20px 25px rgba(0, 0, 0, 0.01);
+  --aimer-card-shadow:
+    0 10px 10px rgba(0, 0, 0, 0.04), 0 20px 25px rgba(0, 0, 0, 0.01);
   --aimer-logo-color: #212428;
 }
 
 /* ── Dark mode via system preference ── */
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
+  :root:not([data-theme="light"]) {
     --aimer-bg-canvas: #1a1d20;
     --aimer-card-bg: rgba(97, 105, 116, 0.08);
     --aimer-control-bg: rgba(97, 105, 116, 0.24);
@@ -40,14 +40,14 @@
     --aimer-danger: #fb2c10;
     --aimer-danger-bg: rgba(219, 29, 3, 0.1);
     --aimer-border: rgba(97, 105, 116, 0.24);
-    --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.12),
-      0 20px 25px rgba(0, 0, 0, 0.08);
+    --aimer-card-shadow:
+      0 10px 10px rgba(0, 0, 0, 0.12), 0 20px 25px rgba(0, 0, 0, 0.08);
     --aimer-logo-color: #fafafa;
   }
 }
 
 /* ── Dark mode via data attribute ── */
-[data-theme='dark'] {
+[data-theme="dark"] {
   --aimer-bg-canvas: #1a1d20;
   --aimer-card-bg: rgba(97, 105, 116, 0.08);
   --aimer-control-bg: rgba(97, 105, 116, 0.24);
@@ -61,8 +61,8 @@
   --aimer-danger: #fb2c10;
   --aimer-danger-bg: rgba(219, 29, 3, 0.1);
   --aimer-border: rgba(97, 105, 116, 0.24);
-  --aimer-card-shadow: 0 10px 10px rgba(0, 0, 0, 0.12),
-    0 20px 25px rgba(0, 0, 0, 0.08);
+  --aimer-card-shadow:
+    0 10px 10px rgba(0, 0, 0, 0.12), 0 20px 25px rgba(0, 0, 0, 0.08);
   --aimer-logo-color: #fafafa;
 }
 
@@ -76,7 +76,7 @@
 body.aimer-login {
   margin: 0;
   padding: 0;
-  font-family: 'Pretendard', 'Roboto', system-ui, -apple-system, sans-serif;
+  font-family: "Pretendard", "Roboto", system-ui, -apple-system, sans-serif;
   background-color: var(--aimer-bg-canvas);
   color: var(--aimer-text-primary);
   min-height: 100vh;
@@ -144,7 +144,7 @@ body.aimer-login {
   font-weight: 500;
   color: var(--aimer-text-secondary);
   margin-bottom: 6px;
-  font-family: 'Roboto', sans-serif;
+  font-family: "Roboto", sans-serif;
 }
 
 .aimer-input-wrapper {
@@ -156,13 +156,15 @@ body.aimer-login {
   height: 36px;
   padding: 0 12px;
   font-size: 14px;
-  font-family: 'Pretendard', 'Roboto', system-ui, sans-serif;
+  font-family: "Pretendard", "Roboto", system-ui, sans-serif;
   color: var(--aimer-text-primary);
   background: var(--aimer-control-bg);
   border: 1px solid transparent;
   border-radius: 8px;
   outline: none;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
 }
 
 .aimer-input::placeholder {
@@ -215,7 +217,7 @@ body.aimer-login {
   margin-top: 6px;
   font-size: 13px;
   color: var(--aimer-danger);
-  font-family: 'Roboto', sans-serif;
+  font-family: "Roboto", sans-serif;
 }
 
 .aimer-error-icon {
@@ -254,11 +256,13 @@ body.aimer-login {
   padding: 0 16px;
   font-size: 14px;
   font-weight: 500;
-  font-family: 'Pretendard', 'Roboto', system-ui, sans-serif;
+  font-family: "Pretendard", "Roboto", system-ui, sans-serif;
   border-radius: 8px;
   border: none;
   cursor: pointer;
-  transition: background-color 0.15s ease, opacity 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    opacity 0.15s ease;
   text-decoration: none;
 }
 
@@ -291,7 +295,7 @@ body.aimer-login {
   color: var(--aimer-btn-primary-bg);
   font-size: 13px;
   text-decoration: none;
-  font-family: 'Roboto', sans-serif;
+  font-family: "Roboto", sans-serif;
 }
 
 .aimer-link:hover {
@@ -316,7 +320,7 @@ body.aimer-login {
 
 .aimer-divider::before,
 .aimer-divider::after {
-  content: '';
+  content: "";
   flex: 1;
   height: 1px;
   background: var(--aimer-border);
@@ -416,7 +420,7 @@ body.aimer-login {
   height: 36px;
   padding: 0 12px;
   font-size: 18px;
-  font-family: 'Roboto', monospace;
+  font-family: "Roboto", monospace;
   letter-spacing: 4px;
   text-align: center;
   color: var(--aimer-text-primary);

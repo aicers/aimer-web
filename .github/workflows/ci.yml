@@ -77,8 +77,153 @@ jobs:
       - name: Build
         run: mkdocs build --strict
 
-  # Downstream check/build/test jobs for code changes will be added
-  # by #26 (CI & Dependabot).  They should use:
-  #   needs: changes
-  #   if: needs.changes.outputs.docs_only != 'true'
-  # so that docs-only PRs skip code validation.
+  check:
+    name: Check
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: biomejs/setup-biome@v2
+        with:
+          version: 2.4.7
+      - run: pnpm check
+      - run: pnpm typecheck
+      - uses: DavidAnson/markdownlint-cli2-action@v22
+      - uses: hadolint/hadolint-action@v3.3.0
+        with:
+          dockerfile: Dockerfile
+
+  nginx-config:
+    name: Nginx Config
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Generate dummy TLS certs
+        run: |
+          mkdir -p infra/certs
+          openssl req -x509 -nodes -newkey rsa:2048 \
+            -keyout infra/certs/localhost-key.pem \
+            -out infra/certs/localhost.pem \
+            -days 1 -subj '/CN=localhost'
+      - name: Validate dev config
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/nginx/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$PWD/infra/certs:/etc/nginx/certs:ro" \
+            nginx:alpine nginx -t
+      - name: Validate prod config
+        run: |
+          docker run --rm \
+            -v "$PWD/infra/nginx/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$PWD/infra/certs:/etc/nginx/certs:ro" \
+            nginx:alpine nginx -t
+
+  unit:
+    name: Unit Test
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:unit
+
+  db:
+    name: DB Test
+    needs: check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-trixie
+        env:
+          POSTGRES_DB: auth_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create audit_db and roles
+        run: psql "postgres://postgres:postgres@localhost:5432/auth_db" -f infra/postgres/init-audit-db.sql
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:db
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
+
+  e2e:
+    name: E2E
+    needs: check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-trixie
+        env:
+          POSTGRES_DB: auth_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      # OpenBao and Keycloak services will be added when e2e tests require them.
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create audit_db and roles
+        run: psql "postgres://postgres:postgres@localhost:5432/auth_db" -f infra/postgres/init-audit-db.sql
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium --with-deps
+      - run: pnpm test:e2e
+        env:
+          CI: "true"
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
+          retention-days: 7
+
+  image-build:
+    name: Image Build
+    needs: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false

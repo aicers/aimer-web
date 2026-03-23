@@ -24,8 +24,7 @@ export function getAuditPool(): Pool {
 
 export function getMigrationAuthPool(): Pool {
   if (!migrationAuthPool) {
-    const url =
-      process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
+    const url = process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
     migrationAuthPool = new Pool({ connectionString: url });
   }
   return migrationAuthPool;

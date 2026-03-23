@@ -1,12 +1,8 @@
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import {
-  computeChecksum,
-  listMigrationFiles,
-  runMigrations,
-} from "../migrate";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { computeChecksum, listMigrationFiles, runMigrations } from "../migrate";
 
 describe("computeChecksum", () => {
   it("returns a SHA-256 hex digest", () => {
@@ -51,7 +47,10 @@ describe("listMigrationFiles", () => {
   it("lists SQL migration files in sorted order", async () => {
     await writeFile(join(tempDir, "0002_add_index.sql"), "CREATE INDEX;");
     await writeFile(join(tempDir, "0001_create_table.sql"), "CREATE TABLE;");
-    await writeFile(join(tempDir, "0003_backfill.ts"), "export default () => {}");
+    await writeFile(
+      join(tempDir, "0003_backfill.ts"),
+      "export default () => {}",
+    );
 
     const files = await listMigrationFiles(tempDir);
 
@@ -181,7 +180,7 @@ describe("runMigrations", () => {
       c.sql.includes("INSERT INTO _migrations"),
     );
     expect(insertCall).toBeDefined();
-    expect(insertCall!.params).toEqual([
+    expect(insertCall?.params).toEqual([
       "0001",
       "create_foo",
       computeChecksum(sql),
@@ -278,9 +277,9 @@ describe("runMigrations", () => {
     // Should NOT attempt to apply the migration
     expect(sqlTexts).not.toContain(sql);
     expect(sqlTexts).not.toContain("BEGIN");
-    expect(
-      calls.some((c) => c.sql.includes("INSERT INTO _migrations")),
-    ).toBe(false);
+    expect(calls.some((c) => c.sql.includes("INSERT INTO _migrations"))).toBe(
+      false,
+    );
   });
 
   it("throws on checksum mismatch for already-applied migration", async () => {

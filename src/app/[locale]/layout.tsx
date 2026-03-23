@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
-import { NextIntlClientProvider, hasLocale } from "next-intl";
+import { notFound } from "next/navigation";
+import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getMessages, getTranslations } from "next-intl/server";
 import { ThemeProvider } from "next-themes";
-import { notFound } from "next/navigation";
 
 import { routing } from "@/i18n/routing";
 import { themeConfig } from "@/lib/theme";

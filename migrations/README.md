@@ -13,7 +13,7 @@ database scope.
 
 Migration files must follow the pattern:
 
-```
+```text
 NNNN_description.sql   — DDL migration (schema changes)
 NNNN_description.ts    — DML migration (data manipulation)
 ```
@@ -21,7 +21,7 @@ NNNN_description.ts    — DML migration (data manipulation)
 `NNNN` is a zero-padded four-digit version number. Migrations are applied
 in lexicographic order. Examples:
 
-```
+```text
 0001_create_users.sql
 0002_add_email_index.sql
 0003_backfill_usernames.ts

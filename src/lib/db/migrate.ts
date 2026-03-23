@@ -147,7 +147,8 @@ export async function runMigrations(
         const checksum = computeChecksum(content);
 
         if (applied.has(file.version)) {
-          const storedChecksum = applied.get(file.version)!;
+          // Map.has() check above guarantees the value exists
+          const storedChecksum = applied.get(file.version) as string;
           if (storedChecksum !== checksum) {
             throw new Error(
               `Checksum mismatch for migration ${file.version}_${file.name}: ` +
