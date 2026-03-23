@@ -157,6 +157,5 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     sid,
   });
 
-  // TODO(#43): Redirect to /admin once admin pages exist
-  return NextResponse.redirect(new URL("/", request.url));
+  return NextResponse.redirect(new URL("/admin", request.url));
 }
