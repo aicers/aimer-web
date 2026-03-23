@@ -394,7 +394,7 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    const db = await createTestDatabase("schema_audit");
+    const db = await createTestDatabase("schema_audit", "audit");
     dbName = db.dbName;
     pool = db.pool;
 
@@ -403,7 +403,7 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
   });
 
   afterAll(async () => {
-    await dropTestDatabase(dbName, pool);
+    await dropTestDatabase(dbName, pool, "audit");
     await closeAdminPool();
   });
 
@@ -436,7 +436,7 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
         "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aimer_audit",
       );
 
-      rolePool = createRolePool(dbName, "aimer_audit", "changeme");
+      rolePool = createRolePool(dbName, "aimer_audit", "changeme", "audit");
     });
 
     afterAll(async () => {
