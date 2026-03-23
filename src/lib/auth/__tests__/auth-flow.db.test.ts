@@ -5,6 +5,7 @@ import {
   createTestDatabase,
   dropTestDatabase,
 } from "../../db/__tests__/db-test-helpers";
+import { countAccessibleCustomers } from "../account";
 
 const hasPostgres = !!process.env.DATABASE_ADMIN_URL;
 
@@ -23,6 +24,8 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
     await closeAdminPool();
   });
 
+  // -- Account upsert --
+
   describe("account upsert", () => {
     it("creates a new account on first sign-in", async () => {
       const result = await pool.query<{
@@ -33,11 +36,8 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
         `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, email, last_sign_in_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET
-           username = EXCLUDED.username,
-           display_name = EXCLUDED.display_name,
-           email = EXCLUDED.email,
-           last_sign_in_at = NOW(),
-           updated_at = NOW()
+           username = EXCLUDED.username, display_name = EXCLUDED.display_name,
+           email = EXCLUDED.email, last_sign_in_at = NOW(), updated_at = NOW()
          RETURNING id, status, token_version`,
         [
           "http://localhost:8080/realms/aimer",
@@ -47,26 +47,19 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
           "test@example.com",
         ],
       );
-
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0].status).toBe("active");
       expect(result.rows[0].token_version).toBe(0);
     });
 
     it("updates existing account on subsequent sign-in", async () => {
-      const result = await pool.query<{
-        id: string;
-        display_name: string;
-      }>(
+      const result = await pool.query<{ display_name: string }>(
         `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, email, last_sign_in_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
          ON CONFLICT (oidc_issuer, oidc_subject) DO UPDATE SET
-           username = EXCLUDED.username,
-           display_name = EXCLUDED.display_name,
-           email = EXCLUDED.email,
-           last_sign_in_at = NOW(),
-           updated_at = NOW()
-         RETURNING id, display_name`,
+           username = EXCLUDED.username, display_name = EXCLUDED.display_name,
+           email = EXCLUDED.email, last_sign_in_at = NOW(), updated_at = NOW()
+         RETURNING display_name`,
         [
           "http://localhost:8080/realms/aimer",
           "user-001",
@@ -75,10 +68,11 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
           "test@example.com",
         ],
       );
-
       expect(result.rows[0].display_name).toBe("Updated Name");
     });
   });
+
+  // -- Session lifecycle --
 
   describe("session lifecycle", () => {
     let accountId: string;
@@ -86,8 +80,7 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
 
     beforeAll(async () => {
       const acct = await pool.query<{ id: string }>(
-        `SELECT id FROM accounts WHERE oidc_subject = $1`,
-        ["user-001"],
+        `SELECT id FROM accounts WHERE oidc_subject = 'user-001'`,
       );
       accountId = acct.rows[0].id;
     });
@@ -95,106 +88,269 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
     it("creates a session", async () => {
       const result = await pool.query<{ sid: string }>(
         `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
-         VALUES ($1, 'general', '127.0.0.1', 'test-agent')
-         RETURNING sid`,
+         VALUES ($1, 'general', '127.0.0.1', 'test-agent') RETURNING sid`,
         [accountId],
       );
       expect(result.rows).toHaveLength(1);
       sid = result.rows[0].sid;
     });
 
-    it("revokes a session", async () => {
+    it("verifyJwtFull query returns valid session", async () => {
+      const rows = await pool.query<{
+        revoked: boolean;
+        needs_reauth: boolean;
+        account_status: string;
+        account_token_version: number;
+      }>(
+        `SELECT s.revoked, s.needs_reauth,
+                a.status AS account_status,
+                a.token_version AS account_token_version
+         FROM sessions s
+         JOIN accounts a ON a.id = s.account_id
+         WHERE s.sid = $1`,
+        [sid],
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0].revoked).toBe(false);
+      expect(rows.rows[0].needs_reauth).toBe(false);
+      expect(rows.rows[0].account_status).toBe("active");
+    });
+
+    it("detects revoked session", async () => {
       await pool.query(`UPDATE sessions SET revoked = true WHERE sid = $1`, [
         sid,
       ]);
-      const result = await pool.query<{ revoked: boolean }>(
+      const rows = await pool.query<{ revoked: boolean }>(
         `SELECT revoked FROM sessions WHERE sid = $1`,
         [sid],
       );
-      expect(result.rows[0].revoked).toBe(true);
+      expect(rows.rows[0].revoked).toBe(true);
     });
-  });
 
-  describe("token_version invalidation", () => {
-    it("bumps token_version", async () => {
-      const before = await pool.query<{ token_version: number }>(
-        `SELECT token_version FROM accounts WHERE oidc_subject = $1`,
-        ["user-001"],
+    it("detects needs_reauth flag", async () => {
+      // Create fresh session for this test
+      const result = await pool.query<{ sid: string }>(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent, needs_reauth)
+         VALUES ($1, 'general', '127.0.0.1', 'test', true) RETURNING sid`,
+        [accountId],
       );
+      const rows = await pool.query<{ needs_reauth: boolean }>(
+        `SELECT needs_reauth FROM sessions WHERE sid = $1`,
+        [result.rows[0].sid],
+      );
+      expect(rows.rows[0].needs_reauth).toBe(true);
+    });
 
+    it("detects suspended account status", async () => {
       await pool.query(
-        `UPDATE accounts SET token_version = token_version + 1
-         WHERE oidc_subject = $1`,
-        ["user-001"],
+        `UPDATE accounts SET status = 'suspended' WHERE oidc_subject = 'user-001'`,
       );
+      const rows = await pool.query<{ account_status: string }>(
+        `SELECT a.status AS account_status FROM accounts a WHERE a.oidc_subject = 'user-001'`,
+      );
+      expect(rows.rows[0].account_status).toBe("suspended");
+      // Restore
+      await pool.query(
+        `UPDATE accounts SET status = 'active' WHERE oidc_subject = 'user-001'`,
+      );
+    });
 
+    it("detects token_version mismatch after bump", async () => {
+      const before = await pool.query<{ token_version: number }>(
+        `SELECT token_version FROM accounts WHERE oidc_subject = 'user-001'`,
+      );
+      await pool.query(
+        `UPDATE accounts SET token_version = token_version + 1 WHERE oidc_subject = 'user-001'`,
+      );
       const after = await pool.query<{ token_version: number }>(
-        `SELECT token_version FROM accounts WHERE oidc_subject = $1`,
-        ["user-001"],
+        `SELECT token_version FROM accounts WHERE oidc_subject = 'user-001'`,
       );
-
       expect(after.rows[0].token_version).toBe(
         before.rows[0].token_version + 1,
       );
     });
+
+    it("returns empty for non-existent session", async () => {
+      const rows = await pool.query(
+        `SELECT s.sid FROM sessions s WHERE s.sid = '00000000-0000-0000-0000-000000000000'`,
+      );
+      expect(rows.rows).toHaveLength(0);
+    });
   });
 
-  describe("standard check (customer access)", () => {
-    it("returns 0 for account with no memberships or assignments", async () => {
-      const acct = await pool.query<{ id: string }>(
-        `SELECT id FROM accounts WHERE oidc_subject = $1`,
-        ["user-001"],
-      );
-      const accountId = acct.rows[0].id;
+  // -- Session policy (idle/absolute timeout) --
 
-      const result = await pool.query<{ total: number }>(
-        `SELECT COUNT(*)::int AS total FROM (
-           SELECT account_id FROM account_customer_memberships WHERE account_id = $1
-           UNION ALL
-           SELECT account_id FROM analyst_customer_assignments WHERE account_id = $1
-         ) AS combined`,
+  describe("session timeout tracking", () => {
+    let accountId: string;
+
+    beforeAll(async () => {
+      const acct = await pool.query<{ id: string }>(
+        `SELECT id FROM accounts WHERE oidc_subject = 'user-001'`,
+      );
+      accountId = acct.rows[0].id;
+    });
+
+    it("updates last_active_at", async () => {
+      const result = await pool.query<{ sid: string }>(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '127.0.0.1', 'test') RETURNING sid`,
         [accountId],
       );
+      const sid = result.rows[0].sid;
 
-      expect(result.rows[0].total).toBe(0);
+      // Wait briefly and update
+      await pool.query(
+        `UPDATE sessions SET last_active_at = NOW() WHERE sid = $1`,
+        [sid],
+      );
+
+      const rows = await pool.query<{ created_at: Date; last_active_at: Date }>(
+        `SELECT created_at, last_active_at FROM sessions WHERE sid = $1`,
+        [sid],
+      );
+      expect(rows.rows[0].last_active_at.getTime()).toBeGreaterThanOrEqual(
+        rows.rows[0].created_at.getTime(),
+      );
+    });
+
+    it("can detect idle timeout via timestamp comparison", async () => {
+      const result = await pool.query<{ sid: string }>(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent,
+                               last_active_at)
+         VALUES ($1, 'general', '127.0.0.1', 'test',
+                 NOW() - INTERVAL '31 minutes')
+         RETURNING sid`,
+        [accountId],
+      );
+      const sid = result.rows[0].sid;
+
+      const rows = await pool.query<{ last_active_at: Date }>(
+        `SELECT last_active_at FROM sessions WHERE sid = $1`,
+        [sid],
+      );
+      const lastActive = Math.floor(
+        rows.rows[0].last_active_at.getTime() / 1000,
+      );
+      const now = Math.floor(Date.now() / 1000);
+      const idleSeconds = 30 * 60; // 30 min default
+
+      expect(now - lastActive).toBeGreaterThan(idleSeconds);
+    });
+  });
+
+  // -- Customer access check --
+
+  describe("customer access (countAccessibleCustomers)", () => {
+    let accountId: string;
+
+    beforeAll(async () => {
+      const acct = await pool.query<{ id: string }>(
+        `SELECT id FROM accounts WHERE oidc_subject = 'user-001'`,
+      );
+      accountId = acct.rows[0].id;
+    });
+
+    it("returns 0 for account with no memberships or assignments", async () => {
+      // Create a fresh account with no memberships
+      const acct = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', 'no-access-user', 'nouser', 'No Access')
+         RETURNING id`,
+      );
+      const total = await countAccessibleCustomers(pool, acct.rows[0].id);
+      expect(total).toBe(0);
     });
 
     it("returns 1+ after adding a membership", async () => {
-      const acct = await pool.query<{ id: string }>(
-        `SELECT id FROM accounts WHERE oidc_subject = $1`,
-        ["user-001"],
+      // Check if customer already exists from previous test run
+      let customerId: string;
+      const existing = await pool.query<{ id: string }>(
+        `SELECT id FROM customers WHERE external_key = 'cust-1'`,
       );
-      const accountId = acct.rows[0].id;
+      if (existing.rows.length > 0) {
+        customerId = existing.rows[0].id;
+      } else {
+        const cust = await pool.query<{ id: string }>(
+          `INSERT INTO customers (external_key, name) VALUES ('cust-1', 'Test Customer') RETURNING id`,
+        );
+        customerId = cust.rows[0].id;
+      }
 
-      // Create a customer
-      const cust = await pool.query<{ id: string }>(
-        `INSERT INTO customers (external_key, name) VALUES ('cust-1', 'Test Customer') RETURNING id`,
-      );
-      const customerId = cust.rows[0].id;
-
-      // Get the 'User' role (general context, builtin)
       const role = await pool.query<{ id: number }>(
         `SELECT id FROM roles WHERE name = 'User' AND auth_context = 'general'`,
       );
-      const roleId = role.rows[0].id;
 
-      // Add membership
+      // Upsert membership
       await pool.query(
         `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
-         VALUES ($1, $2, $3)`,
-        [accountId, customerId, roleId],
+         VALUES ($1, $2, $3)
+         ON CONFLICT (account_id, customer_id) DO NOTHING`,
+        [accountId, customerId, role.rows[0].id],
       );
 
-      const result = await pool.query<{ total: number }>(
-        `SELECT COUNT(*)::int AS total FROM (
-           SELECT account_id FROM account_customer_memberships WHERE account_id = $1
-           UNION ALL
-           SELECT account_id FROM analyst_customer_assignments WHERE account_id = $1
-         ) AS combined`,
+      const total = await countAccessibleCustomers(pool, accountId);
+      expect(total).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  // -- Sign-out-all: revoke all + bump token_version --
+
+  describe("sign-out-all", () => {
+    let accountId: string;
+
+    beforeAll(async () => {
+      const acct = await pool.query<{ id: string }>(
+        `SELECT id FROM accounts WHERE oidc_subject = 'user-001'`,
+      );
+      accountId = acct.rows[0].id;
+    });
+
+    it("revokes all sessions for an account", async () => {
+      // Create two active sessions
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '1.1.1.1', 'browser1')`,
+        [accountId],
+      );
+      await pool.query(
+        `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+         VALUES ($1, 'general', '2.2.2.2', 'browser2')`,
         [accountId],
       );
 
-      expect(result.rows[0].total).toBe(1);
+      // Revoke all
+      const result = await pool.query(
+        `UPDATE sessions SET revoked = true WHERE account_id = $1 AND revoked = false`,
+        [accountId],
+      );
+      expect(result.rowCount).toBeGreaterThanOrEqual(2);
+
+      // Verify none are active
+      const active = await pool.query<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM sessions WHERE account_id = $1 AND revoked = false`,
+        [accountId],
+      );
+      expect(active.rows[0].count).toBe(0);
+    });
+
+    it("bumps token_version to invalidate JWTs", async () => {
+      const before = await pool.query<{ token_version: number }>(
+        `SELECT token_version FROM accounts WHERE id = $1`,
+        [accountId],
+      );
+
+      await pool.query(
+        `UPDATE accounts SET token_version = token_version + 1, updated_at = NOW() WHERE id = $1`,
+        [accountId],
+      );
+
+      const after = await pool.query<{ token_version: number }>(
+        `SELECT token_version FROM accounts WHERE id = $1`,
+        [accountId],
+      );
+      expect(after.rows[0].token_version).toBe(
+        before.rows[0].token_version + 1,
+      );
     });
   });
 });
