@@ -198,6 +198,39 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       ).rejects.toThrow();
     });
 
+    it("customers.external_key", async () => {
+      await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('dup_ek', 'C1')",
+      );
+      await expect(
+        pool.query(
+          "INSERT INTO customers (external_key, name) VALUES ('dup_ek', 'C2')",
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("roles.name", async () => {
+      await pool.query(
+        "INSERT INTO roles (name, auth_context) VALUES ('uniq_role', 'general')",
+      );
+      await expect(
+        pool.query(
+          "INSERT INTO roles (name, auth_context) VALUES ('uniq_role', 'general')",
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("pending_connections.jti", async () => {
+      await pool.query(
+        "INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, expires_at) VALUES ('dup_jti', 'i', 'a', ARRAY['x'], NOW())",
+      );
+      await expect(
+        pool.query(
+          "INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, expires_at) VALUES ('dup_jti', 'i', 'a', ARRAY['x'], NOW())",
+        ),
+      ).rejects.toThrow();
+    });
+
     it("trust_registry(aice_id, issuer, kid)", async () => {
       // Create prerequisite aice_environment
       await pool.query(
@@ -343,27 +376,49 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("can SELECT, INSERT, UPDATE, DELETE on application tables", async () => {
-      // INSERT
+      // Test CRUD on customers
       const { rows } = await rolePool.query(
         "INSERT INTO customers (external_key, name) VALUES ('role_test', 'RoleC') RETURNING id",
       );
       expect(rows).toHaveLength(1);
 
-      // SELECT
       const { rows: selected } = await rolePool.query(
         "SELECT name FROM customers WHERE external_key = 'role_test'",
       );
       expect(selected[0].name).toBe("RoleC");
 
-      // UPDATE
       await rolePool.query(
         "UPDATE customers SET name = 'Updated' WHERE external_key = 'role_test'",
       );
 
-      // DELETE
       await rolePool.query(
         "DELETE FROM customers WHERE external_key = 'role_test'",
       );
+    });
+
+    it("can access all granted application tables", async () => {
+      // Verify SELECT on every table granted in 0012_runtime_role.sql.
+      // Full CRUD tables (13 total):
+      const crudTables = [
+        "system_settings",
+        "customers",
+        "accounts",
+        "account_customer_memberships",
+        "analyst_customer_assignments",
+        "sessions",
+        "aice_environments",
+        "aice_environment_customers",
+        "trust_registry",
+        "pending_connections",
+        "invitations",
+        "analyst_invitations",
+        "staged_event_payloads",
+        "staged_event_customers",
+      ];
+      for (const table of crudTables) {
+        const { rows } = await rolePool.query(`SELECT COUNT(*) FROM ${table}`);
+        expect(Number(rows[0].count)).toBeGreaterThanOrEqual(0);
+      }
     });
 
     it("can only SELECT on roles and role_permissions", async () => {
