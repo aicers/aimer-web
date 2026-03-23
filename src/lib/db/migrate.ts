@@ -58,10 +58,10 @@ export async function listMigrationFiles(
   }
 
   return entries
-    .filter((f) => /^\d{4}_.*\.(sql|ts)$/.test(f))
+    .filter((f) => /^\d{4}[a-z]?_.*\.(sql|ts)$/.test(f))
     .sort()
     .map((f) => {
-      const match = f.match(/^(\d{4})_(.+)\.(sql|ts)$/);
+      const match = f.match(/^(\d{4}[a-z]?)_(.+)\.(sql|ts)$/);
       if (!match) throw new Error(`Invalid migration filename: ${f}`);
       return {
         version: match[1],

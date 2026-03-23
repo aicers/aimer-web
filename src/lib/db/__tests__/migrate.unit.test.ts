@@ -79,6 +79,20 @@ describe("listMigrationFiles", () => {
     expect(files[0].version).toBe("0001");
   });
 
+  it("lists migration files with letter suffix in correct order", async () => {
+    await writeFile(join(tempDir, "0005_accounts.sql"), "CREATE TABLE;");
+    await writeFile(join(tempDir, "0005b_assignments.sql"), "CREATE TABLE;");
+    await writeFile(join(tempDir, "0006_sessions.sql"), "CREATE TABLE;");
+
+    const files = await listMigrationFiles(tempDir);
+
+    expect(files).toHaveLength(3);
+    expect(files[0].version).toBe("0005");
+    expect(files[1].version).toBe("0005b");
+    expect(files[1].name).toBe("assignments");
+    expect(files[2].version).toBe("0006");
+  });
+
   it("includes full path in migration file entries", async () => {
     await writeFile(join(tempDir, "0001_init.sql"), "CREATE TABLE;");
 
