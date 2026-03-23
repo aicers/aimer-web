@@ -13,6 +13,7 @@ import { exchangeCodeForTokens, getIssuerUrl } from "@/lib/auth/oidc";
 import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
 import { validateIdToken } from "@/lib/auth/oidc-validate";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
+import { enforceSameAccount } from "@/lib/auth/same-account";
 import { getAuthPool, query, withTransaction } from "@/lib/db/client";
 
 function denyRedirect(request: NextRequest, reason: string): NextResponse {
@@ -113,6 +114,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
     return denyRedirect(request, "account_inactive");
   }
+
+  // Same-account enforcement: revoke previous account's sessions if different
+  await enforceSameAccount(request, account.id, "admin", meta);
 
   // Admin-specific verification (acr, auth_time, role, admin_eligible)
   const denyReason = verifyAdminClaims(idClaims, account.admin_eligible);
