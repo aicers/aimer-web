@@ -3,6 +3,7 @@ import { auditLog } from "@/lib/auth/audit-stub";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { createInvitation, HttpError } from "@/lib/auth/invitations";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { sendInvitationEmail } from "@/lib/email/invitation";
 
 export const POST = withAuth(async (req: NextRequest, auth) => {
   const originErr = verifyOrigin(req);
@@ -73,9 +74,16 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       customerId,
     });
 
-    // Note: result.token is available here for server-side email
-    // link construction (integrated in #81). It is intentionally
-    // excluded from the API response to limit exposure.
+    // Fire-and-forget: email failure must not affect the API response.
+    sendInvitationEmail({
+      to: email,
+      token: result.token,
+      customerName: result.customerName,
+      roleName: role,
+      expiresAt: result.expiresAt,
+      baseUrl: req.nextUrl.origin,
+    }).catch((err) => console.error("[email] Failed to send invitation:", err));
+
     return Response.json(
       { id: result.id, expiresAt: result.expiresAt.toISOString() },
       { status: 201 },

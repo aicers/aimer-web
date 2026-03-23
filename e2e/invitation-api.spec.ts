@@ -7,6 +7,10 @@ import { expect, test } from "@playwright/test";
 // Full authenticated flows are covered by DB integration tests
 // (src/lib/auth/__tests__/invitations.db.test.ts) which exercise the
 // business logic directly.
+//
+// Email delivery is verified by the Mailpit integration test
+// (src/lib/email/__tests__/invitation-delivery.integration.test.ts)
+// which sends real SMTP and checks content via Mailpit API.
 
 test.describe("POST /api/invitations", () => {
   test("returns 401 without auth cookie", async ({ request }) => {
