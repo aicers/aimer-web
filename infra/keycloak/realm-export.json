@@ -1,0 +1,221 @@
+{
+  "realm": "aimer",
+  "enabled": true,
+  "loginTheme": "aimer",
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "ssoSessionIdleTimeout": 28800,
+  "ssoSessionMaxLifespan": 28800,
+  "roles": {
+    "realm": [
+      {
+        "name": "user",
+        "description": "Default user role"
+      },
+      {
+        "name": "aimer_admin",
+        "description": "System administrator role"
+      }
+    ]
+  },
+  "defaultRoles": ["user"],
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "otpPolicyInitialCounter": 0,
+  "webAuthnPolicyRpEntityName": "aimer",
+  "webAuthnPolicySignatureAlgorithms": ["ES256"],
+  "webAuthnPolicyAttestationConveyancePreference": "not specified",
+  "webAuthnPolicyAuthenticatorAttachment": "not specified",
+  "webAuthnPolicyRequireResidentKey": "not specified",
+  "webAuthnPolicyUserVerificationRequirement": "not specified",
+  "webAuthnPolicyPasswordlessRpEntityName": "aimer",
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256"],
+  "clientScopes": [
+    {
+      "name": "roles",
+      "description": "Map realm roles into tokens",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "defaultDefaultClientScopes": ["roles"],
+  "authenticationFlows": [
+    {
+      "id": "aimer-admin-browser-flow",
+      "alias": "admin browser",
+      "description": "Browser flow with mandatory MFA for System Admin client",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "flowAlias": "admin browser forms"
+        }
+      ]
+    },
+    {
+      "id": "aimer-admin-browser-forms",
+      "alias": "admin browser forms",
+      "description": "Username/password + mandatory MFA",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10
+        },
+        {
+          "authenticatorFlow": true,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "flowAlias": "admin browser mfa"
+        }
+      ]
+    },
+    {
+      "id": "aimer-admin-browser-mfa",
+      "alias": "admin browser mfa",
+      "description": "MFA required — TOTP or WebAuthn",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10
+        },
+        {
+          "authenticator": "webauthn-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 20
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "aimer-web",
+      "name": "Aimer General Client",
+      "description": "General OIDC client — MFA optional",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "changeme-general-secret",
+      "redirectUris": [
+        "https://localhost/api/auth/callback",
+        "http://localhost:3000/api/auth/callback"
+      ],
+      "webOrigins": ["https://localhost", "http://localhost:3000"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["roles"]
+    },
+    {
+      "clientId": "aimer-web-admin",
+      "name": "Aimer System Admin Client",
+      "description": "System Admin OIDC client — MFA mandatory via custom browser flow",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "changeme-admin-secret",
+      "redirectUris": [
+        "https://localhost/api/admin-auth/callback",
+        "http://localhost:3000/api/admin-auth/callback"
+      ],
+      "webOrigins": ["https://localhost", "http://localhost:3000"],
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "fullScopeAllowed": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "defaultClientScopes": ["roles"],
+      "authenticationFlowBindingOverrides": {
+        "browser": "aimer-admin-browser-flow"
+      }
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "google",
+      "providerId": "google",
+      "enabled": false,
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${GOOGLE_CLIENT_ID:}",
+        "clientSecret": "${GOOGLE_CLIENT_SECRET:}",
+        "defaultScope": "openid profile email",
+        "syncMode": "IMPORT"
+      }
+    },
+    {
+      "alias": "microsoft",
+      "providerId": "microsoft",
+      "enabled": false,
+      "trustEmail": true,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "${MICROSOFT_CLIENT_ID:}",
+        "clientSecret": "${MICROSOFT_CLIENT_SECRET:}",
+        "defaultScope": "openid profile email",
+        "syncMode": "IMPORT"
+      }
+    }
+  ]
+}
