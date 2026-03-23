@@ -21,8 +21,12 @@ export default async function proxy(
     return intlMiddleware(request);
   }
 
-  // Skip auth when Keycloak is not configured (e.g., CI without IdP)
+  // Fail-closed in production when Keycloak is not configured.
+  // In non-production (CI, local dev without IdP), skip auth.
   if (!process.env.KEYCLOAK_URL || !process.env.KEYCLOAK_REALM) {
+    if (process.env.NODE_ENV === "production") {
+      return new NextResponse("Auth provider not configured", { status: 503 });
+    }
     return intlMiddleware(request);
   }
 

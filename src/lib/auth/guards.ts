@@ -132,8 +132,17 @@ export function withLogoutAuth(
   const ctx: AuthContext = cookieName === "at_admin" ? "admin" : "general";
 
   return async (req: NextRequest) => {
-    const token = req.cookies.get(cookieName)?.value;
     const meta = extractRequestMeta(req);
+
+    // Origin/Referer verification (mandatory for mutations).
+    // Blocks cross-site POSTs regardless of token presence.
+    const origin = req.headers.get("origin");
+    const expectedOrigin = req.nextUrl.origin;
+    if (!origin || new URL(origin).origin !== expectedOrigin) {
+      return Response.json({ error: "Origin mismatch" }, { status: 403 });
+    }
+
+    const token = req.cookies.get(cookieName)?.value;
 
     if (!token) {
       return handler(req, {
