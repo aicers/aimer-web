@@ -108,9 +108,13 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   }
 
   const { customerId, roleId } = raw as Record<string, unknown>;
-  if (typeof customerId !== "string" || typeof roleId !== "number") {
+  if (
+    typeof customerId !== "string" ||
+    typeof roleId !== "number" ||
+    !Number.isInteger(roleId)
+  ) {
     return Response.json(
-      { error: "customerId (string) and roleId (number) are required" },
+      { error: "customerId (string) and roleId (integer) are required" },
       { status: 400 },
     );
   }

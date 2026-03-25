@@ -669,7 +669,7 @@ describe.skipIf(!hasPostgres)("member management (DB integration)", () => {
     expect(usrMember?.email).toBe("listusr@example.com");
   });
 
-  it("list members returns empty when customer has been cleared", async () => {
+  it("list members returns empty after all members are removed", async () => {
     const cust = await pool.query<{ id: string }>(
       `INSERT INTO customers (external_key, name)
        VALUES ('empty-cust', 'Empty Customer')
@@ -688,14 +688,30 @@ describe.skipIf(!hasPostgres)("member management (DB integration)", () => {
       [mgr.rows[0].id, emptyCustomerId, managerRoleId],
     );
 
-    // List, then remove the only member directly (bypass protection for test)
-    const members = await runInTransaction((client) =>
+    // Verify one member exists before clearing
+    const before = await runInTransaction((client) =>
       listMembers(client, {
         accountId: mgr.rows[0].id,
         customerId: emptyCustomerId,
       }),
     );
-    expect(members).toHaveLength(1);
+    expect(before).toHaveLength(1);
+
+    // Bypass last-Manager protection by deleting directly
+    await pool.query(
+      `DELETE FROM account_customer_memberships
+       WHERE account_id = $1 AND customer_id = $2`,
+      [mgr.rows[0].id, emptyCustomerId],
+    );
+
+    // listMembers requires Manager permission, which the caller no
+    // longer has. Query the raw table to verify zero members.
+    const after = await pool.query(
+      `SELECT COUNT(*)::int AS cnt FROM account_customer_memberships
+       WHERE customer_id = $1`,
+      [emptyCustomerId],
+    );
+    expect(after.rows[0].cnt).toBe(0);
   });
 
   // =========================================================================

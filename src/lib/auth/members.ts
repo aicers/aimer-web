@@ -112,9 +112,21 @@ export async function removeMember(
   client: PoolClient,
   params: RemoveMemberParams,
 ): Promise<void> {
+  // Early permission check (fail fast before locking)
   await assertManagerPermission(client, params.accountId, params.customerId);
 
-  // Verify target is actually a member
+  // Lock Manager rows first — serializes concurrent mutations
+  const { count, managerRoleId } = await countManagersForUpdate(
+    client,
+    params.customerId,
+  );
+
+  // Revalidate permission after lock: the actor may have been
+  // demoted or removed by a concurrent transaction that committed
+  // while we were waiting for the lock.
+  await assertManagerPermission(client, params.accountId, params.customerId);
+
+  // Verify target is actually a member (read after lock for consistency)
   const membership = await client.query<{ role_id: number }>(
     `SELECT role_id FROM account_customer_memberships
      WHERE account_id = $1 AND customer_id = $2`,
@@ -124,11 +136,7 @@ export async function removeMember(
     throw new HttpError("Member not found", 404);
   }
 
-  // Last Manager protection: lock and count
-  const { count, managerRoleId } = await countManagersForUpdate(
-    client,
-    params.customerId,
-  );
+  // Last Manager protection
   if (membership.rows[0].role_id === managerRoleId && count <= 1) {
     throw new HttpError("last_manager_cannot_be_removed", 409);
   }
@@ -148,19 +156,10 @@ export async function changeRole(
   client: PoolClient,
   params: ChangeRoleParams,
 ): Promise<void> {
+  // Early permission check (fail fast before locking)
   await assertManagerPermission(client, params.accountId, params.customerId);
 
-  // Verify target is actually a member
-  const membership = await client.query<{ role_id: number }>(
-    `SELECT role_id FROM account_customer_memberships
-     WHERE account_id = $1 AND customer_id = $2`,
-    [params.targetAccountId, params.customerId],
-  );
-  if (membership.rows.length === 0) {
-    throw new HttpError("Member not found", 404);
-  }
-
-  // Verify target role exists and is general-context
+  // Verify target role exists and is general-context (no lock needed)
   const role = await client.query<{ id: number; auth_context: string }>(
     `SELECT id, auth_context FROM roles WHERE id = $1`,
     [params.roleId],
@@ -172,13 +171,27 @@ export async function changeRole(
     throw new HttpError("Role must be a general-context role", 400);
   }
 
-  const currentRoleId = membership.rows[0].role_id;
-
-  // If demoting from Manager, check last Manager protection
+  // Lock Manager rows first — serializes concurrent mutations
   const { count, managerRoleId } = await countManagersForUpdate(
     client,
     params.customerId,
   );
+
+  // Revalidate permission after lock
+  await assertManagerPermission(client, params.accountId, params.customerId);
+
+  // Verify target is actually a member (read after lock for consistency)
+  const membership = await client.query<{ role_id: number }>(
+    `SELECT role_id FROM account_customer_memberships
+     WHERE account_id = $1 AND customer_id = $2`,
+    [params.targetAccountId, params.customerId],
+  );
+  if (membership.rows.length === 0) {
+    throw new HttpError("Member not found", 404);
+  }
+
+  // Last Manager protection: block demotion of last Manager
+  const currentRoleId = membership.rows[0].role_id;
   if (
     currentRoleId === managerRoleId &&
     params.roleId !== managerRoleId &&
