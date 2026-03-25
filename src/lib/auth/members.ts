@@ -89,6 +89,16 @@ function findTarget(
   return target;
 }
 
+function assertActorIsManager(
+  members: LockedMembership[],
+  actorId: string,
+): void {
+  const actor = members.find((m) => m.accountId === actorId);
+  if (!actor || actor.roleName !== "Manager") {
+    throw new HttpError("Forbidden", 403);
+  }
+}
+
 function assertNotLastManager(
   members: LockedMembership[],
   targetAccountId: string,
@@ -177,6 +187,7 @@ export async function removeMember(
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
     const members = await lockAllMemberships(client, params.customerId);
+    assertActorIsManager(members, params.actorId);
     findTarget(members, params.targetAccountId);
     assertNotLastManager(members, params.targetAccountId);
 
@@ -202,6 +213,7 @@ export async function changeMemberRole(
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
     const members = await lockAllMemberships(client, params.customerId);
+    assertActorIsManager(members, params.actorId);
     const target = findTarget(members, params.targetAccountId);
     await assertValidGeneralRole(client, params.roleId);
 
