@@ -36,22 +36,27 @@ export interface ChangeMemberRoleParams {
 }
 
 // ---------------------------------------------------------------------------
-// Membership existence check
+// Membership lock
+//
+// Locks the target membership row with FOR UPDATE to prevent concurrent
+// modification (TOCTOU). Returns the current role_id for use by callers.
 // ---------------------------------------------------------------------------
 
-async function assertMembershipExists(
+async function lockMembership(
   client: PoolClient,
   accountId: string,
   customerId: string,
-): Promise<void> {
-  const result = await client.query(
-    `SELECT 1 FROM account_customer_memberships
-     WHERE account_id = $1 AND customer_id = $2`,
+): Promise<{ roleId: number }> {
+  const result = await client.query<{ role_id: number }>(
+    `SELECT role_id FROM account_customer_memberships
+     WHERE account_id = $1 AND customer_id = $2
+     FOR UPDATE`,
     [accountId, customerId],
   );
   if (result.rows.length === 0) {
     throw new HttpError("Membership not found", 404);
   }
+  return { roleId: result.rows[0].role_id };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,22 +163,21 @@ export async function removeMember(
 ): Promise<void> {
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
-    await assertMembershipExists(
-      client,
-      params.targetAccountId,
-      params.customerId,
-    );
+    await lockMembership(client, params.targetAccountId, params.customerId);
     await assertNotLastManager(
       client,
       params.targetAccountId,
       params.customerId,
     );
 
-    await client.query(
+    const result = await client.query(
       `DELETE FROM account_customer_memberships
        WHERE account_id = $1 AND customer_id = $2`,
       [params.targetAccountId, params.customerId],
     );
+    if (result.rowCount === 0) {
+      throw new HttpError("Membership not found", 404);
+    }
   });
 }
 
@@ -187,26 +191,18 @@ export async function changeMemberRole(
 ): Promise<void> {
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
-    await assertMembershipExists(
+    const { roleId: currentRoleId } = await lockMembership(
       client,
       params.targetAccountId,
       params.customerId,
     );
     await assertValidGeneralRole(client, params.roleId);
 
-    // If demoting from Manager, check last-Manager protection
-    const current = await client.query<{ role_id: number }>(
-      `SELECT role_id FROM account_customer_memberships
-       WHERE account_id = $1 AND customer_id = $2`,
-      [params.targetAccountId, params.customerId],
-    );
-
-    const currentRoleId = current.rows[0].role_id;
     if (currentRoleId === params.roleId) {
       return; // No-op: same role
     }
 
-    // Check if current role is Manager
+    // If demoting from Manager, check last-Manager protection
     const currentRoleName = await client.query<{ name: string }>(
       `SELECT name FROM roles WHERE id = $1`,
       [currentRoleId],
@@ -220,11 +216,14 @@ export async function changeMemberRole(
       );
     }
 
-    await client.query(
+    const result = await client.query(
       `UPDATE account_customer_memberships
        SET role_id = $1, updated_at = NOW()
        WHERE account_id = $2 AND customer_id = $3`,
       [params.roleId, params.targetAccountId, params.customerId],
     );
+    if (result.rowCount === 0) {
+      throw new HttpError("Membership not found", 404);
+    }
   });
 }
