@@ -48,9 +48,8 @@ test.describe("POST /api/invitations", () => {
     expect(res.status()).toBe(401);
   });
 
-  test("returns 405 for GET method", async ({ request }) => {
-    const res = await request.get("/api/invitations");
-    // Next.js returns 405 for unimplemented methods on route handlers
+  test("returns 405 for PUT method", async ({ request }) => {
+    const res = await request.put("/api/invitations");
     expect(res.status()).toBe(405);
   });
 });
