@@ -1,11 +1,12 @@
 import { join } from "node:path";
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   closeAdminPool,
   createTestDatabase,
   dropTestDatabase,
   hasPostgres,
+  runInTransaction,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
 import { HttpError } from "../errors";
@@ -102,30 +103,16 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
     await closeAdminPool();
   });
 
-  // Helper: run createInvitation in a transaction
-  async function runInTransaction<T>(
-    fn: (client: PoolClient) => Promise<T>,
-  ): Promise<T> {
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      const result = await fn(client);
-      await client.query("COMMIT");
-      return result;
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
+  // Helper: run a function in a transaction using the shared helper
+  const txn = <T>(fn: Parameters<typeof runInTransaction<T>>[1]) =>
+    runInTransaction<T>(pool, fn);
 
   // =========================================================================
   // Happy path
   // =========================================================================
 
   it("creates an invitation with a valid token and expiry", async () => {
-    const result = await runInTransaction((client) =>
+    const result = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -152,7 +139,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("stores SHA-256 hash, not the raw token", async () => {
-    const result = await runInTransaction((client) =>
+    const result = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -174,7 +161,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("sets expiry approximately 7 days from now", async () => {
     const before = Date.now();
-    const result = await runInTransaction((client) =>
+    const result = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -196,7 +183,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("generates unique tokens for different invitations", async () => {
-    const result1 = await runInTransaction((client) =>
+    const result1 = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -204,7 +191,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
         roleName: "User",
       }),
     );
-    const result2 = await runInTransaction((client) =>
+    const result2 = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -218,7 +205,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("allows inviting with Manager role", async () => {
-    const result = await runInTransaction((client) =>
+    const result = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -235,7 +222,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("records the inviting account as invited_by", async () => {
-    const result = await runInTransaction((client) =>
+    const result = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -257,7 +244,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects invitation when email already has membership (409)", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId,
@@ -275,7 +262,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects existing member with different-case email (409)", async () => {
     await expect(
-      runInTransaction((client) =>
+      txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId,
@@ -291,7 +278,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   // =========================================================================
 
   it("refreshes duplicate pending invitation with new token and expiry", async () => {
-    const first = await runInTransaction((client) =>
+    const first = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -300,7 +287,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
       }),
     );
 
-    const second = await runInTransaction((client) =>
+    const second = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -331,7 +318,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("refreshes duplicate pending invitation with different-case email", async () => {
-    const first = await runInTransaction((client) =>
+    const first = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -341,7 +328,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
     );
 
     // Same email, different case → should refresh, not insert new row
-    const second = await runInTransaction((client) =>
+    const second = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -355,7 +342,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   });
 
   it("refresh updates role when re-invited with different role", async () => {
-    const first = await runInTransaction((client) =>
+    const first = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -364,7 +351,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
       }),
     );
 
-    const second = await runInTransaction((client) =>
+    const second = await txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,
@@ -388,7 +375,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects non-Manager accounts (403)", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: userAccountId,
           customerId,
@@ -411,7 +398,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
     );
 
     await expect(
-      runInTransaction((client) =>
+      txn((client) =>
         createInvitation(client, {
           accountId: acct.rows[0].id,
           customerId,
@@ -425,7 +412,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
   it("rejects Manager of a different customer (403)", async () => {
     // managerAccountId is Manager of customerId, NOT otherCustomerId
     await expect(
-      runInTransaction((client) =>
+      txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId: otherCustomerId,
@@ -442,7 +429,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects admin-context role (400)", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId,
@@ -464,7 +451,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects unknown role name (400)", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId,
@@ -482,7 +469,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects Analyst role (400) — separate flow per Discussion #5", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId,
@@ -500,7 +487,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   it("rejects non-existent customerId (404)", async () => {
     try {
-      await runInTransaction((client) =>
+      await txn((client) =>
         createInvitation(client, {
           accountId: managerAccountId,
           customerId: "00000000-0000-0000-0000-000000000000",
@@ -522,7 +509,7 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
 
   // Helper: create a pending invitation and return raw token + invitation id
   async function createPendingInvitation(email: string) {
-    return runInTransaction((client) =>
+    return txn((client) =>
       createInvitation(client, {
         accountId: managerAccountId,
         customerId,

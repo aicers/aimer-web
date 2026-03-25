@@ -2,9 +2,47 @@ import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/auth/audit-stub";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import { listPendingInvitations } from "@/lib/auth/invitation-management";
 import { createInvitation } from "@/lib/auth/invitations";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { sendInvitationEmail } from "@/lib/email/invitation";
+
+// ---------------------------------------------------------------------------
+// GET /api/invitations?customer_id=...
+// ---------------------------------------------------------------------------
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const GET = withAuth(async (req: NextRequest, auth) => {
+  const customerId = req.nextUrl.searchParams.get("customer_id");
+  if (!customerId || !UUID_RE.test(customerId)) {
+    return Response.json(
+      { error: "customer_id query parameter is required (UUID)" },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const invitations = await withTransaction(getAuthPool(), (client) =>
+      listPendingInvitations(client, {
+        accountId: auth.accountId,
+        customerId,
+      }),
+    );
+
+    return Response.json({ invitations });
+  } catch (err: unknown) {
+    if (err instanceof HttpError) {
+      return Response.json({ error: err.message }, { status: err.statusCode });
+    }
+    throw err;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/invitations
+// ---------------------------------------------------------------------------
 
 export const POST = withAuth(async (req: NextRequest, auth) => {
   const originErr = verifyOrigin(req);
@@ -44,8 +82,6 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     );
   }
 
-  const UUID_RE =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!UUID_RE.test(customerId)) {
     return Response.json(
       { error: "Invalid customerId format" },

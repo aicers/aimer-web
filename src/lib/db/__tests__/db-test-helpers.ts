@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 // Prefer the superuser admin URL for CREATE/DROP DATABASE operations.
 // Fall back to DATABASE_URL for CI environments where only the
@@ -110,4 +110,26 @@ export function createRolePool(
   parsed.password = password;
   parsed.pathname = `/${dbName}`;
   return new Pool({ connectionString: parsed.toString() });
+}
+
+/**
+ * Run a function inside a transaction. Commits on success, rolls back on
+ * error. Useful for DB integration tests that need transactional isolation.
+ */
+export async function runInTransaction<T>(
+  pool: Pool,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 }
