@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/client";
 import { HttpError } from "./errors";
-import { assertManagerPermission } from "./permissions";
+import { assertPermission } from "./permissions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,7 +109,12 @@ export async function createInvitation(
   params: CreateInvitationParams,
 ): Promise<CreatedInvitation> {
   const customerName = await assertCustomerExists(client, params.customerId);
-  await assertManagerPermission(client, params.accountId, params.customerId);
+  await assertPermission(
+    client,
+    params.accountId,
+    params.customerId,
+    "customer-members:write",
+  );
   await assertNotAlreadyMember(client, params.customerId, params.email);
 
   const roleId = await resolveRole(client, params.roleName);
