@@ -36,54 +36,67 @@ export interface ChangeMemberRoleParams {
 }
 
 // ---------------------------------------------------------------------------
-// Membership lock
+// Lock all memberships for a customer
 //
-// Locks the target membership row with FOR UPDATE to prevent concurrent
-// modification (TOCTOU). Returns the current role_id for use by callers.
+// Acquires FOR UPDATE locks on every membership row for the customer in
+// deterministic order (account_id). A single lock step eliminates the
+// deadlock that would occur if the target row and the Manager rows were
+// locked separately (A locks B's row then waits for A's Manager lock,
+// while B locks A's row then waits for B's Manager lock).
+//
+// Returns the locked rows joined with role name so callers can derive
+// target existence, current role, and Manager count from one result set.
 // ---------------------------------------------------------------------------
 
-async function lockMembership(
-  client: PoolClient,
-  accountId: string,
-  customerId: string,
-): Promise<{ roleId: number }> {
-  const result = await client.query<{ role_id: number }>(
-    `SELECT role_id FROM account_customer_memberships
-     WHERE account_id = $1 AND customer_id = $2
-     FOR UPDATE`,
-    [accountId, customerId],
-  );
-  if (result.rows.length === 0) {
-    throw new HttpError("Membership not found", 404);
-  }
-  return { roleId: result.rows[0].role_id };
+interface LockedMembership {
+  accountId: string;
+  roleId: number;
+  roleName: string;
 }
 
-// ---------------------------------------------------------------------------
-// Last Manager protection
-//
-// Uses SELECT ... FOR UPDATE to lock Manager rows and prevent concurrent
-// removal/demotion of the last Manager.
-// ---------------------------------------------------------------------------
-
-async function assertNotLastManager(
+async function lockAllMemberships(
   client: PoolClient,
-  targetAccountId: string,
   customerId: string,
-): Promise<void> {
-  const result = await client.query<{ account_id: string }>(
-    `SELECT acm.account_id
+): Promise<LockedMembership[]> {
+  const result = await client.query<{
+    account_id: string;
+    role_id: number;
+    role_name: string;
+  }>(
+    `SELECT acm.account_id, acm.role_id, r.name AS role_name
      FROM account_customer_memberships acm
      JOIN roles r ON r.id = acm.role_id
-     WHERE acm.customer_id = $1 AND r.name = 'Manager'
-     FOR UPDATE`,
+     WHERE acm.customer_id = $1
+     ORDER BY acm.account_id
+     FOR UPDATE OF acm`,
     [customerId],
   );
+  return result.rows.map((r) => ({
+    accountId: r.account_id,
+    roleId: r.role_id,
+    roleName: r.role_name,
+  }));
+}
 
-  const managerIds = result.rows.map((r) => r.account_id);
+function findTarget(
+  members: LockedMembership[],
+  targetAccountId: string,
+): LockedMembership {
+  const target = members.find((m) => m.accountId === targetAccountId);
+  if (!target) {
+    throw new HttpError("Membership not found", 404);
+  }
+  return target;
+}
+
+function assertNotLastManager(
+  members: LockedMembership[],
+  targetAccountId: string,
+): void {
+  const managers = members.filter((m) => m.roleName === "Manager");
   if (
-    managerIds.length <= 1 &&
-    managerIds.some((id) => id === targetAccountId)
+    managers.length <= 1 &&
+    managers.some((m) => m.accountId === targetAccountId)
   ) {
     throw new HttpError("last_manager_cannot_be_removed", 409);
   }
@@ -163,12 +176,9 @@ export async function removeMember(
 ): Promise<void> {
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
-    await lockMembership(client, params.targetAccountId, params.customerId);
-    await assertNotLastManager(
-      client,
-      params.targetAccountId,
-      params.customerId,
-    );
+    const members = await lockAllMemberships(client, params.customerId);
+    findTarget(members, params.targetAccountId);
+    assertNotLastManager(members, params.targetAccountId);
 
     const result = await client.query(
       `DELETE FROM account_customer_memberships
@@ -191,29 +201,17 @@ export async function changeMemberRole(
 ): Promise<void> {
   await withTransaction(pool, async (client) => {
     await assertManagerPermission(client, params.actorId, params.customerId);
-    const { roleId: currentRoleId } = await lockMembership(
-      client,
-      params.targetAccountId,
-      params.customerId,
-    );
+    const members = await lockAllMemberships(client, params.customerId);
+    const target = findTarget(members, params.targetAccountId);
     await assertValidGeneralRole(client, params.roleId);
 
-    if (currentRoleId === params.roleId) {
+    if (target.roleId === params.roleId) {
       return; // No-op: same role
     }
 
     // If demoting from Manager, check last-Manager protection
-    const currentRoleName = await client.query<{ name: string }>(
-      `SELECT name FROM roles WHERE id = $1`,
-      [currentRoleId],
-    );
-
-    if (currentRoleName.rows[0].name === "Manager") {
-      await assertNotLastManager(
-        client,
-        params.targetAccountId,
-        params.customerId,
-      );
+    if (target.roleName === "Manager") {
+      assertNotLastManager(members, params.targetAccountId);
     }
 
     const result = await client.query(
