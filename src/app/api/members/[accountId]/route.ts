@@ -111,7 +111,9 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   if (
     typeof customerId !== "string" ||
     typeof roleId !== "number" ||
-    !Number.isInteger(roleId)
+    !Number.isInteger(roleId) ||
+    roleId < -2147483648 ||
+    roleId > 2147483647
   ) {
     return Response.json(
       { error: "customerId (string) and roleId (integer) are required" },
