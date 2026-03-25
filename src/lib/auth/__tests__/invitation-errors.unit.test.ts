@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HttpError } from "../invitations";
+import { HttpError } from "../errors";
 
 describe("HttpError", () => {
   it("carries statusCode and message", () => {

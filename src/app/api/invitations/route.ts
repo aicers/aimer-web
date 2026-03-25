@@ -1,7 +1,8 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/auth/audit-stub";
+import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
-import { createInvitation, HttpError } from "@/lib/auth/invitations";
+import { createInvitation } from "@/lib/auth/invitations";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { sendInvitationEmail } from "@/lib/email/invitation";
 
