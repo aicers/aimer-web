@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/client";
+import { HttpError } from "./errors";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,20 +19,6 @@ export interface CreatedInvitation {
   token: string;
   expiresAt: Date;
   customerName: string;
-}
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-export class HttpError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode: number,
-  ) {
-    super(message);
-    this.name = "HttpError";
-  }
 }
 
 // ---------------------------------------------------------------------------

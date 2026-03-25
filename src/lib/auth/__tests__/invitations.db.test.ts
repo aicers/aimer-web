@@ -8,12 +8,8 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
-import {
-  acceptInvitation,
-  createInvitation,
-  HttpError,
-  hashToken,
-} from "../invitations";
+import { HttpError } from "../errors";
+import { acceptInvitation, createInvitation, hashToken } from "../invitations";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const LOCK_ID = 1000;
