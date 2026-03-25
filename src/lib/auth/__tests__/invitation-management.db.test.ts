@@ -489,6 +489,14 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
       [inv.id],
     );
     expect(row.rows[0].status).toBe("revoked");
+
+    // Clean up: remove otherManager's membership in this customer so
+    // subsequent cross-tenant tests are not polluted.
+    await pool.query(
+      `DELETE FROM account_customer_memberships
+       WHERE account_id = $1 AND customer_id = $2`,
+      [otherManagerAccountId, customerId],
+    );
   });
 
   it("returns 404 when User role revokes (no permission leak)", async () => {
