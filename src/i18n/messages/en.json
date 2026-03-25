@@ -24,6 +24,9 @@
       "adminAuthTooOld": "Your authentication has expired. System Admin sign-in must be completed within 5 minutes.",
       "adminRoleMissing": "You do not have the System Admin role. Contact an administrator to request access.",
       "adminNotEligible": "Your account is not eligible for System Admin access.",
+      "invitationExpired": "This invitation has expired or is no longer valid. Please request a new invitation.",
+      "invitationEmailMismatch": "The email address you signed in with does not match the invited email. Please sign in with the correct account.",
+      "invitationEmailNotVerified": "Your email address has not been verified. Please verify your email before accepting the invitation.",
       "backToSignIn": "Back to Sign In",
       "contactAdmin": "If you believe this is an error, please contact your system administrator."
     }

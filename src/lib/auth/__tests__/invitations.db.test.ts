@@ -8,7 +8,12 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
-import { createInvitation, HttpError } from "../invitations";
+import {
+  acceptInvitation,
+  createInvitation,
+  HttpError,
+  hashToken,
+} from "../invitations";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const LOCK_ID = 1000;
@@ -513,5 +518,313 @@ describe.skipIf(!hasPostgres)("invitation creation (DB integration)", () => {
       expect((err as HttpError).statusCode).toBe(404);
       expect((err as HttpError).message).toBe("Customer not found");
     }
+  });
+
+  // =========================================================================
+  // Invitation acceptance (#77)
+  // =========================================================================
+
+  // Helper: create a pending invitation and return raw token + invitation id
+  async function createPendingInvitation(email: string) {
+    return runInTransaction((client) =>
+      createInvitation(client, {
+        accountId: managerAccountId,
+        customerId,
+        email,
+        roleName: "User",
+      }),
+    );
+  }
+
+  // Helper: create an account without any membership
+  async function createBareAccount(sub: string, email: string) {
+    const result = await pool.query<{ id: string }>(
+      `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, email)
+       VALUES ('test-issuer', $1, $1, $1, $2)
+       RETURNING id`,
+      [sub, email],
+    );
+    return result.rows[0].id;
+  }
+
+  // Verification item 35-13: invited new user → membership created
+  it("accepts invitation and creates membership", async () => {
+    const email = "accept-test@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("accept-001", email);
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: true,
+    });
+
+    expect(result.deny).toBeNull();
+    expect(result).toMatchObject({
+      invitationId: inv.id,
+      customerId,
+    });
+
+    // Verify membership was created
+    const membership = await pool.query(
+      `SELECT 1 FROM account_customer_memberships
+       WHERE account_id = $1 AND customer_id = $2`,
+      [accountId, customerId],
+    );
+    expect(membership.rows).toHaveLength(1);
+
+    // Verify invitation is consumed
+    const invRow = await pool.query<{ status: string }>(
+      `SELECT status FROM invitations WHERE id = $1`,
+      [inv.id],
+    );
+    expect(invRow.rows[0].status).toBe("accepted");
+  });
+
+  // Verification item 35-8: token one-time use
+  it("rejects already-accepted invitation token", async () => {
+    const email = "one-time-use@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("onetime-001", email);
+
+    // First acceptance
+    const first = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: true,
+    });
+    expect(first.deny).toBeNull();
+
+    // Second attempt with same token → expired (status is no longer pending)
+    const second = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: true,
+    });
+    expect(second.deny).toBe("invitation_expired");
+  });
+
+  // Verification item 35-9: invitation expiration
+  it("rejects expired invitation", async () => {
+    const email = "expired-test@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("expired-001", email);
+
+    // Manually expire the invitation
+    await pool.query(
+      `UPDATE invitations SET expires_at = NOW() - INTERVAL '1 second' WHERE id = $1`,
+      [inv.id],
+    );
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: true,
+    });
+    expect(result.deny).toBe("invitation_expired");
+  });
+
+  // Verification item 35-7 / 35-14: email mismatch rejection
+  it("rejects when OIDC email does not match invited email", async () => {
+    const inv = await createPendingInvitation("invited@example.com");
+    const accountId = await createBareAccount(
+      "mismatch-001",
+      "different@example.com",
+    );
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email: "different@example.com",
+      emailVerified: true,
+    });
+    expect(result.deny).toBe("invitation_email_mismatch");
+
+    // Invitation stays pending for retry (35-26)
+    const invRow = await pool.query<{ status: string }>(
+      `SELECT status FROM invitations WHERE id = $1`,
+      [inv.id],
+    );
+    expect(invRow.rows[0].status).toBe("pending");
+  });
+
+  // Verification item 38-2: email_verified=false rejection
+  it("rejects when email_verified is false", async () => {
+    const email = "unverified@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("unverified-001", email);
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: false,
+    });
+    expect(result.deny).toBe("invitation_email_not_verified");
+  });
+
+  // Verification item 38-2: email_verified=undefined rejection (fail-closed)
+  it("rejects when email_verified is undefined (fail-closed)", async () => {
+    const email = "no-claim@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("noclaim-001", email);
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: undefined,
+    });
+    expect(result.deny).toBe("invitation_email_not_verified");
+  });
+
+  // Verification item 38-3: case-insensitive email matching
+  it("accepts invitation with different-case email", async () => {
+    const inv = await createPendingInvitation("CaseTest@Example.COM");
+    const accountId = await createBareAccount(
+      "casetest-001",
+      "casetest@example.com",
+    );
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email: "casetest@example.com",
+      emailVerified: true,
+    });
+    expect(result.deny).toBeNull();
+  });
+
+  // Idempotent: accepting when membership already exists
+  it("succeeds idempotently when membership already exists", async () => {
+    const email = "idempotent@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId = await createBareAccount("idempotent-001", email);
+
+    // Pre-create the membership
+    const userRoleId = (
+      await pool.query<{ id: number }>(
+        `SELECT id FROM roles WHERE name = 'User' AND auth_context = 'general'`,
+      )
+    ).rows[0].id;
+    await pool.query(
+      `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
+       VALUES ($1, $2, $3)`,
+      [accountId, customerId, userRoleId],
+    );
+
+    const result = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId,
+      email,
+      emailVerified: true,
+    });
+    expect(result.deny).toBeNull();
+
+    // Still only one membership row (ON CONFLICT DO NOTHING)
+    const count = await pool.query<{ cnt: number }>(
+      `SELECT COUNT(*)::int AS cnt FROM account_customer_memberships
+       WHERE account_id = $1 AND customer_id = $2`,
+      [accountId, customerId],
+    );
+    expect(count.rows[0].cnt).toBe(1);
+  });
+
+  // Verification item 35-26: retry after mismatch with correct account
+  it("allows retry after email mismatch with correct account", async () => {
+    const inv = await createPendingInvitation("retry@example.com");
+    const wrongAccountId = await createBareAccount(
+      "wrong-001",
+      "wrong@example.com",
+    );
+    const correctAccountId = await createBareAccount(
+      "correct-001",
+      "retry@example.com",
+    );
+
+    // First attempt: wrong email
+    const first = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId: wrongAccountId,
+      email: "wrong@example.com",
+      emailVerified: true,
+    });
+    expect(first.deny).toBe("invitation_email_mismatch");
+
+    // Second attempt: correct email → succeeds
+    const second = await acceptInvitation(pool, {
+      token: inv.token,
+      accountId: correctAccountId,
+      email: "retry@example.com",
+      emailVerified: true,
+    });
+    expect(second.deny).toBeNull();
+  });
+
+  // Verification item 35-25: concurrent invitation callback — FOR UPDATE
+  it("handles concurrent acceptance safely (only one succeeds)", async () => {
+    const email = "concurrent@example.com";
+    const inv = await createPendingInvitation(email);
+    const accountId1 = await createBareAccount("conc-001", email);
+    const accountId2 = await createBareAccount("conc-002", email);
+
+    // Run two acceptInvitation calls concurrently
+    const [result1, result2] = await Promise.all([
+      acceptInvitation(pool, {
+        token: inv.token,
+        accountId: accountId1,
+        email,
+        emailVerified: true,
+      }),
+      acceptInvitation(pool, {
+        token: inv.token,
+        accountId: accountId2,
+        email,
+        emailVerified: true,
+      }),
+    ]);
+
+    // Exactly one should succeed, the other should see invitation_expired
+    // (FOR UPDATE serializes: first commits status='accepted', second
+    // re-checks and finds status is no longer 'pending')
+    const results = [result1.deny, result2.deny];
+    expect(results).toContain(null);
+    expect(results).toContain("invitation_expired");
+
+    // Verify only one membership was created
+    const memberships = await pool.query<{ account_id: string }>(
+      `SELECT account_id FROM account_customer_memberships
+       WHERE account_id IN ($1, $2) AND customer_id = $3`,
+      [accountId1, accountId2, customerId],
+    );
+    expect(memberships.rows).toHaveLength(1);
+  });
+
+  // Invalid token → expired
+  it("rejects non-existent token", async () => {
+    const accountId = await createBareAccount(
+      "badtoken-001",
+      "badtoken@example.com",
+    );
+
+    const result = await acceptInvitation(pool, {
+      token: "nonexistent-token-value",
+      accountId,
+      email: "badtoken@example.com",
+      emailVerified: true,
+    });
+    expect(result.deny).toBe("invitation_expired");
+  });
+
+  // hashToken utility
+  it("hashToken produces consistent SHA-256 hex output", () => {
+    const hash = hashToken("test-token");
+    expect(hash).toHaveLength(64);
+    expect(hash).toBe(hashToken("test-token"));
+    expect(hash).not.toBe(hashToken("other-token"));
   });
 });

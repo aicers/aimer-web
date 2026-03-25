@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
+import { withTransaction } from "../db/client";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,9 +38,13 @@ export class HttpError extends Error {
 // Helpers
 // ---------------------------------------------------------------------------
 
+export function hashToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
 function generateToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString("base64url");
-  const hash = createHash("sha256").update(raw).digest("hex");
+  const hash = hashToken(raw);
   return { raw, hash };
 }
 
@@ -183,4 +188,81 @@ export async function createInvitation(
 
     throw err;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Accept invitation (transactional)
+// ---------------------------------------------------------------------------
+
+export interface AcceptInvitationParams {
+  token: string;
+  accountId: string;
+  email: string | undefined;
+  emailVerified: boolean | undefined;
+}
+
+export type AcceptInvitationResult =
+  | { deny: "invitation_expired" }
+  | { deny: "invitation_email_not_verified" }
+  | { deny: "invitation_email_mismatch" }
+  | { deny: null; invitationId: string; customerId: string };
+
+export async function acceptInvitation(
+  pool: Pool,
+  params: AcceptInvitationParams,
+): Promise<AcceptInvitationResult> {
+  const tokenHash = hashToken(params.token);
+
+  return withTransaction(pool, async (client) => {
+    const invRows = await client.query<{
+      id: string;
+      customer_id: string;
+      invited_email: string;
+      role_id: number;
+    }>(
+      `SELECT id, customer_id, invited_email, role_id FROM invitations
+       WHERE token_hash = $1 AND status = 'pending' AND expires_at > NOW()
+       FOR UPDATE`,
+      [tokenHash],
+    );
+
+    if (invRows.rows.length === 0) {
+      return { deny: "invitation_expired" };
+    }
+
+    const inv = invRows.rows[0];
+
+    // email_verified must be true (fail-closed)
+    if (params.emailVerified !== true) {
+      return { deny: "invitation_email_not_verified" };
+    }
+
+    // Email match (case-insensitive)
+    if (
+      !params.email ||
+      params.email.toLowerCase() !== inv.invited_email.toLowerCase()
+    ) {
+      return { deny: "invitation_email_mismatch" };
+    }
+
+    // Idempotent membership creation
+    await client.query(
+      `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (account_id, customer_id) DO NOTHING`,
+      [params.accountId, inv.customer_id, inv.role_id],
+    );
+
+    // Consume invitation
+    await client.query(
+      `UPDATE invitations SET status = 'accepted' WHERE id = $1`,
+      [inv.id],
+    );
+
+    return {
+      deny: null,
+      invitationId: inv.id,
+      customerId: inv.customer_id,
+    };
+  });
 }

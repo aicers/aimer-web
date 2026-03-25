@@ -7,6 +7,9 @@ type DenyMessageKey =
   | "adminAuthTooOld"
   | "adminRoleMissing"
   | "adminNotEligible"
+  | "invitationExpired"
+  | "invitationEmailMismatch"
+  | "invitationEmailNotVerified"
   | "genericError";
 
 const REASON_KEYS: Record<string, DenyMessageKey> = {
@@ -16,6 +19,9 @@ const REASON_KEYS: Record<string, DenyMessageKey> = {
   admin_auth_too_old: "adminAuthTooOld",
   admin_role_missing: "adminRoleMissing",
   admin_not_eligible: "adminNotEligible",
+  invitation_expired: "invitationExpired",
+  invitation_email_mismatch: "invitationEmailMismatch",
+  invitation_email_not_verified: "invitationEmailNotVerified",
 };
 
 export default async function DenyPage({

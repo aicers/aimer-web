@@ -24,6 +24,9 @@
       "adminAuthTooOld": "인증이 만료되었습니다. 시스템 관리자 로그인은 5분 이내에 완료해야 합니다.",
       "adminRoleMissing": "시스템 관리자 역할이 없습니다. 접근 권한이 필요하면 관리자에게 문의해 주세요.",
       "adminNotEligible": "이 계정은 시스템 관리자 접근 대상이 아닙니다.",
+      "invitationExpired": "초대가 만료되었거나 더 이상 유효하지 않습니다. 새로운 초대를 요청해 주세요.",
+      "invitationEmailMismatch": "로그인한 이메일 주소가 초대된 이메일과 일치하지 않습니다. 올바른 계정으로 로그인해 주세요.",
+      "invitationEmailNotVerified": "이메일 주소가 인증되지 않았습니다. 초대를 수락하기 전에 이메일을 인증해 주세요.",
       "backToSignIn": "로그인으로 돌아가기",
       "contactAdmin": "오류라고 생각되시면 시스템 관리자에게 문의해 주세요."
     }
