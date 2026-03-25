@@ -70,12 +70,33 @@ export async function clearOidcTempCookies(
 }
 
 // ---------------------------------------------------------------------------
+// Invitation token cookie (SameSite=Lax for cross-site redirect)
+// ---------------------------------------------------------------------------
+
+const INVITATION_TOKEN_MAX_AGE = 300; // 5 minutes
+
+export async function setInvitationTokenCookie(token: string): Promise<void> {
+  const jar = await cookies();
+  jar.set("invitation_token", token, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: INVITATION_TOKEN_MAX_AGE,
+  });
+}
+
+export async function clearInvitationTokenCookie(): Promise<void> {
+  const jar = await cookies();
+  jar.delete("invitation_token");
+}
+
+// ---------------------------------------------------------------------------
 // Cleanup for temporary flow cookies (prevent stale cookies)
 // ---------------------------------------------------------------------------
 
 export async function clearFlowCookies(): Promise<void> {
   const jar = await cookies();
-  jar.delete("invitation_token");
   jar.delete("connection_id");
 }
 

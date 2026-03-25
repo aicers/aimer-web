@@ -2,11 +2,13 @@ import { type NextRequest, NextResponse } from "next/server";
 import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
 import { auditLog } from "@/lib/auth/audit-stub";
 import {
+  clearInvitationTokenCookie,
   clearOidcTempCookies,
   getOidcTempCookies,
   setAuthCookies,
 } from "@/lib/auth/cookies";
 import { generateCsrf } from "@/lib/auth/csrf";
+import { acceptInvitation } from "@/lib/auth/invitations";
 import { signJwt } from "@/lib/auth/jwt";
 import { exchangeCodeForTokens, getIssuerUrl } from "@/lib/auth/oidc";
 import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
@@ -114,10 +116,44 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return denyRedirect(request, "account_inactive");
   }
 
-  // Invitation stub (#51): check for invitation_token cookie
+  // Invitation processing (#77): accept invitation if token cookie exists
   const invitationToken = request.cookies.get("invitation_token")?.value;
   if (invitationToken) {
-    // TODO(#51): Process invitation acceptance
+    const result = await acceptInvitation(pool, {
+      token: invitationToken,
+      accountId: account.id,
+      email: idClaims.email,
+      emailVerified: idClaims.email_verified,
+    });
+
+    if (result.deny) {
+      // Clear cookie for non-retryable denials to avoid blocking
+      // subsequent sign-in attempts with a stale token.
+      if (result.deny === "invitation_expired") {
+        await clearInvitationTokenCookie();
+      }
+      await auditLog({
+        actorId: account.id,
+        authContext: "general",
+        action: "auth.invitation_denied",
+        targetType: "invitation",
+        details: { reason: result.deny },
+        ipAddress: meta.ipAddress,
+      });
+      return denyRedirect(request, result.deny);
+    }
+
+    await clearInvitationTokenCookie();
+
+    await auditLog({
+      actorId: account.id,
+      authContext: "general",
+      action: "auth.invitation_accepted",
+      targetType: "invitation",
+      targetId: result.invitationId,
+      details: { customerId: result.customerId },
+      ipAddress: meta.ipAddress,
+    });
   }
 
   // Bridge stub (#33): check for connection_id cookie

@@ -25,6 +25,28 @@ test.describe("deny page", () => {
     await expect(page.locator("h1")).toContainText("Access Denied");
   });
 
+  test("renders invitation_expired reason", async ({ page }) => {
+    await page.goto("/deny?reason=invitation_expired");
+    await expect(page.locator("h1")).toContainText("Access Denied");
+    await expect(
+      page.locator("text=expired or is no longer valid"),
+    ).toBeVisible();
+  });
+
+  test("renders invitation_email_mismatch reason", async ({ page }) => {
+    await page.goto("/deny?reason=invitation_email_mismatch");
+    await expect(page.locator("h1")).toContainText("Access Denied");
+    await expect(
+      page.locator("text=does not match the invited email"),
+    ).toBeVisible();
+  });
+
+  test("renders invitation_email_not_verified reason", async ({ page }) => {
+    await page.goto("/deny?reason=invitation_email_not_verified");
+    await expect(page.locator("h1")).toContainText("Access Denied");
+    await expect(page.locator("text=has not been verified")).toBeVisible();
+  });
+
   test("back to sign in link points to /api/auth/sign-in", async ({ page }) => {
     await page.goto("/deny?reason=no_access");
     const link = page.locator('a[href="/api/auth/sign-in"]');
