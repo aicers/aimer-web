@@ -129,9 +129,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     if (result.deny) {
       // Clear cookie for non-retryable denials to avoid blocking
       // subsequent sign-in attempts with a stale token.
-      if (result.deny === "invitation_expired") {
-        await clearInvitationTokenCookie();
-      }
+      await clearInvitationTokenCookie();
       await auditLog({
         actorId: account.id,
         authContext: "general",
