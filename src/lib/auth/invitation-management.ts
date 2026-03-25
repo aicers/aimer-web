@@ -67,14 +67,17 @@ export async function revokeInvitation(
   client: PoolClient,
   params: { accountId: string; invitationId: string },
 ): Promise<void> {
-  // Look up the invitation and lock the row
+  // Look up the invitation and lock the row.
+  // The WHERE clause enforces pending + not-expired so that expired
+  // invitations are treated as 404 per the issue spec.
   const result = await client.query<{
     id: string;
     customer_id: string;
-    status: string;
   }>(
-    `SELECT id, customer_id, status FROM invitations
+    `SELECT id, customer_id FROM invitations
      WHERE id = $1
+       AND status = 'pending'
+       AND expires_at > NOW()
      FOR UPDATE`,
     [params.invitationId],
   );
@@ -85,11 +88,17 @@ export async function revokeInvitation(
 
   const inv = result.rows[0];
 
-  if (inv.status !== "pending") {
-    throw new HttpError("Invitation not found", 404);
+  // Return 404 (not 403) when the caller lacks permission so that
+  // cross-tenant callers cannot distinguish "exists but forbidden"
+  // from "does not exist".
+  try {
+    await assertManagerPermission(client, params.accountId, inv.customer_id);
+  } catch (err) {
+    if (err instanceof HttpError && err.statusCode === 403) {
+      throw new HttpError("Invitation not found", 404);
+    }
+    throw err;
   }
-
-  await assertManagerPermission(client, params.accountId, inv.customer_id);
 
   await client.query(
     `UPDATE invitations SET status = 'revoked' WHERE id = $1`,

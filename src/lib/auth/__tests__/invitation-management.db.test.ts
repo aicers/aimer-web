@@ -419,7 +419,7 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
     }
   });
 
-  it("allows revoking a pending invitation whose expiry has passed", async () => {
+  it("returns 404 when revoking an expired pending invitation", async () => {
     const inv = await seedInvitation("expired-revoke@example.com");
 
     await pool.query(
@@ -427,22 +427,18 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
       [inv.id],
     );
 
-    // Status is still 'pending' but expires_at has passed.
-    // Revoking is valid because the row hasn't been cleaned up yet —
-    // the Manager may want to explicitly revoke before a batch job
-    // transitions it to 'expired'.
-    await txn((client) =>
-      revokeInvitation(client, {
-        accountId: managerAccountId,
-        invitationId: inv.id,
-      }),
-    );
-
-    const row = await pool.query<{ status: string }>(
-      `SELECT status FROM invitations WHERE id = $1`,
-      [inv.id],
-    );
-    expect(row.rows[0].status).toBe("revoked");
+    try {
+      await txn((client) =>
+        revokeInvitation(client, {
+          accountId: managerAccountId,
+          invitationId: inv.id,
+        }),
+      );
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpError);
+      expect((err as HttpError).statusCode).toBe(404);
+    }
   });
 
   it("handles concurrent revocation safely (only one succeeds)", async () => {
@@ -495,7 +491,7 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
     expect(row.rows[0].status).toBe("revoked");
   });
 
-  it("rejects revocation by User role of the same customer (403)", async () => {
+  it("returns 404 when User role revokes (no permission leak)", async () => {
     const inv = await seedInvitation("no-perm-revoke@example.com");
 
     try {
@@ -508,11 +504,11 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(HttpError);
-      expect((err as HttpError).statusCode).toBe(403);
+      expect((err as HttpError).statusCode).toBe(404);
     }
   });
 
-  it("rejects revocation by Manager of a different customer (403)", async () => {
+  it("returns 404 when Manager of different customer revokes (no tenant leak)", async () => {
     const inv = await seedInvitation("cross-revoke@example.com");
 
     try {
@@ -525,7 +521,7 @@ describe.skipIf(!hasPostgres)("invitation management (DB integration)", () => {
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(HttpError);
-      expect((err as HttpError).statusCode).toBe(403);
+      expect((err as HttpError).statusCode).toBe(404);
     }
   });
 });
