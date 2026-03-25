@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "../db/client";
 import { HttpError } from "./errors";
+import { assertManagerPermission } from "./permissions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,28 +34,6 @@ function generateToken(): { raw: string; hash: string } {
   const raw = randomBytes(32).toString("base64url");
   const hash = hashToken(raw);
   return { raw, hash };
-}
-
-// ---------------------------------------------------------------------------
-// Permission check
-// ---------------------------------------------------------------------------
-
-async function assertManagerPermission(
-  client: PoolClient,
-  accountId: string,
-  customerId: string,
-): Promise<void> {
-  const result = await client.query<{ permission: string }>(
-    `SELECT rp.permission
-     FROM account_customer_memberships acm
-     JOIN role_permissions rp ON rp.role_id = acm.role_id
-     WHERE acm.account_id = $1 AND acm.customer_id = $2
-       AND rp.permission = 'customer-members:write'`,
-    [accountId, customerId],
-  );
-  if (result.rows.length === 0) {
-    throw new HttpError("Forbidden", 403);
-  }
 }
 
 // ---------------------------------------------------------------------------
