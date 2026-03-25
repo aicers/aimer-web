@@ -37,7 +37,9 @@ test.describe("GET /api/invitations", () => {
     expect(res.status()).toBe(401);
   });
 
-  test("returns 400 without customer_id parameter", async ({ context }) => {
+  test("rejects before parameter validation when auth is invalid", async ({
+    context,
+  }) => {
     await context.addCookies([
       {
         name: "at",
@@ -47,8 +49,8 @@ test.describe("GET /api/invitations", () => {
       },
     ]);
 
-    // Without a valid JWT the request will 401 before reaching validation.
-    // This test documents the guard ordering: auth comes first.
+    // Auth guard runs before customer_id validation, so missing
+    // customer_id still results in 401, not 400.
     const res = await context.request.get("/api/invitations");
     expect(res.status()).toBe(401);
   });
