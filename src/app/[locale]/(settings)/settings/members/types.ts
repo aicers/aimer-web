@@ -38,3 +38,11 @@ export interface PendingInvitation {
   createdAt: string;
   expiresAt: string;
 }
+
+export const DATE_TIME_FORMAT = {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+} as const;

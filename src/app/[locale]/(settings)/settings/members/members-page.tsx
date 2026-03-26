@@ -50,14 +50,14 @@ export function MembersPage() {
       }
 
       const [memberData, invData, rolesData] = await Promise.all([
-        apiFetch<Member[]>(`/api/members?customer_id=${cid}`),
+        apiFetch<{ members: Member[] }>(`/api/members?customer_id=${cid}`),
         apiFetch<{ invitations: PendingInvitation[] }>(
           `/api/invitations?customer_id=${cid}`,
         ),
         apiFetch<{ roles: Role[] }>("/api/roles"),
       ]);
 
-      setMembers(memberData);
+      setMembers(memberData.members);
       setInvitations(invData.invitations);
       setRoles(rolesData.roles);
     } catch (err) {
@@ -77,6 +77,17 @@ export function MembersPage() {
 
   const managerCount = members.filter((m) => m.roleName === "Manager").length;
 
+  function handleMemberError(err: unknown) {
+    if (
+      err instanceof ApiError &&
+      err.message === "last_manager_cannot_be_removed"
+    ) {
+      showToast(t("lastManagerError"), "error");
+    } else {
+      showToast(t("actionError"), "error");
+    }
+  }
+
   const handleRemoveMember = async (accountId: string) => {
     if (!customerId) return;
     try {
@@ -86,14 +97,7 @@ export function MembersPage() {
       showToast(t("actionSuccess"), "success");
       await fetchData();
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.message === "last_manager_cannot_be_removed"
-      ) {
-        showToast(t("lastManagerError"), "error");
-      } else {
-        showToast(t("actionError"), "error");
-      }
+      handleMemberError(err);
     }
   };
 
@@ -107,14 +111,7 @@ export function MembersPage() {
       showToast(t("actionSuccess"), "success");
       await fetchData();
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.message === "last_manager_cannot_be_removed"
-      ) {
-        showToast(t("lastManagerError"), "error");
-      } else {
-        showToast(t("actionError"), "error");
-      }
+      handleMemberError(err);
     }
   };
 

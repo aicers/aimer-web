@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
 
-import type { Member, Role } from "./types";
+import { DATE_TIME_FORMAT, type Member, type Role } from "./types";
 
 interface MemberTableProps {
   members: Member[];
@@ -131,13 +131,10 @@ export function MemberTable({
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
                   {member.lastSignInAt
-                    ? format.dateTime(new Date(member.lastSignInAt), {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
+                    ? format.dateTime(
+                        new Date(member.lastSignInAt),
+                        DATE_TIME_FORMAT,
+                      )
                     : t("never")}
                 </td>
                 {isManager && (

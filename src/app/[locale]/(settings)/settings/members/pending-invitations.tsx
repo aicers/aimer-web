@@ -14,7 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-import type { PendingInvitation } from "./types";
+import { DATE_TIME_FORMAT, type PendingInvitation } from "./types";
 
 interface PendingInvitationsProps {
   invitations: PendingInvitation[];
@@ -82,13 +82,7 @@ export function PendingInvitations({
                   </Badge>
                 </td>
                 <td className="px-4 py-3 text-muted-foreground">
-                  {format.dateTime(new Date(inv.expiresAt), {
-                    year: "numeric",
-                    month: "short",
-                    day: "numeric",
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
+                  {format.dateTime(new Date(inv.expiresAt), DATE_TIME_FORMAT)}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <Button
