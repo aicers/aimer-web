@@ -110,7 +110,7 @@ export function MemberTable({
                   {member.displayName}
                   {member.accountId === currentAccountId && (
                     <span className="ml-1 text-xs text-muted-foreground">
-                      (you)
+                      {t("youLabel")}
                     </span>
                   )}
                 </td>

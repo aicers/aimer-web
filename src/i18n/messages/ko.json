@@ -67,6 +67,7 @@
     "lastSignIn": "마지막 로그인",
     "never": "없음",
     "lastManager": "마지막 매니저",
+    "youLabel": "(나)",
     "lastManagerTooltip": "이 멤버는 유일한 매니저입니다. 역할을 변경하거나 제거할 수 없습니다.",
     "roleUser": "사용자",
     "roleManager": "매니저",

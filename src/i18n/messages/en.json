@@ -67,6 +67,7 @@
     "lastSignIn": "Last Sign-in",
     "never": "Never",
     "lastManager": "Last Manager",
+    "youLabel": "(you)",
     "lastManagerTooltip": "This member is the only Manager. Their role cannot be changed and they cannot be removed.",
     "roleUser": "User",
     "roleManager": "Manager",

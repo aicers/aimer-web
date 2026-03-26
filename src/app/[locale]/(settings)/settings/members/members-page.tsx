@@ -25,6 +25,7 @@ export function MembersPage() {
     type: "success" | "error";
   } | null>(null);
 
+  // TODO(#38): Replace memberships[0] with customer selector from dashboard layout
   const customerId = me?.memberships[0]?.customerId ?? null;
   const myRoleId = me?.memberships[0]?.roleId ?? null;
   const isManager = me?.memberships[0]?.roleName === "Manager";
