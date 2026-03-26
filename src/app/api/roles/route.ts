@@ -7,6 +7,7 @@ export const GET = withAuth(async (_req: NextRequest, _auth) => {
     getAuthPool(),
     `SELECT id, name FROM roles
      WHERE auth_context = 'general'
+       AND name IN ('User', 'Manager')
      ORDER BY name`,
     [],
   );

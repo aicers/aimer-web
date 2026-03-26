@@ -49,7 +49,7 @@ async function countManagersForUpdate(
      FROM account_customer_memberships acm
      JOIN roles r ON r.id = acm.role_id
      WHERE acm.customer_id = $1 AND r.name = 'Manager'
-     FOR UPDATE`,
+     FOR UPDATE OF acm`,
     [customerId],
   );
 
