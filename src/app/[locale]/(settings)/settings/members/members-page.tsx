@@ -45,7 +45,7 @@ export function MembersPage() {
 
       const cid = meData.memberships[0]?.customerId;
       if (!cid) {
-        setError("No customer access");
+        setError(t("noCustomerAccess"));
         setLoading(false);
         return;
       }
