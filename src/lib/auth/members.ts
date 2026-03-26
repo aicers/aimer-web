@@ -10,6 +10,7 @@ export interface Member {
   accountId: string;
   displayName: string;
   email: string | null;
+  roleId: number;
   roleName: string;
   lastSignInAt: string | null;
 }
@@ -48,7 +49,7 @@ async function countManagersForUpdate(
      FROM account_customer_memberships acm
      JOIN roles r ON r.id = acm.role_id
      WHERE acm.customer_id = $1 AND r.name = 'Manager'
-     FOR UPDATE`,
+     FOR UPDATE OF acm`,
     [customerId],
   );
 
@@ -79,12 +80,14 @@ export async function listMembers(
     account_id: string;
     display_name: string;
     email: string | null;
+    role_id: number;
     role_name: string;
     last_sign_in_at: Date | null;
   }>(
     `SELECT a.id AS account_id,
             a.display_name,
             a.email,
+            r.id AS role_id,
             r.name AS role_name,
             a.last_sign_in_at
      FROM account_customer_memberships acm
@@ -99,6 +102,7 @@ export async function listMembers(
     accountId: row.account_id,
     displayName: row.display_name,
     email: row.email,
+    roleId: row.role_id,
     roleName: row.role_name,
     lastSignInAt: row.last_sign_in_at?.toISOString() ?? null,
   }));

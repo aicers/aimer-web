@@ -30,7 +30,7 @@ export const GET = withAuth(async (req: NextRequest, auth) => {
       }),
     );
 
-    return Response.json(members);
+    return Response.json({ members });
   } catch (err: unknown) {
     if (err instanceof HttpError) {
       return Response.json({ error: err.message }, { status: err.statusCode });

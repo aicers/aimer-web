@@ -20,6 +20,23 @@ export const GET = withAuth(async (_req: NextRequest, auth) => {
     return Response.json({ error: "Account not found" }, { status: 404 });
   }
 
+  const memberships = await query<{
+    customer_id: string;
+    customer_name: string;
+    role_id: number;
+    role_name: string;
+  }>(
+    getAuthPool(),
+    `SELECT c.id AS customer_id, c.name AS customer_name,
+            r.id AS role_id, r.name AS role_name
+     FROM account_customer_memberships acm
+     JOIN customers c ON c.id = acm.customer_id
+     JOIN roles r ON r.id = acm.role_id
+     WHERE acm.account_id = $1
+     ORDER BY c.name`,
+    [auth.accountId],
+  );
+
   const account = rows[0];
   return Response.json({
     accountId: auth.accountId,
@@ -30,5 +47,11 @@ export const GET = withAuth(async (_req: NextRequest, auth) => {
     email: account.email,
     locale: account.locale,
     timezone: account.timezone,
+    memberships: memberships.map((m) => ({
+      customerId: m.customer_id,
+      customerName: m.customer_name,
+      roleId: m.role_id,
+      roleName: m.role_name,
+    })),
   });
 });
