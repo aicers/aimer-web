@@ -95,7 +95,7 @@ export function MemberTable({
               </th>
               {isManager && (
                 <th className="px-4 py-3 text-right font-medium text-muted-foreground">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{t("actions")}</span>
                 </th>
               )}
             </tr>

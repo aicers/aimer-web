@@ -94,7 +94,8 @@
     "actionSuccess": "Action completed successfully.",
     "actionError": "An error occurred. Please try again.",
     "lastManagerError": "Cannot remove or demote the last Manager.",
-    "noCustomerAccess": "No customer access. Please request an invitation from a manager."
+    "noCustomerAccess": "No customer access. Please request an invitation from a manager.",
+    "actions": "Actions"
   },
   "validation": {
     "required": "This field is required",
