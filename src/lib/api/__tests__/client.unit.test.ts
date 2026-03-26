@@ -4,7 +4,7 @@ import { ApiError, apiFetch } from "../client";
 
 describe("apiFetch", () => {
   beforeEach(() => {
-    // Set csrf cookie
+    // biome-ignore lint/suspicious/noDocumentCookie: test needs direct cookie manipulation
     document.cookie = "csrf=test-csrf-token";
     vi.stubGlobal(
       "fetch",
@@ -18,7 +18,7 @@ describe("apiFetch", () => {
   });
 
   afterEach(() => {
-    // Clear cookie
+    // biome-ignore lint/suspicious/noDocumentCookie: test needs direct cookie manipulation
     document.cookie = "csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
     vi.restoreAllMocks();
   });
@@ -35,6 +35,7 @@ describe("apiFetch", () => {
   });
 
   it("sends empty CSRF token when cookie is absent", async () => {
+    // biome-ignore lint/suspicious/noDocumentCookie: test needs direct cookie manipulation
     document.cookie = "csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 
     await apiFetch("/api/test");
