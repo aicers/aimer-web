@@ -153,9 +153,16 @@ describe.skipIf(!hasPostgres)("member management (DB integration)", () => {
       expect(member).toHaveProperty("accountId");
       expect(member).toHaveProperty("displayName");
       expect(member).toHaveProperty("email");
+      expect(member).toHaveProperty("roleId");
       expect(member).toHaveProperty("roleName");
       expect(member).toHaveProperty("lastSignInAt");
     }
+
+    // Verify roleId matches the expected role
+    const managerMember = members.find((m) => m.displayName === "Manager One");
+    expect(managerMember?.roleId).toBe(managerRoleId);
+    const userMember = members.find((m) => m.displayName === "User One");
+    expect(userMember?.roleId).toBe(userRoleId);
   });
 
   it("rejects list from non-Manager account (403)", async () => {
