@@ -8,6 +8,7 @@ loadEnv();
 
 export { expect } from "@playwright/test";
 export type { TestAccount, TestData } from "./db";
+export { getTestPool } from "./db";
 
 // ---------------------------------------------------------------------------
 // Extended test with auth fixtures
@@ -20,6 +21,10 @@ export const test = base.extend<{
   managerPage: Page;
   /** Browser page authenticated as a User. */
   userPage: Page;
+  /** Browser page authenticated as an Admin (admin context). */
+  adminPage: Page;
+  /** Browser page authenticated as a multi-role User. */
+  multiRolePage: Page;
 }>({
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture API requires destructuring
   testData: async ({}, use) => {
@@ -39,6 +44,22 @@ export const test = base.extend<{
   userPage: async ({ browser, baseURL, testData }, use) => {
     const context = await browser.newContext({ baseURL: baseURL ?? undefined });
     await injectAuthCookies(context, testData.user, "general");
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
+
+  adminPage: async ({ browser, baseURL, testData }, use) => {
+    const context = await browser.newContext({ baseURL: baseURL ?? undefined });
+    await injectAuthCookies(context, testData.admin, "admin");
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
+
+  multiRolePage: async ({ browser, baseURL, testData }, use) => {
+    const context = await browser.newContext({ baseURL: baseURL ?? undefined });
+    await injectAuthCookies(context, testData.multiRole, "general");
     const page = await context.newPage();
     await use(page);
     await context.close();

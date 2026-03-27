@@ -138,11 +138,13 @@ export async function verifyJwtFull(
     needs_reauth: boolean;
     account_status: string;
     account_token_version: number;
+    admin_eligible: boolean;
   }>(
     getAuthPool(),
     `SELECT s.revoked, s.needs_reauth,
             a.status AS account_status,
-            a.token_version AS account_token_version
+            a.token_version AS account_token_version,
+            a.admin_eligible
      FROM sessions s
      JOIN accounts a ON a.id = s.account_id
      WHERE s.sid = $1`,
@@ -165,6 +167,10 @@ export async function verifyJwtFull(
   }
   if (row.account_token_version !== claims.tv) {
     throw new Error("Token version mismatch");
+  }
+  // Fail-closed: admin sessions require admin_eligible flag
+  if (claims.ctx === "admin" && !row.admin_eligible) {
+    throw new Error("Account not admin-eligible");
   }
 
   return claims;
