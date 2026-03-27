@@ -1,5 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// CI prerequisites for auth-fixture-based UI tests:
+// - PostgreSQL with migrated auth_db (DATABASE_URL / DATABASE_MIGRATION_URL)
+// - JWT key pair at DATA_DIR/keys/ (ec-private.pem, ec-public.pem)
+// - CSRF_SECRET environment variable
+// These are provided by the docker-compose dev stack; see .env.example.
+
 export default defineConfig({
   testDir: ".",
   fullyParallel: false,

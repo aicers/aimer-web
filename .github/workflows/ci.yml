@@ -206,7 +206,9 @@ jobs:
         env:
           CI: "true"
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          DATABASE_MIGRATION_URL: postgres://postgres:postgres@localhost:5432/auth_db
           AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
+          CSRF_SECRET: e2e-test-csrf-secret
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
