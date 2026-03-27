@@ -988,7 +988,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
   describe("listAccessibleEnvironments", () => {
     it("returns active environments linked to customer", async () => {
       const envs = await withClient((c) =>
-        listAccessibleEnvironments(c, activeCustomerId),
+        listAccessibleEnvironments(c, managerAccountId, activeCustomerId),
       );
       const ids = envs.map((e) => e.aiceId);
       expect(ids).toContain(activeAiceId);
@@ -1004,7 +1004,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
       );
 
       const envs = await withClient((c) =>
-        listAccessibleEnvironments(c, activeCustomerId),
+        listAccessibleEnvironments(c, managerAccountId, activeCustomerId),
       );
       const ids = envs.map((e) => e.aiceId);
       expect(ids).not.toContain(suspendedAiceId);
@@ -1032,7 +1032,12 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         customerIds: [activeCustomerId],
       };
       const envs = await withClient((c) =>
-        listAccessibleEnvironments(c, activeCustomerId, bridgeScope),
+        listAccessibleEnvironments(
+          c,
+          managerAccountId,
+          activeCustomerId,
+          bridgeScope,
+        ),
       );
       expect(envs).toHaveLength(1);
       expect(envs[0].aiceId).toBe(activeAiceId);
@@ -1043,6 +1048,29 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
       await pool.query(
         `DELETE FROM aice_environments WHERE aice_id = 'other-active.example.com'`,
       );
+    });
+
+    it("returns empty for account without access to customer", async () => {
+      const envs = await withClient((c) =>
+        listAccessibleEnvironments(c, noAccessAccountId, activeCustomerId),
+      );
+      expect(envs).toHaveLength(0);
+    });
+
+    it("returns empty when customerId is outside bridge scope", async () => {
+      const bridgeScope = {
+        aiceId: activeAiceId,
+        customerIds: [suspendedCustomerId], // activeCustomerId not in scope
+      };
+      const envs = await withClient((c) =>
+        listAccessibleEnvironments(
+          c,
+          managerAccountId,
+          activeCustomerId,
+          bridgeScope,
+        ),
+      );
+      expect(envs).toHaveLength(0);
     });
   });
 });

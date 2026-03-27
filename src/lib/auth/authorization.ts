@@ -244,9 +244,30 @@ export interface AccessibleEnvironment {
 
 export async function listAccessibleEnvironments(
   client: PoolClient,
+  accountId: string,
   customerId: string,
   bridgeScope?: { aiceId: string; customerIds: string[] } | null,
 ): Promise<AccessibleEnvironment[]> {
+  // Verify the account has access to this customer (membership or analyst)
+  const accessRows = await client.query(
+    `SELECT 1 FROM account_customer_memberships
+     WHERE account_id = $1 AND customer_id = $2
+     UNION ALL
+     SELECT 1 FROM analyst_customer_assignments aca
+     JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
+     WHERE aca.account_id = $1 AND aca.customer_id = $2
+     LIMIT 1`,
+    [accountId, customerId],
+  );
+  if (accessRows.rows.length === 0) {
+    return [];
+  }
+
+  // Bridge scope: verify customerId is within bridge scope
+  if (bridgeScope && !bridgeScope.customerIds.includes(customerId)) {
+    return [];
+  }
+
   const rows = await client.query<{
     aice_id: string;
     name: string;
