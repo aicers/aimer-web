@@ -67,18 +67,27 @@ export async function dropTestDatabase(
   pool?: Pool,
   scope: "auth" | "audit" = "auth",
 ): Promise<void> {
-  if (pool) {
-    await pool.end();
-  }
   const adminUrl = (
     scope === "audit" ? AUDIT_ADMIN_URL : AUTH_ADMIN_URL
   ) as string;
   const admin = getAdminPool(adminUrl);
+
+  // Suppress error events BEFORE terminating backends — the FATAL
+  // arrives asynchronously and may fire before pool.end() is called.
+  if (pool) {
+    pool.on("error", () => {});
+  }
+
   await admin.query(`
     SELECT pg_terminate_backend(pid)
     FROM pg_stat_activity
     WHERE datname = '${dbName}' AND pid <> pg_backend_pid()
   `);
+
+  if (pool) {
+    await pool.end();
+  }
+
   await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
 }
 
