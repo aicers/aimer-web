@@ -592,17 +592,18 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
   // -------------------------------------------------------------------------
 
   describe("operationKind enforcement", () => {
-    const bridgeScope = {
+    // bridgeScope must be built lazily — describe runs before beforeAll.
+    const mkBridgeScope = () => ({
       aiceId: activeAiceId,
       customerIds: [activeCustomerId],
-    };
+    });
 
     it("rejects write in bridge session", async () => {
       const result = await withClient((c) =>
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
           operationKind: "write",
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(false);
@@ -613,7 +614,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
           operationKind: "read",
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(true);
@@ -624,7 +625,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
           operationKind: "ingest",
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(true);
@@ -635,7 +636,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
           operationKind: "process",
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(true);
@@ -657,17 +658,17 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
   // -------------------------------------------------------------------------
 
   describe("allowInBridge enforcement", () => {
-    const bridgeScope = {
+    const mkBridgeScope = () => ({
       aiceId: activeAiceId,
       customerIds: [activeCustomerId],
-    };
+    });
 
     it("rejects bridge session when allowInBridge=false", async () => {
       const result = await withClient((c) =>
         authorize(c, "general", managerAccountId, "customer-members:read", {
           customerId: activeCustomerId,
           allowInBridge: false,
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(false);
@@ -689,7 +690,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
           customerId: activeCustomerId,
           operationKind: "read",
           allowInBridge: false,
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(false);
@@ -701,10 +702,10 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
   // -------------------------------------------------------------------------
 
   describe("bridge scope restriction", () => {
-    const bridgeScope = {
+    const mkBridgeScope = () => ({
       aiceId: activeAiceId,
       customerIds: [activeCustomerId],
-    };
+    });
 
     it("rejects when customerId is not in bridge scope", async () => {
       await pool.query(
@@ -715,7 +716,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
       const result = await withClient((c) =>
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: customerBId,
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(false);
@@ -731,7 +732,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
           aiceId: "other-aice.example.com",
-          bridgeScope,
+          bridgeScope: mkBridgeScope(),
         }),
       );
       expect(result.authorized).toBe(false);
