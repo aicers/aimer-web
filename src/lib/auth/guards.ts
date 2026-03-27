@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { getAuthPool, query } from "../db/client";
+import { getAuthPool } from "../db/client";
 import type { AuthContext } from "./cookies";
 import { getAuthCookie, setAuthCookies } from "./cookies";
 import { validateCsrf } from "./csrf";
@@ -8,6 +8,11 @@ import type { RequestMeta } from "./request-meta";
 import { extractRequestMeta } from "./request-meta";
 import { maybeRotateSession } from "./rotation";
 import { getSessionPolicy } from "./session-policy";
+import {
+  SessionExpiredError,
+  SessionRevokedError,
+  validateSession,
+} from "./session-validator";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,6 +25,8 @@ export interface AuthenticatedRequest {
   tokenVersion: number;
   iat: number;
   meta: RequestMeta;
+  bridgeAiceId: string | null;
+  bridgeCustomerIds: string[] | null;
 }
 
 export interface LogoutAuthRequest {
@@ -55,35 +62,28 @@ export function withAuth(
     // Session policy check
     const policy = await getSessionPolicy();
     const ctxPolicy = policy[ctx];
-    const now = Math.floor(Date.now() / 1000);
 
-    const session = await query<{
-      created_at: Date;
-      last_active_at: Date;
-    }>(
-      getAuthPool(),
-      `SELECT created_at, last_active_at FROM sessions WHERE sid = $1`,
-      [claims.sid],
-    );
-
-    if (session.length > 0) {
-      const createdAt = Math.floor(session[0].created_at.getTime() / 1000);
-      const lastActive = Math.floor(session[0].last_active_at.getTime() / 1000);
-      const idleSeconds = ctxPolicy.idle_timeout_minutes * 60;
-      const absoluteSeconds = ctxPolicy.absolute_timeout_minutes * 60;
-
-      if (now - lastActive > idleSeconds) {
+    let bridgeAiceId: string | null = null;
+    let bridgeCustomerIds: string[] | null = null;
+    try {
+      const session = await validateSession(
+        getAuthPool(),
+        claims.sid,
+        ctxPolicy,
+      );
+      bridgeAiceId = session.bridgeAiceId;
+      bridgeCustomerIds = session.bridgeCustomerIds;
+    } catch (err) {
+      if (err instanceof SessionExpiredError) {
         return Response.json(
-          { error: "Session expired (idle)" },
+          { error: `Session expired (${err.reason})` },
           { status: 401 },
         );
       }
-      if (now - createdAt > absoluteSeconds) {
-        return Response.json(
-          { error: "Session expired (absolute)" },
-          { status: 401 },
-        );
+      if (err instanceof SessionRevokedError) {
+        return Response.json({ error: "Session revoked" }, { status: 401 });
       }
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Rotation
@@ -97,13 +97,6 @@ export function withAuth(
       });
     }
 
-    // Update last_active_at
-    await query(
-      getAuthPool(),
-      `UPDATE sessions SET last_active_at = NOW() WHERE sid = $1`,
-      [claims.sid],
-    );
-
     const meta = extractRequestMeta(req);
 
     return handler(req, {
@@ -113,6 +106,8 @@ export function withAuth(
       tokenVersion: claims.tv,
       iat: rotation.rotated && rotation.iat ? rotation.iat : claims.iat,
       meta,
+      bridgeAiceId,
+      bridgeCustomerIds,
     });
   };
 }

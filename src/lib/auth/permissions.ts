@@ -4,6 +4,11 @@ import { HttpError } from "./errors";
 /**
  * Assert that the given account has a specific permission for the given
  * customer. Throws 403 if the permission is not found.
+ *
+ * @deprecated Use {@link authorize} or {@link assertAuthorized} from
+ * `authorization.ts` instead — they check both membership and analyst
+ * permissions (union), enforce bridge scope, and validate customer/environment
+ * status.
  */
 export async function assertPermission(
   client: PoolClient,
@@ -27,6 +32,8 @@ export async function assertPermission(
 /**
  * Assert that the given account has Manager-level write permission
  * (`customer-members:write`) for the given customer.
+ *
+ * @deprecated Use {@link assertAuthorized} from `authorization.ts` instead.
  */
 export async function assertManagerPermission(
   client: PoolClient,
