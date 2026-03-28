@@ -59,7 +59,9 @@ export async function provisionCustomerDb(
     // Step 1: CREATE DATABASE
     const adminPool = new Pool({ connectionString: adminUrl });
     try {
-      await adminPool.query(`CREATE DATABASE ${dbName}`);
+      await adminPool.query(
+        `CREATE DATABASE ${dbName} OWNER aimer_customer_owner`,
+      );
     } finally {
       await adminPool.end();
     }

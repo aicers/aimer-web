@@ -78,10 +78,17 @@ async function main() {
 
         // Update status to active on success (for targeted mode retries)
         if (customer.database_status !== "active") {
-          await authPool.query(
-            "UPDATE customers SET database_status = 'active' WHERE id = $1",
-            [customer.id],
-          );
+          if (!customer.wrapped_dek) {
+            console.error(
+              `Customer ${customer.id}: migrations succeeded but wrapped_dek is missing. ` +
+                "Re-run provisioning to generate a DEK before marking as active.",
+            );
+          } else {
+            await authPool.query(
+              "UPDATE customers SET database_status = 'active' WHERE id = $1",
+              [customer.id],
+            );
+          }
         }
         console.log(`Customer ${customer.id}: migrations complete`);
       } catch (err) {

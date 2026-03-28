@@ -34,7 +34,7 @@ export interface DeleteDeps {
  */
 export async function deleteCustomer(
   authPool: Pool,
-  auditPool: Pool,
+  auditOwnerPool: Pool,
   customerId: string,
   deps?: DeleteDeps,
 ): Promise<void> {
@@ -122,9 +122,9 @@ export async function deleteCustomer(
   // Step 6: Anonymize audit log entries (self-audited)
   if (!deps?.skipAuditAnonymize) {
     try {
-      const anonymized = await auditPool.query(
+      const anonymized = await auditOwnerPool.query(
         `UPDATE audit_logs
-         SET actor_id = NULL,
+         SET actor_id = '[redacted]',
              details = '{}'::jsonb,
              ip_address = NULL
          WHERE customer_id = $1`,
@@ -133,12 +133,13 @@ export async function deleteCustomer(
 
       // Self-audit: record the anonymization operation itself
       if ((anonymized.rowCount ?? 0) > 0) {
-        await auditPool.query(
+        await auditOwnerPool.query(
           `INSERT INTO audit_logs
-             (actor_id, auth_context, action, target_type, target_id, details)
-           VALUES (NULL, 'admin', 'audit.anonymize', 'customer', $1,
-                   $2::jsonb)`,
+             (actor_id, auth_context, action, target_type, target_id, customer_id, details)
+           VALUES ('[system]', 'admin', 'audit.anonymize', 'customer', $1,
+                   $2, $3::jsonb)`,
           [
+            customerId,
             customerId,
             JSON.stringify({ rows_anonymized: anonymized.rowCount }),
           ],

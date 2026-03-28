@@ -181,8 +181,8 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
 
     // Create a session and staged event referencing this customer
     const session = await authPool.query<{ sid: string }>(
-      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent, oidc_sid, expires_at)
-       VALUES ($1, 'general', '127.0.0.1', 'test', 'oidc-del-1', NOW() + INTERVAL '1 hour')
+      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+       VALUES ($1, 'general', '127.0.0.1', 'test')
        RETURNING sid`,
       [managerAccountId],
     );
@@ -230,8 +230,8 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     const customerB = await createTestCustomer("del-staged-keep-b");
 
     const session = await authPool.query<{ sid: string }>(
-      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent, oidc_sid, expires_at)
-       VALUES ($1, 'general', '127.0.0.1', 'test', 'oidc-del-2', NOW() + INTERVAL '1 hour')
+      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+       VALUES ($1, 'general', '127.0.0.1', 'test')
        RETURNING sid`,
       [managerAccountId],
     );
@@ -288,8 +288,8 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     const customerB = await createTestCustomer("del-terminal-b");
 
     const session = await authPool.query<{ sid: string }>(
-      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent, oidc_sid, expires_at)
-       VALUES ($1, 'general', '127.0.0.1', 'test', 'oidc-del-term', NOW() + INTERVAL '1 hour')
+      `INSERT INTO sessions (account_id, auth_context, ip_address, user_agent)
+       VALUES ($1, 'general', '127.0.0.1', 'test')
        RETURNING sid`,
       [managerAccountId],
     );
@@ -377,8 +377,8 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     // Insert audit logs for this customer
     await auditPool.query(
       `INSERT INTO audit_logs (actor_id, action, target_type, target_id, customer_id, details, ip_address)
-       VALUES ($1, 'test.action', 'customer', $2, $2, '{"key":"value"}'::jsonb, '192.168.1.1')`,
-      [managerAccountId, customerId],
+       VALUES ($1, 'test.action', 'customer', $2, $3, '{"key":"value"}'::jsonb, '192.168.1.1')`,
+      [managerAccountId, customerId, customerId],
     );
 
     // Verify audit log exists with data
@@ -402,7 +402,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
       [customerId],
     );
     expect(after.rows.length).toBe(1);
-    expect(after.rows[0].actor_id).toBeNull();
+    expect(after.rows[0].actor_id).toBe("[redacted]");
     expect(after.rows[0].details).toEqual({});
     expect(after.rows[0].ip_address).toBeNull();
 

@@ -3,7 +3,7 @@ import { auditLog } from "@/lib/auth/audit-stub";
 import { deleteCustomer } from "@/lib/auth/delete-customer";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
-import { getAuditPool, getAuthPool } from "@/lib/db/client";
+import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,7 +26,7 @@ export const DELETE = withAuth(
     }
 
     try {
-      await deleteCustomer(getAuthPool(), getAuditPool(), customerId);
+      await deleteCustomer(getAuthPool(), getMigrationAuditPool(), customerId);
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(
