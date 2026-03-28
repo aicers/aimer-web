@@ -23,6 +23,19 @@ export interface AuthorizeResult {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function applyBridgeScope<T extends { id: string }>(
+  items: T[],
+  bridgeScope?: { aiceId: string; customerIds: string[] } | null,
+): T[] {
+  if (!bridgeScope) return items;
+  const scopeSet = new Set(bridgeScope.customerIds);
+  return items.filter((item) => scopeSet.has(item.id));
+}
+
+// ---------------------------------------------------------------------------
 // authorize — per-request DB authorization
 // ---------------------------------------------------------------------------
 
@@ -188,6 +201,13 @@ export interface AccessibleCustomer {
   externalKey: string;
 }
 
+export interface AccessibleCustomerDetailed extends AccessibleCustomer {
+  /** Membership role name (e.g. "User", "Manager"), null if analyst-only. */
+  role: string | null;
+  /** Whether this account has an active analyst assignment for this customer. */
+  isAnalyst: boolean;
+}
+
 export async function listAccessibleCustomers(
   client: PoolClient,
   accountId: string,
@@ -218,19 +238,58 @@ export async function listAccessibleCustomers(
     [accountId],
   );
 
-  let customers = rows.rows.map((r) => ({
+  const customers = rows.rows.map((r) => ({
     id: r.id,
     name: r.name,
     externalKey: r.external_key,
   }));
 
-  // Bridge scope restriction
-  if (bridgeScope) {
-    const scopeSet = new Set(bridgeScope.customerIds);
-    customers = customers.filter((c) => scopeSet.has(c.id));
-  }
+  return applyBridgeScope(customers, bridgeScope);
+}
 
-  return customers;
+// ---------------------------------------------------------------------------
+// listAccessibleCustomersDetailed — with role and analyst info per customer
+// ---------------------------------------------------------------------------
+
+export async function listAccessibleCustomersDetailed(
+  client: PoolClient,
+  accountId: string,
+  bridgeScope?: { aiceId: string; customerIds: string[] } | null,
+): Promise<AccessibleCustomerDetailed[]> {
+  const rows = await client.query<{
+    id: string;
+    name: string;
+    external_key: string;
+    role_name: string | null;
+    is_analyst: boolean;
+  }>(
+    `SELECT c.id, c.name, c.external_key,
+            r.name AS role_name,
+            (aca.account_id IS NOT NULL AND a.analyst_eligible = true) AS is_analyst
+     FROM customers c
+     LEFT JOIN account_customer_memberships acm
+       ON acm.customer_id = c.id AND acm.account_id = $1
+     LEFT JOIN roles r ON r.id = acm.role_id
+     LEFT JOIN analyst_customer_assignments aca
+       ON aca.customer_id = c.id AND aca.account_id = $1
+     CROSS JOIN accounts a
+     WHERE a.id = $1
+       AND c.status = 'active'
+       AND (acm.account_id IS NOT NULL
+            OR (aca.account_id IS NOT NULL AND a.analyst_eligible = true))
+     ORDER BY c.name`,
+    [accountId],
+  );
+
+  const customers: AccessibleCustomerDetailed[] = rows.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    externalKey: r.external_key,
+    role: r.role_name,
+    isAnalyst: r.is_analyst,
+  }));
+
+  return applyBridgeScope(customers, bridgeScope);
 }
 
 // ---------------------------------------------------------------------------

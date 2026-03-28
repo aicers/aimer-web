@@ -3,18 +3,22 @@
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { useCustomerContext } from "@/hooks/use-customer-context";
+import { usePermissions } from "@/hooks/use-permissions";
 import { ApiError, apiFetch } from "@/lib/api/client";
 
 import { InviteDialog } from "./invite-dialog";
 import { MemberTable } from "./member-table";
 import { PendingInvitations } from "./pending-invitations";
-import type { Member, MeResponse, PendingInvitation, Role } from "./types";
+import type { Member, PendingInvitation, Role } from "./types";
 
 export function MembersPage() {
   const t = useTranslations("members");
   const tCommon = useTranslations("common");
 
-  const [me, setMe] = useState<MeResponse | null>(null);
+  const { me, selectedCustomerId } = useCustomerContext();
+  const { isManager } = usePermissions();
+
   const [members, setMembers] = useState<Member[]>([]);
   const [invitations, setInvitations] = useState<PendingInvitation[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
@@ -25,10 +29,10 @@ export function MembersPage() {
     type: "success" | "error";
   } | null>(null);
 
-  // TODO(#38): Replace memberships[0] with customer selector from dashboard layout
-  const customerId = me?.memberships[0]?.customerId ?? null;
-  const myRoleId = me?.memberships[0]?.roleId ?? null;
-  const isManager = me?.memberships[0]?.roleName === "Manager";
+  const customerId = selectedCustomerId;
+  const myRoleId =
+    me?.memberships.find((m) => m.customerId === selectedCustomerId)?.roleId ??
+    null;
 
   const showToast = useCallback(
     (message: string, type: "success" | "error") => {
@@ -38,43 +42,73 @@ export function MembersPage() {
     [],
   );
 
-  const fetchData = useCallback(async () => {
+  const refreshData = useCallback(async () => {
+    if (!customerId) return;
     try {
-      const meData = await apiFetch<MeResponse>("/api/auth/me");
-      setMe(meData);
-
-      const cid = meData.memberships[0]?.customerId;
-      if (!cid) {
-        setError(t("noCustomerAccess"));
-        setLoading(false);
-        return;
-      }
-
       const [memberData, invData, rolesData] = await Promise.all([
-        apiFetch<{ members: Member[] }>(`/api/members?customer_id=${cid}`),
+        apiFetch<{ members: Member[] }>(
+          `/api/members?customer_id=${customerId}`,
+        ),
         apiFetch<{ invitations: PendingInvitation[] }>(
-          `/api/invitations?customer_id=${cid}`,
+          `/api/invitations?customer_id=${customerId}`,
         ),
         apiFetch<{ roles: Role[] }>("/api/roles"),
       ]);
-
       setMembers(memberData.members);
       setInvitations(invData.invitations);
       setRoles(rolesData.roles);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/auth/sign-in";
-        return;
       }
-      setError(t("actionError"));
-    } finally {
-      setLoading(false);
+      throw err;
     }
-  }, [t]);
+  }, [customerId]);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (!customerId) {
+      setError(t("noCustomerAccess"));
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        const [memberData, invData, rolesData] = await Promise.all([
+          apiFetch<{ members: Member[] }>(
+            `/api/members?customer_id=${customerId}`,
+          ),
+          apiFetch<{ invitations: PendingInvitation[] }>(
+            `/api/invitations?customer_id=${customerId}`,
+          ),
+          apiFetch<{ roles: Role[] }>("/api/roles"),
+        ]);
+
+        if (cancelled) return;
+
+        setMembers(memberData.members);
+        setInvitations(invData.invitations);
+        setRoles(rolesData.roles);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          window.location.href = "/api/auth/sign-in";
+          return;
+        }
+        setError(t("actionError"));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [customerId, t]);
 
   const managerCount = members.filter((m) => m.roleName === "Manager").length;
 
@@ -96,7 +130,7 @@ export function MembersPage() {
         method: "DELETE",
       });
       showToast(t("actionSuccess"), "success");
-      await fetchData();
+      await refreshData();
     } catch (err) {
       handleMemberError(err);
     }
@@ -110,7 +144,7 @@ export function MembersPage() {
         body: JSON.stringify({ customerId, roleId }),
       });
       showToast(t("actionSuccess"), "success");
-      await fetchData();
+      await refreshData();
     } catch (err) {
       handleMemberError(err);
     }
@@ -124,7 +158,7 @@ export function MembersPage() {
         body: JSON.stringify({ customerId, email, role }),
       });
       showToast(t("inviteSuccess", { email }), "success");
-      await fetchData();
+      await refreshData();
     } catch (err) {
       if (err instanceof ApiError && err.message === "already_member") {
         showToast(t("inviteAlreadyMember"), "error");
@@ -139,7 +173,7 @@ export function MembersPage() {
     try {
       await apiFetch(`/api/invitations/${id}`, { method: "DELETE" });
       showToast(t("revokeSuccess", { email }), "success");
-      await fetchData();
+      await refreshData();
     } catch {
       showToast(t("actionError"), "error");
     }
@@ -147,7 +181,7 @@ export function MembersPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-muted-foreground">{tCommon("loading")}</p>
       </div>
     );
@@ -155,14 +189,14 @@ export function MembersPage() {
 
   if (error) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-destructive">{error}</p>
       </div>
     );
   }
 
   return (
-    <main id="main-content" className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       {toast && (
         <div
           role="status"
@@ -213,6 +247,6 @@ export function MembersPage() {
           </section>
         )}
       </div>
-    </main>
+    </div>
   );
 }

@@ -9,7 +9,9 @@
     "back": "Back",
     "switchToKorean": "한국어",
     "switchToEnglish": "English",
-    "skipToContent": "Skip to content"
+    "skipToContent": "Skip to content",
+    "forbidden": "You do not have permission to access this page.",
+    "comingSoon": "This feature is not yet available."
   },
   "auth": {
     "signIn": "Sign In",
@@ -96,6 +98,12 @@
     "lastManagerError": "Cannot remove or demote the last Manager.",
     "noCustomerAccess": "No customer access. Please request an invitation from a manager.",
     "actions": "Actions"
+  },
+  "sidebar": {
+    "selectCustomer": "Customer",
+    "selectEnvironment": "Environment",
+    "bridgeLocked": "Locked to bridge session",
+    "analyst": "Analyst"
   },
   "validation": {
     "required": "This field is required",

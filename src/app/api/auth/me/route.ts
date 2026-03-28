@@ -9,9 +9,10 @@ export const GET = withAuth(async (_req: NextRequest, auth) => {
     email: string | null;
     locale: string | null;
     timezone: string | null;
+    analyst_eligible: boolean;
   }>(
     getAuthPool(),
-    `SELECT username, display_name, email, locale, timezone
+    `SELECT username, display_name, email, locale, timezone, analyst_eligible
      FROM accounts WHERE id = $1`,
     [auth.accountId],
   );
@@ -47,6 +48,12 @@ export const GET = withAuth(async (_req: NextRequest, auth) => {
     email: account.email,
     locale: account.locale,
     timezone: account.timezone,
+    analystEligible: account.analyst_eligible,
+    bridge: {
+      active: auth.bridgeAiceId !== null,
+      aiceId: auth.bridgeAiceId,
+      customerIds: auth.bridgeCustomerIds,
+    },
     memberships: memberships.map((m) => ({
       customerId: m.customer_id,
       customerName: m.customer_name,

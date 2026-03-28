@@ -12,6 +12,7 @@ import {
   assertAuthorized,
   authorize,
   listAccessibleCustomers,
+  listAccessibleCustomersDetailed,
   listAccessibleEnvironments,
 } from "../authorization";
 import { HttpError } from "../errors";
@@ -977,6 +978,101 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
     it("returns empty for account with no access", async () => {
       const customers = await withClient((c) =>
         listAccessibleCustomers(c, noAccessAccountId),
+      );
+      expect(customers).toHaveLength(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // listAccessibleCustomersDetailed (#31)
+  // -------------------------------------------------------------------------
+
+  describe("listAccessibleCustomersDetailed", () => {
+    it("returns role and isAnalyst fields for multi-role account", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, multiRoleAccountId),
+      );
+      const byId = new Map(customers.map((c) => [c.id, c]));
+
+      // User membership in activeCustomer
+      const active = byId.get(activeCustomerId);
+      expect(active).toBeDefined();
+      expect(active?.role).toBe("User");
+      expect(active?.isAnalyst).toBe(false);
+
+      // Manager membership in customerB
+      const b = byId.get(customerBId);
+      expect(b).toBeDefined();
+      expect(b?.role).toBe("Manager");
+      expect(b?.isAnalyst).toBe(false);
+
+      // Analyst-only in customerC (no membership)
+      const cust = byId.get(customerCId);
+      expect(cust).toBeDefined();
+      expect(cust?.role).toBeNull();
+      expect(cust?.isAnalyst).toBe(true);
+    });
+
+    it("returns analyst-only access without membership", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, analystAccountId),
+      );
+      const byId = new Map(customers.map((c) => [c.id, c]));
+
+      const active = byId.get(activeCustomerId);
+      expect(active).toBeDefined();
+      expect(active?.role).toBeNull();
+      expect(active?.isAnalyst).toBe(true);
+    });
+
+    it("returns role for membership-only account", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, managerAccountId),
+      );
+      const byId = new Map(customers.map((c) => [c.id, c]));
+
+      const active = byId.get(activeCustomerId);
+      expect(active).toBeDefined();
+      expect(active?.role).toBe("Manager");
+      expect(active?.isAnalyst).toBe(false);
+    });
+
+    it("excludes suspended customers", async () => {
+      await pool.query(
+        `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [userAccountId, suspendedCustomerId, userRoleId],
+      );
+
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, userAccountId),
+      );
+      const ids = customers.map((c) => c.id);
+      expect(ids).not.toContain(suspendedCustomerId);
+
+      await pool.query(
+        `DELETE FROM account_customer_memberships WHERE account_id = $1 AND customer_id = $2`,
+        [userAccountId, suspendedCustomerId],
+      );
+    });
+
+    it("restricts to bridge scope when provided", async () => {
+      const bridgeScope = {
+        aiceId: activeAiceId,
+        customerIds: [activeCustomerId],
+      };
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, multiRoleAccountId, bridgeScope),
+      );
+      const ids = customers.map((c) => c.id);
+      expect(ids).toContain(activeCustomerId);
+      expect(ids).not.toContain(customerBId);
+      expect(ids).not.toContain(customerCId);
+    });
+
+    it("returns empty for account with no access", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, noAccessAccountId),
       );
       expect(customers).toHaveLength(0);
     });

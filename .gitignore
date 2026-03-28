@@ -19,7 +19,8 @@ infra/certs/*.pem
 infra/certs/*.key
 infra/certs/*.crt
 
-# Docker volumes
+# Docker
+docker-compose.override.yml
 pgdata/
 
 # Playwright
