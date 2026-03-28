@@ -4,6 +4,7 @@ import { createCustomer } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { provisionCustomerDb } from "@/lib/db/provision-customer";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -84,13 +85,17 @@ export const POST = withAuth(
         }),
       );
 
+      // Provision customer database after auth_db transaction commits
+      const pool = getAuthPool();
+      const databaseStatus = await provisionCustomerDb(pool, result.id);
+
       await auditLog({
         actorId: auth.accountId,
         authContext: "admin",
         action: "customer.create",
         targetType: "customer",
         targetId: result.id,
-        details: { name, externalKey, managerAccountId },
+        details: { name, externalKey, managerAccountId, databaseStatus },
         ipAddress: auth.meta.ipAddress,
         sid: auth.sessionId,
       });
@@ -101,7 +106,7 @@ export const POST = withAuth(
           name: result.name,
           externalKey: result.externalKey,
           status: result.status,
-          databaseStatus: result.databaseStatus,
+          databaseStatus,
         },
         { status: 201 },
       );

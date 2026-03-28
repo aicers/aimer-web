@@ -74,3 +74,22 @@ GRANT ALL ON DATABASE keycloak_db TO keycloak;
 \connect keycloak_db
 
 GRANT ALL ON SCHEMA public TO keycloak;
+
+-- ---------------------------------------------------------------
+-- customer_db roles (owner + runtime, shared across all customer DBs)
+-- ---------------------------------------------------------------
+\connect auth_db
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_customer_owner') THEN
+    CREATE ROLE aimer_customer_owner WITH LOGIN PASSWORD 'changeme';
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_customer') THEN
+    CREATE ROLE aimer_customer WITH LOGIN PASSWORD 'changeme';
+  END IF;
+END
+$$;
+
+-- Database-level grants are applied dynamically when each customer DB
+-- is provisioned. Table-level grants are applied by customer migrations.

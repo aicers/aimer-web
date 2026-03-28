@@ -120,3 +120,41 @@ export async function rewrapDataKey(
   }
   return newWrapped;
 }
+
+/**
+ * Permanently delete a Transit named key (crypto-shredding).
+ * OpenBao requires the key to be configured with `deletion_allowed=true`
+ * before it can be deleted.
+ */
+export async function deleteTransitKey(
+  config: TransitConfig,
+  keyName: string,
+): Promise<void> {
+  const configUrl = `${config.addr}/v1/transit/keys/${keyName}/config`;
+  const configRes = await fetch(configUrl, {
+    method: "POST",
+    headers: {
+      "X-Vault-Token": config.token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ deletion_allowed: true }),
+  });
+  if (!configRes.ok) {
+    const text = await configRes.text().catch(() => "");
+    throw new Error(
+      `Transit keys/${keyName}/config failed (${configRes.status}): ${text}`,
+    );
+  }
+
+  const deleteUrl = `${config.addr}/v1/transit/keys/${keyName}`;
+  const deleteRes = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: { "X-Vault-Token": config.token },
+  });
+  if (!deleteRes.ok) {
+    const text = await deleteRes.text().catch(() => "");
+    throw new Error(
+      `Transit DELETE keys/${keyName} failed (${deleteRes.status}): ${text}`,
+    );
+  }
+}
