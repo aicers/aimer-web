@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  clearFlowCookies,
+  clearConnectionIdCookie,
+  clearInvitationTokenCookie,
   clearOidcTempCookies,
   setOidcTempCookies,
 } from "@/lib/auth/cookies";
@@ -24,7 +25,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
   await clearOidcTempCookies("admin");
-  await clearFlowCookies();
+  await clearConnectionIdCookie();
+  await clearInvitationTokenCookie();
 
   await setOidcTempCookies("admin", { state, nonce, codeVerifier });
 

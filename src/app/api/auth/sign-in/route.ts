@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import {
-  clearFlowCookies,
+  clearConnectionIdCookie,
+  clearInvitationTokenCookie,
   clearOidcTempCookies,
   setOidcTempCookies,
 } from "@/lib/auth/cookies";
@@ -23,9 +24,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const codeVerifier = generateCodeVerifier();
   const codeChallenge = generateCodeChallenge(codeVerifier);
 
-  // Clean up stale temporary cookies from previous incomplete flows
+  // Clean up stale temporary cookies from previous incomplete flows.
+  // Preserve the active flow's cookie — only clear the OTHER flow's cookie.
   await clearOidcTempCookies("general");
-  await clearFlowCookies();
+  const flow = request.nextUrl.searchParams.get("flow");
+  if (flow !== "bridge") await clearConnectionIdCookie();
+  if (flow !== "invite") await clearInvitationTokenCookie();
 
   // Store OIDC parameters in cookies for callback verification
   await setOidcTempCookies("general", { state, nonce, codeVerifier });

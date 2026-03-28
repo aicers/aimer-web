@@ -1,5 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { clearFlowCookies, setInvitationTokenCookie } from "@/lib/auth/cookies";
+import {
+  clearConnectionIdCookie,
+  setInvitationTokenCookie,
+} from "@/lib/auth/cookies";
 import { hashToken } from "@/lib/auth/invitations";
 import { getAuthPool, query } from "@/lib/db/client";
 
@@ -25,12 +28,12 @@ export async function GET(
     );
   }
 
-  // Clear stale flow cookies before setting new ones (conflict prevention)
-  await clearFlowCookies();
+  // Clear stale bridge cookie (conflict prevention), then set invite token
+  await clearConnectionIdCookie();
   await setInvitationTokenCookie(token);
 
   const response = NextResponse.redirect(
-    new URL("/api/auth/sign-in", request.url),
+    new URL("/api/auth/sign-in?flow=invite", request.url),
   );
   response.headers.set("Referrer-Policy", "no-referrer");
   return response;

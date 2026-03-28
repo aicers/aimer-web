@@ -29,6 +29,11 @@
       "invitationExpired": "초대가 만료되었거나 더 이상 유효하지 않습니다. 새로운 초대를 요청해 주세요.",
       "invitationEmailMismatch": "로그인한 이메일 주소가 초대된 이메일과 일치하지 않습니다. 올바른 계정으로 로그인해 주세요.",
       "invitationEmailNotVerified": "이메일 주소가 인증되지 않았습니다. 초대를 수락하기 전에 이메일을 인증해 주세요.",
+      "bridgeExpired": "브릿지 연결이 만료되었거나 이미 사용되었습니다. AICE에서 새로운 연결을 시작해 주세요.",
+      "bridgeCustomerMismatch": "요청된 고객을 매칭할 수 없습니다. AICE의 고객 구성을 확인해 주세요.",
+      "bridgeCustomerInactive": "요청된 고객 중 하나 이상이 비활성 상태입니다. 관리자에게 문의해 주세요.",
+      "bridgeEnvironmentInactive": "AICE 환경이 비활성 상태입니다. 관리자에게 문의해 주세요.",
+      "bridgeNoAccess": "요청된 고객에 대한 접근 권한이 없습니다. 매니저에게 접근 권한을 요청해 주세요.",
       "backToSignIn": "로그인으로 돌아가기",
       "contactAdmin": "오류라고 생각되시면 시스템 관리자에게 문의해 주세요."
     }

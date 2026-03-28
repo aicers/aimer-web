@@ -18,6 +18,8 @@ vi.mock("@/lib/auth/cookies", () => ({
   })),
   clearOidcTempCookies,
   clearInvitationTokenCookie,
+  clearConnectionIdCookie: vi.fn(),
+  clearAuthCookies: vi.fn(),
   setAuthCookies,
 }));
 
@@ -82,6 +84,11 @@ vi.mock("@/lib/auth/csrf", () => ({
 
 vi.mock("@/lib/auth/same-account", () => ({
   enforceSameAccount: vi.fn(async () => {}),
+}));
+
+vi.mock("@/lib/auth/bridge", () => ({
+  processBridgeCallback: vi.fn(async () => ({ deny: null })),
+  denyConnection: vi.fn(async () => {}),
 }));
 
 vi.mock("@/lib/db/client", () => ({

@@ -1,7 +1,10 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
 import { auditLog } from "@/lib/auth/audit-stub";
+import { processBridgeCallback } from "@/lib/auth/bridge";
 import {
+  clearAuthCookies,
+  clearConnectionIdCookie,
   clearInvitationTokenCookie,
   clearOidcTempCookies,
   getOidcTempCookies,
@@ -154,10 +157,68 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  // Bridge stub (#33): check for connection_id cookie
+  // Bridge flow (#33): check for connection_id cookie
   const connectionId = request.cookies.get("connection_id")?.value;
   if (connectionId) {
-    // TODO(#33): Process bridge flow
+    // Same-account enforcement before consuming the connection so that
+    // a DB failure here does not leave the connection permanently consumed.
+    await enforceSameAccount(request, account.id, "general", meta);
+
+    const bridgeResult = await processBridgeCallback(
+      pool,
+      connectionId,
+      account.id,
+      { ipAddress: meta.ipAddress, userAgent: meta.userAgent },
+    );
+
+    if (bridgeResult.deny) {
+      // Intentional denial — safe to clear cookie now
+      await clearConnectionIdCookie();
+      await clearAuthCookies("general");
+      await auditLog({
+        actorId: account.id,
+        authContext: "general",
+        action: "auth.bridge_denied",
+        targetType: "bridge",
+        details: { reason: bridgeResult.deny, connectionId },
+        ipAddress: meta.ipAddress,
+      });
+      return denyRedirect(request, bridgeResult.deny);
+    }
+
+    // Session + staged events already created inside the transaction.
+    // Only JWT signing + cookies remain (idempotent, safe outside tx).
+    const bridgeSid = bridgeResult.sessionId as string;
+
+    // Sign JWT + CSRF + cookies
+    const { token, iat, exp } = await signJwt({
+      sub: account.id,
+      sid: bridgeSid,
+      ctx: "general",
+      tv: account.token_version,
+    });
+    const csrfToken = generateCsrf({ ctx: "general", sid: bridgeSid, iat });
+    await setAuthCookies("general", { jwt: token, csrfToken, expiresAt: exp });
+
+    // Bridge flow fully succeeded — safe to clear the one-time cookie
+    await clearConnectionIdCookie();
+
+    await auditLog({
+      actorId: account.id,
+      authContext: "general",
+      action: "auth.bridge_sign_in",
+      targetType: "session",
+      targetId: bridgeSid,
+      details: {
+        connectionId,
+        aiceId: bridgeResult.bridgeAiceId,
+        customerIds: bridgeResult.bridgeCustomerIds,
+      },
+      ipAddress: meta.ipAddress,
+      sid: bridgeSid,
+    });
+
+    return NextResponse.redirect(new URL("/", request.url));
   }
 
   // Standard check: count accessible customers
