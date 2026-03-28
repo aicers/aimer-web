@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
+import { encryptPayload } from "../crypto/envelope";
 import { query, withTransaction } from "../db/client";
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,10 @@ export async function createPendingConnection(
 // ---------------------------------------------------------------------------
 
 /**
- * Store staged event payload linked to a pending connection.
+ * Encrypt and store a staged event payload linked to a pending connection.
+ * The payload is encrypted via OpenBao Transit envelope encryption before
+ * storage — the `payload` column holds AES-256-GCM ciphertext and
+ * `wrapped_dek` holds the Transit-wrapped data encryption key.
  */
 export async function stageEventsPayload(
   pool: Pool,
@@ -78,17 +82,20 @@ export async function stageEventsPayload(
     schemaVersion: string;
   },
 ): Promise<string> {
+  const { ciphertext, wrappedDek } = await encryptPayload(params.payload);
+
   const rows = await query<{ id: string }>(
     pool,
     `INSERT INTO staged_event_payloads
-       (connection_id, aice_id, payload_hash, payload, event_count, schema_version, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '${CONNECTION_TTL_SECONDS} seconds')
+       (connection_id, aice_id, payload_hash, payload, wrapped_dek, event_count, schema_version, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() + INTERVAL '${CONNECTION_TTL_SECONDS} seconds')
      RETURNING id`,
     [
       params.connectionId,
       params.aiceId,
       params.payloadHash,
-      params.payload,
+      ciphertext,
+      wrappedDek,
       params.eventCount,
       params.schemaVersion,
     ],
@@ -255,10 +262,22 @@ export async function processBridgeCallback(
     const sessionId = sessionResult.rows[0].sid;
 
     // 6. Link staged events to the new session
-    await client.query(
-      `UPDATE staged_event_payloads SET session_id = $1 WHERE connection_id = $2`,
+    const linkedPayloads = await client.query<{ id: string }>(
+      `UPDATE staged_event_payloads SET session_id = $1 WHERE connection_id = $2 RETURNING id`,
       [sessionId, connectionId],
     );
+
+    // 7. Create staged_event_customers rows for each (payload, customer) pair
+    for (const payload of linkedPayloads.rows) {
+      for (const custId of mappedCustomerIds) {
+        await client.query(
+          `INSERT INTO staged_event_customers (payload_id, customer_id, status)
+           VALUES ($1, $2, 'pending')
+           ON CONFLICT (payload_id, customer_id) DO NOTHING`,
+          [payload.id, custId],
+        );
+      }
+    }
 
     return {
       sessionId,

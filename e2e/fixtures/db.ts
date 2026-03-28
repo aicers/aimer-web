@@ -278,6 +278,10 @@ export async function cleanupTestData(data: TestData): Promise<void> {
     `DELETE FROM analyst_customer_assignments WHERE account_id = ANY($1)`,
     [accountIds],
   );
+  await p.query(
+    `DELETE FROM staged_event_payloads WHERE session_id IN (SELECT sid FROM sessions WHERE account_id = ANY($1))`,
+    [accountIds],
+  );
   await p.query(`DELETE FROM sessions WHERE account_id = ANY($1)`, [
     accountIds,
   ]);
