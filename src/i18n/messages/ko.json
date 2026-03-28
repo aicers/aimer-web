@@ -9,7 +9,9 @@
     "back": "뒤로",
     "switchToKorean": "한국어",
     "switchToEnglish": "English",
-    "skipToContent": "본문으로 건너뛰기"
+    "skipToContent": "본문으로 건너뛰기",
+    "forbidden": "이 페이지에 접근할 권한이 없습니다.",
+    "comingSoon": "이 기능은 아직 사용할 수 없습니다."
   },
   "auth": {
     "signIn": "로그인",
@@ -96,6 +98,12 @@
     "lastManagerError": "마지막 매니저는 제거하거나 강등할 수 없습니다.",
     "noCustomerAccess": "고객 접근 권한이 없습니다. 매니저에게 초대를 요청하세요.",
     "actions": "작업"
+  },
+  "sidebar": {
+    "selectCustomer": "고객",
+    "selectEnvironment": "환경",
+    "bridgeLocked": "브릿지 세션으로 제한됨",
+    "analyst": "분석가"
   },
   "validation": {
     "required": "필수 입력 항목입니다",

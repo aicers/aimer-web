@@ -1,21 +1,4 @@
-export interface MeResponse {
-  accountId: string;
-  sessionId: string;
-  authContext: string;
-  username: string;
-  displayName: string;
-  email: string | null;
-  locale: string | null;
-  timezone: string | null;
-  memberships: Membership[];
-}
-
-export interface Membership {
-  customerId: string;
-  customerName: string;
-  roleId: number;
-  roleName: string;
-}
+export type { Membership, MeResponse } from "@/lib/api/types";
 
 export interface Member {
   accountId: string;

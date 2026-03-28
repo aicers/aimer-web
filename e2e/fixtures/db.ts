@@ -158,14 +158,15 @@ export async function seedTestData(): Promise<TestData> {
     ],
   );
 
-  // Multi-role account: User in customer A, Manager in customer B
+  // Multi-role account: User in customer A, Manager in customer B,
+  // analyst_eligible + analyst assignment in customer A
   const multiAccountId = randomUUID();
   const multiDisplayName = `E2E Multi ${suffix}`;
   const multiEmail = `multi-${suffix}@e2e.test`;
   await p.query(
     `INSERT INTO accounts
-       (id, oidc_issuer, oidc_subject, username, display_name, email, status)
-     VALUES ($1, 'e2e-issuer', $2, $3, $4, $5, 'active')`,
+       (id, oidc_issuer, oidc_subject, username, display_name, email, status, analyst_eligible)
+     VALUES ($1, 'e2e-issuer', $2, $3, $4, $5, 'active', true)`,
     [
       multiAccountId,
       `multi-${suffix}`,
@@ -178,6 +179,11 @@ export async function seedTestData(): Promise<TestData> {
     `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
      VALUES ($1, $2, $3), ($1, $4, $5)`,
     [multiAccountId, customerId, userRoleId, customerBId, managerRoleId],
+  );
+  await p.query(
+    `INSERT INTO analyst_customer_assignments (account_id, customer_id, assigned_by)
+     VALUES ($1, $2, $3)`,
+    [multiAccountId, customerId, mgrAccountId],
   );
 
   // Sessions
