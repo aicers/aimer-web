@@ -1,8 +1,14 @@
 import { join } from "node:path";
 import { Pool } from "pg";
+import { decryptDataKey, getTransitConfig } from "../crypto/transit";
+import {
+  customerDbUrl,
+  customerLockId,
+  customerTransitKeyName,
+  getCustomerOwnerTemplateUrl,
+} from "./customer-db";
+import type { MigrationContext } from "./migrate";
 import { runMigrations } from "./migrate";
-
-const LOCK_ID_CUSTOMER_BASE = 2000;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -15,15 +21,15 @@ async function main() {
 
   try {
     let customers: Array<{
-      id: number;
-      database_url: string;
+      id: string;
       database_status: string;
+      wrapped_dek: string | null;
     }>;
 
     if (targetCustomerId) {
-      // Targeted mode: run regardless of database_status
+      // Targeted mode: run regardless of database_status (for retries)
       const result = await authPool.query(
-        "SELECT id, database_url, database_status FROM customers WHERE id = $1",
+        "SELECT id, database_status, wrapped_dek FROM customers WHERE id = $1",
         [targetCustomerId],
       );
       customers = result.rows;
@@ -34,32 +40,55 @@ async function main() {
     } else {
       // Batch mode: only active customers
       const result = await authPool.query(
-        "SELECT id, database_url, database_status FROM customers WHERE database_status = 'active'",
+        "SELECT id, database_status, wrapped_dek FROM customers WHERE database_status = 'active'",
       );
       customers = result.rows;
     }
 
     const migrationsDir = join(process.cwd(), "migrations", "customer");
+    const ownerTemplateUrl = getCustomerOwnerTemplateUrl();
 
     for (const customer of customers) {
       console.log(
         `Migrating customer ${customer.id} (status: ${customer.database_status})...`,
       );
-      const customerPool = new Pool({
-        connectionString: customer.database_url,
-      });
+
+      const ownerUrl = customerDbUrl(ownerTemplateUrl, customer.id);
+      const customerPool = new Pool({ connectionString: ownerUrl });
+
       try {
+        // Build MigrationContext with decryptDek if DEK is available
+        let context: MigrationContext | undefined;
+        if (customer.wrapped_dek) {
+          const transitConfig = getTransitConfig();
+          const keyName = customerTransitKeyName(customer.id);
+          const wrappedDek = customer.wrapped_dek;
+          context = {
+            decryptDek: () =>
+              decryptDataKey(transitConfig, keyName, wrappedDek),
+          };
+        }
+
         await runMigrations(
           customerPool,
           migrationsDir,
-          LOCK_ID_CUSTOMER_BASE + customer.id,
+          customerLockId(customer.id),
+          context,
         );
+
         // Update status to active on success (for targeted mode retries)
         if (customer.database_status !== "active") {
-          await authPool.query(
-            "UPDATE customers SET database_status = 'active' WHERE id = $1",
-            [customer.id],
-          );
+          if (!customer.wrapped_dek) {
+            console.error(
+              `Customer ${customer.id}: migrations succeeded but wrapped_dek is missing. ` +
+                "Re-run provisioning to generate a DEK before marking as active.",
+            );
+          } else {
+            await authPool.query(
+              "UPDATE customers SET database_status = 'active' WHERE id = $1",
+              [customer.id],
+            );
+          }
         }
         console.log(`Customer ${customer.id}: migrations complete`);
       } catch (err) {

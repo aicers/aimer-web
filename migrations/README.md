@@ -101,8 +101,19 @@ The migration runner reads `DATABASE_MIGRATION_URL` /
 `AUDIT_DATABASE_URL` when unset). The application runtime always uses
 `DATABASE_URL` / `AUDIT_DATABASE_URL`.
 
-Customer DB owner/runtime role separation will be implemented alongside
-the customers table schema in #36.
+Customer databases share two roles across all tenants:
+
+- **`aimer_customer_owner`** — Migration runner (full DDL + DML)
+- **`aimer_customer`** — Application runtime (SELECT, INSERT, UPDATE, DELETE on granted tables)
+
+These roles are created by `infra/postgres/init-databases.sql`.
+Database-level grants are applied during provisioning; table-level
+grants are applied by customer migrations.
+
+The migration runner uses `CUSTOMER_DATABASE_OWNER_URL` (template URL
+with the owner role credentials — the database name is replaced per
+customer). Customer database names follow the convention
+`customer_<uuid_without_hyphens>`, derived from `customers.id`.
 
 ## Concurrency Safety
 

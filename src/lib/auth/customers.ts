@@ -1,4 +1,4 @@
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { HttpError } from "./errors";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,16 @@ export interface CreatedCustomer {
   externalKey: string;
   status: string;
   databaseStatus: string;
+}
+
+export interface CustomerRow {
+  id: string;
+  externalKey: string;
+  name: string;
+  description: string | null;
+  status: string;
+  databaseStatus: string;
+  wrappedDek: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,6 +54,60 @@ async function resolveManagerRoleId(client: PoolClient): Promise<number> {
     throw new HttpError("Manager role not found", 500);
   }
   return result.rows[0].id;
+}
+
+// ---------------------------------------------------------------------------
+// Get customer with status validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a customer by ID, throwing if not found or if the database
+ * is not in a usable state.
+ *
+ * @throws HttpError 404 if customer not found
+ * @throws HttpError 503 if database_status is 'provisioning' or 'failed'
+ */
+export async function getCustomerOrFail(
+  pool: Pool,
+  customerId: string,
+): Promise<CustomerRow> {
+  const result = await pool.query<{
+    id: string;
+    external_key: string;
+    name: string;
+    description: string | null;
+    status: string;
+    database_status: string;
+    wrapped_dek: string | null;
+  }>(
+    `SELECT id, external_key, name, description, status, database_status, wrapped_dek
+     FROM customers WHERE id = $1`,
+    [customerId],
+  );
+
+  if (result.rows.length === 0) {
+    throw new HttpError("Customer not found", 404);
+  }
+
+  const row = result.rows[0];
+
+  if (row.database_status === "failed") {
+    throw new HttpError("customer_database_failed", 503);
+  }
+
+  if (row.database_status === "provisioning") {
+    throw new HttpError("customer_database_provisioning", 503);
+  }
+
+  return {
+    id: row.id,
+    externalKey: row.external_key,
+    name: row.name,
+    description: row.description,
+    status: row.status,
+    databaseStatus: row.database_status,
+    wrappedDek: row.wrapped_dek,
+  };
 }
 
 // ---------------------------------------------------------------------------

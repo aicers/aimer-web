@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Pool, PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 const LOCK_ID_AUTH = 1000;
 const LOCK_ID_AUDIT = 1001;
@@ -215,5 +215,106 @@ export async function runStartupMigrations(): Promise<void> {
     LOCK_ID_AUDIT,
   );
 
+  // Run pending customer_db migrations for all active customers.
+  // Failed customers are skipped — use `pnpm migrate:customers --customer-id=<id>` to retry.
+  await runStartupCustomerMigrations(getMigrationAuthPool(), migrationsRoot);
+
   console.log("Startup migrations complete.");
+}
+
+async function runStartupCustomerMigrations(
+  authPool: Pool,
+  migrationsRoot: string,
+): Promise<void> {
+  const { customerDbUrl, customerLockId, customerTransitKeyName } =
+    await import("./customer-db");
+  const { decryptDataKey, getTransitConfig } = await import(
+    "../crypto/transit"
+  );
+
+  const ownerTemplateUrl = process.env.CUSTOMER_DATABASE_OWNER_URL;
+  if (!ownerTemplateUrl) {
+    console.log(
+      "CUSTOMER_DATABASE_OWNER_URL not set, skipping customer migrations.",
+    );
+    return;
+  }
+
+  const result = await authPool.query<{
+    id: string;
+    wrapped_dek: string | null;
+  }>("SELECT id, wrapped_dek FROM customers WHERE database_status = 'active'");
+
+  if (result.rows.length === 0) {
+    console.log("No active customers to migrate.");
+    return;
+  }
+
+  const customerMigrationsDir = join(migrationsRoot, "customer");
+
+  const { customerDbName } = await import("./customer-db");
+
+  for (const customer of result.rows) {
+    // Verify the database exists before attempting to connect.
+    // An active customer whose DB was externally dropped should be
+    // marked failed rather than crashing the migration loop.
+    const dbName = customerDbName(customer.id);
+    const dbExists = await authPool.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [dbName],
+    );
+    if (dbExists.rows.length === 0) {
+      console.error(
+        `Customer ${customer.id}: database ${dbName} does not exist, marking as failed.`,
+      );
+      await authPool
+        .query(
+          "UPDATE customers SET database_status = 'failed' WHERE id = $1",
+          [customer.id],
+        )
+        .catch(() => {});
+      continue;
+    }
+
+    console.log(`Running customer_db migrations for ${customer.id}...`);
+    const ownerUrl = customerDbUrl(ownerTemplateUrl, customer.id);
+    const customerPool = new Pool({ connectionString: ownerUrl });
+
+    try {
+      let context: MigrationContext | undefined;
+      if (customer.wrapped_dek) {
+        const transitConfig = getTransitConfig();
+        const keyName = customerTransitKeyName(customer.id);
+        const wrappedDek = customer.wrapped_dek;
+        context = {
+          decryptDek: () => decryptDataKey(transitConfig, keyName, wrappedDek),
+        };
+      }
+
+      await runMigrations(
+        customerPool,
+        customerMigrationsDir,
+        customerLockId(customer.id),
+        context,
+      );
+    } catch (err) {
+      console.error(
+        `Customer ${customer.id}: migration failed:`,
+        (err as Error).message,
+      );
+      await authPool
+        .query(
+          "UPDATE customers SET database_status = 'failed' WHERE id = $1",
+          [customer.id],
+        )
+        .catch((updateErr) => {
+          console.error(
+            "Failed to update database_status:",
+            (updateErr as Error).message,
+          );
+        });
+    } finally {
+      await customerPool.end();
+    }
+  }
 }
