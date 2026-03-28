@@ -10,6 +10,11 @@ type DenyMessageKey =
   | "invitationExpired"
   | "invitationEmailMismatch"
   | "invitationEmailNotVerified"
+  | "bridgeExpired"
+  | "bridgeCustomerMismatch"
+  | "bridgeCustomerInactive"
+  | "bridgeEnvironmentInactive"
+  | "bridgeNoAccess"
   | "genericError";
 
 const REASON_KEYS: Record<string, DenyMessageKey> = {
@@ -22,6 +27,11 @@ const REASON_KEYS: Record<string, DenyMessageKey> = {
   invitation_expired: "invitationExpired",
   invitation_email_mismatch: "invitationEmailMismatch",
   invitation_email_not_verified: "invitationEmailNotVerified",
+  bridge_expired: "bridgeExpired",
+  bridge_customer_mismatch: "bridgeCustomerMismatch",
+  bridge_customer_inactive: "bridgeCustomerInactive",
+  bridge_environment_inactive: "bridgeEnvironmentInactive",
+  bridge_no_access: "bridgeNoAccess",
 };
 
 export default async function DenyPage({

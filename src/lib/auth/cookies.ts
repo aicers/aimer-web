@@ -92,10 +92,25 @@ export async function clearInvitationTokenCookie(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup for temporary flow cookies (prevent stale cookies)
+// Bridge connection_id cookie (SameSite=Lax for cross-site redirect)
 // ---------------------------------------------------------------------------
 
-export async function clearFlowCookies(): Promise<void> {
+const CONNECTION_ID_MAX_AGE = 300; // 5 minutes
+
+export async function setConnectionIdCookie(
+  connectionId: string,
+): Promise<void> {
+  const jar = await cookies();
+  jar.set("connection_id", connectionId, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    path: "/",
+    maxAge: CONNECTION_ID_MAX_AGE,
+  });
+}
+
+export async function clearConnectionIdCookie(): Promise<void> {
   const jar = await cookies();
   jar.delete("connection_id");
 }

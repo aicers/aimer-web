@@ -29,6 +29,11 @@
       "invitationExpired": "This invitation has expired or is no longer valid. Please request a new invitation.",
       "invitationEmailMismatch": "The email address you signed in with does not match the invited email. Please sign in with the correct account.",
       "invitationEmailNotVerified": "Your email address has not been verified. Please verify your email before accepting the invitation.",
+      "bridgeExpired": "The bridge connection has expired or was already used. Please initiate a new connection from AICE.",
+      "bridgeCustomerMismatch": "The requested customers could not be matched. Please verify the customer configuration in AICE.",
+      "bridgeCustomerInactive": "One or more requested customers are inactive. Please contact an administrator.",
+      "bridgeEnvironmentInactive": "The AICE environment is inactive. Please contact an administrator.",
+      "bridgeNoAccess": "You do not have access to the requested customers. Please request access from a manager.",
       "backToSignIn": "Back to Sign In",
       "contactAdmin": "If you believe this is an error, please contact your system administrator."
     }
