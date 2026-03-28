@@ -248,7 +248,7 @@ describe.skipIf(!hasPostgres)("bridge DB integration", () => {
   // -- Staged events --
 
   describe("staged event payloads", () => {
-    it("stores and links staged events to session", async () => {
+    it("stores encrypted payload with wrapped_dek and links to session", async () => {
       // Create connection
       const conn = await pool.query<{ connection_id: string }>(
         `INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, sub, expires_at)
@@ -258,12 +258,13 @@ describe.skipIf(!hasPostgres)("bridge DB integration", () => {
       );
       const connId = conn.rows[0].connection_id;
 
-      // Stage payload
+      // Stage encrypted payload (includes wrapped_dek)
       const staged = await pool.query<{ id: string }>(
-        `INSERT INTO staged_event_payloads (connection_id, aice_id, payload_hash, payload, event_count, schema_version, expires_at)
-         VALUES ($1, 'aice-test-1', 'hash123', $2, 5, '1.0', NOW() + INTERVAL '5 minutes')
+        `INSERT INTO staged_event_payloads
+           (connection_id, aice_id, payload_hash, payload, wrapped_dek, event_count, schema_version, expires_at)
+         VALUES ($1, 'aice-test-1', 'hash123', $2, 'vault:v1:testdek', 5, '1.0', NOW() + INTERVAL '5 minutes')
          RETURNING id`,
-        [connId, Buffer.from("test payload")],
+        [connId, Buffer.from("encrypted-test-payload")],
       );
       expect(staged.rows).toHaveLength(1);
 
@@ -276,18 +277,120 @@ describe.skipIf(!hasPostgres)("bridge DB integration", () => {
       );
       const sid = session.rows[0].sid;
 
-      // Link
-      await pool.query(
-        `UPDATE staged_event_payloads SET session_id = $1 WHERE connection_id = $2`,
+      // Link staged events to session (simulates processBridgeCallback step 6)
+      const linked = await pool.query<{ id: string }>(
+        `UPDATE staged_event_payloads SET session_id = $1 WHERE connection_id = $2 RETURNING id`,
         [sid, connId],
       );
+      expect(linked.rows).toHaveLength(1);
 
-      // Verify link
-      const linked = await pool.query<{ session_id: string }>(
-        `SELECT session_id FROM staged_event_payloads WHERE id = $1`,
+      // Verify wrapped_dek stored
+      const verify = await pool.query<{
+        session_id: string;
+        wrapped_dek: string;
+      }>(
+        `SELECT session_id, wrapped_dek FROM staged_event_payloads WHERE id = $1`,
         [staged.rows[0].id],
       );
-      expect(linked.rows[0].session_id).toBe(sid);
+      expect(verify.rows[0].session_id).toBe(sid);
+      expect(verify.rows[0].wrapped_dek).toBe("vault:v1:testdek");
+    });
+
+    it("creates staged_event_customers rows for each payload-customer pair", async () => {
+      // Create connection with two customers
+      const conn = await pool.query<{ connection_id: string }>(
+        `INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, sub, expires_at)
+         VALUES ('jti-staged-cust-1', 'https://aice.test', 'aice-test-1', $1, 'user-1', NOW() + INTERVAL '5 minutes')
+         RETURNING connection_id`,
+        [["ext-cust-a", "ext-cust-b"]],
+      );
+      const connId = conn.rows[0].connection_id;
+
+      // Stage payload
+      const staged = await pool.query<{ id: string }>(
+        `INSERT INTO staged_event_payloads
+           (connection_id, aice_id, payload_hash, payload, wrapped_dek, event_count, schema_version, expires_at)
+         VALUES ($1, 'aice-test-1', 'hash-multi', $2, 'vault:v1:multi', 10, '1.0', NOW() + INTERVAL '5 minutes')
+         RETURNING id`,
+        [connId, Buffer.from("encrypted-multi-customer")],
+      );
+      const payloadId = staged.rows[0].id;
+
+      // Create customer rows (simulates processBridgeCallback step 7)
+      for (const custId of [customerId, customerIdB]) {
+        await pool.query(
+          `INSERT INTO staged_event_customers (payload_id, customer_id, status)
+           VALUES ($1, $2, 'pending')
+           ON CONFLICT (payload_id, customer_id) DO NOTHING`,
+          [payloadId, custId],
+        );
+      }
+
+      // Verify customer rows
+      const custRows = await pool.query<{
+        customer_id: string;
+        status: string;
+      }>(
+        `SELECT customer_id, status FROM staged_event_customers
+         WHERE payload_id = $1 ORDER BY customer_id`,
+        [payloadId],
+      );
+      expect(custRows.rows).toHaveLength(2);
+      for (const row of custRows.rows) {
+        expect(row.status).toBe("pending");
+      }
+      const ids = new Set(custRows.rows.map((r) => r.customer_id));
+      expect(ids.has(customerId)).toBe(true);
+      expect(ids.has(customerIdB)).toBe(true);
+    });
+
+    it("ON CONFLICT DO NOTHING prevents duplicate customer rows", async () => {
+      const conn = await pool.query<{ connection_id: string }>(
+        `INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, sub, expires_at)
+         VALUES ('jti-staged-dup-1', 'https://aice.test', 'aice-test-1', $1, 'user-1', NOW() + INTERVAL '5 minutes')
+         RETURNING connection_id`,
+        [["ext-cust-a"]],
+      );
+      const connId = conn.rows[0].connection_id;
+
+      const staged = await pool.query<{ id: string }>(
+        `INSERT INTO staged_event_payloads
+           (connection_id, aice_id, payload_hash, payload, wrapped_dek, event_count, schema_version, expires_at)
+         VALUES ($1, 'aice-test-1', 'hash-dup', $2, 'vault:v1:dup', 1, '1.0', NOW() + INTERVAL '5 minutes')
+         RETURNING id`,
+        [connId, Buffer.from("encrypted-dup")],
+      );
+
+      // Insert twice — second should be a no-op
+      await pool.query(
+        `INSERT INTO staged_event_customers (payload_id, customer_id, status)
+         VALUES ($1, $2, 'pending')
+         ON CONFLICT (payload_id, customer_id) DO NOTHING`,
+        [staged.rows[0].id, customerId],
+      );
+      await pool.query(
+        `INSERT INTO staged_event_customers (payload_id, customer_id, status)
+         VALUES ($1, $2, 'pending')
+         ON CONFLICT (payload_id, customer_id) DO NOTHING`,
+        [staged.rows[0].id, customerId],
+      );
+
+      const count = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM staged_event_customers WHERE payload_id = $1`,
+        [staged.rows[0].id],
+      );
+      expect(Number(count.rows[0].cnt)).toBe(1);
+    });
+
+    it("rejects NULL wrapped_dek on insert", async () => {
+      await expect(
+        pool.query(
+          `INSERT INTO staged_event_payloads
+             (aice_id, payload_hash, payload, wrapped_dek, event_count, schema_version, expires_at)
+           VALUES ('aice-test-1', 'hash-null', $1, NULL, 1, '1.0', NOW() + INTERVAL '5 minutes')`,
+          [Buffer.from("data")],
+        ),
+      ).rejects.toThrow();
     });
   });
 
