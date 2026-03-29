@@ -13,10 +13,12 @@ vi.mock("../transit", () => ({
   decryptDataKey: (...args: unknown[]) => mockDecryptDataKey(...args),
 }));
 
+import { dekCache } from "../dek-cache";
 import { decryptPayload, encryptPayload } from "../envelope";
 
 afterEach(() => {
   vi.clearAllMocks();
+  dekCache.clear();
 });
 
 function setupMockKeys() {

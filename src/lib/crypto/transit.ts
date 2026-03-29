@@ -4,7 +4,7 @@ import "server-only";
 // Types
 // ---------------------------------------------------------------------------
 
-interface TransitConfig {
+export interface TransitConfig {
   addr: string;
   token: string;
 }
@@ -119,6 +119,28 @@ export async function rewrapDataKey(
     throw new Error("Transit rewrap: unexpected response shape");
   }
   return newWrapped;
+}
+
+/**
+ * Rotate a Transit named key to a new version.
+ * Existing ciphertext can still be decrypted; new encrypt/datakey
+ * operations will use the latest version.
+ */
+export async function rotateTransitKey(
+  config: TransitConfig,
+  keyName: string,
+): Promise<void> {
+  const url = `${config.addr}/v1/transit/keys/${keyName}/rotate`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "X-Vault-Token": config.token },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Transit keys/${keyName}/rotate failed (${res.status}): ${text}`,
+    );
+  }
 }
 
 /**

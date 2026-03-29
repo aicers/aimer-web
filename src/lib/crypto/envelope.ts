@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { dekCache } from "./dek-cache";
 import {
   type DataKey,
   decryptDataKey,
@@ -88,8 +89,12 @@ export async function decryptPayload(
     throw new Error("Ciphertext too short");
   }
 
-  const config = getTransitConfig();
-  const dek = await decryptDataKey(config, keyName, wrappedDek);
+  const cached = dekCache.get(keyName, wrappedDek);
+  const dek =
+    cached ?? (await decryptDataKey(getTransitConfig(), keyName, wrappedDek));
+  if (!cached) {
+    dekCache.set(keyName, wrappedDek, dek);
+  }
 
   try {
     const iv = ciphertext.subarray(0, IV_BYTES);

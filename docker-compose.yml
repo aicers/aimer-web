@@ -23,26 +23,27 @@ services:
     cap_add:
       - IPC_LOCK
     environment:
-      BAO_DEV_ROOT_TOKEN_ID: ${BAO_DEV_ROOT_TOKEN_ID:-dev-root-token}
-      BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
       BAO_ADDR: "http://127.0.0.1:8200"
     ports:
       - "8200:8200"
     volumes:
+      - ./infra/openbao/config.hcl:/bao/config/config.hcl:ro
       - ./infra/openbao/init-transit.sh:/usr/local/bin/init-transit.sh:ro
+      - bao-data:/bao/data
+      - bao-init:/bao/init
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        bao server -dev &
+        bao server -config=/bao/config/config.hcl &
         BAO_PID=$$!
         /usr/local/bin/init-transit.sh
         wait $$BAO_PID
     healthcheck:
-      test: ["CMD", "bao", "status"]
+      test: ["CMD-SHELL", "BAO_ADDR=http://127.0.0.1:8200 bao status"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
@@ -157,3 +158,5 @@ services:
 
 volumes:
   pgdata:
+  bao-data:
+  bao-init:
