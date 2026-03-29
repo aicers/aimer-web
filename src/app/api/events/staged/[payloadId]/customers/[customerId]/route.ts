@@ -1,8 +1,11 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/auth/audit-stub";
+import { authorize } from "@/lib/auth/authorization";
+import { storeApprovedEvents } from "@/lib/auth/event-storage";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import {
   expireStagedEvents,
+  getStagedPayloadDecrypted,
   updateCustomerStatus,
 } from "@/lib/auth/staged-events";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
@@ -63,30 +66,133 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   await expireStagedEvents(pool);
 
   // Verify the payload belongs to the caller's session and is not expired
-  const ownership = await pool.query<{ id: string }>(
-    `SELECT id FROM staged_event_payloads
+  const ownership = await pool.query<{
+    id: string;
+    aice_id: string;
+    event_count: number;
+    schema_version: string;
+    connection_id: string | null;
+  }>(
+    `SELECT id, aice_id, event_count, schema_version, connection_id
+     FROM staged_event_payloads
      WHERE id = $1 AND session_id = $2 AND expires_at > NOW()`,
     [payloadId, auth.sessionId],
   );
   if (ownership.rows.length === 0) {
+    await auditLog({
+      actorId: auth.accountId,
+      authContext: "general",
+      action: `staged_event.${body.action}.not_found`,
+      targetType: "staged_event_customer",
+      targetId: payloadId,
+      ipAddress: auth.meta.ipAddress,
+      sid: auth.sessionId,
+      customerId,
+      details: { customerId, reason: "payload_not_owned" },
+    });
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
-  // Verify the caller has access to this customer
-  if (auth.bridgeCustomerIds) {
-    if (!auth.bridgeCustomerIds.includes(customerId)) {
-      return Response.json({ error: "Forbidden" }, { status: 403 });
-    }
+  const staged = ownership.rows[0];
+
+  // Authorize: analyses:create with operationKind 'ingest'
+  const authResult = await withTransaction(pool, (client) =>
+    authorize(client, "general", auth.accountId, "analyses:create", {
+      customerId,
+      aiceId: staged.aice_id,
+      requiresAiceId: true,
+      operationKind: "ingest",
+      bridgeScope: auth.bridgeCustomerIds
+        ? {
+            aiceId: auth.bridgeAiceId ?? "",
+            customerIds: auth.bridgeCustomerIds,
+          }
+        : null,
+    }),
+  );
+  const auditBase = {
+    actorId: auth.accountId,
+    authContext: "general" as const,
+    targetType: "staged_event_customer",
+    targetId: payloadId,
+    ipAddress: auth.meta.ipAddress,
+    sid: auth.sessionId,
+    customerId,
+  };
+
+  if (!authResult.authorized) {
+    await auditLog({
+      ...auditBase,
+      action: `staged_event.${body.action}.denied`,
+      details: { customerId, reason: "authorization_failed" },
+    });
+    return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const result = await withTransaction(pool, (client) =>
-    updateCustomerStatus(
-      client,
-      payloadId,
-      customerId,
-      body.action as "approve" | "reject",
-    ),
-  );
+  let eventId: string | undefined;
+  let result: { updated: boolean; newStatus: string };
+
+  if (body.action === "approve") {
+    // Decrypt BEFORE the transaction — uses pool, not the txn client.
+    const decrypted = await getStagedPayloadDecrypted(pool, payloadId);
+    if (!decrypted) {
+      return Response.json(
+        { error: "Staged payload not found" },
+        { status: 404 },
+      );
+    }
+
+    const source = staged.connection_id ? "bridge" : "manual";
+
+    // A single auth_db transaction claims the pending row with FOR UPDATE,
+    // writes to customer_db while holding the lock, then updates the status.
+    // This prevents concurrent approve requests from creating duplicate
+    // detection events: the second request blocks on FOR UPDATE and finds
+    // the row already non-pending when the first transaction commits.
+    try {
+      result = await withTransaction(pool, async (client) => {
+        const claim = await client.query(
+          `SELECT 1 FROM staged_event_customers
+           WHERE payload_id = $1 AND customer_id = $2 AND status = 'pending'
+           FOR UPDATE`,
+          [payloadId, customerId],
+        );
+        if (claim.rows.length === 0) {
+          return { updated: false, newStatus: "unchanged" };
+        }
+
+        // Store in customer_db while holding the auth_db row lock
+        eventId = await storeApprovedEvents({
+          customerId,
+          aiceId: staged.aice_id,
+          eventCount: staged.event_count,
+          schemaVersion: staged.schema_version,
+          source,
+          connectionId: staged.connection_id,
+          ingestedBy: auth.accountId,
+          plaintext: decrypted.payload,
+          payloadHash: decrypted.payloadHash,
+        });
+
+        return updateCustomerStatus(client, payloadId, customerId, "approve");
+      });
+    } catch (err) {
+      await auditLog({
+        ...auditBase,
+        action: "staged_event.approve.failed",
+        details: {
+          customerId,
+          reason: "storage_error",
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+      throw err;
+    }
+  } else {
+    result = await withTransaction(pool, (client) =>
+      updateCustomerStatus(client, payloadId, customerId, "reject"),
+    );
+  }
 
   if (!result.updated) {
     return Response.json(
@@ -96,19 +202,10 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   }
 
   await auditLog({
-    actorId: auth.accountId,
-    authContext: "general",
+    ...auditBase,
     action: `staged_event.${body.action}`,
-    targetType: "staged_event_customer",
-    targetId: payloadId,
-    details: { customerId, newStatus: result.newStatus },
-    ipAddress: auth.meta.ipAddress,
-    sid: auth.sessionId,
-    customerId,
+    details: { customerId, newStatus: result.newStatus, eventId },
   });
 
-  // TODO(#52): On approve, re-encrypt with customer-specific DEK and
-  // store in customer_db. For now, only the status is updated.
-
-  return Response.json({ status: result.newStatus });
+  return Response.json({ status: result.newStatus, eventId });
 });
