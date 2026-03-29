@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { decryptDataKey, generateDataKey, rewrapDataKey } from "../transit";
+import {
+  decryptDataKey,
+  generateDataKey,
+  rewrapDataKey,
+  rotateTransitKey,
+} from "../transit";
 
 const config = { addr: "http://localhost:8200", token: "test-token" };
 
@@ -108,5 +113,29 @@ describe("rewrapDataKey", () => {
     expect(url).toBe("http://localhost:8200/v1/transit/rewrap/staging-events");
     const body = JSON.parse(opts.body);
     expect(body.ciphertext).toBe("vault:v1:oldwrappedkey");
+  });
+});
+
+describe("rotateTransitKey", () => {
+  it("calls POST transit/keys/<name>/rotate", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await rotateTransitKey(config, "customer-abc");
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url, opts] = mockFetch.mock.calls[0];
+    expect(url).toBe(
+      "http://localhost:8200/v1/transit/keys/customer-abc/rotate",
+    );
+    expect(opts.method).toBe("POST");
+    expect(opts.headers["X-Vault-Token"]).toBe("test-token");
+  });
+
+  it("throws on non-OK response", async () => {
+    mockFetch.mockResolvedValueOnce(new Response("forbidden", { status: 403 }));
+
+    await expect(rotateTransitKey(config, "customer-abc")).rejects.toThrow(
+      "Transit keys/customer-abc/rotate failed (403)",
+    );
   });
 });

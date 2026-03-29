@@ -190,11 +190,30 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
-      # OpenBao and Keycloak services will be added when e2e tests require them.
+      openbao:
+        image: openbao/openbao:latest
+        env:
+          BAO_DEV_ROOT_TOKEN_ID: e2e-root-token
+          BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+        ports:
+          - 8200:8200
+        options: >-
+          --health-cmd "wget -q --spider http://127.0.0.1:8200/v1/sys/health || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      # Keycloak service will be added when e2e tests require it.
     steps:
       - uses: actions/checkout@v6
       - name: Create databases and roles
         run: psql "postgres://postgres:postgres@localhost:5432/auth_db" -f infra/postgres/init-databases.sql
+      - name: Configure OpenBao Transit
+        run: |
+          curl -sf -X POST http://localhost:8200/v1/sys/mounts/transit \
+            -H "X-Vault-Token: e2e-root-token" \
+            -d '{"type": "transit"}'
+          curl -sf -X POST http://localhost:8200/v1/transit/keys/staging-events \
+            -H "X-Vault-Token: e2e-root-token"
       - uses: pnpm/action-setup@v5
       - uses: actions/setup-node@v6
         with:
@@ -208,7 +227,10 @@ jobs:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
           DATABASE_MIGRATION_URL: postgres://postgres:postgres@localhost:5432/auth_db
           AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
+          CUSTOMER_DATABASE_OWNER_URL: postgres://postgres:postgres@localhost:5432/auth_db
           CSRF_SECRET: e2e-test-csrf-secret
+          BAO_ADDR: http://localhost:8200
+          BAO_TOKEN: e2e-root-token
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:
