@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/auth/audit-stub";
+import { authorize } from "@/lib/auth/authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { stageManualUpload } from "@/lib/auth/staged-events";
 import { encryptPayload } from "@/lib/crypto/envelope";
-import { getAuthPool } from "@/lib/db/client";
+import { getAuthPool, withTransaction } from "@/lib/db/client";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -68,7 +69,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   }
 
   const eventCount = Number(eventCountField);
-  if (!Number.isFinite(eventCount) || eventCount < 1) {
+  if (!Number.isInteger(eventCount) || eventCount < 1) {
     return Response.json(
       { error: "Missing or invalid event_count" },
       { status: 400 },
@@ -85,41 +86,67 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     );
   }
 
-  // Verify caller has access to the customer
-  if (auth.bridgeCustomerIds) {
-    if (!auth.bridgeCustomerIds.includes(customerIdField)) {
-      return Response.json({ error: "Forbidden" }, { status: 403 });
-    }
-    // Verify aice_id matches bridge scope
-    if (auth.bridgeAiceId && auth.bridgeAiceId !== aiceIdField) {
-      return Response.json(
-        { error: "aice_id does not match bridge scope" },
-        { status: 403 },
-      );
-    }
-  } else {
-    // Non-bridge session: verify account has access to the customer
-    const pool = getAuthPool();
-    const accessCheck = await pool.query(
-      `SELECT 1 FROM account_customer_memberships
-       WHERE account_id = $1 AND customer_id = $2
-       UNION ALL
-       SELECT 1 FROM analyst_customer_assignments aca
-       JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
-       WHERE aca.account_id = $1 AND aca.customer_id = $2
-       LIMIT 1`,
-      [auth.accountId, customerIdField],
-    );
-    if (accessCheck.rows.length === 0) {
-      return Response.json({ error: "Forbidden" }, { status: 403 });
-    }
+  // Authorize: analyses:create with operationKind 'ingest'
+  const pool = getAuthPool();
+  const authResult = await withTransaction(pool, (client) =>
+    authorize(client, "general", auth.accountId, "analyses:create", {
+      customerId: customerIdField,
+      aiceId: aiceIdField,
+      requiresAiceId: true,
+      operationKind: "ingest",
+      bridgeScope: auth.bridgeCustomerIds
+        ? {
+            aiceId: auth.bridgeAiceId ?? "",
+            customerIds: auth.bridgeCustomerIds,
+          }
+        : null,
+    }),
+  );
+  const auditBase = {
+    actorId: auth.accountId,
+    authContext: "general" as const,
+    targetType: "staged_event_payload",
+    ipAddress: auth.meta.ipAddress,
+    sid: auth.sessionId,
+    customerId: customerIdField,
+  };
+
+  if (!authResult.authorized) {
+    await auditLog({
+      ...auditBase,
+      action: "staged_event.manual_upload.denied",
+      targetId: "",
+      details: {
+        customerId: customerIdField,
+        aiceId: aiceIdField,
+        reason: "authorization_failed",
+      },
+    });
+    return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const payloadBuffer = Buffer.from(eventsDataBytes);
   const payloadHash = createHash("sha256").update(payloadBuffer).digest("hex");
-  const { ciphertext, wrappedDek } = await encryptPayload(payloadBuffer);
 
-  const pool = getAuthPool();
+  let ciphertext: Buffer;
+  let wrappedDek: string;
+  try {
+    ({ ciphertext, wrappedDek } = await encryptPayload(payloadBuffer));
+  } catch (err) {
+    await auditLog({
+      ...auditBase,
+      action: "staged_event.manual_upload.failed",
+      targetId: "",
+      details: {
+        customerId: customerIdField,
+        aiceId: aiceIdField,
+        reason: "encryption_error",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw err;
+  }
+
   const payloadId = await stageManualUpload(pool, {
     sessionId: auth.sessionId,
     aiceId: aiceIdField,
@@ -132,19 +159,14 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   });
 
   await auditLog({
-    actorId: auth.accountId,
-    authContext: "general",
+    ...auditBase,
     action: "staged_event.manual_upload",
-    targetType: "staged_event_payload",
     targetId: payloadId,
     details: {
       customerId: customerIdField,
       aiceId: aiceIdField,
       eventCount,
     },
-    ipAddress: auth.meta.ipAddress,
-    sid: auth.sessionId,
-    customerId: customerIdField,
   });
 
   return Response.json({ payloadId, eventCount }, { status: 201 });

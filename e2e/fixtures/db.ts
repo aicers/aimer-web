@@ -15,6 +15,7 @@ export interface TestAccount {
 export interface TestData {
   customer: { id: string; name: string; externalKey: string };
   customerB: { id: string; name: string; externalKey: string };
+  aiceEnvironment: { aiceId: string; name: string };
   manager: TestAccount;
   user: TestAccount;
   analyst: TestAccount;
@@ -117,6 +118,20 @@ export async function seedTestData(): Promise<TestData> {
     `INSERT INTO customers (id, external_key, name, status, database_status)
      VALUES ($1, $2, $3, 'active', 'active')`,
     [customerBId, customerBKey, customerBName],
+  );
+
+  // AICE environment linked to both customers
+  const aiceId = `aice-e2e-${suffix}`;
+  const aiceName = `E2E AICE ${suffix}`;
+  await p.query(
+    `INSERT INTO aice_environments (aice_id, name, status)
+     VALUES ($1, $2, 'active')`,
+    [aiceId, aiceName],
+  );
+  await p.query(
+    `INSERT INTO aice_environment_customers (aice_id, customer_id)
+     VALUES ($1, $2), ($1, $3)`,
+    [aiceId, customerId, customerBId],
   );
 
   // Analyst account (analyst_eligible=true, assigned to customer A)
@@ -225,6 +240,7 @@ export async function seedTestData(): Promise<TestData> {
       name: customerBName,
       externalKey: customerBKey,
     },
+    aiceEnvironment: { aiceId, name: aiceName },
     manager: {
       accountId: mgrAccountId,
       sessionId: mgrSession.rows[0].sid,
@@ -289,6 +305,13 @@ export async function cleanupTestData(data: TestData): Promise<void> {
     `DELETE FROM account_customer_memberships WHERE customer_id = ANY($1)`,
     [customerIds],
   );
+  await p.query(
+    `DELETE FROM aice_environment_customers WHERE customer_id = ANY($1)`,
+    [customerIds],
+  );
+  await p.query(`DELETE FROM aice_environments WHERE aice_id = $1`, [
+    data.aiceEnvironment.aiceId,
+  ]);
   await p.query(`DELETE FROM accounts WHERE id = ANY($1)`, [accountIds]);
   await p.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
 }

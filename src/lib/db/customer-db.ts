@@ -71,3 +71,15 @@ export function getCustomerOwnerTemplateUrl(): string {
   }
   return url;
 }
+
+/**
+ * Return the template URL for customer DB runtime connections.
+ * Uses the restricted `aimer_customer` role — never the owner role.
+ */
+export function getCustomerRuntimeTemplateUrl(): string {
+  const url = process.env.CUSTOMER_DATABASE_URL;
+  if (!url) {
+    throw new Error("CUSTOMER_DATABASE_URL environment variable is required");
+  }
+  return url;
+}
