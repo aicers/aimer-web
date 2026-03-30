@@ -46,6 +46,7 @@
     "dashboard": "Dashboard",
     "members": "Members",
     "customerSettings": "Customer Settings",
+    "settings": "Settings",
     "admin": "Admin"
   },
   "admin": {
@@ -108,7 +109,10 @@
     "selectCustomer": "Customer",
     "selectEnvironment": "Environment",
     "bridgeLocked": "Locked to bridge session",
-    "analyst": "Analyst"
+    "analyst": "Analyst",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "openMenu": "Open navigation menu"
   },
   "validation": {
     "required": "This field is required",

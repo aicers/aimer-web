@@ -2,9 +2,10 @@ import { useTranslations } from "next-intl";
 
 export default function HomePage() {
   const t = useTranslations("nav");
+
   return (
-    <div className="flex h-full items-center justify-center">
-      <h1 className="text-2xl font-bold text-foreground">{t("dashboard")}</h1>
+    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <h1 className="text-2xl font-semibold text-foreground">{t("home")}</h1>
     </div>
   );
 }

@@ -46,6 +46,7 @@
     "dashboard": "대시보드",
     "members": "멤버",
     "customerSettings": "고객 설정",
+    "settings": "설정",
     "admin": "관리자"
   },
   "admin": {
@@ -108,7 +109,10 @@
     "selectCustomer": "고객",
     "selectEnvironment": "환경",
     "bridgeLocked": "브릿지 세션으로 제한됨",
-    "analyst": "분석가"
+    "analyst": "분석가",
+    "expandSidebar": "사이드바 펼치기",
+    "collapseSidebar": "사이드바 접기",
+    "openMenu": "탐색 메뉴 열기"
   },
   "validation": {
     "required": "필수 입력 항목입니다",
