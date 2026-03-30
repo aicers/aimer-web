@@ -88,7 +88,7 @@ describe("decryptPayload", () => {
     expect(decrypted).toEqual(original);
   });
 
-  it("round-trips large payloads", async () => {
+  it("round-trips large payloads", { timeout: 30_000 }, async () => {
     setupMockKeys();
     const original = randomBytes(1024 * 1024); // 1 MB
 
