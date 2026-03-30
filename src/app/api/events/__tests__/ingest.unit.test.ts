@@ -32,7 +32,7 @@ vi.mock("@/lib/crypto/envelope", () => ({
 }));
 
 const mockAuditLog = vi.fn(async () => {});
-vi.mock("@/lib/auth/audit-stub", () => ({
+vi.mock("@/lib/audit", () => ({
   auditLog: mockAuditLog,
 }));
 
@@ -150,7 +150,7 @@ describe("POST /api/events/ingest", () => {
     expect(res.status).toBe(403);
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "staged_event.manual_upload.denied",
+        action: "detection_events.upload_denied",
         details: expect.objectContaining({
           reason: "authorization_failed",
         }),

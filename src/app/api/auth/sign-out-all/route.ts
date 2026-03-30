@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { clearAllAuthCookies } from "@/lib/auth/cookies";
 import { withLogoutAuth } from "@/lib/auth/guards";
 import { buildKeycloakLogoutUrl } from "@/lib/auth/keycloak-logout";
@@ -26,15 +26,17 @@ export const POST = withLogoutAuth(async (req: NextRequest, auth) => {
 
   await clearAllAuthCookies();
 
-  await auditLog({
-    actorId: auth.accountId ?? "unknown",
-    authContext: "general",
-    action: "auth.sign_out_all",
-    targetType: "account",
-    targetId: auth.accountId ?? undefined,
-    ipAddress: auth.meta.ipAddress,
-    sid: auth.sessionId ?? undefined,
-  });
+  if (auth.accountId) {
+    void auditLog({
+      actorId: auth.accountId,
+      authContext: "general",
+      action: "general.auth.sign_out_all",
+      targetType: "account",
+      targetId: auth.accountId,
+      ipAddress: auth.meta.ipAddress,
+      sid: auth.sessionId ?? undefined,
+    });
+  }
 
   const logoutUrl = await buildKeycloakLogoutUrl(req.nextUrl.origin);
   return Response.json({ logoutUrl });

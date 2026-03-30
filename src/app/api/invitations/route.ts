@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { listPendingInvitations } from "@/lib/auth/invitation-management";
@@ -97,10 +97,10 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       }),
     );
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "general",
-      action: "invitation.create",
+      action: "invitation.created",
       targetType: "invitation",
       targetId: result.id,
       details: { customerId, email, role },

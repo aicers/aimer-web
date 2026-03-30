@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import {
@@ -56,10 +56,10 @@ export const PUT = withAuth(
 
       clearSessionPolicyCache();
 
-      await auditLog({
+      void auditLog({
         actorId: auth.accountId,
         authContext: "admin",
-        action: "session-policy.update",
+        action: "system.settings_updated",
         targetType: "system-settings",
         targetId: "session_policy",
         details: { policy },

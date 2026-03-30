@@ -402,8 +402,9 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
       [customerId],
     );
     expect(after.rows.length).toBe(1);
-    expect(after.rows[0].actor_id).toBe("[redacted]");
-    expect(after.rows[0].details).toEqual({});
+    expect(after.rows[0].actor_id).toBe(managerAccountId);
+    // {"key":"value"} has no PII keys, so details are preserved as-is
+    expect(after.rows[0].details).toEqual({ key: "value" });
     expect(after.rows[0].ip_address).toBeNull();
 
     // Verify self-audit row was created

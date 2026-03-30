@@ -122,29 +122,8 @@ export async function deleteCustomer(
   // Step 6: Anonymize audit log entries (self-audited)
   if (!deps?.skipAuditAnonymize) {
     try {
-      const anonymized = await auditOwnerPool.query(
-        `UPDATE audit_logs
-         SET actor_id = '[redacted]',
-             details = '{}'::jsonb,
-             ip_address = NULL
-         WHERE customer_id = $1`,
-        [customerId],
-      );
-
-      // Self-audit: record the anonymization operation itself
-      if ((anonymized.rowCount ?? 0) > 0) {
-        await auditOwnerPool.query(
-          `INSERT INTO audit_logs
-             (actor_id, auth_context, action, target_type, target_id, customer_id, details)
-           VALUES ('[system]', 'admin', 'audit.anonymize', 'customer', $1,
-                   $2, $3::jsonb)`,
-          [
-            customerId,
-            customerId,
-            JSON.stringify({ rows_anonymized: anonymized.rowCount }),
-          ],
-        );
-      }
+      const { anonymizeCustomerAuditLogs } = await import("../audit/anonymize");
+      await anonymizeCustomerAuditLogs(auditOwnerPool, customerId);
     } catch (err) {
       console.error(
         `Failed to anonymize audit logs for customer ${customerId}:`,

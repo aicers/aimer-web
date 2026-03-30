@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { changeRole, removeMember } from "@/lib/auth/members";
@@ -48,10 +48,10 @@ export const DELETE = withAuth(async (req: NextRequest, auth) => {
       }),
     );
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "general",
-      action: "member.remove",
+      action: "membership.removed",
       targetType: "membership",
       targetId: targetAccountId,
       details: { customerId },
@@ -138,10 +138,10 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
       }),
     );
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "general",
-      action: "member.change_role",
+      action: "membership.role_changed",
       targetType: "membership",
       targetId: targetAccountId,
       details: { customerId, roleId },

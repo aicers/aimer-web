@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import type { AuditAction } from "@/lib/audit";
+import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { storeApprovedEvents } from "@/lib/auth/event-storage";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -79,10 +80,10 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
     [payloadId, auth.sessionId],
   );
   if (ownership.rows.length === 0) {
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "general",
-      action: `staged_event.${body.action}.not_found`,
+      action: "detection_events.transfer_not_found" satisfies AuditAction,
       targetType: "staged_event_customer",
       targetId: payloadId,
       ipAddress: auth.meta.ipAddress,
@@ -121,9 +122,9 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   };
 
   if (!authResult.authorized) {
-    await auditLog({
+    void auditLog({
       ...auditBase,
-      action: `staged_event.${body.action}.denied`,
+      action: "detection_events.transfer_denied" satisfies AuditAction,
       details: { customerId, reason: "authorization_failed" },
     });
     return Response.json({ error: "Forbidden" }, { status: 403 });
@@ -177,9 +178,9 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
         return updateCustomerStatus(client, payloadId, customerId, "approve");
       });
     } catch (err) {
-      await auditLog({
+      void auditLog({
         ...auditBase,
-        action: "staged_event.approve.failed",
+        action: "detection_events.transfer_failed",
         details: {
           customerId,
           reason: "storage_error",
@@ -201,9 +202,13 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
     );
   }
 
-  await auditLog({
+  const completedAction: AuditAction =
+    body.action === "approve"
+      ? "detection_events.transfer_approved"
+      : "detection_events.transfer_rejected";
+  void auditLog({
     ...auditBase,
-    action: `staged_event.${body.action}`,
+    action: completedAction,
     details: { customerId, newStatus: result.newStatus, eventId },
   });
 

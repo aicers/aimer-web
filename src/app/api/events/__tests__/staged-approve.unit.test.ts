@@ -20,7 +20,7 @@ vi.mock("@/lib/auth/staged-events", () => ({
   expireStagedEvents: vi.fn(async () => 0),
 }));
 
-vi.mock("@/lib/auth/audit-stub", () => ({
+vi.mock("@/lib/audit", () => ({
   auditLog: mockAuditLog,
 }));
 
@@ -161,7 +161,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     );
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "staged_event.approve",
+        action: "detection_events.transfer_approved",
         targetId: PAYLOAD_ID,
         customerId: CUSTOMER_ID,
       }),
@@ -270,7 +270,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     expect(mockStoreApprovedEvents).not.toHaveBeenCalled();
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "staged_event.approve.denied",
+        action: "detection_events.transfer_denied",
         details: expect.objectContaining({
           reason: "authorization_failed",
         }),
@@ -315,7 +315,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     expect(mockUpdateCustomerStatus).not.toHaveBeenCalled();
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "staged_event.approve.failed",
+        action: "detection_events.transfer_failed",
         details: expect.objectContaining({
           reason: "storage_error",
           error: "customer_db unavailable",
@@ -361,7 +361,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     expect(res.status).toBe(404);
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "staged_event.approve.not_found",
+        action: "detection_events.transfer_not_found",
         details: expect.objectContaining({
           reason: "payload_not_owned",
         }),

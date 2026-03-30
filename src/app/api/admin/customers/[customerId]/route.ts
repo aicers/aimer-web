@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { deleteCustomer } from "@/lib/auth/delete-customer";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -37,10 +37,10 @@ export const DELETE = withAuth(
       throw err;
     }
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "admin",
-      action: "customer.delete",
+      action: "customer.deleted",
       targetType: "customer",
       targetId: customerId,
       ipAddress: auth.meta.ipAddress,

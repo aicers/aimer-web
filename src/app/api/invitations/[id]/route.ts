@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { revokeInvitation } from "@/lib/auth/invitation-management";
@@ -28,10 +28,10 @@ export const DELETE = withAuth(async (req: NextRequest, auth) => {
   try {
     await revokeInvitation(getAuthPool(), auth.accountId, id);
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "general",
-      action: "invitation.revoke",
+      action: "invitation.revoked",
       targetType: "invitation",
       targetId: id,
       ipAddress: auth.meta.ipAddress,
