@@ -2,9 +2,9 @@
 
 import { useTranslations } from "next-intl";
 
-import { LocaleSwitcher } from "@/components/locale-switcher";
-import { Sidebar } from "@/components/sidebar";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { Breadcrumbs } from "@/components/breadcrumbs";
+import { HEADER_HEIGHT } from "@/components/layout-constants";
+import { MobileSidebarTrigger, Sidebar } from "@/components/sidebar";
 import {
   CustomerContextProvider,
   useCustomerContext,
@@ -26,9 +26,11 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
     <div className="flex h-screen">
       <Sidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 items-center justify-end gap-2 border-b border-border px-4">
-          <ThemeToggle />
-          <LocaleSwitcher />
+        <header
+          className={`flex ${HEADER_HEIGHT} shrink-0 items-center gap-2 border-b border-border px-4`}
+        >
+          <MobileSidebarTrigger />
+          <Breadcrumbs />
         </header>
         <main id="main-content" className="flex-1 overflow-y-auto">
           {children}
