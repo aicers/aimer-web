@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { stageManualUpload } from "@/lib/auth/staged-events";
@@ -112,9 +112,9 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   };
 
   if (!authResult.authorized) {
-    await auditLog({
+    void auditLog({
       ...auditBase,
-      action: "staged_event.manual_upload.denied",
+      action: "detection_events.upload_denied",
       targetId: "",
       details: {
         customerId: customerIdField,
@@ -133,9 +133,9 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   try {
     ({ ciphertext, wrappedDek } = await encryptPayload(payloadBuffer));
   } catch (err) {
-    await auditLog({
+    void auditLog({
       ...auditBase,
-      action: "staged_event.manual_upload.failed",
+      action: "detection_events.upload_failed",
       targetId: "",
       details: {
         customerId: customerIdField,
@@ -158,9 +158,9 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     customerIds: [customerIdField],
   });
 
-  await auditLog({
+  void auditLog({
     ...auditBase,
-    action: "staged_event.manual_upload",
+    action: "detection_events.upload_completed",
     targetId: payloadId,
     details: {
       customerId: customerIdField,

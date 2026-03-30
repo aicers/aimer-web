@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
+import { auditLog } from "../audit";
 import { getAuthPool, query } from "../db/client";
-import { auditLog } from "./audit-stub";
 import { type AuthContext, clearAllAuthCookies } from "./cookies";
 import { verifyJwtForLogout } from "./jwt";
 
@@ -48,13 +48,13 @@ export async function enforceSameAccount(
 
   await clearAllAuthCookies();
 
-  await auditLog({
+  void auditLog({
     actorId: currentAccountId,
     authContext: currentCtx,
-    action: "auth.same_account_enforcement",
+    action: "session.cross_context_mismatch",
     targetType: "account",
     targetId: previousAccountId,
-    details: { reason: "different_account_sign_in" },
+    details: { reason: "account_switched" },
     ipAddress: meta.ipAddress,
   });
 

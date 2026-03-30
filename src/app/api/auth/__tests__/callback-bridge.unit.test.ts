@@ -65,7 +65,7 @@ vi.mock("@/lib/auth/invitations", () => ({
   acceptInvitation: vi.fn(async () => ({ deny: null })),
 }));
 
-vi.mock("@/lib/auth/audit-stub", () => ({
+vi.mock("@/lib/audit", () => ({
   auditLog: vi.fn(async () => {}),
 }));
 

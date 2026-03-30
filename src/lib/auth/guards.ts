@@ -1,4 +1,6 @@
 import type { NextRequest } from "next/server";
+import { auditLog } from "../audit";
+import { withCorrelationId } from "../audit/correlation";
 import { getAuthPool } from "../db/client";
 import type { AuthContext } from "./cookies";
 import { getAuthCookie, setAuthCookies } from "./cookies";
@@ -59,55 +61,79 @@ export function withAuth(
       return Response.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Session policy check
-    const policy = await getSessionPolicy();
-    const ctxPolicy = policy[ctx];
-
-    let bridgeAiceId: string | null = null;
-    let bridgeCustomerIds: string[] | null = null;
-    try {
-      const session = await validateSession(
-        getAuthPool(),
-        claims.sid,
-        ctxPolicy,
-      );
-      bridgeAiceId = session.bridgeAiceId;
-      bridgeCustomerIds = session.bridgeCustomerIds;
-    } catch (err) {
-      if (err instanceof SessionExpiredError) {
-        return Response.json(
-          { error: `Session expired (${err.reason})` },
-          { status: 401 },
-        );
-      }
-      if (err instanceof SessionRevokedError) {
-        return Response.json({ error: "Session revoked" }, { status: 401 });
-      }
-      return Response.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Rotation
-    const rotation = await maybeRotateSession({ claims, ctx });
-    if (rotation.rotated && rotation.jwt && rotation.csrfToken) {
-      const expiresAt = rotation.expiresAt ?? claims.exp;
-      await setAuthCookies(ctx, {
-        jwt: rotation.jwt,
-        csrfToken: rotation.csrfToken,
-        expiresAt,
-      });
-    }
-
     const meta = extractRequestMeta(req);
 
-    return handler(req, {
-      accountId: claims.sub,
-      sessionId: claims.sid,
-      authContext: ctx,
-      tokenVersion: claims.tv,
-      iat: rotation.rotated && rotation.iat ? rotation.iat : claims.iat,
-      meta,
-      bridgeAiceId,
-      bridgeCustomerIds,
+    return withCorrelationId(async () => {
+      // Session policy check
+      const policy = await getSessionPolicy();
+      const ctxPolicy = policy[ctx];
+
+      let bridgeAiceId: string | null = null;
+      let bridgeCustomerIds: string[] | null = null;
+      try {
+        const session = await validateSession(
+          getAuthPool(),
+          claims.sid,
+          ctxPolicy,
+        );
+        bridgeAiceId = session.bridgeAiceId;
+        bridgeCustomerIds = session.bridgeCustomerIds;
+      } catch (err) {
+        if (err instanceof SessionExpiredError) {
+          const action =
+            err.reason === "idle"
+              ? "session.idle_timeout"
+              : "session.absolute_timeout";
+          auditLog({
+            actorId: claims.sub,
+            authContext: ctx,
+            action,
+            targetType: "session",
+            targetId: claims.sid,
+            ipAddress: meta.ipAddress,
+            sid: claims.sid,
+          });
+          return Response.json(
+            { error: `Session expired (${err.reason})` },
+            { status: 401 },
+          );
+        }
+        if (err instanceof SessionRevokedError) {
+          auditLog({
+            actorId: claims.sub,
+            authContext: ctx,
+            action: "session.revoked",
+            targetType: "session",
+            targetId: claims.sid,
+            ipAddress: meta.ipAddress,
+            sid: claims.sid,
+          });
+          return Response.json({ error: "Session revoked" }, { status: 401 });
+        }
+        return Response.json({ error: "Unauthorized" }, { status: 401 });
+      }
+
+      // Rotation
+      const rotation = await maybeRotateSession({ claims, ctx });
+      if (rotation.rotated && rotation.jwt && rotation.csrfToken) {
+        const expiresAt = rotation.expiresAt ?? claims.exp;
+        await setAuthCookies(ctx, {
+          jwt: rotation.jwt,
+          csrfToken: rotation.csrfToken,
+          expiresAt,
+        });
+      }
+
+      return handler(req, {
+        accountId: claims.sub,
+        sessionId: claims.sid,
+        authContext: ctx,
+        tokenVersion: claims.tv,
+        iat: rotation.rotated && rotation.iat ? rotation.iat : claims.iat,
+        meta,
+        bridgeAiceId,
+        bridgeCustomerIds,
+      });
     });
   };
 }
@@ -186,24 +212,28 @@ export function withLogoutAuth(
     const token = req.cookies.get(cookieName)?.value;
 
     if (!token) {
-      return handler(req, {
-        sessionId: null,
-        accountId: null,
-        iat: null,
-        meta,
-      });
+      return withCorrelationId(() =>
+        handler(req, {
+          sessionId: null,
+          accountId: null,
+          iat: null,
+          meta,
+        }),
+      );
     }
 
     const claims = await verifyJwtForLogout(token, ctx);
 
     if (!claims) {
       // Signature failed — proceed with cookie deletion only
-      return handler(req, {
-        sessionId: null,
-        accountId: null,
-        iat: null,
-        meta,
-      });
+      return withCorrelationId(() =>
+        handler(req, {
+          sessionId: null,
+          accountId: null,
+          iat: null,
+          meta,
+        }),
+      );
     }
 
     const csrfErr = verifyCsrf(req, {
@@ -213,11 +243,13 @@ export function withLogoutAuth(
     });
     if (csrfErr) return csrfErr;
 
-    return handler(req, {
-      sessionId: claims.sid,
-      accountId: claims.sub,
-      iat: claims.iat,
-      meta,
-    });
+    return withCorrelationId(() =>
+      handler(req, {
+        sessionId: claims.sid,
+        accountId: claims.sub,
+        iat: claims.iat,
+        meta,
+      }),
+    );
   };
 }

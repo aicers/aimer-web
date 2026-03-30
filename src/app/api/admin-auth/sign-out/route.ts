@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { clearAuthCookies, getAuthCookie } from "@/lib/auth/cookies";
 import { withLogoutAuth } from "@/lib/auth/guards";
 import { buildKeycloakLogoutUrl } from "@/lib/auth/keycloak-logout";
@@ -21,15 +21,17 @@ export const POST = withLogoutAuth(
     // Clear admin cookies only — preserve general session
     await clearAuthCookies("admin");
 
-    await auditLog({
-      actorId: auth.accountId ?? "unknown",
-      authContext: "admin",
-      action: "admin.auth.sign_out",
-      targetType: "session",
-      targetId: auth.sessionId ?? undefined,
-      ipAddress: auth.meta.ipAddress,
-      sid: auth.sessionId ?? undefined,
-    });
+    if (auth.accountId) {
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "admin",
+        action: "admin.auth.sign_out",
+        targetType: "session",
+        targetId: auth.sessionId ?? undefined,
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId ?? undefined,
+      });
+    }
 
     // Conditional IdP logout: preserve SSO if general session exists
     const generalToken = await getAuthCookie("general");

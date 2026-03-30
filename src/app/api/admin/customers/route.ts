@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { createCustomer } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -89,10 +89,10 @@ export const POST = withAuth(
       const pool = getAuthPool();
       const databaseStatus = await provisionCustomerDb(pool, result.id);
 
-      await auditLog({
+      void auditLog({
         actorId: auth.accountId,
         authContext: "admin",
-        action: "customer.create",
+        action: "customer.created",
         targetType: "customer",
         targetId: result.id,
         details: { name, externalKey, managerAccountId, databaseStatus },

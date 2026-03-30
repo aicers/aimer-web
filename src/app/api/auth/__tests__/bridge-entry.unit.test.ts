@@ -32,8 +32,9 @@ vi.mock("@/lib/auth/cookies", () => ({
   clearInvitationTokenCookie,
 }));
 
-vi.mock("@/lib/auth/audit-stub", () => ({
+vi.mock("@/lib/audit", () => ({
   auditLog: vi.fn(async () => {}),
+  UNKNOWN_ACTOR_ID: "unknown",
 }));
 
 vi.mock("@/lib/db/client", () => ({

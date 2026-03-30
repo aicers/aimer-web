@@ -1,0 +1,95 @@
+/**
+ * Canonical audit action names per Discussion #10 §4.
+ *
+ * Adding or removing an action here is intentional — the TypeScript
+ * compiler will flag every call site that uses a stale name.
+ */
+export type AuditAction =
+  // General auth
+  | "general.auth.sign_in_success"
+  | "general.auth.sign_in_denied"
+  | "general.auth.sign_out"
+  | "general.auth.sign_out_all"
+  // Admin auth
+  | "admin.auth.sign_in_success"
+  | "admin.auth.sign_in_denied"
+  | "admin.auth.sign_out"
+  | "admin.auth.sign_out_all"
+  // Session
+  | "session.ip_mismatch"
+  | "session.ua_mismatch"
+  | "session.idle_timeout"
+  | "session.absolute_timeout"
+  | "session.revoked"
+  | "session.cross_context_mismatch"
+  // Bridge
+  | "bridge.connection_request"
+  | "bridge.connection_granted"
+  | "bridge.connection_denied"
+  | "bridge.write_attempt_blocked"
+  // Invitation
+  | "invitation.created"
+  | "invitation.accepted"
+  | "invitation.failed"
+  | "invitation.expired"
+  | "invitation.revoked"
+  // Account
+  | "account.created"
+  | "account.updated"
+  | "account.suspended"
+  | "account.restored"
+  | "account.disabled"
+  | "account.admin_eligible_changed"
+  | "account.analyst_eligible_changed"
+  // Membership
+  | "membership.created"
+  | "membership.role_changed"
+  | "membership.removed"
+  | "membership.last_manager_blocked"
+  // Analyst assignment
+  | "analyst.assignment.created"
+  | "analyst.assignment.removed"
+  // Customer
+  | "customer.created"
+  | "customer.updated"
+  | "customer.suspended"
+  | "customer.disabled"
+  | "customer.deleted"
+  // AICE environment
+  | "environment.created"
+  | "environment.updated"
+  | "environment.disabled"
+  | "environment.customer_linked"
+  | "environment.customer_unlinked"
+  // Trust registry
+  | "trust_registry.key_registered"
+  | "trust_registry.key_disabled"
+  | "trust_registry.key_removed"
+  // Role
+  | "role.created"
+  | "role.updated"
+  | "role.deleted"
+  | "role.permission_changed"
+  // Detection event ingestion
+  | "detection_events.transfer_approved"
+  | "detection_events.transfer_completed"
+  | "detection_events.transfer_failed"
+  | "detection_events.transfer_denied"
+  | "detection_events.transfer_rejected"
+  | "detection_events.transfer_not_found"
+  | "detection_events.upload_completed"
+  | "detection_events.upload_failed"
+  | "detection_events.upload_denied"
+  // Customer DB
+  | "customer_db.provisioned"
+  | "customer_db.provision_failed"
+  | "customer_db.provision_retried"
+  | "customer_db.dropped"
+  // OpenBao Transit
+  | "openbao.kek_rotated"
+  | "openbao.dek_destroyed"
+  // System
+  | "system.policy_changed"
+  | "system.settings_updated"
+  // Audit (internal)
+  | "audit.anonymize";

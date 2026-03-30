@@ -2,6 +2,11 @@ import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
 import { verifyCsrf, verifyOrigin } from "../guards";
 
+// Mock server-only audit module so importing guards doesn't throw
+vi.mock("@/lib/audit", () => ({
+  auditLog: vi.fn(),
+}));
+
 // Mock the csrf module to avoid needing CSRF_SECRET env var
 vi.mock("../csrf", () => ({
   validateCsrf: vi.fn((params: { token: string }) => {

@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/auth/audit-stub";
+import { auditLog } from "@/lib/audit";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { rotateAllKeks } from "@/lib/auth/kek-rotation";
 import { getAuthPool } from "@/lib/db/client";
@@ -18,7 +18,7 @@ export const POST = withAuth(
 
     const result = await rotateAllKeks(getAuthPool());
 
-    await auditLog({
+    void auditLog({
       actorId: auth.accountId,
       authContext: "admin",
       action: "openbao.kek_rotated",

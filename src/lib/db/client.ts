@@ -17,7 +17,12 @@ export function getAuthPool(): Pool {
 
 export function getAuditPool(): Pool {
   if (!auditPool) {
-    auditPool = new Pool({ connectionString: process.env.AUDIT_DATABASE_URL });
+    auditPool = new Pool({
+      connectionString: process.env.AUDIT_DATABASE_URL,
+      // Audit writes are fire-and-forget. A generous timeout prevents
+      // a slow or unhealthy audit_db from stalling request pipelines.
+      statement_timeout: 5_000,
+    });
   }
   return auditPool;
 }
