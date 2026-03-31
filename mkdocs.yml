@@ -27,6 +27,7 @@ plugins:
             - Getting Started: getting-started.md
             - Configuration: configuration.md
             - Usage: usage.md
+            - Audit Logs: audit-logs.md
         - locale: ko
           name: 한국어
           build: true
@@ -35,11 +36,13 @@ plugins:
             - Getting Started: getting-started.md
             - Configuration: configuration.md
             - Usage: usage.md
+            - Audit Logs: audit-logs.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
             Configuration: 설정
             Usage: 사용법
+            Audit Logs: 감사 로그
 
 extra_css:
   - styles/lists.css
