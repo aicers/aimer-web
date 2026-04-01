@@ -241,9 +241,6 @@ test.describe("Audit logs UI — Admin", () => {
     await adminPage.goto("/en/admin/audit-logs");
     await adminPage.waitForSelector("table tbody tr");
 
-    // Count initial rows
-    const initialCount = await adminPage.locator("table tbody tr").count();
-
     // Filter to admin-only
     await adminPage.locator("select").selectOption("admin");
     await adminPage.getByRole("button", { name: "Apply" }).click();
@@ -254,8 +251,10 @@ test.describe("Audit logs UI — Admin", () => {
     // All visible auth context badges should say "Admin"
     const badges = adminPage.locator("table tbody tr td:nth-child(5)");
     const count = await badges.count();
-    // With filter active, row count may differ
-    expect(count).toBeLessThanOrEqual(initialCount);
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      await expect(badges.nth(i)).toHaveText("Admin");
+    }
   });
 
   test("correlation click clears active filters to show full group", async ({

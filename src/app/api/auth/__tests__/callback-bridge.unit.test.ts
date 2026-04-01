@@ -69,6 +69,11 @@ vi.mock("@/lib/audit", () => ({
   auditLog: vi.fn(async () => {}),
 }));
 
+const mockEmitSevereAlert = vi.fn();
+vi.mock("@/lib/detection", () => ({
+  emitSevereAlert: (arg: unknown) => mockEmitSevereAlert(arg),
+}));
+
 vi.mock("@/lib/auth/jwt", () => ({
   signJwt: vi.fn(async () => ({
     token: "jwt-token",
@@ -183,6 +188,8 @@ describe("callback route — bridge flow (#33)", () => {
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("bridge_expired");
     expect(clearAuthCookies).toHaveBeenCalledWith("general");
+    // Non-scope denial: no scope probing alert
+    expect(mockEmitSevereAlert).not.toHaveBeenCalled();
   });
 
   it("redirects to deny page on bridge_customer_mismatch", async () => {
@@ -194,6 +201,13 @@ describe("callback route — bridge flow (#33)", () => {
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("bridge_customer_mismatch");
     expect(clearAuthCookies).toHaveBeenCalledWith("general");
+    // Scope probing alert emitted for customer_mismatch
+    expect(mockEmitSevereAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        indicator: "bridge_scope_probing",
+        actorId: "account-001",
+      }),
+    );
   });
 
   it("redirects to deny page on bridge_no_access", async () => {
@@ -204,6 +218,9 @@ describe("callback route — bridge flow (#33)", () => {
     const res = await callGET(makeCallbackRequest());
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("bridge_no_access");
+    expect(mockEmitSevereAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ indicator: "bridge_scope_probing" }),
+    );
   });
 
   it("redirects to deny page on bridge_customer_inactive", async () => {
@@ -214,6 +231,9 @@ describe("callback route — bridge flow (#33)", () => {
     const res = await callGET(makeCallbackRequest());
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("bridge_customer_inactive");
+    expect(mockEmitSevereAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ indicator: "bridge_scope_probing" }),
+    );
   });
 
   it("redirects to deny page on bridge_environment_inactive", async () => {
@@ -225,6 +245,9 @@ describe("callback route — bridge flow (#33)", () => {
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain(
       "bridge_environment_inactive",
+    );
+    expect(mockEmitSevereAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ indicator: "bridge_scope_probing" }),
     );
   });
 

@@ -462,11 +462,11 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
     await closeAdminPool();
   });
 
-  it("applies both audit migrations cleanly", async () => {
+  it("applies all audit migrations cleanly", async () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
   });
 
   it("audit_logs.auth_context rejects invalid values", async () => {
@@ -487,6 +487,9 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
       // which grants to aimer_audit_owner and aimer_audit. Since we ran
       // migrations as superuser, re-grant explicitly.
       await pool.query("GRANT SELECT, INSERT ON audit_logs TO aimer_audit");
+      await pool.query(
+        "GRANT SELECT, INSERT ON suspicious_activity_alerts TO aimer_audit",
+      );
       await pool.query(
         "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aimer_audit",
       );

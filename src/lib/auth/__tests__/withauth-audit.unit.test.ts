@@ -24,11 +24,13 @@ vi.mock("../jwt", () => ({
 }));
 
 const mockValidateSession = vi.fn();
+const mockUpdateSessionMeta = vi.fn();
 vi.mock("../session-validator", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../session-validator")>();
   return {
     ...actual,
     validateSession: (...args: unknown[]) => mockValidateSession(...args),
+    updateSessionMeta: (...args: unknown[]) => mockUpdateSessionMeta(...args),
   };
 });
 
@@ -211,6 +213,8 @@ describe("withAuth session audit events", () => {
     mockValidateSession.mockResolvedValue({
       createdAt: 1700000000,
       lastActiveAt: 1700000000,
+      ipAddress: "10.0.0.1",
+      userAgent: "unknown",
       bridgeAiceId: null,
       bridgeCustomerIds: null,
     });
@@ -221,6 +225,121 @@ describe("withAuth session audit events", () => {
 
     expect(res.status).toBe(200);
     expect(handler).toHaveBeenCalledOnce();
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("emits session.ip_mismatch and updates session meta when IP changes", async () => {
+    mockGetAuthCookie.mockResolvedValue("valid-token");
+    mockVerifyJwtFull.mockResolvedValue(CLAIMS);
+    mockValidateSession.mockResolvedValue({
+      createdAt: 1700000000,
+      lastActiveAt: 1700000000,
+      ipAddress: "192.168.1.1", // different from x-forwarded-for: 10.0.0.1
+      userAgent: "unknown",
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler);
+    const res = await guarded(makeRequest());
+
+    expect(res.status).toBe(200);
+    expect(handler).toHaveBeenCalledOnce();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "session.ip_mismatch",
+        actorId: "account-1",
+        targetType: "session",
+        targetId: "sid-1",
+        details: { previous: "192.168.1.1", current: "10.0.0.1" },
+      }),
+    );
+    expect(mockUpdateSessionMeta).toHaveBeenCalledWith(
+      expect.anything(),
+      "sid-1",
+      "10.0.0.1",
+      undefined,
+    );
+  });
+
+  it("emits session.ua_mismatch and updates session meta when UA changes", async () => {
+    mockGetAuthCookie.mockResolvedValue("valid-token");
+    mockVerifyJwtFull.mockResolvedValue(CLAIMS);
+    mockValidateSession.mockResolvedValue({
+      createdAt: 1700000000,
+      lastActiveAt: 1700000000,
+      ipAddress: "10.0.0.1", // same IP
+      userAgent: "Mozilla/5.0 Chrome/100", // different UA
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler);
+    const res = await guarded(makeRequest());
+
+    expect(res.status).toBe(200);
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "session.ua_mismatch",
+        details: { previous: "Mozilla/5.0 Chrome/100", current: "unknown" },
+      }),
+    );
+    expect(mockUpdateSessionMeta).toHaveBeenCalledWith(
+      expect.anything(),
+      "sid-1",
+      undefined,
+      "unknown",
+    );
+  });
+
+  it("emits both mismatch events and updates both when IP and UA differ", async () => {
+    mockGetAuthCookie.mockResolvedValue("valid-token");
+    mockVerifyJwtFull.mockResolvedValue(CLAIMS);
+    mockValidateSession.mockResolvedValue({
+      createdAt: 1700000000,
+      lastActiveAt: 1700000000,
+      ipAddress: "192.168.1.1",
+      userAgent: "Mozilla/5.0 Chrome/100",
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler);
+    await guarded(makeRequest());
+
+    const actions = mockAuditLog.mock.calls.map(
+      (call: unknown[]) => (call[0] as { action: string }).action,
+    );
+    expect(actions).toContain("session.ip_mismatch");
+    expect(actions).toContain("session.ua_mismatch");
+    expect(mockAuditLog).toHaveBeenCalledTimes(2);
+    expect(mockUpdateSessionMeta).toHaveBeenCalledWith(
+      expect.anything(),
+      "sid-1",
+      "10.0.0.1",
+      "unknown",
+    );
+  });
+
+  it("does not emit mismatch when IP and UA match", async () => {
+    mockGetAuthCookie.mockResolvedValue("valid-token");
+    mockVerifyJwtFull.mockResolvedValue(CLAIMS);
+    mockValidateSession.mockResolvedValue({
+      createdAt: 1700000000,
+      lastActiveAt: 1700000000,
+      ipAddress: "10.0.0.1",
+      userAgent: "unknown",
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler);
+    await guarded(makeRequest());
+
     expect(mockAuditLog).not.toHaveBeenCalled();
   });
 });
