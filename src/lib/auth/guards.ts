@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "../audit";
+import type { AuditAction } from "../audit/actions";
 import { withCorrelationId } from "../audit/correlation";
 import { getAuthPool } from "../db/client";
 import type { AuthContext } from "./cookies";
@@ -21,6 +22,20 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
+/** Declarative audit config for guard-level emission. */
+export interface AuditOption {
+  action: AuditAction;
+  targetType: string;
+}
+
+/** Mutable metadata that handlers populate for guard-level audit. */
+export interface AuditMeta {
+  targetId?: string;
+  details?: Record<string, unknown>;
+  customerId?: string;
+  aiceId?: string;
+}
+
 export interface AuthenticatedRequest {
   accountId: string;
   sessionId: string;
@@ -30,6 +45,8 @@ export interface AuthenticatedRequest {
   meta: RequestMeta;
   bridgeAiceId: string | null;
   bridgeCustomerIds: string[] | null;
+  /** Mutable audit metadata — set fields before returning a 2xx response. */
+  audit: AuditMeta;
 }
 
 export interface LogoutAuthRequest {
@@ -45,9 +62,10 @@ export interface LogoutAuthRequest {
 
 export function withAuth(
   handler: (req: NextRequest, auth: AuthenticatedRequest) => Promise<Response>,
-  options?: { ctx?: AuthContext },
+  options?: { ctx?: AuthContext; audit?: AuditOption },
 ): (req: NextRequest) => Promise<Response> {
   const ctx = options?.ctx ?? "general";
+  const auditOption = options?.audit;
 
   return async (req: NextRequest) => {
     const token = await getAuthCookie(ctx);
@@ -171,7 +189,8 @@ export function withAuth(
         });
       }
 
-      return handler(req, {
+      const auditMeta: AuditMeta = {};
+      const response = await handler(req, {
         accountId: claims.sub,
         sessionId: claims.sid,
         authContext: ctx,
@@ -180,7 +199,25 @@ export function withAuth(
         meta,
         bridgeAiceId,
         bridgeCustomerIds,
+        audit: auditMeta,
       });
+
+      if (auditOption && response.ok) {
+        void auditLog({
+          actorId: claims.sub,
+          authContext: ctx,
+          action: auditOption.action,
+          targetType: auditOption.targetType,
+          targetId: auditMeta.targetId,
+          details: auditMeta.details,
+          ipAddress: meta.ipAddress,
+          sid: claims.sid,
+          customerId: auditMeta.customerId,
+          aiceId: auditMeta.aiceId,
+        });
+      }
+
+      return response;
     });
   };
 }

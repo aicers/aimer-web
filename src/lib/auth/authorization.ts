@@ -19,6 +19,8 @@ export interface AuthorizeOptions {
 
 export interface AuthorizeResult {
   authorized: boolean;
+  /** Denial reason when `authorized` is false. */
+  reason?: "bridge_write_blocked" | "bridge_not_allowed";
   permissions?: Set<string>;
 }
 
@@ -63,10 +65,10 @@ export async function authorize(
   // 2. Bridge scope restriction
   if (bridgeScope) {
     if (!allowInBridge) {
-      return { authorized: false };
+      return { authorized: false, reason: "bridge_not_allowed" };
     }
-    if (operationKind === "write") {
-      return { authorized: false };
+    if (operationKind === "write" || operationKind === "ingest") {
+      return { authorized: false, reason: "bridge_write_blocked" };
     }
     if (customerId && !bridgeScope.customerIds.includes(customerId)) {
       return { authorized: false };

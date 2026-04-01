@@ -608,6 +608,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
         }),
       );
       expect(result.authorized).toBe(false);
+      expect(result.reason).toBe("bridge_write_blocked");
     });
 
     it("allows read in bridge session", async () => {
@@ -621,7 +622,7 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
       expect(result.authorized).toBe(true);
     });
 
-    it("allows ingest in bridge session", async () => {
+    it("rejects ingest in bridge session", async () => {
       const result = await withClient((c) =>
         authorize(c, "general", userAccountId, "workspace:read", {
           customerId: activeCustomerId,
@@ -629,7 +630,8 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
           bridgeScope: mkBridgeScope(),
         }),
       );
-      expect(result.authorized).toBe(true);
+      expect(result.authorized).toBe(false);
+      expect(result.reason).toBe("bridge_write_blocked");
     });
 
     it("allows process in bridge session", async () => {

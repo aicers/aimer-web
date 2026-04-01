@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/audit";
 import { deleteCustomer } from "@/lib/auth/delete-customer";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -26,7 +25,12 @@ export const DELETE = withAuth(
     }
 
     try {
-      await deleteCustomer(getAuthPool(), getMigrationAuditPool(), customerId);
+      await deleteCustomer(getAuthPool(), getMigrationAuditPool(), customerId, {
+        actorId: auth.accountId,
+        authContext: "admin",
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+      });
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(
@@ -37,17 +41,12 @@ export const DELETE = withAuth(
       throw err;
     }
 
-    void auditLog({
-      actorId: auth.accountId,
-      authContext: "admin",
-      action: "customer.deleted",
-      targetType: "customer",
-      targetId: customerId,
-      ipAddress: auth.meta.ipAddress,
-      sid: auth.sessionId,
-    });
+    auth.audit.targetId = customerId;
 
     return new Response(null, { status: 204 });
   },
-  { ctx: "admin" },
+  {
+    ctx: "admin",
+    audit: { action: "customer.deleted", targetType: "customer" },
+  },
 );

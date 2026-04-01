@@ -20,6 +20,7 @@ const mockWithAuth = vi.fn(
       meta: { ipAddress: "127.0.0.1", userAgent: "test" },
       bridgeAiceId: null,
       bridgeCustomerIds: null,
+      audit: {},
     }),
 );
 
@@ -171,6 +172,7 @@ describe("POST /api/events/ingest", () => {
           meta: { ipAddress: "127.0.0.1", userAgent: "test" },
           bridgeAiceId: "aice-1",
           bridgeCustomerIds: [CUSTOMER_ID],
+          audit: {},
         }),
     );
 
@@ -205,6 +207,44 @@ describe("POST /api/events/ingest", () => {
         },
       }),
     );
+  });
+
+  it("emits bridge.write_attempt_blocked when authorize returns bridge_write_blocked", async () => {
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "bridge_write_blocked",
+    });
+
+    const file = new File([new Uint8Array([1, 2, 3])], "events.bin");
+    const req = makeIngestRequest({
+      events_data: file,
+      customer_id: CUSTOMER_ID,
+      aice_id: "aice-1",
+      schema_version: "1.0",
+      event_count: "5",
+    });
+
+    const res = await callPOST(req);
+    expect(res.status).toBe(403);
+
+    // Should emit both bridge.write_attempt_blocked AND upload_denied
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "bridge.write_attempt_blocked",
+        details: expect.objectContaining({
+          operation: "ingest",
+        }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.upload_denied",
+        details: expect.objectContaining({
+          reason: "bridge_write_blocked",
+        }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledTimes(2);
   });
 
   it("returns 400 when events_data is missing", async () => {

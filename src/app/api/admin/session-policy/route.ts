@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import {
@@ -56,16 +55,8 @@ export const PUT = withAuth(
 
       clearSessionPolicyCache();
 
-      void auditLog({
-        actorId: auth.accountId,
-        authContext: "admin",
-        action: "system.settings_updated",
-        targetType: "system-settings",
-        targetId: "session_policy",
-        details: { policy },
-        ipAddress: auth.meta.ipAddress,
-        sid: auth.sessionId,
-      });
+      auth.audit.targetId = "session_policy";
+      auth.audit.details = { policy };
 
       return Response.json({ policy });
     } catch (err: unknown) {
@@ -78,5 +69,8 @@ export const PUT = withAuth(
       throw err;
     }
   },
-  { ctx: "admin" },
+  {
+    ctx: "admin",
+    audit: { action: "system.settings_updated", targetType: "system-settings" },
+  },
 );

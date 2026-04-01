@@ -155,7 +155,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         void auditLog({
           actorId: account.id,
           authContext: "general",
-          action: "invitation.failed",
+          action:
+            result.deny === "invitation_expired"
+              ? "invitation.expired"
+              : "invitation.failed",
           targetType: "invitation",
           details: { reason: result.deny },
           ipAddress: meta.ipAddress,

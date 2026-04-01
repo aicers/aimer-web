@@ -112,6 +112,17 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   };
 
   if (!authResult.authorized) {
+    if (authResult.reason === "bridge_write_blocked") {
+      void auditLog({
+        ...auditBase,
+        action: "bridge.write_attempt_blocked",
+        details: {
+          customerId: customerIdField,
+          aiceId: aiceIdField,
+          operation: "ingest",
+        },
+      });
+    }
     void auditLog({
       ...auditBase,
       action: "detection_events.upload_denied",
@@ -119,7 +130,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       details: {
         customerId: customerIdField,
         aiceId: aiceIdField,
-        reason: "authorization_failed",
+        reason: authResult.reason ?? "authorization_failed",
       },
     });
     return Response.json({ error: "Forbidden" }, { status: 403 });

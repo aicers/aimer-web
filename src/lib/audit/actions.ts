@@ -26,6 +26,7 @@ export type AuditAction =
   | "bridge.connection_request"
   | "bridge.connection_granted"
   | "bridge.connection_denied"
+  | "bridge.write_attempt_blocked"
   // Invitation
   | "invitation.created"
   | "invitation.accepted"

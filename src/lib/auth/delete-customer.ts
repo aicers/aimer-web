@@ -1,6 +1,8 @@
 import "server-only";
 
 import { Pool } from "pg";
+import type { ActorContext } from "../audit";
+import { auditLog } from "../audit";
 import { deleteTransitKey, getTransitConfig } from "../crypto/transit";
 import {
   customerDbName,
@@ -36,6 +38,7 @@ export async function deleteCustomer(
   authPool: Pool,
   auditOwnerPool: Pool,
   customerId: string,
+  actorContext?: ActorContext,
   deps?: DeleteDeps,
 ): Promise<void> {
   // -----------------------------------------------------------------------
@@ -85,6 +88,10 @@ export async function deleteCustomer(
 
   // -----------------------------------------------------------------------
   // Phase 2: Infrastructure cleanup (best-effort, post-commit)
+  //
+  // Order matters: anonymize audit logs BEFORE destroying the DEK so
+  // that PII is cleaned while the data is still readable. After
+  // crypto-shredding, backup artifacts become unreadable.
   // -----------------------------------------------------------------------
 
   // Step 4: DROP DATABASE
@@ -92,34 +99,42 @@ export async function deleteCustomer(
   const adminUrl = deps?.adminUrl ?? getAdminUrl();
   const adminPool = new Pool({ connectionString: adminUrl });
   try {
-    // Terminate active connections before dropping
-    await adminPool.query(
-      `SELECT pg_terminate_backend(pid)
-       FROM pg_stat_activity
-       WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
+    // Check if the database actually exists before dropping
+    const dbExists = await adminPool.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [dbName],
     );
-    await adminPool.query(`DROP DATABASE IF EXISTS ${dbName}`);
+    if (dbExists.rows.length > 0) {
+      // Terminate active connections before dropping
+      await adminPool.query(
+        `SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+         WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
+      );
+      await adminPool.query(`DROP DATABASE ${dbName}`);
+      if (actorContext) {
+        void auditLog({
+          actorId: actorContext.actorId,
+          authContext: actorContext.authContext,
+          action: "customer_db.dropped",
+          targetType: "customer_db",
+          targetId: customerId,
+          details: { dbName },
+          ipAddress: actorContext.ipAddress,
+          sid: actorContext.sid,
+          customerId,
+        });
+      }
+    }
   } catch (err) {
     console.error(`Failed to drop database ${dbName}:`, (err as Error).message);
   } finally {
     await adminPool.end();
   }
 
-  // Step 5: Destroy Transit key (crypto-shredding)
-  if (!deps?.skipTransit) {
-    try {
-      const transitConfig = getTransitConfig();
-      const keyName = customerTransitKeyName(customerId);
-      await deleteTransitKey(transitConfig, keyName);
-    } catch (err) {
-      console.error(
-        `Failed to delete Transit key for customer ${customerId}:`,
-        (err as Error).message,
-      );
-    }
-  }
-
-  // Step 6: Anonymize audit log entries (self-audited)
+  // Step 5: Anonymize audit log entries (self-audited)
+  // Must run before DEK destruction so backup artifacts are cleaned
+  // while the data is still accessible.
   if (!deps?.skipAuditAnonymize) {
     try {
       const { anonymizeCustomerAuditLogs } = await import("../audit/anonymize");
@@ -127,6 +142,34 @@ export async function deleteCustomer(
     } catch (err) {
       console.error(
         `Failed to anonymize audit logs for customer ${customerId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  // Step 6: Destroy Transit key (crypto-shredding)
+  // After this, any backup artifacts referencing the DEK are unreadable.
+  if (!deps?.skipTransit) {
+    try {
+      const transitConfig = getTransitConfig();
+      const keyName = customerTransitKeyName(customerId);
+      await deleteTransitKey(transitConfig, keyName);
+      if (actorContext) {
+        void auditLog({
+          actorId: actorContext.actorId,
+          authContext: actorContext.authContext,
+          action: "openbao.dek_destroyed",
+          targetType: "transit_key",
+          targetId: keyName,
+          details: { customerId },
+          ipAddress: actorContext.ipAddress,
+          sid: actorContext.sid,
+          customerId,
+        });
+      }
+    } catch (err) {
+      console.error(
+        `Failed to delete Transit key for customer ${customerId}:`,
         (err as Error).message,
       );
     }
