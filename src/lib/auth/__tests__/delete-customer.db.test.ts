@@ -145,7 +145,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
 
     // Delete
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerId, {
+    await deleteCustomer(authPool, auditPool, customerId, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -204,7 +204,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     );
 
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerId, {
+    await deleteCustomer(authPool, auditPool, customerId, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -255,7 +255,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
 
     // Delete only customer A
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerA, {
+    await deleteCustomer(authPool, auditPool, customerA, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -276,7 +276,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     expect(secB.rows.length).toBe(1);
 
     // Clean up
-    await deleteCustomer(authPool, auditPool, customerB, {
+    await deleteCustomer(authPool, auditPool, customerB, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -313,7 +313,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
 
     // Delete customer A — now only customer B (approved/terminal) remains
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerA, {
+    await deleteCustomer(authPool, auditPool, customerA, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -327,7 +327,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     expect(payloadAfter.rows.length).toBe(0);
 
     // Clean up customer B
-    await deleteCustomer(authPool, auditPool, customerB, {
+    await deleteCustomer(authPool, auditPool, customerB, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -353,7 +353,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     expect(before.rows.length).toBe(1);
 
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerId, {
+    await deleteCustomer(authPool, auditPool, customerId, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,
@@ -391,7 +391,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     expect(before.rows[0].ip_address).toBe("192.168.1.1");
 
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerId, {
+    await deleteCustomer(authPool, auditPool, customerId, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
     });
@@ -430,6 +430,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
         authPool,
         auditPool,
         "00000000-0000-0000-0000-000000000000",
+        undefined,
         { adminUrl: authDbUrl, skipTransit: true, skipAuditAnonymize: true },
       );
       expect.fail("should have thrown");
@@ -466,7 +467,7 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     expect(invBefore.rows.length).toBe(1);
 
     const { deleteCustomer } = await import("../delete-customer");
-    await deleteCustomer(authPool, auditPool, customerId, {
+    await deleteCustomer(authPool, auditPool, customerId, undefined, {
       adminUrl: authDbUrl,
       skipTransit: true,
       skipAuditAnonymize: true,

@@ -106,7 +106,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     const customerId = await createTestCustomer("prov-happy-path");
 
     const { provisionCustomerDb } = await import("../provision-customer");
-    const status = await provisionCustomerDb(authPool, customerId, {
+    const status = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: CUSTOMER_MIGRATIONS_DIR,
@@ -157,7 +157,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     const customerId = await createTestCustomer("prov-dek-fail");
 
     const { provisionCustomerDb } = await import("../provision-customer");
-    const status = await provisionCustomerDb(authPool, customerId, {
+    const status = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: CUSTOMER_MIGRATIONS_DIR,
@@ -194,7 +194,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     );
 
     const { provisionCustomerDb } = await import("../provision-customer");
-    const status = await provisionCustomerDb(authPool, customerId, {
+    const status = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: tmpDir,
@@ -228,7 +228,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "mig-retry-"));
     await writeFile(join(tmpDir, "0000_bad.sql"), "SELECT 1/0;");
 
-    const status1 = await provisionCustomerDb(authPool, customerId, {
+    const status1 = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: tmpDir,
@@ -246,7 +246,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     );
 
     // Second attempt: succeed with correct migrations
-    const status2 = await provisionCustomerDb(authPool, customerId, {
+    const status2 = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: CUSTOMER_MIGRATIONS_DIR,
@@ -280,7 +280,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     await writeFile(join(tmpDir, "0000_bad.sql"), "SELECT 1/0;");
 
     // Provision good customer
-    const goodStatus = await provisionCustomerDb(authPool, goodId, {
+    const goodStatus = await provisionCustomerDb(authPool, goodId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: CUSTOMER_MIGRATIONS_DIR,
@@ -289,7 +289,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     expect(goodStatus).toBe("active");
 
     // Provision bad customer (migration fails)
-    const badStatus = await provisionCustomerDb(authPool, badId, {
+    const badStatus = await provisionCustomerDb(authPool, badId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
       migrationsDir: tmpDir,

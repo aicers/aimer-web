@@ -47,6 +47,7 @@ vi.mock("@/lib/auth/guards", () => ({
         "b0000000-0000-0000-0000-000000000001",
         "b0000000-0000-0000-0000-000000000002",
       ],
+      audit: {},
     }),
   verifyOrigin: () => null,
   verifyCsrf: () => null,
@@ -276,6 +277,37 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
         }),
       }),
     );
+  });
+
+  it("emits bridge.write_attempt_blocked when authorize returns bridge_write_blocked", async () => {
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "bridge_write_blocked",
+    });
+
+    const res = await callPATCH(PAYLOAD_ID, CUSTOMER_ID, {
+      action: "approve",
+    });
+    expect(res.status).toBe(403);
+
+    // Should emit both bridge.write_attempt_blocked AND transfer_denied
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "bridge.write_attempt_blocked",
+        details: expect.objectContaining({
+          operation: "approve",
+        }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.transfer_denied",
+        details: expect.objectContaining({
+          reason: "bridge_write_blocked",
+        }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledTimes(2);
   });
 
   it("returns 403 for customer not in bridgeCustomerIds", async () => {

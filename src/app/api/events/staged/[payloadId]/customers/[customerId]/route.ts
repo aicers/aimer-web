@@ -122,10 +122,20 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   };
 
   if (!authResult.authorized) {
+    if (authResult.reason === "bridge_write_blocked") {
+      void auditLog({
+        ...auditBase,
+        action: "bridge.write_attempt_blocked" satisfies AuditAction,
+        details: { customerId, aiceId: staged.aice_id, operation: "approve" },
+      });
+    }
     void auditLog({
       ...auditBase,
       action: "detection_events.transfer_denied" satisfies AuditAction,
-      details: { customerId, reason: "authorization_failed" },
+      details: {
+        customerId,
+        reason: authResult.reason ?? "authorization_failed",
+      },
     });
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }

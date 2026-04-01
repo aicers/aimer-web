@@ -1,5 +1,4 @@
 import type { NextRequest } from "next/server";
-import { auditLog } from "@/lib/audit";
 import { createCustomer } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -87,18 +86,22 @@ export const POST = withAuth(
 
       // Provision customer database after auth_db transaction commits
       const pool = getAuthPool();
-      const databaseStatus = await provisionCustomerDb(pool, result.id);
-
-      void auditLog({
-        actorId: auth.accountId,
-        authContext: "admin",
-        action: "customer.created",
-        targetType: "customer",
-        targetId: result.id,
-        details: { name, externalKey, managerAccountId, databaseStatus },
-        ipAddress: auth.meta.ipAddress,
-        sid: auth.sessionId,
+      const databaseStatus = await provisionCustomerDb(pool, result.id, {
+        actorContext: {
+          actorId: auth.accountId,
+          authContext: "admin",
+          ipAddress: auth.meta.ipAddress,
+          sid: auth.sessionId,
+        },
       });
+
+      auth.audit.targetId = result.id;
+      auth.audit.details = {
+        name,
+        externalKey,
+        managerAccountId,
+        databaseStatus,
+      };
 
       return Response.json(
         {
@@ -120,5 +123,8 @@ export const POST = withAuth(
       throw err;
     }
   },
-  { ctx: "admin" },
+  {
+    ctx: "admin",
+    audit: { action: "customer.created", targetType: "customer" },
+  },
 );

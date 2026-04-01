@@ -7,6 +7,14 @@ import { getCorrelationId } from "./correlation";
 export type { AuditAction } from "./actions";
 export { getCorrelationId, withCorrelationId } from "./correlation";
 
+/** Actor context for audit event emission from service functions. */
+export interface ActorContext {
+  actorId: string;
+  authContext: "general" | "admin";
+  ipAddress?: string;
+  sid?: string;
+}
+
 /**
  * Actor ID for pre-authentication requests where the caller's identity
  * cannot be determined (e.g. invalid context token on bridge entry).

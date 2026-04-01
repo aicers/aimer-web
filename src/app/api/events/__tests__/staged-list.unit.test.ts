@@ -24,6 +24,7 @@ vi.mock("@/lib/auth/guards", () => ({
       meta: { ipAddress: "127.0.0.1", userAgent: "test" },
       bridgeAiceId: null,
       bridgeCustomerIds: null,
+      audit: {},
     }),
 }));
 

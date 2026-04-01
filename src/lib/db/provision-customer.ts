@@ -2,6 +2,8 @@ import "server-only";
 
 import { join } from "node:path";
 import { Pool } from "pg";
+import type { ActorContext } from "../audit";
+import { auditLog } from "../audit";
 import { generateDataKey, getTransitConfig } from "../crypto/transit";
 import {
   customerDbName,
@@ -25,6 +27,11 @@ export interface ProvisionDeps {
   generateDek: (keyName: string) => Promise<{ wrappedDek: string }>;
 }
 
+export interface ProvisionOptions {
+  actorContext?: ActorContext;
+  isRetry?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -46,8 +53,11 @@ export interface ProvisionDeps {
 export async function provisionCustomerDb(
   authPool: Pool,
   customerId: string,
+  options?: ProvisionOptions,
   deps?: ProvisionDeps,
 ): Promise<"active" | "failed"> {
+  const actorContext = options?.actorContext;
+  const isRetry = options?.isRetry ?? false;
   const dbName = customerDbName(customerId);
   const adminUrl = deps?.adminUrl ?? getAdminUrl();
   const ownerTemplateUrl =
@@ -115,6 +125,22 @@ export async function provisionCustomerDb(
       [customerId],
     );
 
+    if (actorContext) {
+      void auditLog({
+        actorId: actorContext.actorId,
+        authContext: actorContext.authContext,
+        action: isRetry
+          ? "customer_db.provision_retried"
+          : "customer_db.provisioned",
+        targetType: "customer_db",
+        targetId: customerId,
+        details: { dbName, outcome: "active" },
+        ipAddress: actorContext.ipAddress,
+        sid: actorContext.sid,
+        customerId,
+      });
+    }
+
     return "active";
   } catch (err) {
     console.error(
@@ -131,6 +157,27 @@ export async function provisionCustomerDb(
           (updateErr as Error).message,
         );
       });
+
+    if (actorContext) {
+      void auditLog({
+        actorId: actorContext.actorId,
+        authContext: actorContext.authContext,
+        action: isRetry
+          ? "customer_db.provision_retried"
+          : "customer_db.provision_failed",
+        targetType: "customer_db",
+        targetId: customerId,
+        details: {
+          dbName,
+          outcome: "failed",
+          error: (err as Error).message,
+        },
+        ipAddress: actorContext.ipAddress,
+        sid: actorContext.sid,
+        customerId,
+      });
+    }
+
     return "failed";
   }
 }

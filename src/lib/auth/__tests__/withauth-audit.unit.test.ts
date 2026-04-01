@@ -343,3 +343,113 @@ describe("withAuth session audit events", () => {
     expect(mockAuditLog).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guard-level structural audit
+// ---------------------------------------------------------------------------
+
+function setupValidSession() {
+  mockGetAuthCookie.mockResolvedValue("valid-token");
+  mockVerifyJwtFull.mockResolvedValue(CLAIMS);
+  mockValidateSession.mockResolvedValue({
+    createdAt: 1700000000,
+    lastActiveAt: 1700000000,
+    ipAddress: "10.0.0.1",
+    userAgent: "unknown",
+    bridgeAiceId: null,
+    bridgeCustomerIds: null,
+  });
+}
+
+describe("withAuth guard-level audit emission", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("emits audit event on 2xx when audit option is set", async () => {
+    setupValidSession();
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler, {
+      audit: { action: "customer.created", targetType: "customer" },
+    });
+    await guarded(makeRequest());
+
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "account-1",
+        authContext: "general",
+        action: "customer.created",
+        targetType: "customer",
+        sid: "sid-1",
+        ipAddress: "10.0.0.1",
+      }),
+    );
+  });
+
+  it("does not emit audit event on 4xx response", async () => {
+    setupValidSession();
+
+    const handler = vi
+      .fn()
+      .mockResolvedValue(Response.json({ error: "bad" }, { status: 400 }));
+    const guarded = withAuth(handler, {
+      audit: { action: "customer.created", targetType: "customer" },
+    });
+    await guarded(makeRequest());
+
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("does not emit audit event when no audit option is set", async () => {
+    setupValidSession();
+
+    const handler = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    const guarded = withAuth(handler);
+    await guarded(makeRequest());
+
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("propagates handler-set audit metadata", async () => {
+    setupValidSession();
+
+    const handler = vi.fn(async (_req, auth) => {
+      auth.audit.targetId = "cust-42";
+      auth.audit.details = { name: "Acme" };
+      auth.audit.customerId = "cust-42";
+      auth.audit.aiceId = "env-1";
+      return Response.json({ ok: true }, { status: 201 });
+    });
+    const guarded = withAuth(handler, {
+      ctx: "admin",
+      audit: { action: "customer.created", targetType: "customer" },
+    });
+    await guarded(makeRequest());
+
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "account-1",
+        authContext: "admin",
+        action: "customer.created",
+        targetType: "customer",
+        targetId: "cust-42",
+        details: { name: "Acme" },
+        customerId: "cust-42",
+        aiceId: "env-1",
+      }),
+    );
+  });
+
+  it("does not emit when handler throws (no response)", async () => {
+    setupValidSession();
+
+    const handler = vi.fn().mockRejectedValue(new Error("boom"));
+    const guarded = withAuth(handler, {
+      audit: { action: "customer.created", targetType: "customer" },
+    });
+
+    await expect(guarded(makeRequest())).rejects.toThrow("boom");
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+});
