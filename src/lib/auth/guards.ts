@@ -13,6 +13,7 @@ import { getSessionPolicy } from "./session-policy";
 import {
   SessionExpiredError,
   SessionRevokedError,
+  updateSessionMeta,
   validateSession,
 } from "./session-validator";
 
@@ -78,6 +79,52 @@ export function withAuth(
         );
         bridgeAiceId = session.bridgeAiceId;
         bridgeCustomerIds = session.bridgeCustomerIds;
+
+        // IP/UA mismatch detection — emit once, then update session baseline
+        // so subsequent requests with the same new IP/UA don't re-trigger.
+        const ipChanged =
+          meta.ipAddress && meta.ipAddress !== session.ipAddress;
+        const uaChanged =
+          meta.userAgent && meta.userAgent !== session.userAgent;
+
+        if (ipChanged) {
+          void auditLog({
+            actorId: claims.sub,
+            authContext: ctx,
+            action: "session.ip_mismatch",
+            targetType: "session",
+            targetId: claims.sid,
+            details: {
+              previous: session.ipAddress,
+              current: meta.ipAddress,
+            },
+            ipAddress: meta.ipAddress,
+            sid: claims.sid,
+          });
+        }
+        if (uaChanged) {
+          void auditLog({
+            actorId: claims.sub,
+            authContext: ctx,
+            action: "session.ua_mismatch",
+            targetType: "session",
+            targetId: claims.sid,
+            details: {
+              previous: session.userAgent,
+              current: meta.userAgent,
+            },
+            ipAddress: meta.ipAddress,
+            sid: claims.sid,
+          });
+        }
+        if (ipChanged || uaChanged) {
+          void updateSessionMeta(
+            getAuthPool(),
+            claims.sid,
+            ipChanged ? meta.ipAddress : undefined,
+            uaChanged ? meta.userAgent : undefined,
+          );
+        }
       } catch (err) {
         if (err instanceof SessionExpiredError) {
           const action =

@@ -20,6 +20,7 @@ import { validateIdToken } from "@/lib/auth/oidc-validate";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { enforceSameAccount } from "@/lib/auth/same-account";
 import { getAuthPool, query, withTransaction } from "@/lib/db/client";
+import { emitSevereAlert } from "@/lib/detection";
 
 function denyRedirect(request: NextRequest, reason: string): NextResponse {
   return NextResponse.redirect(new URL(`/deny?reason=${reason}`, request.url));
@@ -109,20 +110,30 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // Status check
     if (account.status !== "active") {
+      const denyDetails = {
+        reason:
+          account.status === "suspended"
+            ? "status_suspended"
+            : "status_disabled",
+        status: account.status,
+      };
       void auditLog({
         actorId: account.id,
         authContext: "general",
         action: "general.auth.sign_in_denied",
         targetType: "account",
         targetId: account.id,
-        details: {
-          reason:
-            account.status === "suspended"
-              ? "status_suspended"
-              : "status_disabled",
-          status: account.status,
-        },
+        details: denyDetails,
         ipAddress: meta.ipAddress,
+      });
+      void emitSevereAlert({
+        indicator: "suspended_account_sign_in",
+        actorId: account.id,
+        ipAddress: meta.ipAddress,
+        summary: {
+          authContext: "general",
+          ...denyDetails,
+        },
       });
       return denyRedirect(request, "account_inactive");
     }
@@ -192,6 +203,27 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
           ipAddress: meta.ipAddress,
           aiceId: bridgeResult.bridgeAiceId ?? undefined,
         });
+
+        // Scope-related denials indicate probing attempts
+        const scopeReasons = new Set([
+          "bridge_customer_mismatch",
+          "bridge_customer_inactive",
+          "bridge_environment_inactive",
+          "bridge_no_access",
+        ]);
+        if (scopeReasons.has(bridgeResult.deny)) {
+          void emitSevereAlert({
+            indicator: "bridge_scope_probing",
+            actorId: account.id,
+            ipAddress: meta.ipAddress,
+            summary: {
+              reason: bridgeResult.deny,
+              connectionId,
+              aiceId: bridgeResult.bridgeAiceId,
+            },
+          });
+        }
+
         return denyRedirect(request, bridgeResult.deny);
       }
 

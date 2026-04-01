@@ -16,6 +16,7 @@ import { validateIdToken } from "@/lib/auth/oidc-validate";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { enforceSameAccount } from "@/lib/auth/same-account";
 import { getAuthPool, query, withTransaction } from "@/lib/db/client";
+import { emitSevereAlert } from "@/lib/detection";
 
 function denyRedirect(request: NextRequest, reason: string): NextResponse {
   return NextResponse.redirect(new URL(`/deny?reason=${reason}`, request.url));
@@ -105,20 +106,30 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // Status check
     if (account.status !== "active") {
+      const denyDetails = {
+        reason:
+          account.status === "suspended"
+            ? "status_suspended"
+            : "status_disabled",
+        status: account.status,
+      };
       void auditLog({
         actorId: account.id,
         authContext: "admin",
         action: "admin.auth.sign_in_denied",
         targetType: "account",
         targetId: account.id,
-        details: {
-          reason:
-            account.status === "suspended"
-              ? "status_suspended"
-              : "status_disabled",
-          status: account.status,
-        },
+        details: denyDetails,
         ipAddress: meta.ipAddress,
+      });
+      void emitSevereAlert({
+        indicator: "suspended_account_sign_in",
+        actorId: account.id,
+        ipAddress: meta.ipAddress,
+        summary: {
+          authContext: "admin",
+          ...denyDetails,
+        },
       });
       return denyRedirect(request, "account_inactive");
     }
@@ -135,6 +146,17 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         details: { reason: denyReason, acr: idClaims.acr },
         ipAddress: meta.ipAddress,
       });
+
+      // acr/auth_time denials indicate admin auth probing
+      if (denyReason === "acr_invalid" || denyReason === "auth_time_too_old") {
+        void emitSevereAlert({
+          indicator: "admin_auth_denial_pattern",
+          actorId: account.id,
+          ipAddress: meta.ipAddress,
+          summary: { reason: denyReason, acr: idClaims.acr },
+        });
+      }
+
       return denyRedirect(request, denyReason);
     }
 

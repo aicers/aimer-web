@@ -8,6 +8,8 @@ import { query } from "../db/client";
 export interface ValidatedSession {
   createdAt: number;
   lastActiveAt: number;
+  ipAddress: string;
+  userAgent: string;
   bridgeAiceId: string | null;
   bridgeCustomerIds: string[] | null;
 }
@@ -40,11 +42,14 @@ export async function validateSession(
     revoked: boolean;
     created_at: Date;
     last_active_at: Date;
+    ip_address: string;
+    user_agent: string;
     bridge_aice_id: string | null;
     bridge_customer_ids: string[] | null;
   }>(
     pool,
-    `SELECT revoked, created_at, last_active_at, bridge_aice_id, bridge_customer_ids
+    `SELECT revoked, created_at, last_active_at, ip_address, user_agent,
+            bridge_aice_id, bridge_customer_ids
      FROM sessions WHERE sid = $1`,
     [sid],
   );
@@ -83,7 +88,41 @@ export async function validateSession(
   return {
     createdAt,
     lastActiveAt,
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
     bridgeAiceId: row.bridge_aice_id,
     bridgeCustomerIds: row.bridge_customer_ids,
   };
+}
+
+// ---------------------------------------------------------------------------
+// updateSessionMeta — update IP/UA baseline after mismatch detection
+// ---------------------------------------------------------------------------
+
+export async function updateSessionMeta(
+  pool: Pool,
+  sid: string,
+  ipAddress?: string,
+  userAgent?: string,
+): Promise<void> {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  let idx = 1;
+
+  if (ipAddress !== undefined) {
+    sets.push(`ip_address = $${idx++}`);
+    values.push(ipAddress);
+  }
+  if (userAgent !== undefined) {
+    sets.push(`user_agent = $${idx++}`);
+    values.push(userAgent);
+  }
+  if (sets.length === 0) return;
+
+  values.push(sid);
+  await query(
+    pool,
+    `UPDATE sessions SET ${sets.join(", ")} WHERE sid = $${idx}`,
+    values,
+  );
 }

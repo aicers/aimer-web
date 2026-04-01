@@ -70,6 +70,10 @@ vi.mock("@/lib/audit", () => ({
   auditLog: vi.fn(async () => {}),
 }));
 
+vi.mock("@/lib/detection", () => ({
+  emitSevereAlert: vi.fn(async () => {}),
+}));
+
 vi.mock("@/lib/auth/jwt", () => ({
   signJwt: vi.fn(async () => ({
     token: "jwt-token",

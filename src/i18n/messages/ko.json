@@ -56,6 +56,7 @@
     "analysts": "분석가",
     "trustRegistry": "신뢰 레지스트리",
     "auditLog": "감사 로그",
+    "suspiciousActivity": "의심스러운 활동",
     "settings": "설정"
   },
   "events": {
@@ -145,6 +146,40 @@
     "general": "일반",
     "admin": "관리자",
     "errorLoading": "감사 로그를 불러오지 못했습니다. 다시 시도해 주세요."
+  },
+  "suspiciousActivity": {
+    "title": "의심스러운 활동",
+    "description": "시스템 활동에서 감지된 의심스러운 패턴입니다.",
+    "createdAt": "감지 시간",
+    "severity": "심각도",
+    "indicator": "지표",
+    "actor": "행위자",
+    "ipAddress": "IP 주소",
+    "summary": "요약",
+    "auditLogIds": "관련 감사 로그",
+    "severe": "심각",
+    "warning": "경고",
+    "allSeverities": "전체 심각도",
+    "allIndicators": "전체 지표",
+    "filterFrom": "시작일",
+    "filterTo": "종료일",
+    "apply": "적용",
+    "reset": "초기화",
+    "noResults": "의심스러운 활동 알림이 없습니다.",
+    "loadMore": "더 보기",
+    "errorLoading": "알림을 불러오지 못했습니다. 다시 시도해 주세요.",
+    "last24h": "최근 24시간",
+    "severeCount": "심각 {count}건",
+    "warningCount": "경고 {count}건",
+    "indicators": {
+      "consecutive_sign_in_denials": "연속 로그인 거부",
+      "admin_auth_denial_pattern": "관리자 인증 거부 패턴",
+      "session_ip_mismatch": "세션 IP/UA 불일치",
+      "concurrent_multi_ip_sessions": "동시 다중 IP 세션",
+      "bridge_abuse": "브릿지 남용",
+      "bridge_scope_probing": "브릿지 범위 탐색",
+      "suspended_account_sign_in": "정지 계정 로그인 시도"
+    }
   },
   "validation": {
     "required": "필수 입력 항목입니다",

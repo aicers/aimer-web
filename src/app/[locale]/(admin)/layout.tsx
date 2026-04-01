@@ -1,6 +1,13 @@
 "use client";
 
-import { BarChart3, FileText, LogOut, Menu, Settings } from "lucide-react";
+import {
+  BarChart3,
+  FileText,
+  LogOut,
+  Menu,
+  Settings,
+  ShieldAlert,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
@@ -27,6 +34,11 @@ function useAdminNavItems(): AdminNavItem[] {
       href: `/${locale}/admin/audit-logs`,
       label: t("auditLog"),
       icon: FileText,
+    },
+    {
+      href: `/${locale}/admin/suspicious-activity`,
+      label: t("suspiciousActivity"),
+      icon: ShieldAlert,
     },
     {
       href: `/${locale}/admin`,

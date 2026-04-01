@@ -56,6 +56,7 @@
     "analysts": "Analysts",
     "trustRegistry": "Trust Registry",
     "auditLog": "Audit Log",
+    "suspiciousActivity": "Suspicious Activity",
     "settings": "Settings"
   },
   "events": {
@@ -145,6 +146,40 @@
     "general": "General",
     "admin": "Admin",
     "errorLoading": "Failed to load audit logs. Please try again."
+  },
+  "suspiciousActivity": {
+    "title": "Suspicious Activity",
+    "description": "Detected suspicious patterns in system activity.",
+    "createdAt": "Detected At",
+    "severity": "Severity",
+    "indicator": "Indicator",
+    "actor": "Actor",
+    "ipAddress": "IP Address",
+    "summary": "Summary",
+    "auditLogIds": "Related Audit Logs",
+    "severe": "Severe",
+    "warning": "Warning",
+    "allSeverities": "All severities",
+    "allIndicators": "All indicators",
+    "filterFrom": "From",
+    "filterTo": "To",
+    "apply": "Apply",
+    "reset": "Reset",
+    "noResults": "No suspicious activity alerts found.",
+    "loadMore": "Load More",
+    "errorLoading": "Failed to load alerts. Please try again.",
+    "last24h": "Last 24 hours",
+    "severeCount": "{count} severe",
+    "warningCount": "{count} warning",
+    "indicators": {
+      "consecutive_sign_in_denials": "Consecutive Sign-in Denials",
+      "admin_auth_denial_pattern": "Admin Auth Denial Pattern",
+      "session_ip_mismatch": "Session IP/UA Mismatch",
+      "concurrent_multi_ip_sessions": "Concurrent Multi-IP Sessions",
+      "bridge_abuse": "Bridge Abuse",
+      "bridge_scope_probing": "Bridge Scope Probing",
+      "suspended_account_sign_in": "Suspended Account Sign-in"
+    }
   },
   "validation": {
     "required": "This field is required",
