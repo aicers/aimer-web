@@ -66,17 +66,23 @@ export async function provisionCustomerDb(
     deps?.migrationsDir ?? join(process.cwd(), "migrations", "customer");
 
   try {
-    // Step 1: CREATE DATABASE
+    // Step 1: CREATE DATABASE (idempotent — skips if already exists)
     const adminPool = new Pool({ connectionString: adminUrl });
     try {
-      await adminPool.query(
-        `CREATE DATABASE ${dbName} OWNER aimer_customer_owner`,
-      );
+      await adminPool
+        .query(`SELECT 1 FROM pg_database WHERE datname = '${dbName}'`)
+        .then(async (res) => {
+          if (res.rows.length === 0) {
+            await adminPool.query(
+              `CREATE DATABASE ${dbName} OWNER aimer_customer_owner`,
+            );
+          }
+        });
     } finally {
       await adminPool.end();
     }
 
-    // Step 2: Grant schema privileges to customer roles
+    // Step 2: Grant schema privileges to customer roles (idempotent)
     const ownerUrl = customerDbUrl(ownerTemplateUrl, customerId);
     const ownerPool = new Pool({ connectionString: ownerUrl });
     try {
@@ -88,24 +94,33 @@ export async function provisionCustomerDb(
       await ownerPool.end();
     }
 
-    // Step 3: Generate DEK and store wrapped form
-    let wrappedDek: string;
-    if (deps?.generateDek) {
-      const result = await deps.generateDek(customerTransitKeyName(customerId));
-      wrappedDek = result.wrappedDek;
-    } else {
-      const transitConfig = getTransitConfig();
-      const keyName = customerTransitKeyName(customerId);
-      const dataKey = await generateDataKey(transitConfig, keyName);
-      // Zero plaintext immediately — provisioning doesn't need it.
-      dataKey.plaintext.fill(0);
-      wrappedDek = dataKey.wrappedDek;
-    }
-
-    await authPool.query(
-      "UPDATE customers SET wrapped_dek = $1 WHERE id = $2",
-      [wrappedDek, customerId],
+    // Step 3: Generate DEK and store wrapped form (idempotent — skips
+    // if already stored)
+    const dekRow = await authPool.query<{ wrapped_dek: string | null }>(
+      "SELECT wrapped_dek FROM customers WHERE id = $1",
+      [customerId],
     );
+    if (!dekRow.rows[0]?.wrapped_dek) {
+      let wrappedDek: string;
+      if (deps?.generateDek) {
+        const result = await deps.generateDek(
+          customerTransitKeyName(customerId),
+        );
+        wrappedDek = result.wrappedDek;
+      } else {
+        const transitConfig = getTransitConfig();
+        const keyName = customerTransitKeyName(customerId);
+        const dataKey = await generateDataKey(transitConfig, keyName);
+        // Zero plaintext immediately — provisioning doesn't need it.
+        dataKey.plaintext.fill(0);
+        wrappedDek = dataKey.wrappedDek;
+      }
+
+      await authPool.query(
+        "UPDATE customers SET wrapped_dek = $1 WHERE id = $2",
+        [wrappedDek, customerId],
+      );
+    }
 
     // Step 4: Run customer migrations
     const migrationOwnerPool = new Pool({ connectionString: ownerUrl });

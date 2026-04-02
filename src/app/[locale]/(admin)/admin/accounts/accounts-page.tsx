@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { adminFetch } from "@/lib/api/admin-client";
 import { ApiError, apiFetch } from "@/lib/api/client";
 
 interface Account {
@@ -43,13 +44,6 @@ const DATE_TIME_FORMAT = {
   hour: "2-digit" as const,
   minute: "2-digit" as const,
 };
-
-function getAdminCsrfToken(): string {
-  const match = document.cookie
-    .split("; ")
-    .find((c) => c.startsWith("csrf_admin="));
-  return match ? match.split("=")[1] : "";
-}
 
 export function AccountsPage() {
   const t = useTranslations("adminAccounts");
@@ -83,7 +77,7 @@ export function AccountsPage() {
 
   const fetchAccounts = useCallback(async () => {
     try {
-      const data = await apiFetch<{ accounts: Account[] }>(
+      const data = await adminFetch<{ accounts: Account[] }>(
         "/api/admin/accounts",
       );
       setAccounts(data.accounts);
@@ -130,21 +124,9 @@ export function AccountsPage() {
     setActionLoading(true);
     try {
       const newStatus = dialogAction === "suspend" ? "suspended" : "active";
-      await fetch(`/api/admin/accounts/${dialogTarget.id}`, {
+      await adminFetch(`/api/admin/accounts/${dialogTarget.id}`, {
         method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token-Admin": getAdminCsrfToken(),
-        },
         body: JSON.stringify({ status: newStatus }),
-      }).then(async (res) => {
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new ApiError(
-            (body as { error?: string }).error ?? res.statusText,
-            res.status,
-          );
-        }
       });
 
       setDialogOpen(false);

@@ -72,11 +72,6 @@ test.describe("POST /api/admin/customers", () => {
     });
     expect(res.status()).toBe(401);
   });
-
-  test("returns 405 for GET method", async ({ request }) => {
-    const res = await request.get("/api/admin/customers");
-    expect(res.status()).toBe(405);
-  });
 });
 
 // =========================================================================

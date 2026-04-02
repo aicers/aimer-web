@@ -79,11 +79,6 @@ test.describe("POST /api/admin/customers", () => {
   // Method enforcement
   // =========================================================================
 
-  test("returns 405 for GET method", async ({ request }) => {
-    const res = await request.get(ENDPOINT);
-    expect(res.status()).toBe(405);
-  });
-
   test("returns 405 for PUT method", async ({ request }) => {
     const res = await request.put(ENDPOINT, {
       headers: { origin: ORIGIN },

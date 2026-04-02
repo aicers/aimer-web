@@ -1,9 +1,57 @@
 import type { NextRequest } from "next/server";
+import { assertAuthorized } from "@/lib/auth/authorization";
 import { createCustomer } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { provisionCustomerDb } from "@/lib/db/provision-customer";
+
+export const GET = withAuth(
+  async (_req, auth) => {
+    const pool = getAuthPool();
+    const client = await pool.connect();
+    try {
+      await assertAuthorized(client, "admin", auth.accountId, "customers:read");
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(
+          { error: err.message },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+    const result = await pool.query<{
+      id: string;
+      name: string;
+      external_key: string;
+      description: string | null;
+      status: string;
+      database_status: string;
+      created_at: string;
+    }>(
+      `SELECT id, name, external_key, description, status,
+              database_status, created_at
+       FROM customers
+       ORDER BY created_at`,
+    );
+
+    return Response.json({
+      customers: result.rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        externalKey: r.external_key,
+        description: r.description,
+        status: r.status,
+        databaseStatus: r.database_status,
+        createdAt: r.created_at,
+      })),
+    });
+  },
+  { ctx: "admin" },
+);
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -19,6 +67,27 @@ export const POST = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    const pool = getAuthPool();
+    const authzClient = await pool.connect();
+    try {
+      await assertAuthorized(
+        authzClient,
+        "admin",
+        auth.accountId,
+        "customers:write",
+      );
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(
+          { error: err.message },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
+    } finally {
+      authzClient.release();
+    }
 
     // Parse request body
     let raw: unknown;

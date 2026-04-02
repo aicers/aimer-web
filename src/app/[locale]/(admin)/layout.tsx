@@ -2,6 +2,7 @@
 
 import {
   BarChart3,
+  Building2,
   FileText,
   LogOut,
   Menu,
@@ -18,6 +19,7 @@ import { HEADER_HEIGHT } from "@/components/layout-constants";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { getAdminCsrfToken } from "@/lib/api/admin-client";
 import { cn } from "@/lib/utils";
 
 interface AdminNavItem {
@@ -37,6 +39,11 @@ function useAdminNavItems(): AdminNavItem[] {
       icon: Users,
     },
     {
+      href: `/${locale}/admin/customers`,
+      label: t("customers"),
+      icon: Building2,
+    },
+    {
       href: `/${locale}/admin/audit-logs`,
       label: t("auditLog"),
       icon: FileText,
@@ -52,13 +59,6 @@ function useAdminNavItems(): AdminNavItem[] {
       icon: Settings,
     },
   ];
-}
-
-function getAdminCsrfToken(): string {
-  const match = document.cookie
-    .split("; ")
-    .find((c) => c.startsWith("csrf_admin="));
-  return match ? match.split("=")[1] : "";
 }
 
 function AdminSidebarContent({ onNavigate }: { onNavigate?: () => void }) {
