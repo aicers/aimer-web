@@ -16,7 +16,10 @@
     "test:unit": "vitest run --passWithNoTests 'unit.test'",
     "test:db": "vitest run --passWithNoTests 'db.test'",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
-    "migrate:customers": "tsx src/lib/db/migrate-customers-cli.ts"
+    "migrate:customers": "tsx src/lib/db/migrate-customers-cli.ts",
+    "backup": "tsx src/lib/backup/backup-cli.ts",
+    "restore": "tsx src/lib/backup/restore-cli.ts",
+    "backup:verify": "tsx src/lib/backup/verify-cli.ts"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

@@ -28,6 +28,7 @@ plugins:
             - Configuration: configuration.md
             - Usage: usage.md
             - Audit Logs: audit-logs.md
+            - Backup & Restore: backup-restore.md
         - locale: ko
           name: 한국어
           build: true
@@ -37,12 +38,14 @@ plugins:
             - Configuration: configuration.md
             - Usage: usage.md
             - Audit Logs: audit-logs.md
+            - Backup & Restore: backup-restore.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
             Configuration: 설정
             Usage: 사용법
             Audit Logs: 감사 로그
+            Backup & Restore: 백업 및 복원
 
 extra_css:
   - styles/lists.css
