@@ -23,6 +23,9 @@ infra/certs/*.crt
 docker-compose.override.yml
 pgdata/
 
+# Backups
+backups/
+
 # Playwright
 playwright-report/
 test-results/
