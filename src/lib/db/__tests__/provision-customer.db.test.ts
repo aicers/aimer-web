@@ -245,7 +245,9 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
       [customerId],
     );
 
-    // Second attempt: succeed with correct migrations
+    // Second attempt: succeed with correct migrations.
+    // DEK is already stored from the first attempt, so it should be
+    // reused rather than regenerated (avoids orphaning encrypted data).
     const status2 = await provisionCustomerDb(authPool, customerId, undefined, {
       adminUrl: authDbUrl,
       ownerTemplateUrl: authDbUrl,
@@ -259,7 +261,7 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
       [customerId],
     );
     expect(row.rows[0].database_status).toBe("active");
-    expect(row.rows[0].wrapped_dek).toBe("vault:v1:retry-dek-2");
+    expect(row.rows[0].wrapped_dek).toBe("vault:v1:retry-dek");
 
     await cleanupCustomerDb(customerId);
     await rm(tmpDir, { recursive: true });
