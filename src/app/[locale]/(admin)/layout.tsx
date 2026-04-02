@@ -7,6 +7,7 @@ import {
   Menu,
   Settings,
   ShieldAlert,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -30,6 +31,11 @@ function useAdminNavItems(): AdminNavItem[] {
   const locale = useLocale();
 
   return [
+    {
+      href: `/${locale}/admin/accounts`,
+      label: t("accounts"),
+      icon: Users,
+    },
     {
       href: `/${locale}/admin/audit-logs`,
       label: t("auditLog"),
