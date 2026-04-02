@@ -30,6 +30,7 @@ plugins:
             - Authentication: authentication.md
             - Navigation: navigation.md
             - Members: members.md
+            - Account Management: account-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
         - locale: ko
@@ -43,6 +44,7 @@ plugins:
             - Authentication: authentication.md
             - Navigation: navigation.md
             - Members: members.md
+            - Account Management: account-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
           nav_translations:
@@ -53,6 +55,7 @@ plugins:
             Authentication: 인증
             Navigation: 내비게이션
             Members: 멤버
+            Account Management: 계정 관리
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
 
