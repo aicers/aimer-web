@@ -4,6 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------- Mocks ----------
 
+const mockApiFetch = vi.fn();
+vi.mock("@/lib/api/client", () => ({
+  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
+}));
+
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -304,7 +309,11 @@ describe("Sidebar", () => {
     expect(aside.textContent).toContain("Sign Out");
   });
 
-  it("navigates to sign-out endpoint on sign out click", () => {
+  it("calls sign-out API on sign out click", async () => {
+    mockApiFetch.mockResolvedValue({
+      logoutUrl: "http://localhost:8080/logout",
+    });
+
     const hrefSetter = vi.fn();
     Object.defineProperty(window, "location", {
       value: { href: "/" },
@@ -323,7 +332,16 @@ describe("Sidebar", () => {
     assertDefined(signOutBtn);
     fireEvent.click(signOutBtn);
 
-    expect(hrefSetter).toHaveBeenCalledWith("/api/auth/sign-out");
+    // Wait for async sign-out to complete
+    await vi.waitFor(() => {
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/sign-out", {
+        method: "POST",
+      });
+    });
+
+    await vi.waitFor(() => {
+      expect(hrefSetter).toHaveBeenCalledWith("http://localhost:8080/logout");
+    });
   });
 
   it("disables environment selector when no environments exist", () => {

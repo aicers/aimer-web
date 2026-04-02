@@ -1,0 +1,65 @@
+# Authentication
+
+Aimer Web uses Keycloak as its identity provider. Users sign in
+through an OpenID Connect (OIDC) redirect flow and are returned to
+the dashboard after successful authentication.
+
+## Signing in
+
+Click **Sign In** or navigate to any protected page. The browser
+redirects to the Keycloak login screen where you enter your
+credentials. After authentication completes, you are returned to
+the Aimer Web dashboard.
+
+![Sign-in page](../assets/sign-in.png)
+
+If your account belongs to multiple customer workspaces, the
+dashboard opens with the first accessible customer selected. You
+can switch customers using the sidebar selector (see
+[Navigation](navigation.md)).
+
+## Signing out
+
+Click the **Sign Out** button at the bottom of the sidebar.
+Signing out revokes your Aimer Web session and redirects you to
+the Keycloak logout page, which terminates your single sign-on
+(SSO) session.
+
+![Sign-out button in the sidebar](../assets/sign-out-sidebar.png)
+
+## Admin authentication
+
+System Administrators access the Admin dashboard through a
+separate sign-in flow that requires multi-factor authentication
+(MFA). Admin authentication must be completed within five minutes.
+Having an active admin session does not affect your general
+session.
+
+## Access denied
+
+When authentication or authorization fails, Aimer Web displays an
+access denied page with a message explaining the reason.
+
+![Access denied page](../assets/deny-page.png)
+
+Common reasons include:
+
+- **Account inactive** — your account has been suspended or
+    disabled by an administrator.
+- **No access** — your account is not a member of any customer
+    workspace. Contact a Manager to receive an invitation.
+- **MFA required** — admin access requires multi-factor
+    authentication. Configure a TOTP or WebAuthn device in
+    Keycloak.
+- **Admin session expired** — the admin authentication window
+    (five minutes) has elapsed. Sign in again.
+- **Invitation expired** — the invitation link is no longer valid.
+    Ask the Manager to send a new invitation.
+- **Email mismatch** — you signed in with a different email
+    address than the one the invitation was sent to.
+- **Email not verified** — your email address has not been verified
+    in Keycloak. Verify it and try again.
+
+Each error page includes a **Back to Sign In** link that returns
+you to the general sign-in flow. For admin or bridge session
+errors, you will need to re-initiate those flows separately.
