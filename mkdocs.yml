@@ -27,6 +27,9 @@ plugins:
             - Getting Started: getting-started.md
             - Configuration: configuration.md
             - Usage: usage.md
+            - Authentication: authentication.md
+            - Navigation: navigation.md
+            - Members: members.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
         - locale: ko
@@ -37,6 +40,9 @@ plugins:
             - Getting Started: getting-started.md
             - Configuration: configuration.md
             - Usage: usage.md
+            - Authentication: authentication.md
+            - Navigation: navigation.md
+            - Members: members.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
           nav_translations:
@@ -44,6 +50,9 @@ plugins:
             Getting Started: 시작하기
             Configuration: 설정
             Usage: 사용법
+            Authentication: 인증
+            Navigation: 내비게이션
+            Members: 멤버
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
 

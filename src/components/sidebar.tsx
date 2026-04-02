@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
+import { apiFetch } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
 import {
@@ -245,8 +246,17 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
   const t = useTranslations("auth");
   const { me } = useCustomerContext();
 
-  const signOut = useCallback(() => {
-    window.location.href = "/api/auth/sign-out";
+  const signOut = useCallback(async () => {
+    try {
+      const { logoutUrl } = await apiFetch<{ logoutUrl: string }>(
+        "/api/auth/sign-out",
+        { method: "POST" },
+      );
+      window.location.href = logoutUrl;
+    } catch {
+      // Fallback: reload to trigger auth redirect
+      window.location.href = "/";
+    }
   }, []);
 
   if (collapsed) {
