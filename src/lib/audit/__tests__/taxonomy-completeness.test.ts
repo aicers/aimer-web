@@ -79,6 +79,21 @@ const PRODUCED: Record<string, string> = {
   "openbao.dek_destroyed": "src/lib/auth/delete-customer.ts",
   // System (guard-level: settings_updated)
   "system.settings_updated": "src/app/api/admin/session-policy/route.ts",
+  // AICE environment management (guard-level)
+  "environment.created": "src/app/api/admin/environments/route.ts",
+  "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",
+  "environment.deleted": "src/app/api/admin/environments/[aiceId]/route.ts",
+  "environment.customer_linked":
+    "src/app/api/admin/environments/[aiceId]/customers/route.ts",
+  "environment.customer_unlinked":
+    "src/app/api/admin/environments/[aiceId]/customers/[customerId]/route.ts",
+  // Trust registry (guard-level)
+  "trust_registry.key_registered":
+    "src/app/api/admin/environments/[aiceId]/trust-registry/route.ts",
+  "trust_registry.key_disabled":
+    "src/app/api/admin/environments/[aiceId]/trust-registry/[keyId]/route.ts",
+  "trust_registry.key_removed":
+    "src/app/api/admin/environments/[aiceId]/trust-registry/[keyId]/route.ts",
   // Audit (internal) — emitted via raw SQL in anonymize.ts
   "audit.anonymize": "src/lib/audit/anonymize.ts",
 } satisfies Partial<Record<AuditAction, string>>;
@@ -109,16 +124,8 @@ const NOT_YET_PRODUCED: Set<AuditAction> = new Set([
   "customer.updated",
   "customer.suspended",
   "customer.disabled",
-  // AICE environment management — no routes yet
-  "environment.created",
-  "environment.updated",
+  // AICE environment — environment.disabled not yet used (status changes use environment.updated)
   "environment.disabled",
-  "environment.customer_linked",
-  "environment.customer_unlinked",
-  // Trust registry — no routes yet
-  "trust_registry.key_registered",
-  "trust_registry.key_disabled",
-  "trust_registry.key_removed",
   // Role management — no routes yet
   "role.created",
   "role.updated",
@@ -165,6 +172,8 @@ const PRODUCED_CATEGORIES = [
   "invitation",
   "membership",
   "customer",
+  "environment",
+  "trust_registry",
   "detection_events",
   "customer_db",
   "openbao",

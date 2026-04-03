@@ -59,6 +59,7 @@ export type AuditAction =
   | "environment.created"
   | "environment.updated"
   | "environment.disabled"
+  | "environment.deleted"
   | "environment.customer_linked"
   | "environment.customer_unlinked"
   // Trust registry
