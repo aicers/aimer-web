@@ -32,6 +32,7 @@ plugins:
             - Members: members.md
             - Account Management: account-management.md
             - Customer Management: customer-management.md
+            - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
         - locale: ko
@@ -47,6 +48,7 @@ plugins:
             - Members: members.md
             - Account Management: account-management.md
             - Customer Management: customer-management.md
+            - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
           nav_translations:
@@ -59,6 +61,7 @@ plugins:
             Members: 멤버
             Account Management: 계정 관리
             Customer Management: 고객 관리
+            Environment Management: 환경 관리
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
 

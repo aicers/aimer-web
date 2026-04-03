@@ -4,6 +4,7 @@ import {
   BarChart3,
   Building2,
   FileText,
+  Globe,
   LogOut,
   Menu,
   Settings,
@@ -42,6 +43,11 @@ function useAdminNavItems(): AdminNavItem[] {
       href: `/${locale}/admin/customers`,
       label: t("customers"),
       icon: Building2,
+    },
+    {
+      href: `/${locale}/admin/environments`,
+      label: t("environments"),
+      icon: Globe,
     },
     {
       href: `/${locale}/admin/audit-logs`,
