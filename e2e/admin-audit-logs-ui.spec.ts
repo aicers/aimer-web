@@ -117,11 +117,12 @@ test.describe("Audit logs UI — Admin", () => {
     await expect(adminPage.locator("h1")).toHaveText("Audit Logs");
   });
 
-  test("admin sign-out button is present", async ({ adminPage }) => {
+  test("admin sign-out button is present", async ({ adminPage, testData }) => {
     await adminPage.goto("/en/admin");
 
-    const signOutBtn = adminPage.getByRole("button", { name: "Sign Out" });
-    await expect(signOutBtn).toBeVisible();
+    // Open the user profile dropdown to reveal Sign Out
+    await adminPage.getByText(testData.admin.displayName).click();
+    await expect(adminPage.getByText("Sign Out")).toBeVisible();
   });
 
   test("admin layout shows mobile menu trigger on small viewport", async ({

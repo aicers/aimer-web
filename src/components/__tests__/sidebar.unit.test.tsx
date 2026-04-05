@@ -4,11 +4,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------- Mocks ----------
 
-const mockApiFetch = vi.fn();
-vi.mock("@/lib/api/client", () => ({
-  apiFetch: (...args: unknown[]) => mockApiFetch(...args),
-}));
-
 vi.mock("next/link", () => ({
   default: ({
     href,
@@ -47,15 +42,11 @@ vi.mock("next-intl", () => {
     collapseSidebar: "Collapse sidebar",
     openMenu: "Open navigation menu",
   };
-  const authMap: Record<string, string> = {
-    signOut: "Sign Out",
-  };
   return {
     useLocale: vi.fn(() => "en"),
     useTranslations: vi.fn((ns: string) => {
       if (ns === "nav") return (key: string) => navMap[key] ?? key;
       if (ns === "sidebar") return (key: string) => sidebarMap[key] ?? key;
-      if (ns === "auth") return (key: string) => authMap[key] ?? key;
       return (key: string) => key;
     }),
   };
@@ -67,18 +58,6 @@ vi.mock("@/hooks/use-customer-context", () => ({
 
 vi.mock("@/hooks/use-permissions", () => ({
   usePermissions: vi.fn(),
-}));
-
-vi.mock("@/components/theme-toggle", () => ({
-  ThemeToggle: ({ className }: { className?: string }) => (
-    <button type="button" className={className} data-testid="theme-toggle">
-      Theme
-    </button>
-  ),
-}));
-
-vi.mock("@/components/locale-switcher", () => ({
-  LocaleSwitcher: () => <button type="button">Locale</button>,
 }));
 
 vi.mock("@/components/ui/tooltip", () => ({
@@ -202,15 +181,8 @@ describe("Sidebar", () => {
     setup();
   });
 
-  it("renders logo text AIMER", () => {
-    const { container } = render(<Sidebar />);
-    const aside = container.querySelector("aside");
-    assertDefined(aside);
-    expect(aside.textContent).toContain("AIMER");
-  });
-
   it("renders all general navigation items", () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const nav = container.querySelector('nav[aria-label="Main"]');
     assertDefined(nav);
     const text = nav.textContent ?? "";
@@ -223,7 +195,7 @@ describe("Sidebar", () => {
   });
 
   it("renders manager-only items when canViewMembers is true", () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const nav = container.querySelector('nav[aria-label="Main"]');
     assertDefined(nav);
     const text = nav.textContent ?? "";
@@ -239,7 +211,7 @@ describe("Sidebar", () => {
       canViewCustomerSettings: false,
     });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const nav = container.querySelector('nav[aria-label="Main"]');
     assertDefined(nav);
     const text = nav.textContent ?? "";
@@ -249,7 +221,7 @@ describe("Sidebar", () => {
   });
 
   it("renders customer selector with correct value", () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const selects = container.querySelectorAll("select");
 
     expect(selects.length).toBe(2);
@@ -258,7 +230,7 @@ describe("Sidebar", () => {
   });
 
   it("renders environment selector", () => {
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const selects = container.querySelectorAll("select");
 
     expect(selects.length).toBe(2);
@@ -284,7 +256,7 @@ describe("Sidebar", () => {
       },
     });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const selects = container.querySelectorAll("select");
 
     expect((selects[0] as HTMLSelectElement).disabled).toBe(true);
@@ -292,62 +264,10 @@ describe("Sidebar", () => {
     expect(container.textContent).toContain("Locked to bridge session");
   });
 
-  it("renders user profile with display name and email", () => {
-    const { container } = render(<Sidebar />);
-    const aside = container.querySelector("aside");
-    assertDefined(aside);
-
-    expect(aside.textContent).toContain("Test User");
-    expect(aside.textContent).toContain("test@example.com");
-  });
-
-  it("renders sign out button", () => {
-    const { container } = render(<Sidebar />);
-    const aside = container.querySelector("aside");
-    assertDefined(aside);
-
-    expect(aside.textContent).toContain("Sign Out");
-  });
-
-  it("calls sign-out API on sign out click", async () => {
-    mockApiFetch.mockResolvedValue({
-      logoutUrl: "http://localhost:8080/logout",
-    });
-
-    const hrefSetter = vi.fn();
-    Object.defineProperty(window, "location", {
-      value: { href: "/" },
-      writable: true,
-      configurable: true,
-    });
-    Object.defineProperty(window.location, "href", {
-      set: hrefSetter,
-      configurable: true,
-    });
-
-    const { container } = render(<Sidebar />);
-    const signOutBtn = Array.from(container.querySelectorAll("button")).find(
-      (btn) => btn.textContent?.includes("Sign Out"),
-    );
-    assertDefined(signOutBtn);
-    fireEvent.click(signOutBtn);
-
-    // Wait for async sign-out to complete
-    await vi.waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/sign-out", {
-        method: "POST",
-      });
-    });
-
-    await vi.waitFor(() => {
-      expect(hrefSetter).toHaveBeenCalledWith("http://localhost:8080/logout");
-    });
-  });
-
   it("disables environment selector when no environments exist", () => {
     mockDefaults({ environments: [], selectedEnvironmentId: null });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const selects = container.querySelectorAll("select");
 
     expect(selects.length).toBe(2);
@@ -374,7 +294,7 @@ describe("Sidebar", () => {
       ],
     });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const customerSelect = container.querySelectorAll("select")[0];
     assertDefined(customerSelect);
 
@@ -406,7 +326,7 @@ describe("Sidebar", () => {
       ],
     });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const customerSelect = container.querySelectorAll("select")[0];
     assertDefined(customerSelect);
 
@@ -424,7 +344,7 @@ describe("Sidebar", () => {
       ],
     });
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
     const envSelect = container.querySelectorAll("select")[1];
     assertDefined(envSelect);
 
@@ -435,7 +355,7 @@ describe("Sidebar", () => {
   it("marks active nav item with aria-current=page", () => {
     mockedUsePathname.mockReturnValue("/en/events");
 
-    const { container } = render(<Sidebar />);
+    const { container } = render(<Sidebar collapsed={false} />);
 
     const activeLink = container.querySelector(
       'a[aria-current="page"]',
@@ -444,78 +364,10 @@ describe("Sidebar", () => {
     expect(activeLink.getAttribute("href")).toBe("/en/events");
   });
 
-  it("has aria-label on collapse toggle button", () => {
-    const { container } = render(<Sidebar />);
+  it("hides customer selector when collapsed", () => {
+    const { container } = render(<Sidebar collapsed={true} />);
 
-    const toggle = container.querySelector(
-      'button[aria-label="Collapse sidebar"]',
-    );
-    expect(toggle).not.toBeNull();
-  });
-
-  describe("collapse/expand", () => {
-    it("persists collapsed state to localStorage", () => {
-      const { container } = render(<Sidebar />);
-
-      const toggle = container.querySelector(
-        'button[aria-label="Collapse sidebar"]',
-      );
-      assertDefined(toggle);
-      fireEvent.click(toggle);
-
-      expect(localStorage.getItem("sidebar-collapsed")).toBe("true");
-    });
-
-    it("reads collapsed state from localStorage on mount", () => {
-      localStorage.setItem("sidebar-collapsed", "true");
-
-      const { container } = render(<Sidebar />);
-      const aside = container.querySelector("aside");
-      assertDefined(aside);
-
-      // In collapsed mode, AIMER logo text should be visually hidden
-      const logoText = aside.querySelector(".sr-only");
-      assertDefined(logoText);
-      expect(logoText.textContent).toBe("AIMER");
-      // Expand button should be present
-      expect(
-        container.querySelector('button[aria-label="Expand sidebar"]'),
-      ).not.toBeNull();
-    });
-
-    it("hides customer selector when collapsed", () => {
-      localStorage.setItem("sidebar-collapsed", "true");
-
-      const { container } = render(<Sidebar />);
-
-      expect(container.querySelector("#customer-select")).toBeNull();
-    });
-
-    it("restores state after expand", () => {
-      const { container } = render(<Sidebar />);
-      const aside = container.querySelector("aside");
-      assertDefined(aside);
-
-      const collapse = container.querySelector(
-        'button[aria-label="Collapse sidebar"]',
-      );
-      assertDefined(collapse);
-      fireEvent.click(collapse);
-      // Logo text is sr-only when collapsed
-      expect(aside.querySelector(".sr-only")?.textContent).toBe("AIMER");
-
-      const expand = container.querySelector(
-        'button[aria-label="Expand sidebar"]',
-      );
-      assertDefined(expand);
-      fireEvent.click(expand);
-      // Logo text is visible when expanded (not sr-only)
-      const visibleLogo = aside.querySelector("span:not(.sr-only)");
-      assertDefined(visibleLogo);
-      expect(visibleLogo.textContent).toBe("AIMER");
-
-      expect(localStorage.getItem("sidebar-collapsed")).toBe("false");
-    });
+    expect(container.querySelector("#customer-select")).toBeNull();
   });
 });
 
@@ -544,7 +396,6 @@ describe("MobileSidebarTrigger", () => {
     expect(sheetContents.length).toBe(1);
 
     const text = sheetContents[0].textContent ?? "";
-    expect(text).toContain("AIMER");
     expect(text).toContain("Home");
     expect(text).toContain("Events");
     expect(text).toContain("Analysis");
@@ -578,7 +429,7 @@ describe("MobileSidebarTrigger", () => {
 
     // The sheet should call onOpenChange(false) to close
     assertDefined(lastOnOpenChange);
-    // The click handler on nav links calls the OnNavigateContext callback,
+    // The click handler on nav links calls the onNavigate callback,
     // which calls setOpen(false), which triggers onOpenChange(false).
     // Since our mock Sheet captures onOpenChange, verify it was provided.
     expect(typeof lastOnOpenChange).toBe("function");

@@ -77,24 +77,24 @@ export function MemberTable({
 
   return (
     <>
-      <div className="overflow-hidden rounded-lg border border-border">
+      <div className="overflow-hidden rounded-md border border-border">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-muted/50">
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                 {t("name")}
               </th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                 {t("email")}
               </th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                 {t("role")}
               </th>
-              <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+              <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                 {t("lastSignIn")}
               </th>
               {isManager && (
-                <th className="px-4 py-3 text-right font-medium text-muted-foreground">
+                <th className="px-3 py-3 text-right font-medium text-muted-foreground">
                   <span className="sr-only">{t("actions")}</span>
                 </th>
               )}
@@ -106,7 +106,7 @@ export function MemberTable({
                 key={member.accountId}
                 className="border-b border-border last:border-b-0"
               >
-                <td className="px-4 py-3 font-medium text-foreground">
+                <td className="px-3 py-3.5 font-medium text-foreground">
                   {member.displayName}
                   {member.accountId === currentAccountId && (
                     <span className="ml-1 text-xs text-muted-foreground">
@@ -114,10 +114,10 @@ export function MemberTable({
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-muted-foreground">
+                <td className="px-3 py-3.5 text-muted-foreground">
                   {member.email ?? "—"}
                 </td>
-                <td className="px-4 py-3">
+                <td className="px-3 py-3.5">
                   <span className="inline-flex items-center gap-1.5">
                     {member.roleName === "Manager"
                       ? t("roleManager")
@@ -129,7 +129,7 @@ export function MemberTable({
                     )}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-muted-foreground">
+                <td className="px-3 py-3.5 text-muted-foreground">
                   {member.lastSignInAt
                     ? format.dateTime(
                         new Date(member.lastSignInAt),
@@ -138,7 +138,7 @@ export function MemberTable({
                     : t("never")}
                 </td>
                 {isManager && (
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-3 py-3.5 text-right">
                     <div className="flex items-center justify-end gap-1">
                       {otherRole(member) && (
                         <Button

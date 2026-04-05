@@ -1,18 +1,38 @@
 "use client";
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
+import { useCallback } from "react";
 
 import { Breadcrumbs } from "@/components/breadcrumbs";
-import { HEADER_HEIGHT } from "@/components/layout-constants";
-import { MobileSidebarTrigger, Sidebar } from "@/components/sidebar";
+import { AppHeader } from "@/components/header";
+import {
+  MobileSidebarTrigger,
+  Sidebar,
+  useSidebarCollapsed,
+} from "@/components/sidebar";
 import {
   CustomerContextProvider,
   useCustomerContext,
 } from "@/hooks/use-customer-context";
+import { apiFetch } from "@/lib/api/client";
 
 function DashboardShell({ children }: { children: React.ReactNode }) {
-  const { loading } = useCustomerContext();
+  const { loading, me } = useCustomerContext();
   const t = useTranslations("common");
+  const locale = useLocale();
+  const { collapsed, toggle } = useSidebarCollapsed();
+
+  const signOut = useCallback(async () => {
+    try {
+      const { logoutUrl } = await apiFetch<{ logoutUrl: string }>(
+        "/api/auth/sign-out",
+        { method: "POST" },
+      );
+      window.location.href = logoutUrl;
+    } catch {
+      window.location.href = "/";
+    }
+  }, []);
 
   if (loading) {
     return (
@@ -23,18 +43,25 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen">
-      <Sidebar />
-      <div className="flex flex-1 flex-col overflow-hidden">
-        <header
-          className={`flex ${HEADER_HEIGHT} shrink-0 items-center gap-2 border-b border-border px-4`}
-        >
-          <MobileSidebarTrigger />
-          <Breadcrumbs />
-        </header>
-        <main id="main-content" className="flex-1 overflow-y-auto">
-          {children}
-        </main>
+    <div className="flex h-screen flex-col">
+      <AppHeader
+        collapsed={collapsed}
+        onToggleSidebar={toggle}
+        homeHref={`/${locale}`}
+        user={me}
+        onSignOut={signOut}
+        mobileMenuTrigger={<MobileSidebarTrigger />}
+      />
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar collapsed={collapsed} />
+        <div className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex shrink-0 items-center px-6 py-2">
+            <Breadcrumbs />
+          </div>
+          <main id="main-content" className="flex-1 overflow-y-auto">
+            {children}
+          </main>
+        </div>
       </div>
     </div>
   );

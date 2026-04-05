@@ -98,9 +98,9 @@ test.describe("Dashboard sidebar collapse", () => {
       managerPage.getByRole("button", { name: "Expand sidebar" }),
     ).toBeVisible();
 
-    // Nav item text should be sr-only (not visually rendered as block text)
+    // Nav item text should be visible as small labels (collapsed shows icons + tiny text)
     const nav = managerPage.getByRole("navigation", { name: "Main" });
-    await expect(nav.locator("a >> .sr-only").first()).toBeAttached();
+    await expect(nav.locator("a").first()).toBeVisible();
   });
 
   test("expands sidebar and shows nav labels again", async ({
@@ -191,15 +191,19 @@ test.describe("Dashboard breadcrumbs", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Dashboard user section", () => {
-  test("renders user display name and sign out", async ({
+  test("renders user display name and sign out in dropdown", async ({
     managerPage,
     testData,
   }) => {
     await managerPage.goto("/en");
 
+    // User name is visible in the header dropdown trigger
     await expect(
       managerPage.getByText(testData.manager.displayName),
     ).toBeVisible();
+
+    // Open the user profile dropdown to reveal Sign Out
+    await managerPage.getByText(testData.manager.displayName).click();
     await expect(managerPage.getByText("Sign Out")).toBeVisible();
   });
 
