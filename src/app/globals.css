@@ -105,6 +105,8 @@
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
+  --shadow-auth-card:
+    0 10px 10px rgba(0, 0, 0, 0.04), 0 20px 25px rgba(0, 0, 0, 0.01);
   --breakpoint-desktop: 1280px;
   --breakpoint-wide: 2000px;
 }

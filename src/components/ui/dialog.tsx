@@ -92,7 +92,7 @@ function DialogTitle({
   return (
     <RadixDialog.Title
       className={cn(
-        "text-lg font-semibold leading-none tracking-tight text-foreground",
+        "text-lg font-medium leading-none tracking-tight text-foreground",
         className,
       )}
       {...props}
