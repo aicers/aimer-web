@@ -41,6 +41,9 @@ export type AuditAction =
   | "account.disabled"
   | "account.admin_eligible_changed"
   | "account.analyst_eligible_changed"
+  // Admin designation
+  | "admin.designated"
+  | "admin.revoked"
   // Membership
   | "membership.created"
   | "membership.role_changed"
