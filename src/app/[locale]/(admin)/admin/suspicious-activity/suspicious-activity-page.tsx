@@ -176,7 +176,7 @@ export function SuspiciousActivityPage() {
     <div className="space-y-6">
       {/* Summary stats */}
       {summary && (summary.severe > 0 || summary.warning > 0) && (
-        <div className="flex items-center gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
+        <div className="flex items-center gap-4 rounded-md border border-border bg-muted/30 px-4 py-3">
           <span className="text-sm text-muted-foreground">{t("last24h")}</span>
           {summary.severe > 0 && (
             <Badge variant="destructive">
@@ -192,7 +192,7 @@ export function SuspiciousActivityPage() {
       )}
 
       {/* Filter controls */}
-      <div className="rounded-lg border border-border p-4">
+      <div className="rounded-md border border-border p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Select
             value={filters.severity}
@@ -273,23 +273,23 @@ export function SuspiciousActivityPage() {
               <p className="text-sm text-muted-foreground">{t("noResults")}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-border">
+            <div className="overflow-x-auto rounded-md border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("createdAt")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("severity")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("indicator")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("actor")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("ipAddress")}
                     </th>
                   </tr>
@@ -358,35 +358,35 @@ function AlertRow({
         className="cursor-pointer border-b border-border last:border-b-0 hover:bg-muted/30"
         onClick={onToggle}
       >
-        <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+        <td className="px-3 py-3.5 text-muted-foreground whitespace-nowrap">
           {format.dateTime(new Date(entry.createdAt), DATE_TIME_FORMAT)}
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           <Badge
             variant={entry.severity === "severe" ? "destructive" : "warning"}
           >
             {t(entry.severity as "severe" | "warning")}
           </Badge>
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           <Badge variant="secondary">
             {tIndicators(entry.indicator as Parameters<typeof tIndicators>[0])}
           </Badge>
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           {entry.actorId ? (
             <code className="text-xs">{truncateId(entry.actorId)}</code>
           ) : (
             "—"
           )}
         </td>
-        <td className="px-4 py-3 text-muted-foreground">
+        <td className="px-3 py-3.5 text-muted-foreground">
           {entry.ipAddress ?? "—"}
         </td>
       </tr>
       {expanded && (
         <tr className="border-b border-border last:border-b-0">
-          <td colSpan={5} className="bg-muted/20 px-4 py-3">
+          <td colSpan={5} className="bg-muted/20 px-3 py-3.5">
             <div className="space-y-1">
               <p className="text-xs font-medium text-muted-foreground">
                 {t("summary")}

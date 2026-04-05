@@ -47,7 +47,7 @@ export default async function DenyPage({
     (reason && REASON_KEYS[reason]) || "genericError";
 
   return (
-    <div className="w-full max-w-md rounded-lg border border-border bg-card p-8 shadow-auth-card">
+    <div className="w-full max-w-md rounded-md border border-border bg-card p-8 shadow-auth-card">
       <h1 className="mb-4 text-2xl font-bold text-foreground">{t("title")}</h1>
       <p className="text-sm text-muted-foreground">{t(messageKey)}</p>
       <p className="mt-4 text-sm text-muted-foreground">{t("contactAdmin")}</p>

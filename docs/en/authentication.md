@@ -20,12 +20,12 @@ can switch customers using the sidebar selector (see
 
 ## Signing out
 
-Click the **Sign Out** button at the bottom of the sidebar.
-Signing out revokes your Aimer Web session and redirects you to
-the Keycloak logout page, which terminates your single sign-on
-(SSO) session.
+Click the profile dropdown on the right side of the header bar to
+open the user menu, then click **Sign Out**. Signing out revokes
+your Aimer Web session and redirects you to the Keycloak logout
+page, which terminates your single sign-on (SSO) session.
 
-![Sign-out button in the sidebar](../assets/sign-out-sidebar.png)
+![Sign Out in the profile dropdown](../assets/sign-out-header.png)
 
 ## Admin authentication
 

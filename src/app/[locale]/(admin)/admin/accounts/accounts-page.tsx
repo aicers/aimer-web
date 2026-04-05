@@ -191,7 +191,7 @@ export function AccountsPage() {
             <p className="text-sm text-muted-foreground">{t("noResults")}</p>
           </div>
         ) : (
-          <div className="rounded-lg border border-border">
+          <div className="rounded-md border border-border">
             <Table>
               <TableHeader>
                 <TableRow>

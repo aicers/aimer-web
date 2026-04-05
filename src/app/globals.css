@@ -31,7 +31,7 @@
 }
 
 [data-theme="gray-light"] {
-  --bg-canvas: #f9fafa;
+  --bg-canvas: #f5f6f7;
   --card-bg: #ffffff;
   --control-bg: rgba(97, 105, 116, 0.08);
   --control-placeholder: #616974;
@@ -43,7 +43,7 @@
   --danger: #db1d03;
   --danger-bg: #fff9f9;
   --neutral-40: #7c8492;
-  --table-bg: #f9fafa;
+  --table-bg: #f5f6f7;
 
   /* Sidebar */
   --sidebar-bg: #ffffff;

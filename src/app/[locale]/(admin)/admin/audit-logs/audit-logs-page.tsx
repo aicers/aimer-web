@@ -184,7 +184,7 @@ export function AuditLogsPage() {
     <div className="space-y-6">
       {/* Correlation filter banner */}
       {correlationFilter && (
-        <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/50 px-4 py-3">
+        <div className="flex items-center gap-3 rounded-md border border-border bg-muted/50 px-4 py-3">
           <span className="text-sm text-muted-foreground">
             {t("correlationId")}:
           </span>
@@ -203,7 +203,7 @@ export function AuditLogsPage() {
       )}
 
       {/* Filter controls */}
-      <div className="rounded-lg border border-border p-4">
+      <div className="rounded-md border border-border p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Select
             value={filters.authContext}
@@ -305,29 +305,29 @@ export function AuditLogsPage() {
               <p className="text-sm text-muted-foreground">{t("noResults")}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-border">
+            <div className="overflow-x-auto rounded-md border border-border">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("timestamp")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("actor")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("action")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("target")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("authContext")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("ipAddress")}
                     </th>
-                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">
+                    <th className="px-3 py-3 text-left font-medium text-muted-foreground">
                       {t("correlationId")}
                     </th>
                   </tr>
@@ -398,19 +398,19 @@ function AuditLogRow({
         className="cursor-pointer border-b border-border last:border-b-0 hover:bg-muted/30"
         onClick={onToggle}
       >
-        <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+        <td className="px-3 py-3.5 text-muted-foreground whitespace-nowrap">
           {format.dateTime(new Date(entry.timestamp), DATE_TIME_FORMAT)}
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           <code className="text-xs">{truncateId(entry.actorId)}</code>
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           <Badge variant="secondary">{entry.action}</Badge>
         </td>
-        <td className="px-4 py-3 text-muted-foreground">
+        <td className="px-3 py-3.5 text-muted-foreground">
           <code className="text-xs">{targetDisplay}</code>
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           {entry.authContext && (
             <Badge
               variant={
@@ -421,10 +421,10 @@ function AuditLogRow({
             </Badge>
           )}
         </td>
-        <td className="px-4 py-3 text-muted-foreground">
+        <td className="px-3 py-3.5 text-muted-foreground">
           {entry.ipAddress ?? "—"}
         </td>
-        <td className="px-4 py-3">
+        <td className="px-3 py-3.5">
           {entry.correlationId ? (
             <Button
               type="button"
@@ -449,7 +449,7 @@ function AuditLogRow({
       </tr>
       {expanded && (
         <tr className="border-b border-border last:border-b-0">
-          <td colSpan={7} className="bg-muted/20 px-4 py-3">
+          <td colSpan={7} className="bg-muted/20 px-3 py-3.5">
             <div className="space-y-1">
               {entry.details && (
                 <>

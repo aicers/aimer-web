@@ -1,14 +1,26 @@
 # Navigation
 
-The Aimer Web dashboard uses a sidebar for navigation, a
-customer/environment selector for context switching, and
+The Aimer Web dashboard uses a top header bar for branding and
+user controls, a sidebar for navigation and context switching, and
 breadcrumbs for orientation.
+
+## Header bar
+
+A full-width header bar sits at the top of every authenticated
+page. It contains:
+
+- **Left side** — hamburger button (sidebar toggle), AIMER logo,
+    and context label (e.g., "Admin" when in the admin dashboard).
+- **Right side** — theme toggle, language switcher, and a user
+    profile dropdown (avatar, display name, email, and chevron)
+    that opens a menu with **Sign Out**.
+
+![Header bar](../assets/header-bar.png)
 
 ## Sidebar
 
 The sidebar is displayed on the left side of every dashboard page.
-It contains the logo, customer selector, navigation links, and
-user controls.
+It contains the customer/environment selector and navigation links.
 
 ![Sidebar expanded](../assets/sidebar-expanded.png)
 
@@ -32,18 +44,18 @@ settings:
 
 ### Collapsed mode
 
-Click the collapse toggle at the bottom of the sidebar to switch
-between expanded (256 px) and collapsed (64 px) views. In
-collapsed mode, only icons are shown; hover over an icon to see a
-tooltip with the label. The collapse state is saved in the browser
-and persists across sessions.
+Click the hamburger button in the header bar to switch between
+expanded (256 px) and collapsed (64 px) views. In collapsed mode,
+icons are shown with small text labels beneath them; hover over an
+item to see a tooltip with the full label. The collapse state is
+saved in the browser and persists across sessions.
 
 ![Sidebar collapsed](../assets/sidebar-collapsed.png)
 
 ## Customer and environment selector
 
-Below the logo, two dropdowns let you choose the active customer
-workspace and AICE environment.
+At the top of the sidebar, two dropdowns let you choose the active
+customer workspace and AICE environment.
 
 ![Customer and environment selector](../assets/customer-selector.png)
 
@@ -63,20 +75,24 @@ locked state.
 
 ## User section
 
-At the bottom of the sidebar, the user section shows your display
-name and email address. It also provides:
+The user section is located on the right side of the header bar.
+Clicking the profile dropdown opens a menu with your name and
+email. From this menu you can:
 
-- **Theme toggle** — switch between light and dark modes.
-- **Language switcher** — switch between English and Korean.
 - **Sign Out** — end your session
     (see [Authentication](authentication.md)).
 
+The header bar also provides:
+
+- **Theme toggle** — switch between light and dark modes.
+- **Language switcher** — switch between English and Korean.
+
 ## Mobile menu
 
-On screens narrower than 768 px, the sidebar is hidden and
-replaced by a hamburger menu button in the top-left corner of the
-header. Tapping the button opens the sidebar as a slide-over panel.
-Navigating to a page automatically closes the panel.
+On screens narrower than 768 px, the sidebar is hidden and a
+hamburger menu button appears in the header bar. Tapping the
+button opens the sidebar as a slide-over panel. Navigating to a
+page automatically closes the panel.
 
 ![Mobile menu](../assets/mobile-menu.png)
 

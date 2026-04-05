@@ -1,14 +1,10 @@
 "use client";
 
 import {
-  BarChart3,
-  ChevronLeft,
-  ChevronRight,
   FileText,
   Home,
   LayoutDashboard,
   Lock,
-  LogOut,
   Menu,
   Search,
   Settings,
@@ -18,16 +14,8 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { LocaleSwitcher } from "@/components/locale-switcher";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { Select } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import {
@@ -38,28 +26,40 @@ import {
 } from "@/components/ui/tooltip";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
-import { apiFetch } from "@/lib/api/client";
 import { cn } from "@/lib/utils";
 
 import {
-  HEADER_HEIGHT,
   SIDEBAR_WIDTH_COLLAPSED,
   SIDEBAR_WIDTH_EXPANDED,
 } from "./layout-constants";
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed";
 
-/**
- * Callback context used by `MobileSidebarTrigger` to close the sheet
- * when a navigation link is clicked.
- */
-const OnNavigateContext = createContext<(() => void) | null>(null);
-
-interface NavItem {
+export interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  visible: boolean;
+  visible?: boolean;
+  exact?: boolean;
+}
+
+export function useSidebarCollapsed() {
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    if (stored === "true") setCollapsed(true);
+  }, []);
+
+  const toggle = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  return { collapsed, toggle };
 }
 
 function useNavItems(): NavItem[] {
@@ -68,30 +68,26 @@ function useNavItems(): NavItem[] {
   const permissions = usePermissions();
 
   return [
-    { href: `/${locale}`, label: t("home"), icon: Home, visible: true },
+    { href: `/${locale}`, label: t("home"), icon: Home, exact: true },
     {
       href: `/${locale}/events`,
       label: t("events"),
       icon: Shield,
-      visible: true,
     },
     {
       href: `/${locale}/analysis`,
       label: t("analysis"),
       icon: Search,
-      visible: true,
     },
     {
       href: `/${locale}/reports`,
       label: t("reports"),
       icon: FileText,
-      visible: true,
     },
     {
       href: `/${locale}/dashboard`,
       label: t("dashboard"),
       icon: LayoutDashboard,
-      visible: true,
     },
     {
       href: `/${locale}/settings/members`,
@@ -180,27 +176,28 @@ function CustomerSelector({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function NavList({
+export function NavList({
   items,
   collapsed,
+  ariaLabel = "Main",
+  onNavigate,
 }: {
   items: NavItem[];
   collapsed: boolean;
+  ariaLabel?: string;
+  onNavigate?: (() => void) | null;
 }) {
   const pathname = usePathname();
-  const locale = useLocale();
-  const onNavigate = useContext(OnNavigateContext);
 
-  const visible = items.filter((item) => item.visible);
+  const visible = items.filter((item) => item.visible !== false);
 
   return (
-    <nav aria-label="Main" className="flex-1 overflow-y-auto p-2">
+    <nav aria-label={ariaLabel} className="flex-1 overflow-y-auto p-2">
       <ul className="space-y-1">
         {visible.map((item) => {
-          const isActive =
-            item.href === `/${locale}`
-              ? pathname === item.href
-              : pathname.startsWith(item.href);
+          const isActive = item.exact
+            ? pathname === item.href
+            : pathname.startsWith(item.href);
 
           const link = (
             <Link
@@ -208,8 +205,10 @@ function NavList({
               onClick={onNavigate ?? undefined}
               aria-current={isActive ? "page" : undefined}
               className={cn(
-                "flex items-center rounded-md text-sm font-medium transition-colors",
-                collapsed ? "justify-center p-2" : "gap-3 px-3 py-2",
+                "flex items-center rounded-md font-medium transition-colors",
+                collapsed
+                  ? "flex-col justify-center gap-0.5 px-1 py-2 text-[10px]"
+                  : "gap-3 px-3 py-2 text-sm",
                 isActive
                   ? "bg-[var(--sidebar-active)] text-white"
                   : "text-[var(--sidebar-muted)] hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]",
@@ -217,7 +216,9 @@ function NavList({
             >
               <item.icon className="h-4 w-4 shrink-0" />
               {collapsed ? (
-                <span className="sr-only">{item.label}</span>
+                <span className="truncate w-full text-center">
+                  {item.label}
+                </span>
               ) : (
                 item.label
               )}
@@ -242,134 +243,30 @@ function NavList({
   );
 }
 
-function UserSection({ collapsed }: { collapsed: boolean }) {
-  const t = useTranslations("auth");
-  const { me } = useCustomerContext();
-
-  const signOut = useCallback(async () => {
-    try {
-      const { logoutUrl } = await apiFetch<{ logoutUrl: string }>(
-        "/api/auth/sign-out",
-        { method: "POST" },
-      );
-      window.location.href = logoutUrl;
-    } catch {
-      // Fallback: reload to trigger auth redirect
-      window.location.href = "/";
-    }
-  }, []);
-
-  if (collapsed) {
-    return (
-      <div className="space-y-1 border-t border-[var(--sidebar-border)] p-2">
-        <ThemeToggle className="w-full" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={signOut}
-              aria-label={t("signOut")}
-              className="flex w-full items-center justify-center rounded-md p-2 text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right">{t("signOut")}</TooltipContent>
-        </Tooltip>
-      </div>
-    );
-  }
-
-  return (
-    <div className="border-t border-[var(--sidebar-border)] p-3">
-      {me && (
-        <div className="mb-3 rounded-md bg-[var(--sidebar-account-bg)] px-3 py-2">
-          <p className="truncate text-sm font-medium text-[var(--sidebar-fg)]">
-            {me.displayName}
-          </p>
-          {me.email && (
-            <p className="truncate text-xs text-[var(--sidebar-muted)]">
-              {me.email}
-            </p>
-          )}
-        </div>
-      )}
-      <div className="flex items-center gap-1">
-        <ThemeToggle />
-        <LocaleSwitcher />
-        <button
-          type="button"
-          onClick={signOut}
-          className="ml-auto flex items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]"
-        >
-          <LogOut className="h-4 w-4" />
-          {t("signOut")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function SidebarLogo({ collapsed }: { collapsed: boolean }) {
-  const locale = useLocale();
-  const onNavigate = useContext(OnNavigateContext);
-
-  return (
-    <Link
-      href={`/${locale}`}
-      onClick={onNavigate ?? undefined}
-      className={cn(
-        `flex ${HEADER_HEIGHT} items-center border-b border-[var(--sidebar-border)] transition-colors hover:bg-[var(--sidebar-account-bg)]`,
-        collapsed ? "justify-center px-2" : "px-4",
-      )}
-    >
-      <BarChart3
-        className={cn(
-          "shrink-0 text-[var(--sidebar-active)]",
-          collapsed ? "h-6 w-6" : "h-7 w-7",
-        )}
-      />
-      {collapsed ? (
-        <span className="sr-only">AIMER</span>
-      ) : (
-        <span className="ml-2 text-lg font-bold text-[var(--sidebar-fg)]">
-          AIMER
-        </span>
-      )}
-    </Link>
-  );
-}
-
-function SidebarContent({ collapsed }: { collapsed: boolean }) {
+function SidebarContent({
+  collapsed,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  onNavigate?: (() => void) | null;
+}) {
   const navItems = useNavItems();
 
   return (
     <>
-      <SidebarLogo collapsed={collapsed} />
       <CustomerSelector collapsed={collapsed} />
-      <NavList items={navItems} collapsed={collapsed} />
-      <UserSection collapsed={collapsed} />
+      <NavList items={navItems} collapsed={collapsed} onNavigate={onNavigate} />
     </>
   );
 }
 
-export function Sidebar() {
-  const t = useTranslations("sidebar");
-  const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
-    if (stored === "true") setCollapsed(true);
-  }, []);
-
-  const toggle = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
-      return next;
-    });
-  }, []);
-
+export function SidebarShell({
+  collapsed,
+  children,
+}: {
+  collapsed: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <TooltipProvider>
       <aside
@@ -378,23 +275,17 @@ export function Sidebar() {
           collapsed ? SIDEBAR_WIDTH_COLLAPSED : SIDEBAR_WIDTH_EXPANDED,
         )}
       >
-        <SidebarContent collapsed={collapsed} />
-        <div className="border-t border-[var(--sidebar-border)] p-2">
-          <button
-            type="button"
-            onClick={toggle}
-            aria-label={collapsed ? t("expandSidebar") : t("collapseSidebar")}
-            className="flex w-full items-center justify-center rounded-md p-2 text-[var(--sidebar-muted)] transition-colors hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]"
-          >
-            {collapsed ? (
-              <ChevronRight className="h-4 w-4" />
-            ) : (
-              <ChevronLeft className="h-4 w-4" />
-            )}
-          </button>
-        </div>
+        {children}
       </aside>
     </TooltipProvider>
+  );
+}
+
+export function Sidebar({ collapsed }: { collapsed: boolean }) {
+  return (
+    <SidebarShell collapsed={collapsed}>
+      <SidebarContent collapsed={collapsed} />
+    </SidebarShell>
   );
 }
 
@@ -417,9 +308,7 @@ export function MobileSidebarTrigger() {
       </SheetTrigger>
       <SheetContent aria-label={t("openMenu")}>
         <TooltipProvider>
-          <OnNavigateContext.Provider value={closeSheet}>
-            <SidebarContent collapsed={false} />
-          </OnNavigateContext.Provider>
+          <SidebarContent collapsed={false} onNavigate={closeSheet} />
         </TooltipProvider>
       </SheetContent>
     </Sheet>
