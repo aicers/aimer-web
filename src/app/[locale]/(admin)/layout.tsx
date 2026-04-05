@@ -9,6 +9,7 @@ import {
   Menu,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -38,6 +39,11 @@ function useAdminNavItems(): AdminNavItem[] {
       href: `/${locale}/admin/accounts`,
       label: t("accounts"),
       icon: Users,
+    },
+    {
+      href: `/${locale}/admin/admins`,
+      label: t("admins"),
+      icon: ShieldCheck,
     },
     {
       href: `/${locale}/admin/customers`,

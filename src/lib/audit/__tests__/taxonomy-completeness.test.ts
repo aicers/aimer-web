@@ -94,6 +94,9 @@ const PRODUCED: Record<string, string> = {
     "src/app/api/admin/environments/[aiceId]/trust-registry/[keyId]/route.ts",
   "trust_registry.key_removed":
     "src/app/api/admin/environments/[aiceId]/trust-registry/[keyId]/route.ts",
+  // Admin designation
+  "admin.designated": "src/app/api/admin/admins/route.ts",
+  "admin.revoked": "src/app/api/admin/admins/[accountId]/route.ts",
   // Audit (internal) — emitted via raw SQL in anonymize.ts
   "audit.anonymize": "src/lib/audit/anonymize.ts",
 } satisfies Partial<Record<AuditAction, string>>;
