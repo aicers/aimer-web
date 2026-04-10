@@ -372,6 +372,9 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     afterAll(async () => {
+      // Suppress FATAL errors that arrive asynchronously when the parent
+      // afterAll terminates backends via dropTestDatabase.
+      rolePool.on("error", () => {});
       await rolePool.end();
     });
 
@@ -498,6 +501,7 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
     });
 
     afterAll(async () => {
+      rolePool.on("error", () => {});
       await rolePool.end();
     });
 
