@@ -327,7 +327,7 @@ export function CustomersPage() {
             <p className="text-sm text-muted-foreground">{t("noResults")}</p>
           </div>
         ) : (
-          <div className="rounded-md border border-border">
+          <div className="rounded-md border border-border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>

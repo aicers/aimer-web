@@ -203,7 +203,7 @@ export function AuditLogsPage() {
       )}
 
       {/* Filter controls */}
-      <div className="rounded-md border border-border p-4">
+      <div className="rounded-md border border-border bg-card p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Select
             value={filters.authContext}
@@ -305,7 +305,7 @@ export function AuditLogsPage() {
               <p className="text-sm text-muted-foreground">{t("noResults")}</p>
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-md border border-border">
+            <div className="overflow-x-auto rounded-md border border-border bg-card">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border bg-muted/50">
