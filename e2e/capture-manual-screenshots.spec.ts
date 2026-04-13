@@ -352,8 +352,10 @@ base.describe.serial("Manual screenshots", () => {
     await mgrPage.getByLabel("Email address").fill(inviteEmail);
     await mgrPage.getByRole("button", { name: "Send Invitation" }).click();
 
-    // Wait for invitation to appear
-    await expect(mgrPage.getByText(inviteEmail)).toBeVisible();
+    // Wait for invitation to appear in the table
+    await expect(
+      mgrPage.getByRole("cell", { name: inviteEmail }),
+    ).toBeVisible();
     await settle(mgrPage);
 
     await mgrPage.screenshot({
