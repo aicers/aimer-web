@@ -37,6 +37,11 @@ updates:
           - version-update:semver-major
         versions:
           - ">= 25"
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
+        versions:
+          - ">= 6"
 
   - package-ecosystem: github-actions
     directory: /
