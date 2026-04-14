@@ -92,6 +92,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: biomejs/setup-biome@v2
+        with:
+          version: latest
       - run: pnpm check
       - run: pnpm typecheck
       - uses: DavidAnson/markdownlint-cli2-action@v23
