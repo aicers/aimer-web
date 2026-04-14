@@ -17,7 +17,6 @@ updates:
           - "@types/react-dom"
       tooling:
         patterns:
-          - "@biomejs/biome"
           - vitest
           - "@playwright/test"
           - markdownlint-cli2
