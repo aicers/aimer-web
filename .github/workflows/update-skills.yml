@@ -66,15 +66,18 @@ jobs:
             name=$(basename "$dir")
             is_allowed "$name" || rm -rf "$dir"
           done
-          # 2. Claude Code symlinks under .claude/skills/ (if CLI created any
-          #    for non-allowlisted skills before we pruned the source dirs).
-          if [ -d .claude/skills ]; then
-            for link in .claude/skills/*; do
-              [ -e "$link" ] || [ -L "$link" ] || continue
-              name=$(basename "$link")
-              is_allowed "$name" || rm -rf "$link"
-            done
-          fi
+          # 2. Claude Code reads skills from .claude/skills/, so keep it in
+          #    lockstep with the allowlist: one symlink per allowlisted skill,
+          #    no extras. `ln -sfn` makes the write idempotent.
+          mkdir -p .claude/skills
+          for name in $ALLOWLIST; do
+            ln -sfn "../../.agents/skills/$name" ".claude/skills/$name"
+          done
+          for link in .claude/skills/*; do
+            [ -e "$link" ] || [ -L "$link" ] || continue
+            name=$(basename "$link")
+            is_allowed "$name" || rm -rf "$link"
+          done
           # 3. skills-lock.json — keep only allowlisted entries.
           allow_json=$(printf '%s\n' $ALLOWLIST | jq -Rn '[inputs]')
           tmp=$(mktemp)

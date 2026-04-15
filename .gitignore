@@ -30,8 +30,11 @@ backups/
 playwright-report/
 test-results/
 
-# Claude Code
-.claude/
+# Claude Code — tool config stays local, but .claude/skills/ is tracked so
+# Claude Code users on teammate machines see the allowlisted skills.
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # IDE
 .vscode/
