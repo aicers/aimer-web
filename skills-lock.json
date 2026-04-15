@@ -1,11 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "agent-browser": {
-      "source": "vercel-labs/agent-browser",
-      "sourceType": "github",
-      "computedHash": "91782f423f6fad0fe4e2159350f2eb8c3cf66cfa4d2387b2c8d927d443c9a603"
-    },
     "algorithmic-art": {
       "source": "anthropics/skills",
       "sourceType": "github",
@@ -95,11 +90,6 @@
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",
       "computedHash": "43ca6c197f8ec13055079da7053232d477068b03ca443f9ac1bc819b95cdd432"
-    },
-    "vercel-react-native-skills": {
-      "source": "vercel-labs/agent-skills",
-      "sourceType": "github",
-      "computedHash": "41d24eafa7c3d82e270439808f7cfbc4d51aeb2d14f2809a2267c16275784d06"
     },
     "vercel-react-view-transitions": {
       "source": "vercel-labs/agent-skills",
