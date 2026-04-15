@@ -36,6 +36,52 @@ jobs:
             .cortex .crush .factory .goose .iflow .junie .kilocode .kiro \
             .kode .mcpjam .mux .neovate .openhands .pi .pochi .qoder .qwen \
             .roo .trae .vibe .windsurf .zencoder skills
+      # `skills update` pulls every skill its configured source repos expose,
+      # including new ones we never opted in to (see PR #172: it re-added the
+      # previously-removed `vercel-react-native-skills` and added a brand-new
+      # `claude-api`). The CLI has no per-skill allowlist flag in v1.5.0, so
+      # post-prune to the skill set we actually use on this repo.
+      #
+      # To add or remove a skill, edit ALLOWLIST here, and `.agents/skills/`
+      # + `skills-lock.json` will converge on the next workflow run.
+      - name: Prune non-allowlisted skills
+        env:
+          ALLOWLIST: >-
+            frontend-design
+            vercel-composition-patterns
+            vercel-react-best-practices
+            vercel-react-view-transitions
+            web-design-guidelines
+            webapp-testing
+        run: |
+          is_allowed() {
+            for name in $ALLOWLIST; do
+              [ "$name" = "$1" ] && return 0
+            done
+            return 1
+          }
+          # 1. Skill source dirs under .agents/skills/
+          for dir in .agents/skills/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            is_allowed "$name" || rm -rf "$dir"
+          done
+          # 2. Claude Code symlinks under .claude/skills/ (if CLI created any
+          #    for non-allowlisted skills before we pruned the source dirs).
+          if [ -d .claude/skills ]; then
+            for link in .claude/skills/*; do
+              [ -e "$link" ] || [ -L "$link" ] || continue
+              name=$(basename "$link")
+              is_allowed "$name" || rm -rf "$link"
+            done
+          fi
+          # 3. skills-lock.json — keep only allowlisted entries.
+          allow_json=$(printf '%s\n' $ALLOWLIST | jq -Rn '[inputs]')
+          tmp=$(mktemp)
+          jq --argjson allow "$allow_json" \
+            '.skills |= with_entries(select(.key as $k | $allow | index($k)))' \
+            skills-lock.json > "$tmp"
+          mv "$tmp" skills-lock.json
       - name: Check for changes
         id: changes
         run: |
