@@ -22,6 +22,20 @@ jobs:
         run: npx -y skills experimental_install -y
       - name: Update skills
         run: npx -y skills update -y
+      # The `skills` CLI has no allowlist flag for `experimental_install` /
+      # `update` (see v1.5.0), so it materializes a symlink directory under
+      # every non-universal agent it knows about (`.adal`, `.augment`, …).
+      # We only use Claude Code, Codex, and Gemini CLI on this repo:
+      #   - claude-code keeps its own dir (`.claude/skills/`)
+      #   - codex and gemini-cli are universal agents that read directly
+      #     from `.agents/skills/`, so no extra dir is needed for them
+      # Prune everything else so the weekly PR stays small.
+      - name: Prune non-allowlisted agent directories
+        run: |
+          rm -rf .adal .agent .augment .bob .codebuddy .commandcode .continue \
+            .cortex .crush .factory .goose .iflow .junie .kilocode .kiro \
+            .kode .mcpjam .mux .neovate .openhands .pi .pochi .qoder .qwen \
+            .roo .trae .vibe .windsurf .zencoder skills
       - name: Check for changes
         id: changes
         run: |
