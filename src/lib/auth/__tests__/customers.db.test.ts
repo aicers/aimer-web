@@ -8,7 +8,7 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
-import { createCustomer } from "../customers";
+import { createCustomer, updateCustomer } from "../customers";
 import { HttpError } from "../errors";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
@@ -314,6 +314,137 @@ describe.skipIf(!hasPostgres)("customer creation (DB integration)", () => {
   // =========================================================================
   // Timestamps
   // =========================================================================
+
+  // =========================================================================
+  // updateCustomer
+  // =========================================================================
+
+  describe("updateCustomer", () => {
+    it("updates name and reports changedFields", async () => {
+      const created = await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "Update Name Corp",
+          externalKey: "update-name-001",
+          managerAccountId,
+        }),
+      );
+
+      const result = await runInTransaction((client) =>
+        updateCustomer(client, created.id, { name: "Renamed Corp" }),
+      );
+
+      expect(result.name).toBe("Renamed Corp");
+      expect(result.changedFields).toEqual(["name"]);
+      expect(result.previous).toEqual({ name: "Update Name Corp" });
+      expect(result.next).toEqual({ name: "Renamed Corp" });
+    });
+
+    it("updates external_key with previous/next snapshot", async () => {
+      const created = await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "Key Change Corp",
+          externalKey: "key-old-001",
+          managerAccountId,
+        }),
+      );
+
+      const result = await runInTransaction((client) =>
+        updateCustomer(client, created.id, { externalKey: "key-new-001" }),
+      );
+
+      expect(result.externalKey).toBe("key-new-001");
+      expect(result.changedFields).toEqual(["external_key"]);
+      expect(result.previous).toEqual({ external_key: "key-old-001" });
+      expect(result.next).toEqual({ external_key: "key-new-001" });
+    });
+
+    it("rejects external_key collision with 409", async () => {
+      await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "First",
+          externalKey: "collide-001",
+          managerAccountId,
+        }),
+      );
+      const second = await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "Second",
+          externalKey: "collide-002",
+          managerAccountId,
+        }),
+      );
+
+      try {
+        await runInTransaction((client) =>
+          updateCustomer(client, second.id, { externalKey: "collide-001" }),
+        );
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(HttpError);
+        expect((err as HttpError).statusCode).toBe(409);
+        expect((err as HttpError).message).toBe("external_key_conflict");
+      }
+    });
+
+    it("returns 404 for unknown customer ID", async () => {
+      const fake = "00000000-0000-0000-0000-fffffffff000";
+      try {
+        await runInTransaction((client) =>
+          updateCustomer(client, fake, { name: "x" }),
+        );
+        expect.unreachable();
+      } catch (err) {
+        expect(err).toBeInstanceOf(HttpError);
+        expect((err as HttpError).statusCode).toBe(404);
+      }
+    });
+
+    it("no-op update returns empty changedFields", async () => {
+      const created = await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "NoOp Corp",
+          externalKey: "noop-001",
+          managerAccountId,
+        }),
+      );
+
+      const result = await runInTransaction((client) =>
+        updateCustomer(client, created.id, { name: "NoOp Corp" }),
+      );
+
+      expect(result.changedFields).toEqual([]);
+      expect(result.name).toBe("NoOp Corp");
+    });
+
+    it("multi-field update reports all changed fields", async () => {
+      const created = await runInTransaction((client) =>
+        createCustomer(client, {
+          name: "Multi A",
+          externalKey: "multi-old-001",
+          description: "old",
+          managerAccountId,
+        }),
+      );
+
+      const result = await runInTransaction((client) =>
+        updateCustomer(client, created.id, {
+          name: "Multi B",
+          externalKey: "multi-new-001",
+          description: "new",
+        }),
+      );
+
+      expect(result.changedFields.sort()).toEqual(
+        ["description", "external_key", "name"].sort(),
+      );
+      expect(result.previous.name).toBe("Multi A");
+      expect(result.previous.external_key).toBe("multi-old-001");
+      expect(result.previous.description).toBe("old");
+      expect(result.next.name).toBe("Multi B");
+      expect(result.next.external_key).toBe("multi-new-001");
+      expect(result.next.description).toBe("new");
+    });
+  });
 
   it("sets created_at and updated_at on customer and membership", async () => {
     const before = new Date();

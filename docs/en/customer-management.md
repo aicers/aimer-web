@@ -44,6 +44,38 @@ creation. The Database Status column shows **Provisioning**
 while this is in progress, then changes to **Active** on
 success or **Failed** if an error occurs.
 
+The **External Key** field carries an inline help note and a
+link to the
+[Cross-System Customer Identification](cross-system-customer-identification.md)
+operations guide. Read that page before choosing a value — it
+must be agreed with the aice-web-next operator over an
+out-of-band secure channel.
+
+## Editing a customer
+
+1. Find the customer in the table.
+2. Click the **Edit** button in the Actions column.
+3. The Edit Customer dialog appears, pre-filled with the
+    current name, external key, and description.
+4. Adjust the fields you want to change.
+5. Click **Save**.
+
+<!-- TODO: screenshot - aimer-bridge batch -->
+
+If you change the **External Key** to a different value, a
+non-dismissable confirmation dialog appears before the save
+goes through. external_key is the customer mapping identifier
+shared with aice-web-next, and any change must be mirrored on
+that side. The confirmation reminds you to coordinate the
+change and run a bridge test immediately afterwards. Click
+**Cancel** to abandon the change, or the explicit confirm
+button to proceed.
+
+Edits are recorded as `customer.updated` audit entries whose
+`details.changedFields` array names the fields that actually
+changed, with old and new values in `details.previous` and
+`details.next`.
+
 ## Deleting a customer
 
 1. Find the customer you want to delete in the table.
@@ -82,6 +114,11 @@ retry as many times as needed.
 Customer management actions are recorded in the audit log:
 
 - **customer.created** — when a customer is created.
+- **customer.updated** — when a customer's name, description,
+    or external key is updated. The `details.changedFields`
+    array lists which fields changed, and
+    `details.previous` / `details.next` carry the old and new
+    values.
 - **customer.deleted** — when a customer is deleted.
 - **customer_db.provisioned** — when database provisioning
     succeeds on first attempt.

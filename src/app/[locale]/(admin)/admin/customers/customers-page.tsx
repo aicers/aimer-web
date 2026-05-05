@@ -1,6 +1,6 @@
 "use client";
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { adminFetch } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/client";
+import { manualUrl } from "@/lib/manual-url";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,6 +55,11 @@ interface Account {
 export function CustomersPage() {
   const t = useTranslations("adminCustomers");
   const tCommon = useTranslations("common");
+  const locale = useLocale();
+  const guideHref = manualUrl(
+    "cross-system-customer-identification",
+    locale === "ko" ? "ko" : "en",
+  );
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -67,6 +73,15 @@ export function CustomersPage() {
   const [createExternalKey, setCreateExternalKey] = useState("");
   const [createDescription, setCreateDescription] = useState("");
   const [createManagerId, setCreateManagerId] = useState("");
+
+  // Edit dialog
+  const [editOpen, setEditOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const [editTarget, setEditTarget] = useState<Customer | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editExternalKey, setEditExternalKey] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [externalKeyWarnOpen, setExternalKeyWarnOpen] = useState(false);
 
   // Delete dialog
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -174,6 +189,74 @@ export function CustomersPage() {
     } finally {
       setCreateLoading(false);
     }
+  };
+
+  // -----------------------------------------------------------------------
+  // Edit
+  // -----------------------------------------------------------------------
+
+  const openEdit = (customer: Customer) => {
+    setEditTarget(customer);
+    setEditName(customer.name);
+    setEditExternalKey(customer.externalKey);
+    setEditDescription(customer.description ?? "");
+    setExternalKeyWarnOpen(false);
+    setEditOpen(true);
+  };
+
+  const submitEdit = async () => {
+    if (!editTarget) return;
+    setEditLoading(true);
+    try {
+      const trimmedName = editName.trim();
+      const trimmedKey = editExternalKey.trim();
+      const trimmedDesc = editDescription.trim();
+      const body: Record<string, string | null> = {};
+      if (trimmedName !== editTarget.name) body.name = trimmedName;
+      if (trimmedKey !== editTarget.externalKey) body.externalKey = trimmedKey;
+      if (trimmedDesc !== (editTarget.description ?? "")) {
+        body.description = trimmedDesc;
+      }
+      if (Object.keys(body).length === 0) {
+        setEditOpen(false);
+        setExternalKeyWarnOpen(false);
+        return;
+      }
+      await adminFetch(`/api/admin/customers/${editTarget.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      setEditOpen(false);
+      setExternalKeyWarnOpen(false);
+      showToast(t("updateSuccess"), "success");
+      await fetchCustomers();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        window.location.href = "/api/admin-auth/sign-in";
+        return;
+      }
+      if (err instanceof ApiError && err.status === 409) {
+        showToast(t("errorExternalKeyConflict"), "error");
+      } else {
+        showToast(
+          err instanceof ApiError ? err.message : t("actionError"),
+          "error",
+        );
+      }
+      setExternalKeyWarnOpen(false);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleEdit = () => {
+    if (!editTarget) return;
+    const trimmedKey = editExternalKey.trim();
+    if (trimmedKey !== editTarget.externalKey) {
+      setExternalKeyWarnOpen(true);
+      return;
+    }
+    void submitEdit();
   };
 
   // -----------------------------------------------------------------------
@@ -381,6 +464,14 @@ export function CustomersPage() {
                         )}
                         <Button
                           type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openEdit(customer)}
+                        >
+                          {t("edit")}
+                        </Button>
+                        <Button
+                          type="button"
                           variant="destructive"
                           size="sm"
                           onClick={() => openDelete(customer)}
@@ -430,7 +521,22 @@ export function CustomersPage() {
                 value={createExternalKey}
                 onChange={(e) => setCreateExternalKey(e.target.value)}
                 disabled={createLoading}
+                aria-describedby="customer-external-key-help"
               />
+              <p
+                id="customer-external-key-help"
+                className="text-xs text-muted-foreground"
+              >
+                {t("externalKeyHelp")}{" "}
+                <a
+                  href={guideHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  {t("externalKeyGuideLink")}
+                </a>
+              </p>
             </div>
             <div className="space-y-2">
               <label
@@ -482,6 +588,127 @@ export function CustomersPage() {
               onClick={handleCreate}
             >
               {createLoading ? tCommon("loading") : t("create")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("editTitle")}</DialogTitle>
+            <DialogDescription>{t("editDescription")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <label
+                htmlFor="customer-edit-name"
+                className="text-sm font-medium text-foreground"
+              >
+                {t("name")}
+              </label>
+              <Input
+                id="customer-edit-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                disabled={editLoading}
+              />
+            </div>
+            <div className="space-y-2">
+              <label
+                htmlFor="customer-edit-external-key"
+                className="text-sm font-medium text-foreground"
+              >
+                {t("externalKey")}
+              </label>
+              <Input
+                id="customer-edit-external-key"
+                value={editExternalKey}
+                onChange={(e) => setEditExternalKey(e.target.value)}
+                disabled={editLoading}
+                aria-describedby="customer-edit-external-key-help"
+              />
+              <p
+                id="customer-edit-external-key-help"
+                className="text-xs text-muted-foreground"
+              >
+                {t("externalKeyHelp")}{" "}
+                <a
+                  href={guideHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline hover:text-foreground"
+                >
+                  {t("externalKeyGuideLink")}
+                </a>
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label
+                htmlFor="customer-edit-description"
+                className="text-sm font-medium text-foreground"
+              >
+                {t("descriptionField")}
+              </label>
+              <Input
+                id="customer-edit-description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                disabled={editLoading}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button type="button" variant="outline" disabled={editLoading}>
+                {tCommon("cancel")}
+              </Button>
+            </DialogClose>
+            <Button
+              type="button"
+              disabled={
+                editLoading ||
+                !editName.trim() ||
+                !editExternalKey.trim() ||
+                !editTarget
+              }
+              onClick={handleEdit}
+            >
+              {editLoading ? tCommon("loading") : tCommon("save")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* External key change warning — explicit confirm required */}
+      <Dialog open={externalKeyWarnOpen} onOpenChange={() => {}}>
+        <DialogContent
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onPointerDownOutside={(e) => e.preventDefault()}
+          onInteractOutside={(e) => e.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>{t("externalKeyChangeWarningTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("externalKeyChangeWarning")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={editLoading}
+              onClick={() => setExternalKeyWarnOpen(false)}
+            >
+              {tCommon("cancel")}
+            </Button>
+            <Button
+              type="button"
+              disabled={editLoading}
+              onClick={() => void submitEdit()}
+            >
+              {editLoading ? tCommon("loading") : t("externalKeyChangeConfirm")}
             </Button>
           </DialogFooter>
         </DialogContent>

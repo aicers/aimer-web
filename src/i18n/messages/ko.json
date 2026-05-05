@@ -239,7 +239,21 @@
     "actionSuccess": "작업이 완료되었습니다.",
     "actionError": "오류가 발생했습니다. 다시 시도해 주세요.",
     "createSuccess": "고객이 생성되었습니다.",
-    "deleteSuccess": "고객이 삭제되었습니다."
+    "deleteSuccess": "고객이 삭제되었습니다.",
+    "edit": "편집",
+    "editTitle": "고객 편집",
+    "editDescription": "고객의 이름, 외부 키, 설명을 업데이트합니다.",
+    "updateSuccess": "고객이 업데이트되었습니다.",
+    "externalKeyHelp": "external_key는 전사적으로 유일한 비즈니스 식별자여야 합니다 (예: 도메인, 사업자등록번호, 계약 코드). 동일한 값을 안전한 별도 채널을 통한 협의에 따라 aice-web-next에도 동일하게 등록해야 합니다. 불일치 시 bridge_customer_mismatch 거부로 나타납니다. 등록 또는 변경 직후 bridge 테스트로 매핑을 검증하세요.",
+    "externalKeyGuideLink": "운영 가이드 보기",
+    "externalKeyChangeWarningTitle": "external_key 변경 확인",
+    "externalKeyChangeWarning": "external_key는 aice-web-next와의 customer 매핑 식별자입니다. 변경 후 aice-web-next 측에서도 동일 값으로 변경되어야 매핑이 유지됩니다. 변경 직후 bridge 테스트로 검증하세요. 계속하시겠습니까?",
+    "externalKeyChangeConfirm": "예, external_key 변경",
+    "errorExternalKeyConflict": "다른 고객이 이미 이 외부 키를 사용 중입니다.",
+    "errorExternalKeyRequired": "external_key는 필수 항목입니다.",
+    "errorExternalKeyTooLong": "external_key는 256자 이하여야 합니다.",
+    "errorExternalKeyInvalidCharacters": "external_key에는 제어 문자를 포함할 수 없습니다.",
+    "errorNameRequired": "이름은 필수 항목입니다."
   },
   "adminEnvironments": {
     "title": "환경",
