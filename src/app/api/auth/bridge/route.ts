@@ -69,16 +69,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           { status: 400 },
         );
       }
-      if (!(eventsDataField instanceof File)) {
+      let eventsDataBytes: Uint8Array;
+      if (eventsDataField instanceof File) {
+        eventsDataBytes = new Uint8Array(await eventsDataField.arrayBuffer());
+      } else if (
+        typeof eventsDataField === "string" &&
+        eventsDataField.length > 0
+      ) {
+        eventsDataBytes = new TextEncoder().encode(eventsDataField);
+      } else {
         return NextResponse.json(
           { error: "Missing events_data" },
           { status: 400 },
         );
       }
-
-      const eventsDataBytes = new Uint8Array(
-        await eventsDataField.arrayBuffer(),
-      );
 
       try {
         envelopeClaims = await verifyEventsEnvelope(

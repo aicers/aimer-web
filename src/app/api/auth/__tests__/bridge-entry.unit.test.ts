@@ -213,6 +213,101 @@ describe("POST /api/auth/bridge", () => {
     expect(body.error).toContain("events_envelope");
   });
 
+  it("accepts events_data as a string (text part)", async () => {
+    mockVerifyEventsEnvelope.mockResolvedValue({
+      iss: "https://aice.test",
+      aiceId: "aice-1",
+      customerIds: ["cust-ext-1"],
+      contextJti: "unique-jti",
+      payloadHash: "abc123",
+      eventCount: 1,
+      schemaVersion: "0.0-stub",
+    });
+    mockStageEventsPayload.mockResolvedValue("staged-id-text");
+
+    const jsonString = '{"hello":"world","schema_version":"0.0-stub"}';
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_envelope: "valid-jws",
+      events_data: jsonString,
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(307);
+    const verifyCall = mockVerifyEventsEnvelope.mock.calls[0];
+    const passedBytes = verifyCall[2] as Uint8Array;
+    expect(passedBytes).toEqual(new TextEncoder().encode(jsonString));
+  });
+
+  it("preserves leading/trailing whitespace in string events_data", async () => {
+    mockVerifyEventsEnvelope.mockResolvedValue({
+      iss: "https://aice.test",
+      aiceId: "aice-1",
+      customerIds: ["cust-ext-1"],
+      contextJti: "unique-jti",
+      payloadHash: "ws-hash",
+      eventCount: 0,
+      schemaVersion: "0.0-stub",
+    });
+    mockStageEventsPayload.mockResolvedValue("staged-id-ws");
+
+    const padded = '   {"a":1}   ';
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_envelope: "valid-jws",
+      events_data: padded,
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(307);
+    const passedBytes = mockVerifyEventsEnvelope.mock.calls[0][2] as Uint8Array;
+    expect(passedBytes).toEqual(new TextEncoder().encode(padded));
+  });
+
+  it("returns 400 for empty string events_data", async () => {
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_envelope: "some-jws",
+      events_data: "",
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("events_data");
+    expect(mockVerifyEventsEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for string events_data without envelope", async () => {
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_data: '{"hello":"world"}',
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("events_envelope");
+    expect(mockVerifyEventsEnvelope).not.toHaveBeenCalled();
+  });
+
+  it("propagates payload_hash mismatch as 403 for string events_data", async () => {
+    mockVerifyEventsEnvelope.mockRejectedValue(
+      new Error("Events envelope payload_hash mismatch"),
+    );
+
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_envelope: "valid-jws",
+      events_data: '{"hello":"world"}',
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toContain("Invalid events envelope");
+  });
+
   it("propagates non-jti database errors as 500", async () => {
     mockCreatePendingConnection.mockRejectedValue(
       new Error("connection refused"),
