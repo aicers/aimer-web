@@ -1,11 +1,13 @@
 import type { NextRequest } from "next/server";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
+import { parseExpiresAtInput } from "@/lib/auth/expires-at";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import {
   computeJwkThumbprint,
   InvalidJwkError,
 } from "@/lib/auth/jwk-thumbprint";
+import { invalidateTrustRegistryCache } from "@/lib/auth/trust-registry";
 import { getAuthPool } from "@/lib/db/client";
 
 function extractAiceId(req: NextRequest): string | null {
@@ -53,11 +55,12 @@ export const GET = withAuth(
       public_key: unknown;
       description: string | null;
       enabled: boolean;
+      expires_at: string | Date | null;
       created_at: string;
       updated_at: string;
     }>(
       `SELECT id, aice_id, issuer, kid, public_key, description,
-              enabled, created_at, updated_at
+              enabled, expires_at, created_at, updated_at
        FROM trust_registry
        WHERE aice_id = $1
        ORDER BY created_at`,
@@ -73,6 +76,10 @@ export const GET = withAuth(
         publicKey: r.public_key,
         description: r.description,
         enabled: r.enabled,
+        expiresAt:
+          r.expires_at instanceof Date
+            ? r.expires_at.toISOString()
+            : r.expires_at,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       })),
@@ -145,7 +152,7 @@ export const POST = withAuth(
       );
     }
 
-    const { issuer, kid, publicKey, description } = raw as Record<
+    const { issuer, kid, publicKey, description, expiresAt } = raw as Record<
       string,
       unknown
     >;
@@ -191,26 +198,44 @@ export const POST = withAuth(
       throw err;
     }
 
+    const expiresAtParse = parseExpiresAtInput(expiresAt);
+    if (!expiresAtParse.ok) {
+      return Response.json(
+        { error: expiresAtParse.error, field: "expiresAt" },
+        { status: 400 },
+      );
+    }
+
     try {
       const result = await pool.query<{
         id: number;
         issuer: string;
         kid: string;
         enabled: boolean;
+        expires_at: string | Date | null;
       }>(
-        `INSERT INTO trust_registry (aice_id, issuer, kid, public_key, description)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, issuer, kid, enabled`,
+        `INSERT INTO trust_registry (aice_id, issuer, kid, public_key, description, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, issuer, kid, enabled, expires_at`,
         [
           aiceId,
           issuer.trim(),
           kid.trim(),
           JSON.stringify(publicKey),
           typeof description === "string" ? description : null,
+          expiresAtParse.expiresAt,
         ],
       );
 
       const key = result.rows[0];
+      const expiresAtIso =
+        key.expires_at instanceof Date
+          ? key.expires_at.toISOString()
+          : key.expires_at;
+
+      // Force a fresh trust-registry cache load so the new key (and its
+      // expires_at) is visible without waiting up to CACHE_TTL_MS.
+      invalidateTrustRegistryCache();
 
       auth.audit.targetId = String(key.id);
       auth.audit.details = {
@@ -218,6 +243,7 @@ export const POST = withAuth(
         issuer: key.issuer,
         kid: key.kid,
         jwkThumbprint: thumbprint,
+        expiresAt: expiresAtIso,
       };
 
       return Response.json(
@@ -227,6 +253,7 @@ export const POST = withAuth(
           issuer: key.issuer,
           kid: key.kid,
           enabled: key.enabled,
+          expiresAt: expiresAtIso,
         },
         { status: 201 },
       );

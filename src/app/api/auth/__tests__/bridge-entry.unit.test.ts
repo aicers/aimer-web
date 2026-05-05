@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { TrustRegistryKeyExpiredError } from "@/lib/auth/errors";
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -11,6 +13,7 @@ const mockCreatePendingConnection = vi.fn();
 const mockStageEventsPayload = vi.fn();
 const setConnectionIdCookie = vi.fn();
 const clearInvitationTokenCookie = vi.fn();
+const mockAuditLog = vi.fn(async (..._args: unknown[]) => {});
 
 vi.mock("@/lib/auth/context-token", () => ({
   verifyContextToken: (...args: unknown[]) => mockVerifyContextToken(...args),
@@ -33,7 +36,7 @@ vi.mock("@/lib/auth/cookies", () => ({
 }));
 
 vi.mock("@/lib/audit", () => ({
-  auditLog: vi.fn(async () => {}),
+  auditLog: (...args: unknown[]) => mockAuditLog(...args),
   UNKNOWN_ACTOR_ID: "unknown",
 }));
 
@@ -124,6 +127,78 @@ describe("POST /api/auth/bridge", () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toContain("Invalid context token");
+  });
+
+  it("audits expired context token with innerReason: trust_registry_key_expired", async () => {
+    const expiresAtMs = Date.parse("2026-05-01T00:00:00Z");
+    mockVerifyContextToken.mockRejectedValue(
+      new TrustRegistryKeyExpiredError("trust_registry key expired", {
+        aiceId: "aice-1",
+        issuer: "https://aice.test",
+        kid: "key-1",
+        expiresAtMs,
+      }),
+    );
+
+    const form = makeFormData({ context_token: "expired-jwt" });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid context token");
+
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "bridge.connection_denied",
+        details: expect.objectContaining({
+          reason: "context_token_rejected",
+          innerReason: "trust_registry_key_expired",
+          aiceId: "aice-1",
+          issuer: "https://aice.test",
+          kid: "key-1",
+          expiresAt: new Date(expiresAtMs).toISOString(),
+        }),
+      }),
+    );
+  });
+
+  it("audits expired events envelope with innerReason: trust_registry_key_expired", async () => {
+    const expiresAtMs = Date.parse("2026-05-01T00:00:00Z");
+    mockVerifyEventsEnvelope.mockRejectedValue(
+      new TrustRegistryKeyExpiredError("trust_registry key expired", {
+        aiceId: "aice-1",
+        issuer: "https://aice.test",
+        kid: "envelope-key",
+        expiresAtMs,
+      }),
+    );
+
+    const eventsBlob = new File([new Uint8Array([1, 2, 3])], "events.bin");
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_envelope: "expired-jws",
+      events_data: eventsBlob,
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("Invalid events envelope");
+
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "bridge.connection_denied",
+        actorId: validContextClaims.sub,
+        aiceId: validContextClaims.aiceId,
+        details: expect.objectContaining({
+          reason: "envelope_rejected",
+          innerReason: "trust_registry_key_expired",
+          kid: "envelope-key",
+          expiresAt: new Date(expiresAtMs).toISOString(),
+          jti: validContextClaims.jti,
+        }),
+      }),
+    );
   });
 
   it("returns 409 for jti replay (duplicate)", async () => {

@@ -7,6 +7,7 @@ import {
   clearInvitationTokenCookie,
   setConnectionIdCookie,
 } from "@/lib/auth/cookies";
+import { TrustRegistryKeyExpiredError } from "@/lib/auth/errors";
 import { verifyEventsEnvelope } from "@/lib/auth/events-envelope";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool } from "@/lib/db/client";
@@ -40,11 +41,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     try {
       contextClaims = await verifyContextToken(pool, contextTokenField);
     } catch (err) {
+      const isExpired = err instanceof TrustRegistryKeyExpiredError;
       void auditLog({
         actorId: UNKNOWN_ACTOR_ID,
         action: "bridge.connection_denied",
         targetType: "bridge",
-        details: { reason: "context_token_rejected", error: String(err) },
+        details: {
+          reason: "context_token_rejected",
+          ...(isExpired
+            ? {
+                innerReason: "trust_registry_key_expired",
+                aiceId: err.aiceId,
+                issuer: err.issuer,
+                kid: err.kid,
+                expiresAt: new Date(err.expiresAtMs).toISOString(),
+              }
+            : {}),
+          error: String(err),
+        },
         ipAddress: meta.ipAddress,
       });
       return NextResponse.json(
@@ -97,12 +111,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           contextClaims,
         );
       } catch (err) {
+        const isExpired = err instanceof TrustRegistryKeyExpiredError;
         void auditLog({
           actorId: contextClaims.sub,
           action: "bridge.connection_denied",
           targetType: "bridge",
           details: {
             reason: "envelope_rejected",
+            ...(isExpired
+              ? {
+                  innerReason: "trust_registry_key_expired",
+                  kid: err.kid,
+                  expiresAt: new Date(err.expiresAtMs).toISOString(),
+                }
+              : {}),
             error: String(err),
             jti: contextClaims.jti,
           },

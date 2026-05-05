@@ -31,11 +31,11 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     await dropTestDatabase(dbName, pool);
   });
 
-  it("applies all 19 auth migrations cleanly", async () => {
+  it("applies all 20 auth migrations cleanly", async () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(19);
+    expect(rows).toHaveLength(20);
   });
 
   // -- Built-in roles --
