@@ -51,9 +51,13 @@ vi.mock("@/lib/db/client", () => ({
   ),
 }));
 
-vi.mock("@/lib/auth/customers", () => ({
-  createCustomer: (...args: unknown[]) => mockCreateCustomer(...args),
-}));
+vi.mock("@/lib/auth/customers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/auth/customers")>();
+  return {
+    ...actual,
+    createCustomer: (...args: unknown[]) => mockCreateCustomer(...args),
+  };
+});
 
 vi.mock("@/lib/db/provision-customer", () => ({
   provisionCustomerDb: (...args: unknown[]) => mockProvisionCustomerDb(...args),

@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { assertAuthorized } from "@/lib/auth/authorization";
-import { createCustomer } from "@/lib/auth/customers";
+import { createCustomer, validateCustomerFields } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
@@ -109,16 +109,20 @@ export const POST = withAuth(
       unknown
     >;
 
-    if (
-      typeof name !== "string" ||
-      typeof externalKey !== "string" ||
-      !name.trim() ||
-      !externalKey.trim()
-    ) {
-      return Response.json(
-        { error: "name and externalKey are required non-empty strings" },
-        { status: 400 },
+    let validated: ReturnType<typeof validateCustomerFields>;
+    try {
+      validated = validateCustomerFields(
+        { name, externalKey, description },
+        { requireAll: true },
       );
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(
+          { error: err.message },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
     }
 
     if (typeof managerAccountId !== "string") {
@@ -135,20 +139,12 @@ export const POST = withAuth(
       );
     }
 
-    if (description !== undefined && typeof description !== "string") {
-      return Response.json(
-        { error: "description must be a string" },
-        { status: 400 },
-      );
-    }
-
     try {
       const result = await withTransaction(getAuthPool(), (client) =>
         createCustomer(client, {
-          name,
-          externalKey,
-          description:
-            typeof description === "string" ? description : undefined,
+          name: validated.name as string,
+          externalKey: validated.externalKey as string,
+          description: validated.description ?? undefined,
           managerAccountId,
         }),
       );
@@ -166,8 +162,8 @@ export const POST = withAuth(
 
       auth.audit.targetId = result.id;
       auth.audit.details = {
-        name,
-        externalKey,
+        name: validated.name,
+        externalKey: validated.externalKey,
         managerAccountId,
         databaseStatus,
       };

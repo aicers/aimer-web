@@ -139,13 +139,62 @@ test.describe("DELETE /api/admin/customers/:customerId", () => {
     });
     expect(res.status()).toBe(405);
   });
+});
 
-  test("returns 405 for PATCH method on /:customerId route", async ({
-    request,
-  }) => {
+// =========================================================================
+// PATCH /api/admin/customers/:customerId
+// =========================================================================
+
+test.describe("PATCH /api/admin/customers/:customerId", () => {
+  test("returns 401 without admin auth cookie", async ({ request }) => {
     const res = await request.patch(`/api/admin/customers/${DUMMY_UUID}`, {
-      headers: { origin: ORIGIN },
+      headers: { origin: ORIGIN, "content-type": "application/json" },
+      data: { name: "Renamed" },
     });
-    expect(res.status()).toBe(405);
+    expect(res.status()).toBe(401);
+    const body = await res.json();
+    expect(body.error).toBe("Unauthorized");
+  });
+
+  test("returns 401 with invalid admin cookie", async ({ context }) => {
+    await context.addCookies([
+      {
+        name: "at_admin",
+        value: "invalid-jwt-token",
+        domain: "localhost",
+        path: "/",
+      },
+    ]);
+
+    const res = await context.request.patch(
+      `/api/admin/customers/${DUMMY_UUID}`,
+      {
+        headers: { origin: ORIGIN, "content-type": "application/json" },
+        data: { name: "Renamed" },
+      },
+    );
+    expect(res.status()).toBe(401);
+  });
+
+  test("returns 401 with general auth cookie (requires admin)", async ({
+    context,
+  }) => {
+    await context.addCookies([
+      {
+        name: "at",
+        value: "some-general-jwt",
+        domain: "localhost",
+        path: "/",
+      },
+    ]);
+
+    const res = await context.request.patch(
+      `/api/admin/customers/${DUMMY_UUID}`,
+      {
+        headers: { origin: ORIGIN, "content-type": "application/json" },
+        data: { name: "Renamed" },
+      },
+    );
+    expect(res.status()).toBe(401);
   });
 });
