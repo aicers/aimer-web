@@ -2,6 +2,10 @@ import type { NextRequest } from "next/server";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  computeJwkThumbprint,
+  InvalidJwkError,
+} from "@/lib/auth/jwk-thumbprint";
 import { getAuthPool } from "@/lib/db/client";
 
 function extractAiceId(req: NextRequest): string | null {
@@ -176,6 +180,17 @@ export const POST = withAuth(
       );
     }
 
+    let thumbprint: string;
+    try {
+      const tp = await computeJwkThumbprint(publicKey);
+      thumbprint = tp.base64url;
+    } catch (err) {
+      if (err instanceof InvalidJwkError) {
+        return Response.json({ error: err.message }, { status: 400 });
+      }
+      throw err;
+    }
+
     try {
       const result = await pool.query<{
         id: number;
@@ -198,7 +213,12 @@ export const POST = withAuth(
       const key = result.rows[0];
 
       auth.audit.targetId = String(key.id);
-      auth.audit.details = { aiceId, issuer: key.issuer, kid: key.kid };
+      auth.audit.details = {
+        aiceId,
+        issuer: key.issuer,
+        kid: key.kid,
+        jwkThumbprint: thumbprint,
+      };
 
       return Response.json(
         {

@@ -3,6 +3,10 @@ import { auditLog } from "@/lib/audit";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  computeJwkThumbprint,
+  InvalidJwkError,
+} from "@/lib/auth/jwk-thumbprint";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 
 export const GET = withAuth(
@@ -217,6 +221,24 @@ export const POST = withAuth(
       }
     }
 
+    // Compute the server-side thumbprint up-front. This both validates the
+    // JWK (so we 400 before any DB writes) and produces the value we persist
+    // into the audit trail — the operator confirmed this exact thumbprint on
+    // the registration screen.
+    let trustRegistryThumbprint: string | null = null;
+    if (trustRegistryKey) {
+      const trk = trustRegistryKey as Record<string, unknown>;
+      try {
+        const tp = await computeJwkThumbprint(trk.publicKey);
+        trustRegistryThumbprint = tp.base64url;
+      } catch (err) {
+        if (err instanceof InvalidJwkError) {
+          return Response.json({ error: err.message }, { status: 400 });
+        }
+        throw err;
+      }
+    }
+
     try {
       const result = await withTransaction(pool, async (client) => {
         const envResult = await client.query<{
@@ -286,6 +308,7 @@ export const POST = withAuth(
             aiceId: result.env.aice_id,
             issuer: result.registeredKey.issuer,
             kid: result.registeredKey.kid,
+            jwkThumbprint: trustRegistryThumbprint,
           },
           ipAddress: auth.meta.ipAddress,
           sid: auth.sessionId,

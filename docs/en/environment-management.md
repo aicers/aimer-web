@@ -42,9 +42,17 @@ shows:
     alongside the environment:
     - **Issuer** — the token issuer identifier.
     - **Key ID (kid)** — the key identifier.
-    - **Public Key (JWK)** — paste the JWK JSON.
+    - **Public Key (JWK)** — paste the JWK JSON. The server then
+        recomputes the RFC 7638 SHA-256 JWK Thumbprint and shows
+        it in two formats (see
+        [Verifying the JWK Thumbprint](#verifying-the-jwk-thumbprint)
+        below).
     - **Key Description** — an optional description.
-4. Click **Create Environment** to submit.
+4. Compare the displayed thumbprint against the value shown by
+    aice-web-next out-of-band, then toggle the **I confirmed the
+    thumbprint matches** checkbox.
+5. Click **Create Environment** to submit. The button is disabled
+    until the thumbprint confirmation is checked.
 
 ![Create environment dialog](../assets/admin-environments-create-dialog.png)
 
@@ -95,9 +103,57 @@ registry panel.
 2. Fill in the required fields:
     - **Issuer** — the token issuer identifier.
     - **Key ID (kid)** — the key identifier.
-    - **Public Key (JWK)** — paste the JWK JSON.
+    - **Public Key (JWK)** — paste the JWK JSON. The server then
+        recomputes the RFC 7638 SHA-256 JWK Thumbprint and shows
+        it in two formats (see
+        [Verifying the JWK Thumbprint](#verifying-the-jwk-thumbprint)
+        below).
     - **Key Description** — an optional description.
-3. Click **Register Key** to submit.
+3. Compare the displayed thumbprint against the value shown by
+    aice-web-next out-of-band, then toggle the **I confirmed the
+    thumbprint matches** checkbox.
+4. Click **Register Key** to submit. The button is disabled until
+    the thumbprint confirmation is checked.
+
+### Verifying the JWK Thumbprint
+
+When a JWK is pasted into the create-environment or register-key
+form, the server independently recomputes the RFC 7638 SHA-256
+thumbprint of the public key and renders it in two formats:
+
+- **base64url (canonical)** — 43 characters, no padding. This is
+    the value to compare for verification.
+- **hex (4-byte blocks)** — 64 hex characters grouped in eight
+    blocks of 8 characters separated by `:`. Provided as a visual
+    aid for verbal or mental comparison.
+
+Both formats encode the same 32-byte SHA-256 digest; only the
+rendering differs. Both are displayed in full (no truncation) and
+each has a **Copy** button.
+
+The aice-web-next System Administrator transmits the thumbprint
+out-of-band — over a separate, trusted channel from the JWK
+itself — so that an attacker who could swap the public key during
+the paste would not also control the comparison value. Compare
+both sides character-for-character before toggling the
+confirmation checkbox.
+
+If the JWK is malformed or uses an unsupported `kty`, an error
+is shown in place of the thumbprint, the confirmation checkbox
+does not appear, and the submit button stays disabled.
+
+Editing the JWK textarea after confirming clears the
+confirmation, hides the previously displayed thumbprint, and
+re-disables the submit button. The operator must wait for the
+new thumbprint to render and re-confirm before the form can be
+submitted.
+
+The server-computed thumbprint is also written to the
+`trust_registry.key_registered` audit details so the registered
+value can be verified after the fact.
+
+<!-- TODO: screenshot - aimer-bridge batch -->
+
 
 ### Enabling or disabling a key
 
