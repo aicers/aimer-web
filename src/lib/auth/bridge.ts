@@ -24,6 +24,21 @@ export interface BridgeCallbackResult {
   sessionId?: string;
   bridgeAiceId?: string;
   bridgeCustomerIds?: string[];
+  /**
+   * external_key values the sender claimed scope to, taken from
+   * `pending_connections.customer_ids`. Populated on every scope-probing
+   * denial path so audit can preserve forensic context.
+   */
+  requestedCustomerExternalKeys?: string[];
+  /**
+   * Subset of `requestedCustomerExternalKeys` that resolved against
+   * `aice_environment_customers JOIN customers` for the bridge's
+   * `aice_id`. Independent of customer / environment status — a key
+   * whose customer or environment is inactive is still listed here
+   * because it was found; the denial reason itself encodes the
+   * status-related rejection.
+   */
+  matchedCustomerExternalKeys?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -154,12 +169,22 @@ async function denyConsumed(
   client: PoolClient,
   connectionId: string,
   reason: string,
+  metadata: {
+    bridgeAiceId?: string;
+    requestedCustomerExternalKeys?: string[];
+    matchedCustomerExternalKeys?: string[];
+  } = {},
 ): Promise<BridgeCallbackResult> {
   await client.query(
     `UPDATE pending_connections SET status = 'denied' WHERE connection_id = $1`,
     [connectionId],
   );
-  return { deny: reason };
+  return {
+    deny: reason,
+    bridgeAiceId: metadata.bridgeAiceId,
+    requestedCustomerExternalKeys: metadata.requestedCustomerExternalKeys,
+    matchedCustomerExternalKeys: metadata.matchedCustomerExternalKeys,
+  };
 }
 
 /**
@@ -202,26 +227,55 @@ export async function processBridgeCallback(
       [conn.aiceId, conn.customerIds],
     );
 
-    // 3. Exact match verification
-    const mappedExternalKeys = new Set<string>();
-    const mappedCustomerIds: string[] = [];
+    // 3. Collect all matched rows. `matchedCustomerExternalKeys` is the
+    //    set of keys resolved against `aice_environment_customers JOIN
+    //    customers` regardless of `customers.status` /
+    //    `aice_environments.status` — the denial reason itself encodes
+    //    the status-related rejection, so audit can distinguish
+    //    "sender typoed an external_key" (requested ∖ matched) from
+    //    "the resolved customer is inactive" (still in matched).
+    const matchedExternalKeys: string[] = [];
+    const matchedCustomerIds: string[] = [];
+    let hasInactiveCustomer = false;
+    let hasInactiveEnvironment = false;
     for (const row of mappingResult.rows) {
-      if (row.customer_status !== "active") {
-        return denyConsumed(client, connectionId, "bridge_customer_inactive");
-      }
-      if (row.env_status !== "active") {
-        return denyConsumed(
-          client,
-          connectionId,
-          "bridge_environment_inactive",
-        );
-      }
-      mappedExternalKeys.add(row.external_key);
-      mappedCustomerIds.push(row.customer_id);
+      matchedExternalKeys.push(row.external_key);
+      matchedCustomerIds.push(row.customer_id);
+      if (row.customer_status !== "active") hasInactiveCustomer = true;
+      if (row.env_status !== "active") hasInactiveEnvironment = true;
     }
 
-    if (mappedExternalKeys.size !== conn.customerIds.length) {
-      return denyConsumed(client, connectionId, "bridge_customer_mismatch");
+    const denyMetadata = {
+      bridgeAiceId: conn.aiceId,
+      requestedCustomerExternalKeys: conn.customerIds,
+      matchedCustomerExternalKeys: matchedExternalKeys,
+    };
+
+    if (matchedExternalKeys.length !== conn.customerIds.length) {
+      return denyConsumed(
+        client,
+        connectionId,
+        "bridge_customer_mismatch",
+        denyMetadata,
+      );
+    }
+
+    if (hasInactiveCustomer) {
+      return denyConsumed(
+        client,
+        connectionId,
+        "bridge_customer_inactive",
+        denyMetadata,
+      );
+    }
+
+    if (hasInactiveEnvironment) {
+      return denyConsumed(
+        client,
+        connectionId,
+        "bridge_environment_inactive",
+        denyMetadata,
+      );
     }
 
     // 4. Verify account has access to ALL mapped customers
@@ -235,13 +289,18 @@ export async function processBridgeCallback(
          JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
          WHERE aca.account_id = $1 AND aca.customer_id = ANY($2::uuid[])
        ) sub`,
-      [accountId, mappedCustomerIds],
+      [accountId, matchedCustomerIds],
     );
 
     const accessibleIds = new Set(accessResult.rows.map((r) => r.customer_id));
-    for (const custId of mappedCustomerIds) {
+    for (const custId of matchedCustomerIds) {
       if (!accessibleIds.has(custId)) {
-        return denyConsumed(client, connectionId, "bridge_no_access");
+        return denyConsumed(
+          client,
+          connectionId,
+          "bridge_no_access",
+          denyMetadata,
+        );
       }
     }
 
@@ -254,7 +313,7 @@ export async function processBridgeCallback(
       [
         accountId,
         conn.aiceId,
-        mappedCustomerIds,
+        matchedCustomerIds,
         sessionParams.ipAddress,
         sessionParams.userAgent,
       ],
@@ -269,7 +328,7 @@ export async function processBridgeCallback(
 
     // 7. Create staged_event_customers rows for each (payload, customer) pair
     for (const payload of linkedPayloads.rows) {
-      for (const custId of mappedCustomerIds) {
+      for (const custId of matchedCustomerIds) {
         await client.query(
           `INSERT INTO staged_event_customers (payload_id, customer_id, status)
            VALUES ($1, $2, 'pending')
@@ -282,7 +341,7 @@ export async function processBridgeCallback(
     return {
       sessionId,
       bridgeAiceId: conn.aiceId,
-      bridgeCustomerIds: mappedCustomerIds,
+      bridgeCustomerIds: matchedCustomerIds,
     };
   });
 }

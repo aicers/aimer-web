@@ -60,6 +60,38 @@ Common reasons include:
 - **Email not verified** — your email address has not been verified
     in Keycloak. Verify it and try again.
 
+### Bridge sign-in denials
+
+When you are returned from AICE through a bridge connection, sign-in
+can be denied for reasons specific to that flow. The deny page
+explains each one with the recovery action you should take:
+
+- **Bridge expired** — the connection link expired or was already
+    used. Initiate a new connection from AICE.
+- **Customer scope mismatch** — the customer scope sent from AICE
+    does not match what is registered for that environment in
+    Aimer Web. Report this configuration error to your operator
+    with the time of failure so they can reconcile the registration.
+- **Customer inactive** — the customer record exists in Aimer Web
+    but is currently not active. Wait for the operator to
+    reactivate the customer, then try again.
+- **Environment inactive** — the AICE environment is registered
+    but not active. Wait for the operator to reactivate the
+    environment, then try again.
+- **No access** — you signed in successfully, but your account is
+    not authorized for the customer that AICE asked you to access.
+    If you should be a member of that customer, ask a Manager of
+    that customer to invite you. If you should be assigned as an
+    analyst, ask a System Administrator to add you to the analyst
+    assignment.
+
+<!-- TODO: screenshot - aimer-bridge batch -->
+
+For privacy, the deny page never names specific customers or
+environments. The exact identifiers involved are recorded in the
+audit log, which is only visible to System Administrators (see
+[Audit logs](audit-logs.md)).
+
 Each error page includes a **Back to Sign In** link that returns
 you to the general sign-in flow. For admin or bridge session
 errors, you will need to re-initiate those flows separately.

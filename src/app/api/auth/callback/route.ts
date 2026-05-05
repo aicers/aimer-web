@@ -197,12 +197,29 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         // Intentional denial — safe to clear cookie now
         await clearConnectionIdCookie();
         await clearAuthCookies("general");
+
+        // Forensic metadata is restricted to audit (System Admin only).
+        // Never include these keys in the HTTP response, deny page, or
+        // any user-facing log.
+        const auditDetails: Record<string, unknown> = {
+          reason: bridgeResult.deny,
+          connectionId,
+        };
+        if (bridgeResult.requestedCustomerExternalKeys !== undefined) {
+          auditDetails.requestedCustomerExternalKeys =
+            bridgeResult.requestedCustomerExternalKeys;
+        }
+        if (bridgeResult.matchedCustomerExternalKeys !== undefined) {
+          auditDetails.matchedCustomerExternalKeys =
+            bridgeResult.matchedCustomerExternalKeys;
+        }
+
         void auditLog({
           actorId: account.id,
           authContext: "general",
           action: "bridge.connection_denied",
           targetType: "bridge",
-          details: { reason: bridgeResult.deny, connectionId },
+          details: auditDetails,
           ipAddress: meta.ipAddress,
           aiceId: bridgeResult.bridgeAiceId ?? undefined,
         });
