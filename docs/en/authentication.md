@@ -55,9 +55,11 @@ either form, and applies the same size cap and SHA-256 payload-hash
 verification to both.
 
 If the context token is missing, expired, or rejected, Aimer Web does
-not start a sign-in flow and instead returns to the access denied page
-with a bridge-session error. In that case, return to Aimer Console and
-trigger **Send to Aimer** again to obtain a fresh context token.
+not start a sign-in flow. Instead, the bridge endpoint responds with a
+JSON error (HTTP 400 for a missing token, HTTP 403 for a rejected or
+expired token), which Aimer Console surfaces back to the operator. In
+that case, return to Aimer Console and trigger **Send to Aimer** again
+to obtain a fresh context token.
 
 <!-- TODO: screenshot - aimer-bridge batch -->
 
