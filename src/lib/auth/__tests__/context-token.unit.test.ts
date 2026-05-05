@@ -202,6 +202,34 @@ describe("context token verification", () => {
     );
   });
 
+  it("dedupes duplicate customer_ids while preserving first-seen order", async () => {
+    // Reviewer round 1: duplicates would otherwise reach
+    // processBridgeCallback, where SELECT DISTINCT mapping resolves to a
+    // shorter list than the requested array, falsely tripping
+    // bridge_customer_mismatch with an empty `requested ∖ matched`.
+    setupTrustRegistry();
+    const token = await signContextToken({
+      customer_ids: ["cust-ext-1", "cust-ext-2", "cust-ext-1", "cust-ext-3"],
+    });
+    const claims = await verifyContextToken(fakePool, token);
+    expect(claims.customerIds).toEqual([
+      "cust-ext-1",
+      "cust-ext-2",
+      "cust-ext-3",
+    ]);
+  });
+
+  it("enforces customer_ids size limit on the raw array (cannot bypass via duplicates)", async () => {
+    setupTrustRegistry();
+    // 21 entries that dedupe to 1 — must still reject so a malicious
+    // sender cannot smuggle a giant payload past the cap.
+    const inflated = Array.from({ length: 21 }, () => "cust-same");
+    const token = await signContextToken({ customer_ids: inflated });
+    await expect(verifyContextToken(fakePool, token)).rejects.toThrow(
+      "exceeds maximum",
+    );
+  });
+
   it("rejects token with non-string customer_ids", async () => {
     setupTrustRegistry();
     const token = await signContextToken({ customer_ids: [1, 2, 3] });

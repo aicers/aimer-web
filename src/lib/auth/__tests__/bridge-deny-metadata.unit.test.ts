@@ -217,6 +217,106 @@ describe("processBridgeCallback denial metadata (issue #194)", () => {
     expect(result.matchedCustomerExternalKeys).toEqual(["ext-a"]);
   });
 
+  it("dedupes duplicate requested keys so a single resolved match is not classified as bridge_customer_mismatch", async () => {
+    // Reviewer round 1: a malformed sender or buggy registered sender that
+    // emits `["ext-a", "ext-a"]` in customer_ids should not trip
+    // bridge_customer_mismatch, because the only requested key resolves.
+    // The validator dedupes upstream; this test exercises the bridge-layer
+    // defense so the audit invariant (`requested ∖ matched` non-empty for
+    // mismatch) holds even if a row is inserted outside the validator.
+    const { processBridgeCallback } = await import("../bridge");
+    setQueue([
+      {
+        match: /UPDATE pending_connections[\s\S]*RETURNING/,
+        rows: [
+          {
+            ...PENDING_CONNECTION_BASE,
+            customer_ids: ["ext-a", "ext-a"],
+          },
+        ],
+      },
+      {
+        match: /FROM aice_environment_customers/,
+        rows: [
+          {
+            customer_id: "uuid-a",
+            external_key: "ext-a",
+            customer_status: "active",
+            env_status: "active",
+          },
+        ],
+      },
+      {
+        match: /account_customer_memberships|analyst_customer_assignments/,
+        rows: [{ customer_id: "uuid-a" }],
+      },
+      {
+        match: /INSERT INTO sessions/,
+        rows: [{ sid: "sess-1" }],
+      },
+      {
+        match: /UPDATE staged_event_payloads/,
+        rows: [],
+      },
+    ]);
+
+    const result = await processBridgeCallback(
+      {} as never,
+      "conn-1",
+      "account-1",
+      { ipAddress: "127.0.0.1", userAgent: "test" },
+    );
+
+    // No denial: deduped requested set [ext-a] equals matched set [ext-a].
+    expect(result.deny).toBeUndefined();
+    expect(result.sessionId).toBe("sess-1");
+    expect(result.bridgeCustomerIds).toEqual(["uuid-a"]);
+  });
+
+  it("bridge_customer_mismatch with duplicates in raw row still preserves audit invariant", async () => {
+    // Even if the row contains duplicates AND a real mismatch, the deduped
+    // requested set must produce a non-empty `requested ∖ matched`.
+    const { processBridgeCallback } = await import("../bridge");
+    setQueue([
+      {
+        match: /UPDATE pending_connections[\s\S]*RETURNING/,
+        rows: [
+          {
+            ...PENDING_CONNECTION_BASE,
+            customer_ids: ["ext-a", "ext-a", "ext-typo"],
+          },
+        ],
+      },
+      {
+        match: /FROM aice_environment_customers/,
+        rows: [
+          {
+            customer_id: "uuid-a",
+            external_key: "ext-a",
+            customer_status: "active",
+            env_status: "active",
+          },
+        ],
+      },
+    ]);
+
+    const result = await processBridgeCallback(
+      {} as never,
+      "conn-1",
+      "account-1",
+      { ipAddress: "127.0.0.1", userAgent: "test" },
+    );
+
+    expect(result.deny).toBe("bridge_customer_mismatch");
+    expect(result.requestedCustomerExternalKeys).toEqual(["ext-a", "ext-typo"]);
+    expect(result.matchedCustomerExternalKeys).toEqual(["ext-a"]);
+    const matched = new Set(result.matchedCustomerExternalKeys);
+    const diff = (result.requestedCustomerExternalKeys ?? []).filter(
+      (k) => !matched.has(k),
+    );
+    expect(diff).toEqual(["ext-typo"]);
+  });
+
   it("bridge_expired (no row from atomic consume) does not populate metadata", async () => {
     const { processBridgeCallback } = await import("../bridge");
     setQueue([

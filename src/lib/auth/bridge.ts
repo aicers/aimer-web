@@ -209,6 +209,13 @@ export async function processBridgeCallback(
     // 2. Map external customer_ids to internal UUIDs via aice_environment_customers
     //    customer_ids in pending_connections are external_key values.
     //    Single query returns both internal ID and external_key with status info.
+    //    Dedupe the requested set: the mapping query uses SELECT DISTINCT,
+    //    so without dedupe a duplicate-bearing request would cause a false
+    //    `bridge_customer_mismatch` with an empty `requested ∖ matched` and
+    //    break audit forensics. `verifyContextToken` already dedupes; this
+    //    is defense-in-depth for any path that reaches a pending_connections
+    //    row outside that validator.
+    const requestedExternalKeys = Array.from(new Set(conn.customerIds));
     const mappingResult = await client.query<{
       customer_id: string;
       external_key: string;
@@ -224,7 +231,7 @@ export async function processBridgeCallback(
        JOIN aice_environments ae ON ae.aice_id = aec.aice_id
        WHERE aec.aice_id = $1
          AND c.external_key = ANY($2::text[])`,
-      [conn.aiceId, conn.customerIds],
+      [conn.aiceId, requestedExternalKeys],
     );
 
     // 3. Collect all matched rows. `matchedCustomerExternalKeys` is the
@@ -247,11 +254,11 @@ export async function processBridgeCallback(
 
     const denyMetadata = {
       bridgeAiceId: conn.aiceId,
-      requestedCustomerExternalKeys: conn.customerIds,
+      requestedCustomerExternalKeys: requestedExternalKeys,
       matchedCustomerExternalKeys: matchedExternalKeys,
     };
 
-    if (matchedExternalKeys.length !== conn.customerIds.length) {
+    if (matchedExternalKeys.length !== requestedExternalKeys.length) {
       return denyConsumed(
         client,
         connectionId,

@@ -117,19 +117,28 @@ export async function verifyContextToken(
     }
   }
 
-  // Size limit — DoS prevention
+  // Size limit — DoS prevention. Checked on the raw array before dedupe
+  // so a sender cannot bypass the cap by inflating with duplicates.
   if (customerIds.length > MAX_CUSTOMER_IDS) {
     throw new Error(
       `Context token customer_ids exceeds maximum (${customerIds.length} > ${MAX_CUSTOMER_IDS})`,
     );
   }
 
+  // Treat customer_ids as a set: dedupe while preserving first-seen order.
+  // Downstream code (`processBridgeCallback`) compares the requested keys
+  // against a `SELECT DISTINCT` mapping query, so leaving duplicates in
+  // would let a sender with a buggy / malformed token trip
+  // `bridge_customer_mismatch` with an empty `requested ∖ matched`,
+  // breaking the audit invariant.
+  const uniqueCustomerIds = Array.from(new Set(customerIds as string[]));
+
   return {
     iss: iss as string,
     aud: "aimer-web",
     sub,
     aiceId: verifiedAiceId,
-    customerIds: customerIds as string[],
+    customerIds: uniqueCustomerIds,
     iat,
     exp,
     jti,
