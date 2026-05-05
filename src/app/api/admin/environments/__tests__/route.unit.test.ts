@@ -525,9 +525,30 @@ describe("POST /api/admin/environments", () => {
           aiceId: AICE_ID,
           issuer: "https://issuer.example",
           kid: "key-1",
+          jwkThumbprint: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
         }),
       }),
     );
+  });
+
+  it("returns 400 and writes nothing when trustRegistryKey.publicKey JWK is invalid", async () => {
+    const { POST } = await import("../route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        trustRegistryKey: {
+          issuer: "https://issuer.example",
+          kid: "key-1",
+          publicKey: { kty: "BOGUS" },
+        },
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Invalid JWK");
+    expect(mockTxQuery).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalled();
   });
 
   it("does not emit trust_registry audit event without trustRegistryKey", async () => {

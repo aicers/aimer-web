@@ -302,7 +302,16 @@
     "noKeys": "이 환경에 신뢰 레지스트리 키가 없습니다.",
     "backToList": "환경 목록으로 돌아가기",
     "aiceIdConflict": "이 AICE ID를 가진 환경이 이미 존재합니다.",
-    "invalidPublicKey": "유효하지 않은 JWK JSON입니다. 형식을 확인해 주세요."
+    "invalidPublicKey": "유효하지 않은 JWK JSON입니다. 형식을 확인해 주세요.",
+    "thumbprintTitle": "JWK 지문(Thumbprint)",
+    "thumbprintInstruction": "이 값을 aice-web-next에 표시된 지문과 별도 채널로 비교하세요. base64url 형식이 표준이며, hex 형식은 시각적 비교를 돕기 위해 제공됩니다.",
+    "thumbprintBase64Url": "base64url (표준)",
+    "thumbprintHex": "hex (4바이트 블록)",
+    "thumbprintComputing": "지문을 계산 중입니다...",
+    "thumbprintError": "지문 계산에 실패했습니다. 다시 시도해 주세요.",
+    "thumbprintConfirm": "aice-web-next에 표시된 지문과 일치함을 확인했습니다.",
+    "copy": "복사",
+    "copied": "복사됨"
   },
   "adminAdmins": {
     "title": "시스템 관리자",

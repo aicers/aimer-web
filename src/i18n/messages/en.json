@@ -302,7 +302,16 @@
     "noKeys": "No trust registry keys for this environment.",
     "backToList": "Back to environments",
     "aiceIdConflict": "An environment with this AICE ID already exists.",
-    "invalidPublicKey": "Invalid JWK JSON. Please check the format."
+    "invalidPublicKey": "Invalid JWK JSON. Please check the format.",
+    "thumbprintTitle": "JWK Thumbprint",
+    "thumbprintInstruction": "Compare these values out-of-band against the thumbprint shown on aice-web-next. The base64url form is canonical; the hex form is provided as a visual aid.",
+    "thumbprintBase64Url": "base64url (canonical)",
+    "thumbprintHex": "hex (4-byte blocks)",
+    "thumbprintComputing": "Computing thumbprint...",
+    "thumbprintError": "Failed to compute thumbprint. Please try again.",
+    "thumbprintConfirm": "I confirmed the thumbprint matches the value shown on aice-web-next.",
+    "copy": "Copy",
+    "copied": "Copied"
   },
   "adminAdmins": {
     "title": "System Admins",

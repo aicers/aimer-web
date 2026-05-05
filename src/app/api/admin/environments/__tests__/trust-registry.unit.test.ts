@@ -369,6 +369,41 @@ describe("POST /api/admin/environments/[aiceId]/trust-registry", () => {
     });
   });
 
+  it("returns 400 when publicKey has unsupported kty", async () => {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ "?column?": 1 }] });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(
+      makePostRequest({
+        issuer: "https://iss",
+        kid: "k",
+        publicKey: { kty: "BOGUS" },
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("Invalid JWK");
+  });
+
+  it("does not insert into trust_registry when JWK is invalid", async () => {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ "?column?": 1 }] });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    await POST(
+      makePostRequest({
+        issuer: "https://iss",
+        kid: "k",
+        publicKey: { kty: "EC", crv: "P-256" },
+      }),
+    );
+
+    // Only the env-existence query should have run; no INSERT.
+    expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+  });
+
   it("returns 409 on duplicate issuer+kid", async () => {
     mockPoolQuery.mockReset();
     mockPoolQuery

@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { adminFetch } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/client";
+import { JwkThumbprintConfirm } from "./jwk-thumbprint-confirm";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -92,6 +93,8 @@ export function EnvironmentsPage() {
   const [createKid, setCreateKid] = useState("");
   const [createPublicKey, setCreatePublicKey] = useState("");
   const [createKeyDescription, setCreateKeyDescription] = useState("");
+  const [createKeyConfirmed, setCreateKeyConfirmed] = useState(false);
+  const [createKeyValid, setCreateKeyValid] = useState(false);
 
   // Edit dialog
   const [editOpen, setEditOpen] = useState(false);
@@ -128,6 +131,8 @@ export function EnvironmentsPage() {
   const [regKid, setRegKid] = useState("");
   const [regPublicKey, setRegPublicKey] = useState("");
   const [regKeyDescription, setRegKeyDescription] = useState("");
+  const [regKeyConfirmed, setRegKeyConfirmed] = useState(false);
+  const [regKeyValid, setRegKeyValid] = useState(false);
   const [removeKeyOpen, setRemoveKeyOpen] = useState(false);
   const [removeKeyTarget, setRemoveKeyTarget] =
     useState<TrustRegistryKey | null>(null);
@@ -226,6 +231,8 @@ export function EnvironmentsPage() {
     setCreateKid("");
     setCreatePublicKey("");
     setCreateKeyDescription("");
+    setCreateKeyConfirmed(false);
+    setCreateKeyValid(false);
     setCreateOpen(true);
   };
 
@@ -458,6 +465,8 @@ export function EnvironmentsPage() {
     setRegKid("");
     setRegPublicKey("");
     setRegKeyDescription("");
+    setRegKeyConfirmed(false);
+    setRegKeyValid(false);
     setRegisterKeyOpen(true);
   };
 
@@ -590,7 +599,11 @@ export function EnvironmentsPage() {
 
   const createKeyDisabled =
     createIncludeKey &&
-    (!createIssuer.trim() || !createKid.trim() || !createPublicKey.trim());
+    (!createIssuer.trim() ||
+      !createKid.trim() ||
+      !createPublicKey.trim() ||
+      !createKeyValid ||
+      !createKeyConfirmed);
 
   const linkedCustomerIds = new Set(linkedCustomers.map((c) => c.customerId));
   const availableCustomers = allCustomers.filter(
@@ -912,11 +925,22 @@ export function EnvironmentsPage() {
                   id="reg-public-key"
                   className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   value={regPublicKey}
-                  onChange={(e) => setRegPublicKey(e.target.value)}
+                  onChange={(e) => {
+                    setRegPublicKey(e.target.value);
+                    setRegKeyConfirmed(false);
+                    setRegKeyValid(false);
+                  }}
                   placeholder={t("publicKeyPlaceholder")}
                   disabled={registerKeyLoading}
                 />
               </div>
+              <JwkThumbprintConfirm
+                jwkText={regPublicKey}
+                confirmed={regKeyConfirmed}
+                onConfirmedChange={setRegKeyConfirmed}
+                onValidityChange={setRegKeyValid}
+                disabled={registerKeyLoading}
+              />
               <div className="space-y-2">
                 <label
                   htmlFor="reg-key-description"
@@ -948,7 +972,9 @@ export function EnvironmentsPage() {
                   registerKeyLoading ||
                   !regIssuer.trim() ||
                   !regKid.trim() ||
-                  !regPublicKey.trim()
+                  !regPublicKey.trim() ||
+                  !regKeyValid ||
+                  !regKeyConfirmed
                 }
                 onClick={handleRegisterKey}
               >
@@ -1242,11 +1268,22 @@ export function EnvironmentsPage() {
                     id="env-public-key"
                     className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                     value={createPublicKey}
-                    onChange={(e) => setCreatePublicKey(e.target.value)}
+                    onChange={(e) => {
+                      setCreatePublicKey(e.target.value);
+                      setCreateKeyConfirmed(false);
+                      setCreateKeyValid(false);
+                    }}
                     placeholder={t("publicKeyPlaceholder")}
                     disabled={createLoading}
                   />
                 </div>
+                <JwkThumbprintConfirm
+                  jwkText={createPublicKey}
+                  confirmed={createKeyConfirmed}
+                  onConfirmedChange={setCreateKeyConfirmed}
+                  onValidityChange={setCreateKeyValid}
+                  disabled={createLoading}
+                />
                 <div className="space-y-2">
                   <label
                     htmlFor="env-key-description"
