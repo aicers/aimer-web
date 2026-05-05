@@ -48,6 +48,9 @@ shows:
         [Verifying the JWK Thumbprint](#verifying-the-jwk-thumbprint)
         below).
     - **Key Description** — an optional description.
+    - **Expires At** — an optional hard-expiry timestamp; see
+        [Key expiration policy](#key-expiration-policy-expires_at)
+        for the accepted formats and behavior.
 4. Compare the displayed thumbprint against the value shown by
     aice-web-next out-of-band, then toggle the **I confirmed the
     thumbprint matches** checkbox.
@@ -109,6 +112,9 @@ registry panel.
         [Verifying the JWK Thumbprint](#verifying-the-jwk-thumbprint)
         below).
     - **Key Description** — an optional description.
+    - **Expires At** — an optional hard-expiry timestamp; see
+        [Key expiration policy](#key-expiration-policy-expires_at)
+        below for the accepted formats and behavior.
 3. Compare the displayed thumbprint against the value shown by
     aice-web-next out-of-band, then toggle the **I confirmed the
     thumbprint matches** checkbox.
@@ -154,6 +160,46 @@ value can be verified after the fact.
 
 <!-- TODO: screenshot - aimer-bridge batch -->
 
+### Key expiration policy (`expires_at`)
+
+Each trust registry key has an optional `expires_at` field with
+two possible policies:
+
+- **Soft expiry (default).** Leave the field blank when
+    registering. The key remains trusted until an operator
+    manually disables or removes it; rotation is policy-driven,
+    not enforced by the platform.
+- **Hard expiry.** Provide a timezone-explicit ISO 8601 datetime
+    such as `2026-05-05T12:00:00Z` or `2026-05-05T21:00:00+09:00`.
+    After this moment all bridge requests using this key are
+    rejected, regardless of whether the operator has touched the
+    `enabled` flag. Rejection is re-evaluated on every verify, so
+    the boundary takes effect immediately and is not deferred by
+    any caching layer.
+
+The key registration UI is a plain text field. Operators must
+enter a timezone-explicit ISO 8601 datetime (with `Z` or
+`±HH:MM`) — values without a timezone (e.g.
+`2026-05-05T12:00:00`) or date-only values are rejected with a
+validation error in the browser before submission and again on
+the server.
+
+Past timestamps are accepted intentionally — setting
+`expires_at` to a date in the past is a fast way to "burn" a
+compromised key without waiting for a separate disable step.
+
+The trust registry keys table shows the expiration distance for
+each key:
+
+- **No expiry (soft)** — the field was left blank.
+- A specific date — when expiration is more than 30 days away
+    (neutral color).
+- **Yellow** — within 30 days of expiry.
+- **Red** — within 7 days of expiry.
+- **Gray "expired"** — past `expires_at`. The key is still
+    listed but bridge calls signed with it are denied.
+
+<!-- TODO: screenshot - aimer-bridge batch -->
 
 ### Enabling or disabling a key
 

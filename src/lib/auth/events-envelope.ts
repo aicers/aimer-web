@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { compactVerify, importJWK } from "jose";
 import type { Pool } from "pg";
 import type { ContextTokenClaims } from "./context-token";
+import { TrustRegistryKeyExpiredError } from "./errors";
 import { lookupTrustRegistryKey } from "./trust-registry";
 
 // ---------------------------------------------------------------------------
@@ -83,17 +84,28 @@ export async function verifyEventsEnvelope(
     throw new Error("Events envelope header missing kid or alg");
   }
 
-  const entry = await lookupTrustRegistryKey(
+  const lookup = await lookupTrustRegistryKey(
     pool,
     contextClaims.aiceId,
     contextClaims.iss,
     kid,
   );
-  if (!entry) {
+  if (!lookup.entry) {
+    if (lookup.rejection.reason === "expired") {
+      throw new TrustRegistryKeyExpiredError(
+        "Events envelope: trust registry key expired",
+        {
+          aiceId: contextClaims.aiceId,
+          issuer: contextClaims.iss,
+          kid,
+          expiresAtMs: lookup.rejection.expiresAtMs,
+        },
+      );
+    }
     throw new Error("Events envelope: unknown key in trust registry");
   }
 
-  const publicKey = await importJWK(entry.publicKey, alg);
+  const publicKey = await importJWK(lookup.entry.publicKey, alg);
   const { payload: rawPayload } = await compactVerify(envelope, publicKey);
 
   // 3. Parse envelope claims

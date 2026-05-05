@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -556,6 +558,129 @@ describe("POST /api/admin/environments", () => {
     await POST(makePostRequest(VALID_POST_BODY));
 
     expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
+  // ---- expiresAt --------------------------------------------------------
+
+  it("persists expiresAt for the trust registry key and returns it", async () => {
+    const inserted = new Date("2026-05-05T12:00:00.000Z");
+    mockTxQuery
+      .mockReset()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 1,
+            aice_id: AICE_ID,
+            name: "Test",
+            description: null,
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 10,
+            issuer: "https://issuer.example",
+            kid: "key-1",
+            expires_at: inserted,
+          },
+        ],
+      });
+
+    const { POST } = await import("../route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        trustRegistryKey: {
+          issuer: "https://issuer.example",
+          kid: "key-1",
+          publicKey: { kty: "RSA", n: "abc", e: "AQAB" },
+          expiresAt: "2026-05-05T21:00:00+09:00",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.trustRegistryKey.expiresAt).toBe("2026-05-05T12:00:00.000Z");
+
+    // expires_at flows in as UTC-normalized Date to the INSERT
+    const insertParams = mockTxQuery.mock.calls[1][1];
+    const expiresAtParam = insertParams[5];
+    expect(expiresAtParam).toBeInstanceOf(Date);
+    expect((expiresAtParam as Date).toISOString()).toBe(
+      "2026-05-05T12:00:00.000Z",
+    );
+  });
+
+  it("rejects invalid expiresAt with 400 and field tag", async () => {
+    const { POST } = await import("../route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        trustRegistryKey: {
+          issuer: "https://issuer.example",
+          kid: "key-1",
+          publicKey: { kty: "RSA", n: "abc", e: "AQAB" },
+          expiresAt: "not a date",
+        },
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.field).toBe("trustRegistryKey.expiresAt");
+    expect(mockTxQuery).not.toHaveBeenCalled();
+  });
+
+  it("includes expiresAt in trust_registry.key_registered audit details", async () => {
+    const inserted = new Date("2026-05-05T12:00:00.000Z");
+    mockTxQuery
+      .mockReset()
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 1,
+            aice_id: AICE_ID,
+            name: "Test",
+            description: null,
+            status: "active",
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 10,
+            issuer: "https://issuer.example",
+            kid: "key-1",
+            expires_at: inserted,
+          },
+        ],
+      });
+
+    const { POST } = await import("../route");
+    await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        trustRegistryKey: {
+          issuer: "https://issuer.example",
+          kid: "key-1",
+          publicKey: { kty: "RSA", n: "abc", e: "AQAB" },
+          expiresAt: "2026-05-05T12:00:00Z",
+        },
+      }),
+    );
+
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "trust_registry.key_registered",
+        details: expect.objectContaining({
+          expiresAt: "2026-05-05T12:00:00.000Z",
+        }),
+      }),
+    );
   });
 });
 

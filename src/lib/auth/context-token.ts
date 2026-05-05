@@ -2,6 +2,7 @@ import "server-only";
 
 import { importJWK, jwtVerify } from "jose";
 import type { Pool } from "pg";
+import { TrustRegistryKeyExpiredError } from "./errors";
 import { lookupTrustRegistryKey } from "./trust-registry";
 
 // ---------------------------------------------------------------------------
@@ -72,14 +73,25 @@ export async function verifyContextToken(
   }
 
   // Look up public key from trust registry
-  const entry = await lookupTrustRegistryKey(pool, aiceId, iss, kid);
-  if (!entry) {
+  const lookup = await lookupTrustRegistryKey(pool, aiceId, iss, kid);
+  if (!lookup.entry) {
+    if (lookup.rejection.reason === "expired") {
+      throw new TrustRegistryKeyExpiredError(
+        `Trust registry: key expired (aice_id=${aiceId}, iss=${iss}, kid=${kid})`,
+        {
+          aiceId,
+          issuer: iss,
+          kid,
+          expiresAtMs: lookup.rejection.expiresAtMs,
+        },
+      );
+    }
     throw new Error(
       `Trust registry: unknown key (aice_id=${aiceId}, iss=${iss}, kid=${kid})`,
     );
   }
 
-  const publicKey = await importJWK(entry.publicKey, alg);
+  const publicKey = await importJWK(lookup.entry.publicKey, alg);
 
   // Verify JWT signature + standard claims
   const { payload } = await jwtVerify(token, publicKey, {

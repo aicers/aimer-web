@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -14,10 +16,18 @@ const mockAssertAuthorized = vi.fn();
 
 const SELF_ACCOUNT_ID = "00000000-0000-0000-0000-000000000099";
 
+// Shared, mutable holder so tests can inspect the per-call audit object
+// that the route handler writes targetId / details into.
+const lastAudit: { current: Record<string, unknown> | null } = {
+  current: null,
+};
+
 const mockWithAuth = vi.fn(
   // biome-ignore lint/complexity/noBannedTypes: test mock needs generic callable
-  (handler: Function) => (req: NextRequest) =>
-    handler(req, {
+  (handler: Function) => (req: NextRequest) => {
+    const audit: Record<string, unknown> = {};
+    lastAudit.current = audit;
+    return handler(req, {
       accountId: SELF_ACCOUNT_ID,
       sessionId: "sess-1",
       authContext: "admin",
@@ -26,8 +36,9 @@ const mockWithAuth = vi.fn(
       meta: { ipAddress: "127.0.0.1", userAgent: "test" },
       bridgeAiceId: null,
       bridgeCustomerIds: null,
-      audit: {},
-    }),
+      audit,
+    });
+  },
 );
 
 vi.mock("@/lib/auth/guards", () => ({
@@ -182,6 +193,56 @@ describe("GET /api/admin/environments/[aiceId]/trust-registry", () => {
     const [sql, params] = mockPoolQuery.mock.calls[0];
     expect(sql).toContain("WHERE aice_id = $1");
     expect(params).toEqual([AICE_ID]);
+  });
+
+  it("returns expiresAt when set, canonicalized as UTC ISO", async () => {
+    mockPoolQuery.mockResolvedValue({
+      rows: [
+        {
+          id: 42,
+          aice_id: AICE_ID,
+          issuer: "https://issuer.example",
+          kid: "key-1",
+          public_key: { kty: "RSA" },
+          description: null,
+          enabled: true,
+          expires_at: new Date("2026-05-05T12:00:00.000Z"),
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const { GET } = await import("../[aiceId]/trust-registry/route");
+    const res = await GET(makeGetRequest());
+    const body = await res.json();
+
+    expect(body.keys[0].expiresAt).toBe("2026-05-05T12:00:00.000Z");
+  });
+
+  it("returns null expiresAt when soft-expiry", async () => {
+    mockPoolQuery.mockResolvedValue({
+      rows: [
+        {
+          id: 43,
+          aice_id: AICE_ID,
+          issuer: "https://issuer.example",
+          kid: "key-2",
+          public_key: { kty: "RSA" },
+          description: null,
+          enabled: true,
+          expires_at: null,
+          created_at: "2026-01-01T00:00:00.000Z",
+          updated_at: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const { GET } = await import("../[aiceId]/trust-registry/route");
+    const res = await GET(makeGetRequest());
+    const body = await res.json();
+
+    expect(body.keys[0].expiresAt).toBeNull();
   });
 });
 
@@ -419,6 +480,151 @@ describe("POST /api/admin/environments/[aiceId]/trust-registry", () => {
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.error).toContain("already exists");
+  });
+
+  // ---- expiresAt --------------------------------------------------------
+
+  it("persists expiresAt and returns it canonicalized to UTC", async () => {
+    const inserted = new Date("2026-05-05T12:00:00.000Z");
+    mockPoolQuery.mockReset();
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [{ "?column?": 1 }] }) // env exists
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 11,
+            issuer: "https://issuer.example",
+            kid: "key-1",
+            enabled: true,
+            expires_at: inserted,
+          },
+        ],
+      });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        expiresAt: "2026-05-05T21:00:00+09:00",
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.expiresAt).toBe("2026-05-05T12:00:00.000Z");
+
+    // Verify the parameter passed to the INSERT was a Date
+    const [, params] = mockPoolQuery.mock.calls[1];
+    const expiresAtParam = params[5];
+    expect(expiresAtParam).toBeInstanceOf(Date);
+    expect((expiresAtParam as Date).toISOString()).toBe(
+      "2026-05-05T12:00:00.000Z",
+    );
+  });
+
+  it("treats omitted expiresAt as NULL (soft expiry)", async () => {
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(makePostRequest(VALID_POST_BODY));
+
+    expect(res.status).toBe(201);
+    const [, params] = mockPoolQuery.mock.calls[1];
+    expect(params[5]).toBeNull();
+  });
+
+  it("rejects timezone-less ISO datetime with 400", async () => {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ "?column?": 1 }] });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(
+      makePostRequest({ ...VALID_POST_BODY, expiresAt: "2026-05-05T12:00:00" }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.field).toBe("expiresAt");
+    expect(body.error).toContain("timezone-explicit");
+  });
+
+  it("rejects out-of-range calendar date with 400", async () => {
+    mockPoolQuery.mockReset();
+    mockPoolQuery.mockResolvedValueOnce({ rows: [{ "?column?": 1 }] });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        expiresAt: "2026-02-30T00:00:00Z",
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.field).toBe("expiresAt");
+  });
+
+  it("accepts a past timestamp (operator may burn a key)", async () => {
+    const past = new Date("2000-01-01T00:00:00.000Z");
+    mockPoolQuery.mockReset();
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [{ "?column?": 1 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 12,
+            issuer: "https://issuer.example",
+            kid: "key-1",
+            enabled: true,
+            expires_at: past,
+          },
+        ],
+      });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    const res = await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        expiresAt: "2000-01-01T00:00:00Z",
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.expiresAt).toBe("2000-01-01T00:00:00.000Z");
+  });
+
+  it("includes expiresAt in the audit log details", async () => {
+    const inserted = new Date("2026-05-05T12:00:00.000Z");
+    mockPoolQuery.mockReset();
+    mockPoolQuery
+      .mockResolvedValueOnce({ rows: [{ "?column?": 1 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            id: 13,
+            issuer: "https://issuer.example",
+            kid: "key-1",
+            enabled: true,
+            expires_at: inserted,
+          },
+        ],
+      });
+
+    const { POST } = await import("../[aiceId]/trust-registry/route");
+    await POST(
+      makePostRequest({
+        ...VALID_POST_BODY,
+        expiresAt: "2026-05-05T12:00:00Z",
+      }),
+    );
+
+    expect(lastAudit.current).not.toBeNull();
+    const details = (lastAudit.current as { details: Record<string, unknown> })
+      .details;
+    expect(details.expiresAt).toBe("2026-05-05T12:00:00.000Z");
+    expect(details.aiceId).toBe(AICE_ID);
+    expect(details.issuer).toBe("https://issuer.example");
+    expect(details.kid).toBe("key-1");
   });
 });
 

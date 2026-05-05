@@ -26,6 +26,8 @@ import {
 } from "@/components/ui/table";
 import { adminFetch } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/client";
+import { parseExpiresAtInput } from "@/lib/auth/expires-at";
+import { classifyExpiry } from "./expiry-status";
 import { JwkThumbprintConfirm } from "./jwk-thumbprint-confirm";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +61,7 @@ interface TrustRegistryKey {
   publicKey: unknown;
   description: string | null;
   enabled: boolean;
+  expiresAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -67,6 +70,25 @@ interface Customer {
   id: string;
   name: string;
   externalKey: string;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate operator input strictly and return a canonical UTC ISO string.
+ *
+ * Reuses the server's strict parser so the client rejects the same inputs
+ * the API would reject (timezone-less, date-only, out-of-range calendar
+ * values such as `2026-02-30`). Sending the result back through the API
+ * is then guaranteed to round-trip through the same validation rather
+ * than silently relying on `new Date(...)`'s permissive normalization.
+ */
+function toIsoUtc(input: string): string | null {
+  const result = parseExpiresAtInput(input);
+  if (!result.ok || result.expiresAt === null) return null;
+  return result.expiresAt.toISOString();
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +117,7 @@ export function EnvironmentsPage() {
   const [createKeyDescription, setCreateKeyDescription] = useState("");
   const [createKeyConfirmed, setCreateKeyConfirmed] = useState(false);
   const [createKeyValid, setCreateKeyValid] = useState(false);
+  const [createKeyExpiresAt, setCreateKeyExpiresAt] = useState("");
 
   // Edit dialog
   const [editOpen, setEditOpen] = useState(false);
@@ -133,6 +156,7 @@ export function EnvironmentsPage() {
   const [regKeyDescription, setRegKeyDescription] = useState("");
   const [regKeyConfirmed, setRegKeyConfirmed] = useState(false);
   const [regKeyValid, setRegKeyValid] = useState(false);
+  const [regKeyExpiresAt, setRegKeyExpiresAt] = useState("");
   const [removeKeyOpen, setRemoveKeyOpen] = useState(false);
   const [removeKeyTarget, setRemoveKeyTarget] =
     useState<TrustRegistryKey | null>(null);
@@ -233,6 +257,7 @@ export function EnvironmentsPage() {
     setCreateKeyDescription("");
     setCreateKeyConfirmed(false);
     setCreateKeyValid(false);
+    setCreateKeyExpiresAt("");
     setCreateOpen(true);
   };
 
@@ -249,11 +274,21 @@ export function EnvironmentsPage() {
           setCreateLoading(false);
           return;
         }
+        const trimmedExpiresAt = createKeyExpiresAt.trim();
+        const expiresAtIso = trimmedExpiresAt
+          ? toIsoUtc(trimmedExpiresAt)
+          : undefined;
+        if (trimmedExpiresAt && !expiresAtIso) {
+          showToast(t("keyExpiresAtInvalid"), "error");
+          setCreateLoading(false);
+          return;
+        }
         trustRegistryKey = {
           issuer: createIssuer,
           kid: createKid,
           publicKey: parsedKey,
           description: createKeyDescription || undefined,
+          expiresAt: expiresAtIso,
         };
       }
 
@@ -467,6 +502,7 @@ export function EnvironmentsPage() {
     setRegKeyDescription("");
     setRegKeyConfirmed(false);
     setRegKeyValid(false);
+    setRegKeyExpiresAt("");
     setRegisterKeyOpen(true);
   };
 
@@ -482,6 +518,15 @@ export function EnvironmentsPage() {
         setRegisterKeyLoading(false);
         return;
       }
+      const trimmedExpiresAt = regKeyExpiresAt.trim();
+      const expiresAtIso = trimmedExpiresAt
+        ? toIsoUtc(trimmedExpiresAt)
+        : undefined;
+      if (trimmedExpiresAt && !expiresAtIso) {
+        showToast(t("keyExpiresAtInvalid"), "error");
+        setRegisterKeyLoading(false);
+        return;
+      }
       await adminFetch(
         `/api/admin/environments/${detailEnv.aiceId}/trust-registry`,
         {
@@ -491,6 +536,7 @@ export function EnvironmentsPage() {
             kid: regKid,
             publicKey: parsedKey,
             description: regKeyDescription || undefined,
+            expiresAt: expiresAtIso,
           }),
         },
       );
@@ -739,52 +785,95 @@ export function EnvironmentsPage() {
                       <TableHead>{t("issuer")}</TableHead>
                       <TableHead>{t("kid")}</TableHead>
                       <TableHead>{t("status")}</TableHead>
+                      <TableHead>{t("keyExpiresAt")}</TableHead>
                       <TableHead>{t("actions")}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {trustKeys.map((key) => (
-                      <TableRow key={key.id}>
-                        <TableCell>
-                          <span className="font-medium">{key.issuer}</span>
-                          {key.description && (
-                            <p className="text-xs text-muted-foreground">
-                              {key.description}
-                            </p>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {key.kid}
-                        </TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={key.enabled ? "default" : "secondary"}
-                          >
-                            {key.enabled ? t("enabled") : t("disabledLabel")}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleToggleKey(key)}
+                    {trustKeys.map((key) => {
+                      const expiry = classifyExpiry(key.expiresAt);
+                      let expiryText: string;
+                      if (expiry.status === "none") {
+                        expiryText = t("keyExpiresAtNever");
+                      } else if (expiry.status === "expired") {
+                        expiryText = t("keyExpired");
+                      } else if (expiry.days === 0) {
+                        expiryText = t("keyExpiresToday");
+                      } else if (expiry.days != null) {
+                        expiryText = t("keyExpiresInDays", {
+                          days: expiry.days,
+                        });
+                      } else {
+                        expiryText = t("keyExpiresAtNever");
+                      }
+                      const expiryClass =
+                        expiry.status === "expired"
+                          ? "text-muted-foreground"
+                          : expiry.status === "red"
+                            ? "text-destructive font-medium"
+                            : expiry.status === "yellow"
+                              ? "text-amber-600 dark:text-amber-400 font-medium"
+                              : "text-muted-foreground";
+                      return (
+                        <TableRow key={key.id}>
+                          <TableCell>
+                            <span className="font-medium">{key.issuer}</span>
+                            {key.description && (
+                              <p className="text-xs text-muted-foreground">
+                                {key.description}
+                              </p>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {key.kid}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={key.enabled ? "default" : "secondary"}
                             >
-                              {key.enabled ? t("disableKey") : t("enableKey")}
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => openRemoveKey(key)}
+                              {key.enabled ? t("enabled") : t("disabledLabel")}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <span
+                              className={`text-xs ${expiryClass}`}
+                              title={
+                                expiry.date
+                                  ? expiry.date.toISOString()
+                                  : undefined
+                              }
                             >
-                              {t("removeKey")}
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                              {expiryText}
+                              {expiry.date && (
+                                <span className="ml-2 text-muted-foreground">
+                                  ({expiry.date.toISOString().slice(0, 10)})
+                                </span>
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleToggleKey(key)}
+                              >
+                                {key.enabled ? t("disableKey") : t("enableKey")}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => openRemoveKey(key)}
+                              >
+                                {t("removeKey")}
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
@@ -954,6 +1043,24 @@ export function EnvironmentsPage() {
                   onChange={(e) => setRegKeyDescription(e.target.value)}
                   disabled={registerKeyLoading}
                 />
+              </div>
+              <div className="space-y-2">
+                <label
+                  htmlFor="reg-key-expires-at"
+                  className="text-sm font-medium text-foreground"
+                >
+                  {t("keyExpiresAtField")}
+                </label>
+                <Input
+                  id="reg-key-expires-at"
+                  value={regKeyExpiresAt}
+                  onChange={(e) => setRegKeyExpiresAt(e.target.value)}
+                  placeholder={t("keyExpiresAtPlaceholder")}
+                  disabled={registerKeyLoading}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("keyExpiresAtHelp")}
+                </p>
               </div>
             </div>
             <DialogFooter>
@@ -1297,6 +1404,24 @@ export function EnvironmentsPage() {
                     onChange={(e) => setCreateKeyDescription(e.target.value)}
                     disabled={createLoading}
                   />
+                </div>
+                <div className="space-y-2">
+                  <label
+                    htmlFor="env-key-expires-at"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    {t("keyExpiresAtField")}
+                  </label>
+                  <Input
+                    id="env-key-expires-at"
+                    value={createKeyExpiresAt}
+                    onChange={(e) => setCreateKeyExpiresAt(e.target.value)}
+                    placeholder={t("keyExpiresAtPlaceholder")}
+                    disabled={createLoading}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {t("keyExpiresAtHelp")}
+                  </p>
                 </div>
               </>
             )}

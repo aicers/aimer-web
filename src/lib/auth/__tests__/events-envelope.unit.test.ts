@@ -12,6 +12,7 @@ vi.mock("../trust-registry", () => ({
   lookupTrustRegistryKey: (...args: unknown[]) => mockLookup(...args),
 }));
 
+import { TrustRegistryKeyExpiredError } from "../errors";
 import { verifyEventsEnvelope } from "../events-envelope";
 
 const fakePool = {} as Parameters<typeof verifyEventsEnvelope>[0];
@@ -43,12 +44,16 @@ const baseClaims: ContextTokenClaims = {
   jti: "context-jti-1",
 };
 
-function setupTrustRegistry(): void {
+function setupTrustRegistry(expiresAtMs: number | null = null): void {
   mockLookup.mockResolvedValue({
-    aiceId: "aice-1",
-    issuer: "https://aice.test",
-    kid: "key-1",
-    publicKey: publicJwk,
+    entry: {
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "key-1",
+      publicKey: publicJwk,
+      expiresAtMs,
+    },
+    rejection: null,
   });
 }
 
@@ -164,12 +169,28 @@ describe("events envelope verification", () => {
   });
 
   it("rejects unknown key in trust registry", async () => {
-    mockLookup.mockResolvedValue(null);
+    mockLookup.mockResolvedValue({
+      entry: null,
+      rejection: { reason: "unknown" },
+    });
     const envelope = await signEnvelope();
 
     await expect(
       verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
     ).rejects.toThrow("unknown key");
+  });
+
+  it("rejects when trust registry key is expired", async () => {
+    const expiresAtMs = Date.now() - 1000;
+    mockLookup.mockResolvedValue({
+      entry: null,
+      rejection: { reason: "expired", expiresAtMs },
+    });
+    const envelope = await signEnvelope();
+
+    await expect(
+      verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+    ).rejects.toBeInstanceOf(TrustRegistryKeyExpiredError);
   });
 
   it("rejects invalid envelope format", async () => {

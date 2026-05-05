@@ -11,6 +11,7 @@ vi.mock("../trust-registry", () => ({
 }));
 
 import { verifyContextToken } from "../context-token";
+import { TrustRegistryKeyExpiredError } from "../errors";
 
 const fakePool = {} as Parameters<typeof verifyContextToken>[0];
 
@@ -58,12 +59,16 @@ async function signContextToken(
   return builder.sign(privateKey);
 }
 
-function setupTrustRegistry(): void {
+function setupTrustRegistry(expiresAtMs: number | null = null): void {
   mockLookup.mockResolvedValue({
-    aiceId: "aice-1",
-    issuer: "https://aice.test",
-    kid: "key-1",
-    publicKey: publicJwk,
+    entry: {
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "key-1",
+      publicKey: publicJwk,
+      expiresAtMs,
+    },
+    rejection: null,
   });
 }
 
@@ -84,7 +89,10 @@ describe("context token verification", () => {
   });
 
   it("rejects token with unknown issuer/kid", async () => {
-    mockLookup.mockResolvedValue(null);
+    mockLookup.mockResolvedValue({
+      entry: null,
+      rejection: { reason: "unknown" },
+    });
     const token = await signContextToken();
 
     await expect(verifyContextToken(fakePool, token)).rejects.toThrow(
@@ -103,12 +111,7 @@ describe("context token verification", () => {
   });
 
   it("rejects token with wrong audience", async () => {
-    mockLookup.mockResolvedValue({
-      aiceId: "aice-1",
-      issuer: "https://aice.test",
-      kid: "key-1",
-      publicKey: publicJwk,
-    });
+    setupTrustRegistry();
 
     const token = await new SignJWT({
       aice_id: "aice-1",
@@ -241,6 +244,26 @@ describe("context token verification", () => {
 
   it("rejects invalid token format", async () => {
     await expect(verifyContextToken(fakePool, "not.a.valid")).rejects.toThrow();
+  });
+
+  it("rejects when trust registry key has expired", async () => {
+    const expiresAtMs = Date.now() - 1000;
+    mockLookup.mockResolvedValue({
+      entry: null,
+      rejection: { reason: "expired", expiresAtMs },
+    });
+    const token = await signContextToken();
+
+    await expect(verifyContextToken(fakePool, token)).rejects.toBeInstanceOf(
+      TrustRegistryKeyExpiredError,
+    );
+  });
+
+  it("verifies with expires_at unset (soft-expiry)", async () => {
+    setupTrustRegistry(null);
+    const token = await signContextToken();
+    const claims = await verifyContextToken(fakePool, token);
+    expect(claims.aiceId).toBe("aice-1");
   });
 
   it("rejects token with missing kid in header", async () => {

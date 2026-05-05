@@ -329,7 +329,16 @@
     "thumbprintError": "Failed to compute thumbprint. Please try again.",
     "thumbprintConfirm": "I confirmed the thumbprint matches the value shown on aice-web-next.",
     "copy": "Copy",
-    "copied": "Copied"
+    "copied": "Copied",
+    "keyExpiresAt": "Expires",
+    "keyExpiresAtNever": "No expiry (soft)",
+    "keyExpiresInDays": "in {days} days",
+    "keyExpiresToday": "today",
+    "keyExpired": "expired",
+    "keyExpiresAtField": "Expires At (optional)",
+    "keyExpiresAtPlaceholder": "2026-05-05T12:00:00Z",
+    "keyExpiresAtHelp": "Leave blank for soft-expiry (governed by enabled only). Provide a timezone-explicit ISO 8601 datetime (Z or ±HH:MM) to enforce hard expiry.",
+    "keyExpiresAtInvalid": "Expires At must be a timezone-explicit ISO 8601 datetime."
   },
   "adminAdmins": {
     "title": "System Admins",

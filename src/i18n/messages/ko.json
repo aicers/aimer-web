@@ -329,7 +329,16 @@
     "thumbprintError": "지문 계산에 실패했습니다. 다시 시도해 주세요.",
     "thumbprintConfirm": "aice-web-next에 표시된 지문과 일치함을 확인했습니다.",
     "copy": "복사",
-    "copied": "복사됨"
+    "copied": "복사됨",
+    "keyExpiresAt": "만료",
+    "keyExpiresAtNever": "만료 없음 (소프트)",
+    "keyExpiresInDays": "{days}일 후",
+    "keyExpiresToday": "오늘",
+    "keyExpired": "만료됨",
+    "keyExpiresAtField": "만료 일시 (선택)",
+    "keyExpiresAtPlaceholder": "2026-05-05T12:00:00Z",
+    "keyExpiresAtHelp": "비워두면 소프트 만료(enabled 플래그만으로 제어)입니다. 하드 만료를 적용하려면 타임존이 명시된 ISO 8601 일시(Z 또는 ±HH:MM)를 입력하세요.",
+    "keyExpiresAtInvalid": "만료 일시는 타임존이 명시된 ISO 8601 일시여야 합니다."
   },
   "adminAdmins": {
     "title": "시스템 관리자",
