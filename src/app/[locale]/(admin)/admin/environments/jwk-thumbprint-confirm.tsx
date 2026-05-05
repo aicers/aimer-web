@@ -40,10 +40,20 @@ export function JwkThumbprintConfirm({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<"base64url" | "hex" | null>(null);
 
-  // Recompute whenever the JWK input changes. Reset confirmation + UI state.
-  useEffect(() => {
+  // Reset display state synchronously on jwkText change so the same render
+  // that sees the new input cannot show a stale thumbprint or error.
+  const [lastJwkText, setLastJwkText] = useState(jwkText);
+  if (jwkText !== lastJwkText) {
+    setLastJwkText(jwkText);
     setThumbprint(null);
     setError(null);
+    setComputing(jwkText.trim().length > 0);
+  }
+
+  // Recompute whenever the JWK input changes. Parent confirmation/validity
+  // is also reset here as a defense-in-depth, but the parent's textarea
+  // onChange handler is expected to clear those synchronously as well.
+  useEffect(() => {
     onConfirmedChange(false);
     onValidityChange?.(false);
 
