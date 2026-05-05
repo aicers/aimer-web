@@ -253,7 +253,11 @@
     "errorExternalKeyRequired": "external_key는 필수 항목입니다.",
     "errorExternalKeyTooLong": "external_key는 256자 이하여야 합니다.",
     "errorExternalKeyInvalidCharacters": "external_key에는 제어 문자를 포함할 수 없습니다.",
-    "errorNameRequired": "이름은 필수 항목입니다."
+    "errorNameRequired": "이름은 필수 항목입니다.",
+    "errorNameTooLong": "이름은 256자 이하여야 합니다.",
+    "errorNameInvalidCharacters": "이름에는 제어 문자를 포함할 수 없습니다.",
+    "errorDescriptionTooLong": "설명은 1024자 이하여야 합니다.",
+    "errorDescriptionInvalidCharacters": "설명에는 제어 문자를 포함할 수 없습니다."
   },
   "adminEnvironments": {
     "title": "환경",

@@ -253,7 +253,11 @@
     "errorExternalKeyRequired": "external_key is required.",
     "errorExternalKeyTooLong": "external_key must be 256 characters or fewer.",
     "errorExternalKeyInvalidCharacters": "external_key must not contain control characters.",
-    "errorNameRequired": "Name is required."
+    "errorNameRequired": "Name is required.",
+    "errorNameTooLong": "Name must be 256 characters or fewer.",
+    "errorNameInvalidCharacters": "Name must not contain control characters.",
+    "errorDescriptionTooLong": "Description must be 1024 characters or fewer.",
+    "errorDescriptionInvalidCharacters": "Description must not contain control characters."
   },
   "adminEnvironments": {
     "title": "Environments",

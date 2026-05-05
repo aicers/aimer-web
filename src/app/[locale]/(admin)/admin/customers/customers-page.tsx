@@ -107,6 +107,26 @@ export function CustomersPage() {
     [],
   );
 
+  // Map typed API validation error codes (from src/lib/auth/customers.ts)
+  // to localized operator-facing messages. Falls back to the API message
+  // when the code isn't a known validation code.
+  const localizeApiError = useCallback(
+    (err: ApiError): string => {
+      const codeMap: Record<string, string> = {
+        external_key_required: t("errorExternalKeyRequired"),
+        external_key_too_long: t("errorExternalKeyTooLong"),
+        external_key_invalid_characters: t("errorExternalKeyInvalidCharacters"),
+        name_required: t("errorNameRequired"),
+        name_too_long: t("errorNameTooLong"),
+        name_invalid_characters: t("errorNameInvalidCharacters"),
+        description_too_long: t("errorDescriptionTooLong"),
+        description_invalid_characters: t("errorDescriptionInvalidCharacters"),
+      };
+      return codeMap[err.message] ?? err.message;
+    },
+    [t],
+  );
+
   // -----------------------------------------------------------------------
   // Data fetching
   // -----------------------------------------------------------------------
@@ -182,10 +202,14 @@ export function CustomersPage() {
         window.location.href = "/api/admin-auth/sign-in";
         return;
       }
-      showToast(
-        err instanceof ApiError ? err.message : t("actionError"),
-        "error",
-      );
+      if (err instanceof ApiError && err.status === 409) {
+        showToast(t("errorExternalKeyConflict"), "error");
+      } else {
+        showToast(
+          err instanceof ApiError ? localizeApiError(err) : t("actionError"),
+          "error",
+        );
+      }
     } finally {
       setCreateLoading(false);
     }
@@ -239,7 +263,7 @@ export function CustomersPage() {
         showToast(t("errorExternalKeyConflict"), "error");
       } else {
         showToast(
-          err instanceof ApiError ? err.message : t("actionError"),
+          err instanceof ApiError ? localizeApiError(err) : t("actionError"),
           "error",
         );
       }
