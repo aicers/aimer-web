@@ -291,6 +291,20 @@ describe("POST /api/auth/bridge", () => {
     expect(mockVerifyEventsEnvelope).not.toHaveBeenCalled();
   });
 
+  it("returns 400 for empty events_data without envelope (presence detected)", async () => {
+    const form = makeFormData({
+      context_token: "valid-jwt",
+      events_data: "",
+    });
+    const res = await callPOST(makeBridgeRequest(form));
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain("events_envelope");
+    expect(mockVerifyEventsEnvelope).not.toHaveBeenCalled();
+    expect(mockCreatePendingConnection).not.toHaveBeenCalled();
+  });
+
   it("propagates payload_hash mismatch as 403 for string events_data", async () => {
     mockVerifyEventsEnvelope.mockRejectedValue(
       new Error("Events envelope payload_hash mismatch"),
