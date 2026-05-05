@@ -65,9 +65,24 @@ vi.mock("@/lib/auth/invitations", () => ({
   acceptInvitation: vi.fn(async () => ({ deny: null })),
 }));
 
+const mockAuditLog = vi.fn(async (_arg: unknown) => {});
 vi.mock("@/lib/audit", () => ({
-  auditLog: vi.fn(async () => {}),
+  auditLog: (arg: unknown) => mockAuditLog(arg),
 }));
+
+interface AuditLogArg {
+  action: string;
+  aiceId?: string;
+  details: Record<string, unknown>;
+}
+
+function findDenyAuditCall(): AuditLogArg {
+  const denyCall = mockAuditLog.mock.calls.find(
+    (c) => (c[0] as AuditLogArg).action === "bridge.connection_denied",
+  );
+  if (!denyCall) throw new Error("expected bridge.connection_denied audit");
+  return denyCall[0] as AuditLogArg;
+}
 
 const mockEmitSevereAlert = vi.fn();
 vi.mock("@/lib/detection", () => ({
@@ -267,6 +282,110 @@ describe("callback route — bridge flow (#33)", () => {
 
     await callGET(makeCallbackRequest());
     expect(setAuthCookies).not.toHaveBeenCalled();
+  });
+
+  it("audit details on bridge_customer_mismatch include requested + matched external keys and aiceId", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_customer_mismatch",
+      bridgeAiceId: "aice-1",
+      requestedCustomerExternalKeys: ["ext-a", "ext-typo"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+
+    await callGET(makeCallbackRequest());
+
+    const arg = findDenyAuditCall();
+    expect(arg.aiceId).toBe("aice-1");
+    expect(arg.details).toMatchObject({
+      reason: "bridge_customer_mismatch",
+      connectionId: "conn-id-1",
+      requestedCustomerExternalKeys: ["ext-a", "ext-typo"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+  });
+
+  it("audit details on bridge_customer_inactive include matched keys equal to requested", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_customer_inactive",
+      bridgeAiceId: "aice-2",
+      requestedCustomerExternalKeys: ["ext-a"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+
+    await callGET(makeCallbackRequest());
+
+    const arg = findDenyAuditCall();
+    expect(arg.aiceId).toBe("aice-2");
+    expect(arg.details).toMatchObject({
+      reason: "bridge_customer_inactive",
+      requestedCustomerExternalKeys: ["ext-a"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+  });
+
+  it("audit details on bridge_environment_inactive include matched keys equal to requested", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_environment_inactive",
+      bridgeAiceId: "aice-3",
+      requestedCustomerExternalKeys: ["ext-a", "ext-b"],
+      matchedCustomerExternalKeys: ["ext-a", "ext-b"],
+    });
+
+    await callGET(makeCallbackRequest());
+
+    const arg = findDenyAuditCall();
+    expect(arg.details).toMatchObject({
+      reason: "bridge_environment_inactive",
+      requestedCustomerExternalKeys: ["ext-a", "ext-b"],
+      matchedCustomerExternalKeys: ["ext-a", "ext-b"],
+    });
+  });
+
+  it("audit details on bridge_no_access include matched keys", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_no_access",
+      bridgeAiceId: "aice-4",
+      requestedCustomerExternalKeys: ["ext-a"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+
+    await callGET(makeCallbackRequest());
+
+    const arg = findDenyAuditCall();
+    expect(arg.details).toMatchObject({
+      reason: "bridge_no_access",
+      requestedCustomerExternalKeys: ["ext-a"],
+      matchedCustomerExternalKeys: ["ext-a"],
+    });
+  });
+
+  it("does not leak requested/matched external keys in the deny redirect URL", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_customer_mismatch",
+      bridgeAiceId: "aice-1",
+      requestedCustomerExternalKeys: ["ext-secret-key"],
+      matchedCustomerExternalKeys: [],
+    });
+
+    const res = await callGET(makeCallbackRequest());
+    const location = res.headers.get("location") ?? "";
+    expect(location).not.toContain("ext-secret-key");
+    expect(location).not.toContain("requestedCustomerExternalKeys");
+    expect(location).not.toContain("matchedCustomerExternalKeys");
+  });
+
+  it("audit details omit external-key fields when bridge layer does not provide them (e.g. bridge_expired)", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      deny: "bridge_expired",
+    });
+
+    await callGET(makeCallbackRequest());
+
+    const arg = findDenyAuditCall();
+    expect(arg.details).toEqual({
+      reason: "bridge_expired",
+      connectionId: "conn-id-1",
+    });
   });
 
   it("proceeds with standard flow when no connection_id cookie", async () => {

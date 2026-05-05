@@ -12,26 +12,43 @@ test.describe("bridge deny page reasons", () => {
   test("renders bridge_customer_mismatch reason", async ({ page }) => {
     await page.goto("/deny?reason=bridge_customer_mismatch");
     await expect(page.locator("h1")).toContainText("Access Denied");
-    await expect(page.locator("text=could not be matched")).toBeVisible();
+    await expect(
+      page.locator("text=customer scope sent from AICE does not match"),
+    ).toBeVisible();
+    await expect(
+      page.locator("text=report this configuration error"),
+    ).toBeVisible();
   });
 
   test("renders bridge_customer_inactive reason", async ({ page }) => {
     await page.goto("/deny?reason=bridge_customer_inactive");
     await expect(page.locator("h1")).toContainText("Access Denied");
-    await expect(page.locator("text=customers are inactive")).toBeVisible();
+    await expect(
+      page.locator("text=Sign-in for this customer is currently disabled"),
+    ).toBeVisible();
+    await expect(
+      page.locator("text=wait for the operator to reactivate"),
+    ).toBeVisible();
   });
 
   test("renders bridge_environment_inactive reason", async ({ page }) => {
     await page.goto("/deny?reason=bridge_environment_inactive");
     await expect(page.locator("h1")).toContainText("Access Denied");
-    await expect(page.locator("text=environment is inactive")).toBeVisible();
+    await expect(
+      page.locator(
+        "text=Sign-in for this AICE environment is currently disabled",
+      ),
+    ).toBeVisible();
   });
 
   test("renders bridge_no_access reason", async ({ page }) => {
     await page.goto("/deny?reason=bridge_no_access");
     await expect(page.locator("h1")).toContainText("Access Denied");
     await expect(
-      page.locator("text=do not have access to the requested"),
+      page.locator("text=ask a Manager of that customer to invite you"),
+    ).toBeVisible();
+    await expect(
+      page.locator("text=ask a System Administrator to add you"),
     ).toBeVisible();
   });
 
