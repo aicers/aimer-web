@@ -62,23 +62,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       | undefined;
     let eventsDataBuffer: Buffer | undefined;
 
-    if (envelopeField || eventsDataField) {
+    // Presence semantics — `FormData.get()` returns `null` for absent fields and
+    // `""` for present-but-empty text fields. Truthy-checking would treat an
+    // empty string the same as a missing field, which would let
+    // `events_data=""` (without `events_envelope`) skip envelope validation
+    // and silently succeed via the session-only handoff path.
+    if (envelopeField !== null || eventsDataField !== null) {
       if (typeof envelopeField !== "string" || !envelopeField) {
         return NextResponse.json(
           { error: "Missing events_envelope" },
           { status: 400 },
         );
       }
-      if (!(eventsDataField instanceof File)) {
+      let eventsDataBytes: Uint8Array;
+      if (eventsDataField instanceof File) {
+        eventsDataBytes = new Uint8Array(await eventsDataField.arrayBuffer());
+      } else if (
+        typeof eventsDataField === "string" &&
+        eventsDataField.length > 0
+      ) {
+        eventsDataBytes = new TextEncoder().encode(eventsDataField);
+      } else {
         return NextResponse.json(
           { error: "Missing events_data" },
           { status: 400 },
         );
       }
-
-      const eventsDataBytes = new Uint8Array(
-        await eventsDataField.arrayBuffer(),
-      );
 
       try {
         envelopeClaims = await verifyEventsEnvelope(
