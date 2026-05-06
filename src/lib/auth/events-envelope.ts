@@ -142,7 +142,11 @@ export async function verifyEventsEnvelope(
   }
 
   // 4. Verify payload_hash matches SHA-256 of events_data
-  const computedHash = createHash("sha256").update(eventsData).digest("hex");
+  // base64url encoding follows RFC 7515 (JWS) conventions used by the
+  // sender (aice-web-next/src/lib/aimer/events-envelope.ts).
+  const computedHash = createHash("sha256")
+    .update(eventsData)
+    .digest("base64url");
   if (computedHash !== payloadHash) {
     throw new Error("Events envelope payload_hash mismatch");
   }

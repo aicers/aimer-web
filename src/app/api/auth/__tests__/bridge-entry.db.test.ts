@@ -216,7 +216,7 @@ describe.skipIf(!hasPostgres)(
         '{"hello":"world","schema_version":"0.0-stub","event_count":1}';
       const expectedHash = createHash("sha256")
         .update(new TextEncoder().encode(jsonString))
-        .digest("hex");
+        .digest("base64url");
 
       const envelope = await signEnvelope({
         payloadHash: expectedHash,
@@ -288,7 +288,7 @@ describe.skipIf(!hasPostgres)(
       const jsonString = '{"too":"big-for-the-cap"}';
       const hash = createHash("sha256")
         .update(new TextEncoder().encode(jsonString))
-        .digest("hex");
+        .digest("base64url");
       const envelope = await signEnvelope({
         payloadHash: hash,
         contextJti: jti,

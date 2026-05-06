@@ -31,7 +31,9 @@ afterEach(() => {
 });
 
 const samplePayload = Buffer.from("detection events binary data");
-const sampleHash = createHash("sha256").update(samplePayload).digest("hex");
+const sampleHash = createHash("sha256")
+  .update(samplePayload)
+  .digest("base64url");
 
 const baseClaims: ContextTokenClaims = {
   iss: "https://aice.test",
