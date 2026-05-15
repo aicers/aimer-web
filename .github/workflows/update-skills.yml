@@ -30,12 +30,29 @@ jobs:
       #   - codex and gemini-cli are universal agents that read directly
       #     from `.agents/skills/`, so no extra dir is needed for them
       # Prune everything else so the weekly PR stays small.
+      #
+      # Deletion is scoped to the shapes the `skills` CLI actually produces:
+      #   - root `skills/` (legacy top-level dir)
+      #   - `.<agent>/skills/`
+      #   - `.<agent>/agent/skills/`
+      # The dot-prefix gate protects future non-dotted project dirs that may
+      # happen to contain a `skills/` subdir (e.g. `tools/skills/`) from being
+      # wiped. If the CLI ever introduces a structurally different layout, the
+      # next weekly PR will surface it and we extend the shape list here.
       - name: Prune non-allowlisted agent directories
         run: |
-          rm -rf .adal .agent .augment .bob .codebuddy .commandcode .continue \
-            .cortex .crush .factory .goose .iflow .junie .kilocode .kiro \
-            .kode .mcpjam .mux .neovate .openhands .pi .pochi .qoder .qwen \
-            .roo .trae .vibe .windsurf .zencoder skills
+          shopt -s nullglob dotglob
+          for entry in */ .*/; do
+            name=${entry%/}
+            case "$name" in
+              .|..|.git|.github|.agents|.claude) continue ;;
+            esac
+            if [ "$name" = "skills" ] ||
+               { [ "${name#.}" != "$name" ] &&
+                 { [ -d "$name/skills" ] || [ -d "$name/agent/skills" ]; }; }; then
+              rm -rf "$name"
+            fi
+          done
       # `skills update` pulls every skill its configured source repos expose,
       # including new ones we never opted in to (see PR #172: it re-added the
       # previously-removed `vercel-react-native-skills` and added a brand-new
