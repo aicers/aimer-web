@@ -33,7 +33,7 @@ import {
   verifyMultipartTokens,
   verifyPhase2Multipart,
 } from "../envelope-verify";
-import { PayloadTooLargeError } from "../errors";
+import { PayloadTooLargeError, TrustRegistryKeyExpiredError } from "../errors";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,6 +140,69 @@ describe("verifyMultipartTokens", () => {
     expect(e.code).toBe("events_data_too_large");
     expect(e.cause).toBe(cause);
     expect(e.details).toEqual({ actualBytes: 11, maxBytes: 10 });
+    expect(e.contextClaims).toEqual(validContextClaims);
+  });
+
+  it("translates TrustRegistryKeyExpiredError during context-token verification into a dedicated semantic code", async () => {
+    const cause = new TrustRegistryKeyExpiredError("key expired", {
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "key-1",
+      expiresAtMs: 1700000000000,
+    });
+    mockVerifyContextToken.mockRejectedValue(cause);
+    const form = new FormData();
+    form.append("context_token", "valid-jwt");
+
+    let thrown: unknown;
+    try {
+      await verifyMultipartTokens(fakePool, makeRequest(form));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(EnvelopeVerificationError);
+    const e = thrown as EnvelopeVerificationError;
+    expect(e.code).toBe("trust_registry_key_expired");
+    expect(e.cause).toBe(cause);
+    expect(e.details).toEqual({
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "key-1",
+      expiresAtMs: 1700000000000,
+    });
+    // Surfaced before context-token verification succeeded — no claims yet.
+    expect(e.contextClaims).toBeUndefined();
+  });
+
+  it("translates TrustRegistryKeyExpiredError during envelope verification and carries contextClaims", async () => {
+    const cause = new TrustRegistryKeyExpiredError("key expired", {
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "envelope-key",
+      expiresAtMs: 1700000000000,
+    });
+    mockVerifyEventsEnvelope.mockRejectedValue(cause);
+    const form = new FormData();
+    form.append("context_token", "valid-jwt");
+    form.append("events_envelope", "valid-jws");
+    form.append("events_data", "x");
+
+    let thrown: unknown;
+    try {
+      await verifyMultipartTokens(fakePool, makeRequest(form));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(EnvelopeVerificationError);
+    const e = thrown as EnvelopeVerificationError;
+    expect(e.code).toBe("trust_registry_key_expired");
+    expect(e.cause).toBe(cause);
+    expect(e.details).toEqual({
+      aiceId: "aice-1",
+      issuer: "https://aice.test",
+      kid: "envelope-key",
+      expiresAtMs: 1700000000000,
+    });
     expect(e.contextClaims).toEqual(validContextClaims);
   });
 

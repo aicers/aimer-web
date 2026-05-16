@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import type { Pool } from "pg";
 import { type ContextTokenClaims, verifyContextToken } from "./context-token";
 import { getCustomerByExternalKey } from "./customers";
-import { PayloadTooLargeError } from "./errors";
+import { PayloadTooLargeError, TrustRegistryKeyExpiredError } from "./errors";
 import {
   type EventsEnvelopeClaims,
   verifyEventsEnvelope,
@@ -25,6 +25,7 @@ export type EnvelopeVerificationCode =
   | "missing_events_data"
   | "invalid_context_token"
   | "invalid_events_envelope"
+  | "trust_registry_key_expired"
   | "events_data_too_large"
   | "malformed_payload"
   | "missing_external_key"
@@ -129,6 +130,21 @@ export async function verifyMultipartTokens(
   try {
     contextClaims = await verifyContextToken(pool, contextTokenField);
   } catch (cause) {
+    if (cause instanceof TrustRegistryKeyExpiredError) {
+      throw new EnvelopeVerificationError(
+        "trust_registry_key_expired",
+        cause.message,
+        {
+          cause,
+          details: {
+            aiceId: cause.aiceId,
+            issuer: cause.issuer,
+            kid: cause.kid,
+            expiresAtMs: cause.expiresAtMs,
+          },
+        },
+      );
+    }
     throw new EnvelopeVerificationError(
       "invalid_context_token",
       "Invalid context token",
@@ -186,6 +202,22 @@ export async function verifyMultipartTokens(
           details: {
             actualBytes: cause.actualBytes,
             maxBytes: cause.maxBytes,
+          },
+        },
+      );
+    }
+    if (cause instanceof TrustRegistryKeyExpiredError) {
+      throw new EnvelopeVerificationError(
+        "trust_registry_key_expired",
+        cause.message,
+        {
+          cause,
+          contextClaims,
+          details: {
+            aiceId: cause.aiceId,
+            issuer: cause.issuer,
+            kid: cause.kid,
+            expiresAtMs: cause.expiresAtMs,
           },
         },
       );

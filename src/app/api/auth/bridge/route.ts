@@ -10,7 +10,6 @@ import {
   EnvelopeVerificationError,
   verifyMultipartTokens,
 } from "@/lib/auth/envelope-verify";
-import { TrustRegistryKeyExpiredError } from "@/lib/auth/errors";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool } from "@/lib/db/client";
 
@@ -140,24 +139,13 @@ function mapVerificationErrorToPhase1Response(
       );
 
     case "invalid_context_token": {
-      const cause = err.cause;
-      const isExpired = cause instanceof TrustRegistryKeyExpiredError;
       void auditLog({
         actorId: UNKNOWN_ACTOR_ID,
         action: "bridge.connection_denied",
         targetType: "bridge",
         details: {
           reason: "context_token_rejected",
-          ...(isExpired
-            ? {
-                innerReason: "trust_registry_key_expired",
-                aiceId: cause.aiceId,
-                issuer: cause.issuer,
-                kid: cause.kid,
-                expiresAt: new Date(cause.expiresAtMs).toISOString(),
-              }
-            : {}),
-          error: String(cause ?? err),
+          error: String(err.cause ?? err),
         },
         ipAddress,
       });
@@ -167,12 +155,64 @@ function mapVerificationErrorToPhase1Response(
       );
     }
 
+    // Phase 1 collapses key-expiry under whichever step (context-token vs
+    // envelope) surfaced it. The semantic code identifies the failure mode
+    // uniformly; the presence of `err.contextClaims` tells us which step ran.
+    case "trust_registry_key_expired": {
+      const claims = err.contextClaims;
+      const details = err.details ?? {};
+      const expiresAtMs =
+        typeof details.expiresAtMs === "number" ? details.expiresAtMs : 0;
+      const expiresAt = new Date(expiresAtMs).toISOString();
+      if (!claims) {
+        // Surfaced during context-token verification — no verified claims yet.
+        void auditLog({
+          actorId: UNKNOWN_ACTOR_ID,
+          action: "bridge.connection_denied",
+          targetType: "bridge",
+          details: {
+            reason: "context_token_rejected",
+            innerReason: "trust_registry_key_expired",
+            aiceId: details.aiceId,
+            issuer: details.issuer,
+            kid: details.kid,
+            expiresAt,
+            error: String(err.cause ?? err),
+          },
+          ipAddress,
+        });
+        return NextResponse.json(
+          { error: "Invalid context token" },
+          { status: 403 },
+        );
+      }
+      // Surfaced during envelope verification — context token had already
+      // succeeded, so the failure is reported as `envelope_rejected`.
+      void auditLog({
+        actorId: claims.sub,
+        action: "bridge.connection_denied",
+        targetType: "bridge",
+        details: {
+          reason: "envelope_rejected",
+          innerReason: "trust_registry_key_expired",
+          kid: details.kid,
+          expiresAt,
+          error: String(err.cause ?? err),
+          jti: claims.jti,
+        },
+        ipAddress,
+        aiceId: claims.aiceId,
+      });
+      return NextResponse.json(
+        { error: "Invalid events envelope" },
+        { status: 403 },
+      );
+    }
+
     // Phase 1 collapses oversize and other envelope failures onto the same
     // 403 / envelope_rejected audit row. Phase 2 routes will split out 413.
     case "invalid_events_envelope":
     case "events_data_too_large": {
-      const cause = err.cause;
-      const isExpired = cause instanceof TrustRegistryKeyExpiredError;
       const claims = err.contextClaims;
       void auditLog({
         actorId: claims?.sub ?? UNKNOWN_ACTOR_ID,
@@ -180,14 +220,7 @@ function mapVerificationErrorToPhase1Response(
         targetType: "bridge",
         details: {
           reason: "envelope_rejected",
-          ...(isExpired
-            ? {
-                innerReason: "trust_registry_key_expired",
-                kid: cause.kid,
-                expiresAt: new Date(cause.expiresAtMs).toISOString(),
-              }
-            : {}),
-          error: String(cause ?? err),
+          error: String(err.cause ?? err),
           ...(claims ? { jti: claims.jti } : {}),
         },
         ipAddress,
