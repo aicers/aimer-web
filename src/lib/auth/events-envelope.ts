@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { compactVerify, importJWK } from "jose";
 import type { Pool } from "pg";
 import type { ContextTokenClaims } from "./context-token";
-import { TrustRegistryKeyExpiredError } from "./errors";
+import { PayloadTooLargeError, TrustRegistryKeyExpiredError } from "./errors";
 import { lookupTrustRegistryKey } from "./trust-registry";
 
 // ---------------------------------------------------------------------------
@@ -63,9 +63,7 @@ export async function verifyEventsEnvelope(
   // 1. Size cap check — before any crypto
   const maxBytes = getMaxPayloadBytes();
   if (eventsData.byteLength > maxBytes) {
-    throw new Error(
-      `Events data exceeds size cap (${eventsData.byteLength} > ${maxBytes} bytes)`,
-    );
+    throw new PayloadTooLargeError(eventsData.byteLength, maxBytes);
   }
 
   // 2. Verify JWS signature

@@ -38,3 +38,21 @@ export class TrustRegistryKeyExpiredError extends Error {
   readonly issuer: string;
   readonly kid: string;
 }
+
+/**
+ * Thrown by {@link verifyEventsEnvelope} when the supplied `events_data`
+ * exceeds `BRIDGE_MAX_PAYLOAD_BYTES`. Distinguished from generic envelope
+ * verification failures so Phase 2 routes can map it to HTTP 413 while
+ * Phase 1 keeps mapping it to 403.
+ */
+export class PayloadTooLargeError extends Error {
+  readonly actualBytes: number;
+  readonly maxBytes: number;
+
+  constructor(actualBytes: number, maxBytes: number) {
+    super(`Events data exceeds size cap (${actualBytes} > ${maxBytes} bytes)`);
+    this.name = "PayloadTooLargeError";
+    this.actualBytes = actualBytes;
+    this.maxBytes = maxBytes;
+  }
+}
