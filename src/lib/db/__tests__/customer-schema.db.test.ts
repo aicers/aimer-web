@@ -407,7 +407,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       }
     });
 
-    it("can INSERT and DELETE on baseline_event", async () => {
+    it("can INSERT and DELETE on every Phase 2 table", async () => {
+      // INSERT order respects FK dependencies: story before story_member,
+      // policy_run before policy_event. DELETE walks the children first
+      // so each child-table DELETE grant is exercised directly (not via
+      // ON DELETE CASCADE from the parent).
+
       await rolePool.query(
         `INSERT INTO baseline_event (
           baseline_version, event_key, event_time, kind,
@@ -418,9 +423,67 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
           0.1, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'aice'
         )`,
       );
+
+      await rolePool.query(
+        `INSERT INTO story (
+          story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id
+        ) VALUES (
+          900, 'role-test', 'auto_correlated',
+          NOW(), NOW(),
+          '{}'::jsonb, 'aice'
+        )`,
+      );
+      await rolePool.query(
+        `INSERT INTO story_member (
+          story_id, story_version, member_event_key, role, event
+        ) VALUES (900, 'role-test', 1, 'primary', '{}'::jsonb)`,
+      );
+
+      await rolePool.query(
+        `INSERT INTO policy_run (
+          run_id, period_start, period_end, created_at_source,
+          baseline_version, policies_fingerprint, exclusions_fingerprint,
+          status, source_aice_id
+        ) VALUES (
+          900, NOW(), NOW(), NOW(),
+          'v1', 'p', 'e', 'ready', 'aice'
+        )`,
+      );
+      await rolePool.query(
+        `INSERT INTO policy_event (
+          run_id, event_key, event_time, kind,
+          policy_triage_snapshot
+        ) VALUES (900, 1, NOW(), 'http', '[]'::jsonb)`,
+      );
+
+      await rolePool.query(
+        `INSERT INTO analysis_narrative (
+          content_hash, target_kind, target_keys, narrative,
+          prompt_version, model_version
+        ) VALUES (
+          'role-test-hash', 'story', '{"story_id":900}'::jsonb, 'n',
+          'pv', 'mv'
+        )`,
+      );
+
+      // DELETE children directly to confirm the DELETE grant on each
+      // child table (not just the cascade from the parent).
+      await rolePool.query(
+        "DELETE FROM story_member WHERE story_id = 900 AND story_version = 'role-test'",
+      );
+      await rolePool.query("DELETE FROM policy_event WHERE run_id = 900");
+      await rolePool.query(
+        "DELETE FROM analysis_narrative WHERE content_hash = 'role-test-hash'",
+      );
       await rolePool.query(
         "DELETE FROM baseline_event WHERE baseline_version = 'role-test'",
       );
+      await rolePool.query(
+        "DELETE FROM story WHERE story_id = 900 AND story_version = 'role-test'",
+      );
+      await rolePool.query("DELETE FROM policy_run WHERE run_id = 900");
     });
 
     it("cannot UPDATE on any Phase 2 table", async () => {
