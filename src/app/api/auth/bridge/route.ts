@@ -2,13 +2,15 @@ import { type NextRequest, NextResponse } from "next/server";
 import { auditLog, UNKNOWN_ACTOR_ID } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { createPendingConnection, stageEventsPayload } from "@/lib/auth/bridge";
-import { verifyContextToken } from "@/lib/auth/context-token";
 import {
   clearInvitationTokenCookie,
   setConnectionIdCookie,
 } from "@/lib/auth/cookies";
+import {
+  EnvelopeVerificationError,
+  verifyMultipartTokens,
+} from "@/lib/auth/envelope-verify";
 import { TrustRegistryKeyExpiredError } from "@/lib/auth/errors";
-import { verifyEventsEnvelope } from "@/lib/auth/events-envelope";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool } from "@/lib/db/client";
 
@@ -17,128 +19,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const pool = getAuthPool();
     const meta = extractRequestMeta(request);
 
-    let formData: FormData;
+    let verified: Awaited<ReturnType<typeof verifyMultipartTokens>>;
     try {
-      formData = await request.formData();
-    } catch {
-      return NextResponse.json(
-        { error: "Invalid multipart form data" },
-        { status: 400 },
-      );
-    }
-
-    // Extract fields
-    const contextTokenField = formData.get("context_token");
-    if (typeof contextTokenField !== "string" || !contextTokenField) {
-      return NextResponse.json(
-        { error: "Missing context_token" },
-        { status: 400 },
-      );
-    }
-
-    // Verify context token (cryptographic properties only)
-    let contextClaims: Awaited<ReturnType<typeof verifyContextToken>>;
-    try {
-      contextClaims = await verifyContextToken(pool, contextTokenField);
+      verified = await verifyMultipartTokens(pool, request);
     } catch (err) {
-      const isExpired = err instanceof TrustRegistryKeyExpiredError;
-      void auditLog({
-        actorId: UNKNOWN_ACTOR_ID,
-        action: "bridge.connection_denied",
-        targetType: "bridge",
-        details: {
-          reason: "context_token_rejected",
-          ...(isExpired
-            ? {
-                innerReason: "trust_registry_key_expired",
-                aiceId: err.aiceId,
-                issuer: err.issuer,
-                kid: err.kid,
-                expiresAt: new Date(err.expiresAtMs).toISOString(),
-              }
-            : {}),
-          error: String(err),
-        },
-        ipAddress: meta.ipAddress,
-      });
-      return NextResponse.json(
-        { error: "Invalid context token" },
-        { status: 403 },
-      );
+      if (err instanceof EnvelopeVerificationError) {
+        return mapVerificationErrorToPhase1Response(err, meta.ipAddress);
+      }
+      throw err;
     }
 
-    // Verify events envelope if present
-    const envelopeField = formData.get("events_envelope");
-    const eventsDataField = formData.get("events_data");
-
-    let envelopeClaims:
-      | Awaited<ReturnType<typeof verifyEventsEnvelope>>
-      | undefined;
-    let eventsDataBuffer: Buffer | undefined;
-
-    // Presence semantics — `FormData.get()` returns `null` for absent fields and
-    // `""` for present-but-empty text fields. Truthy-checking would treat an
-    // empty string the same as a missing field, which would let
-    // `events_data=""` (without `events_envelope`) skip envelope validation
-    // and silently succeed via the session-only handoff path.
-    if (envelopeField !== null || eventsDataField !== null) {
-      if (typeof envelopeField !== "string" || !envelopeField) {
-        return NextResponse.json(
-          { error: "Missing events_envelope" },
-          { status: 400 },
-        );
-      }
-      let eventsDataBytes: Uint8Array;
-      if (eventsDataField instanceof File) {
-        eventsDataBytes = new Uint8Array(await eventsDataField.arrayBuffer());
-      } else if (
-        typeof eventsDataField === "string" &&
-        eventsDataField.length > 0
-      ) {
-        eventsDataBytes = new TextEncoder().encode(eventsDataField);
-      } else {
-        return NextResponse.json(
-          { error: "Missing events_data" },
-          { status: 400 },
-        );
-      }
-
-      try {
-        envelopeClaims = await verifyEventsEnvelope(
-          pool,
-          envelopeField,
-          eventsDataBytes,
-          contextClaims,
-        );
-      } catch (err) {
-        const isExpired = err instanceof TrustRegistryKeyExpiredError;
-        void auditLog({
-          actorId: contextClaims.sub,
-          action: "bridge.connection_denied",
-          targetType: "bridge",
-          details: {
-            reason: "envelope_rejected",
-            ...(isExpired
-              ? {
-                  innerReason: "trust_registry_key_expired",
-                  kid: err.kid,
-                  expiresAt: new Date(err.expiresAtMs).toISOString(),
-                }
-              : {}),
-            error: String(err),
-            jti: contextClaims.jti,
-          },
-          ipAddress: meta.ipAddress,
-          aiceId: contextClaims.aiceId,
-        });
-        return NextResponse.json(
-          { error: "Invalid events envelope" },
-          { status: 403 },
-        );
-      }
-
-      eventsDataBuffer = Buffer.from(eventsDataBytes);
-    }
+    const { contextClaims, envelopeClaims, eventsData } = verified;
 
     // Create pending connection (jti uniqueness enforced by DB constraint)
     let connectionId: string;
@@ -173,12 +64,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     // Stage events data if present
-    if (envelopeClaims && eventsDataBuffer) {
+    if (envelopeClaims && eventsData) {
       await stageEventsPayload(pool, {
         connectionId,
         aiceId: envelopeClaims.aiceId,
         payloadHash: envelopeClaims.payloadHash,
-        payload: eventsDataBuffer,
+        payload: Buffer.from(eventsData),
         eventCount: envelopeClaims.eventCount,
         schemaVersion: envelopeClaims.schemaVersion,
       });
@@ -209,4 +100,108 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       new URL("/api/auth/sign-in?flow=bridge", origin),
     );
   });
+}
+
+/**
+ * Map {@link EnvelopeVerificationError} codes back to the Phase 1 HTTP
+ * status set and audit reasons. Keeps Phase 1 e2e behavior identical
+ * after the verification logic was extracted into the shared helper.
+ *
+ * Phase 2 routes will define their own mapper that targets the
+ * RFC 0002-aligned status set.
+ */
+function mapVerificationErrorToPhase1Response(
+  err: EnvelopeVerificationError,
+  ipAddress: string | undefined,
+): NextResponse {
+  switch (err.code) {
+    case "malformed_multipart":
+      return NextResponse.json(
+        { error: "Invalid multipart form data" },
+        { status: 400 },
+      );
+
+    case "missing_context_token":
+      return NextResponse.json(
+        { error: "Missing context_token" },
+        { status: 400 },
+      );
+
+    case "missing_events_envelope":
+      return NextResponse.json(
+        { error: "Missing events_envelope" },
+        { status: 400 },
+      );
+
+    case "missing_events_data":
+      return NextResponse.json(
+        { error: "Missing events_data" },
+        { status: 400 },
+      );
+
+    case "invalid_context_token": {
+      const cause = err.cause;
+      const isExpired = cause instanceof TrustRegistryKeyExpiredError;
+      void auditLog({
+        actorId: UNKNOWN_ACTOR_ID,
+        action: "bridge.connection_denied",
+        targetType: "bridge",
+        details: {
+          reason: "context_token_rejected",
+          ...(isExpired
+            ? {
+                innerReason: "trust_registry_key_expired",
+                aiceId: cause.aiceId,
+                issuer: cause.issuer,
+                kid: cause.kid,
+                expiresAt: new Date(cause.expiresAtMs).toISOString(),
+              }
+            : {}),
+          error: String(cause ?? err),
+        },
+        ipAddress,
+      });
+      return NextResponse.json(
+        { error: "Invalid context token" },
+        { status: 403 },
+      );
+    }
+
+    // Phase 1 collapses oversize and other envelope failures onto the same
+    // 403 / envelope_rejected audit row. Phase 2 routes will split out 413.
+    case "invalid_events_envelope":
+    case "events_data_too_large": {
+      const cause = err.cause;
+      const isExpired = cause instanceof TrustRegistryKeyExpiredError;
+      const claims = err.contextClaims;
+      void auditLog({
+        actorId: claims?.sub ?? UNKNOWN_ACTOR_ID,
+        action: "bridge.connection_denied",
+        targetType: "bridge",
+        details: {
+          reason: "envelope_rejected",
+          ...(isExpired
+            ? {
+                innerReason: "trust_registry_key_expired",
+                kid: cause.kid,
+                expiresAt: new Date(cause.expiresAtMs).toISOString(),
+              }
+            : {}),
+          error: String(cause ?? err),
+          ...(claims ? { jti: claims.jti } : {}),
+        },
+        ipAddress,
+        ...(claims ? { aiceId: claims.aiceId } : {}),
+      });
+      return NextResponse.json(
+        { error: "Invalid events envelope" },
+        { status: 403 },
+      );
+    }
+
+    // Phase 2-only codes cannot reach Phase 1 — the bridge route does not
+    // invoke `enforcePhase2CustomerScope`. Fall through to a generic 400.
+    default:
+      return NextResponse.json({ error: err.message }, { status: 400 });
+  }
 }

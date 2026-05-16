@@ -225,6 +225,48 @@ export async function getCustomerOrFail(
 }
 
 // ---------------------------------------------------------------------------
+// Lookup customer by external_key
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a customer row from its `external_key`. Returns `null` if no
+ * row matches. Unlike {@link getCustomerOrFail}, this performs no
+ * status checks — the caller decides whether `provisioning` / `failed`
+ * is acceptable for its use case.
+ */
+export async function getCustomerByExternalKey(
+  pool: Pool,
+  externalKey: string,
+): Promise<CustomerRow | null> {
+  const result = await pool.query<{
+    id: string;
+    external_key: string;
+    name: string;
+    description: string | null;
+    status: string;
+    database_status: string;
+    wrapped_dek: string | null;
+  }>(
+    `SELECT id, external_key, name, description, status, database_status, wrapped_dek
+     FROM customers WHERE external_key = $1`,
+    [externalKey],
+  );
+
+  if (result.rows.length === 0) return null;
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    externalKey: row.external_key,
+    name: row.name,
+    description: row.description,
+    status: row.status,
+    databaseStatus: row.database_status,
+    wrappedDek: row.wrapped_dek,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Create customer with initial Manager (transactional)
 // ---------------------------------------------------------------------------
 
