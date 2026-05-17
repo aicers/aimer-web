@@ -193,6 +193,14 @@ withdrawn `policy_run` and `story_member` children of a withdrawn
 automatically removed — they age out via aimer-web retention
 (RFC 0002 §6 withdraw).
 
+The Zod schema additionally rejects (with `400
+payload_schema_invalid`) payloads that combine `{ kind: "policy_run",
+run_id: R }` with any `{ kind: "policy_event", run_id: R, ... }` for
+the same run. The run's FK cascade already removes its policy_event
+rows, so the count attributed to the explicit policy_event item would
+otherwise depend on item order — `withdrawn` if processed before the
+run, `not_found` after the cascade ran — masking a sender bug.
+
 Response:
 
 ```json

@@ -156,4 +156,37 @@ describe("withdrawPayloadSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("rejects policy_event overlapping with policy_run for the same run_id (event item first)", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [
+        { kind: "policy_event", run_id: "10", event_keys: ["1"] },
+        { kind: "policy_run", run_id: "10" },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects policy_event overlapping with policy_run for the same run_id (run item first)", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [
+        { kind: "policy_run", run_id: "10" },
+        { kind: "policy_event", run_id: "10", event_keys: ["1"] },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts policy_event and policy_run when run_ids differ", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [
+        { kind: "policy_event", run_id: "10", event_keys: ["1"] },
+        { kind: "policy_run", run_id: "11" },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
 });

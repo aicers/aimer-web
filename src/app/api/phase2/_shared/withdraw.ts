@@ -54,6 +54,16 @@ export type WithdrawalItem = z.infer<typeof withdrawalItemSchema>;
  * The guard covers both within-array duplicates (two event_keys in one
  * item) and across-item duplicates (two items referencing the same
  * natural key).
+ *
+ * Additionally, a `policy_run` withdrawal cascades to its child
+ * `policy_event` rows (FK in migrations/customer/0002). If a payload
+ * combines `{ kind: "policy_run", run_id: R }` with any
+ * `{ kind: "policy_event", run_id: R, ... }` for the same run, the
+ * count attributed to the explicit policy_event withdrawal depends on
+ * the order items are processed — `withdrawn` when the event item is
+ * processed first, `not_found` after the run's cascade has already
+ * removed the rows. We reject this overlap at the schema layer so the
+ * response counts cannot misrepresent a sender bug.
  */
 export const withdrawPayloadSchema = z
   .object({
@@ -63,6 +73,12 @@ export const withdrawPayloadSchema = z
   })
   .superRefine((payload, ctx) => {
     const seen = new Set<string>();
+    const policyRunIds = new Set<string>();
+    payload.withdrawals.forEach((item) => {
+      if (item.kind === "policy_run") {
+        policyRunIds.add(item.run_id);
+      }
+    });
     payload.withdrawals.forEach((item, idx) => {
       if (item.kind === "baseline_event") {
         item.event_keys.forEach((ek, j) => {
@@ -87,6 +103,13 @@ export const withdrawPayloadSchema = z
         }
         seen.add(key);
       } else if (item.kind === "policy_event") {
+        if (policyRunIds.has(item.run_id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["withdrawals", idx],
+            message: `policy_event withdrawal for run_id ${item.run_id} overlaps with a policy_run withdrawal in the same payload; the run's FK cascade already removes its policy_event rows`,
+          });
+        }
         item.event_keys.forEach((ek, j) => {
           const key = `policy_event|${item.run_id}|${ek}`;
           if (seen.has(key)) {

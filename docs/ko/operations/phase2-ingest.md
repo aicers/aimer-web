@@ -189,6 +189,15 @@ DELETE하거나 교체하는 세 개의 Phase 2 변경 엔드포인트를
 않으며 aimer-web 보존 정책으로 자연 소거됩니다(RFC 0002 §6
 withdraw).
 
+Zod 스키마는 또한 `{ kind: "policy_run", run_id: R }`과 동일한
+`run_id`를 가진 `{ kind: "policy_event", run_id: R, ... }`이
+같은 페이로드에 함께 있는 경우 `400 payload_schema_invalid`로
+거부합니다. 런의 FK cascade가 이미 `policy_event` 자식 행을
+제거하므로, 명시적 `policy_event` 항목에 매겨지는 카운트는
+처리 순서에 따라 달라집니다 — 런보다 먼저 처리되면 `withdrawn`,
+cascade 이후라면 `not_found`. 이는 발신자 버그를 가리므로
+스키마 레이어에서 거부합니다.
+
 응답:
 
 ```json
