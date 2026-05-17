@@ -126,4 +126,34 @@ describe("withdrawPayloadSchema", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("rejects leading-zero event_key (would alias '01' and '1' to one DB row)", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [
+        {
+          kind: "baseline_event",
+          baseline_version: "v1",
+          event_keys: ["01"],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects leading-zero story_id", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [{ kind: "story", story_id: "01", story_version: "v1" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects leading-zero run_id on policy_run", () => {
+    const result = withdrawPayloadSchema.safeParse({
+      external_key: "ext-1",
+      withdrawals: [{ kind: "policy_run", run_id: "010" }],
+    });
+    expect(result.success).toBe(false);
+  });
 });

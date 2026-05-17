@@ -237,6 +237,18 @@ For a `story` window, replace `baseline_version` + `events` with
 - Payload-internal natural-key duplicates — same
   `(baseline_version, event_key)`, `(story_id, story_version)`, or
   `(story_id, story_version, member_event_key)`.
+- Numeric strings in non-canonical form (`"01"`, `"010"`, etc.) for
+  any `event_key`, `story_id`, `run_id`, or member `event_key`. The
+  DB natural keys are `numeric` / `bigint`, so `"01"` and `"1"`
+  collapse to the same row; allowing both wire forms would let
+  duplicate guards miss collisions that the DB then surfaces as a
+  PK violation (`500` after the JTI is consumed) or as silently
+  miscounted withdraw responses.
+- A `window` whose `from >= to` (zero-width or reversed interval).
+  An empty interval would pass the row-membership guards (every
+  comparison fails on an empty array), consume the JTI, take the
+  advisory lock, delete nothing, and return `200` — indistinguishable
+  from a no-op success and almost certainly a sender bug.
 
 The DELETE filter:
 

@@ -233,6 +233,17 @@ aice-web-next가 Force Rebuild를 수행했다면 `refresh-window`를,
 - 페이로드 내부 자연 키 중복 — `(baseline_version, event_key)`,
   `(story_id, story_version)`,
   `(story_id, story_version, member_event_key)`가 동일한 항목.
+- 비정규 형식의 숫자 문자열(`"01"`, `"010"` 등): `event_key`,
+  `story_id`, `run_id`, member `event_key` 모두 정규형만 허용합니다.
+  DB의 자연 키는 `numeric` / `bigint`이라서 `"01"`과 `"1"`이 같은
+  행으로 충돌하므로, 두 형태를 모두 받으면 페이로드 내부 중복
+  가드를 우회해 PK 위반(JTI 소비 후 `500`)이나 withdraw 응답의
+  카운트 왜곡으로 이어집니다.
+- `from >= to`인 `window`(폭이 0이거나 뒤집힌 구간): 빈 배열이면
+  행 멤버십 가드가 발동하지 않아 JTI를 소비하고 잠금을 잡은 뒤
+  아무것도 삭제하지 않고 `200`을 반환하게 됩니다. 정상 no-op과
+  구분할 수 없고 사실상 전송측 버그이므로 스키마 단계에서
+  거부합니다.
 
 DELETE 필터:
 

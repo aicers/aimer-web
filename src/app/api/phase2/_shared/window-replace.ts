@@ -12,17 +12,46 @@ const windowTimestamp = z
   .min(1)
   .refine((s) => !Number.isNaN(Date.parse(s)), "must be an ISO-8601 timestamp");
 
-const baselineWindowSchema = z.object({
-  kind: z.literal("baseline_event"),
-  from: windowTimestamp,
-  to: windowTimestamp,
-});
+/**
+ * Reject zero-width or reversed intervals (`from >= to`). The window
+ * contract is a half-open `[from, to)` range — an empty interval would
+ * pass the row-membership refines (every comparison fails, but those
+ * only fire when the array is non-empty), consume the JTI, take the
+ * advisory lock, delete nothing, and return 200 to the sender. That is
+ * indistinguishable from a no-op success and almost certainly a sender
+ * bug; fail fast at the schema layer instead.
+ */
+function refineFromLessThanTo<T extends { from: string; to: string }>(
+  schema: z.ZodType<T>,
+) {
+  return schema.refine(
+    (w) => {
+      const f = Date.parse(w.from);
+      const t = Date.parse(w.to);
+      return !Number.isNaN(f) && !Number.isNaN(t) && f < t;
+    },
+    {
+      message: "window.from must be strictly earlier than window.to",
+      path: ["to"],
+    },
+  );
+}
 
-const storyWindowSchema = z.object({
-  kind: z.literal("story"),
-  from: windowTimestamp,
-  to: windowTimestamp,
-});
+const baselineWindowSchema = refineFromLessThanTo(
+  z.object({
+    kind: z.literal("baseline_event"),
+    from: windowTimestamp,
+    to: windowTimestamp,
+  }),
+);
+
+const storyWindowSchema = refineFromLessThanTo(
+  z.object({
+    kind: z.literal("story"),
+    from: windowTimestamp,
+    to: windowTimestamp,
+  }),
+);
 
 /**
  * `stories[*].kind` MUST be `auto_correlated` (RFC 0002 §6

@@ -88,6 +88,43 @@ describe("windowReplacePayloadSchema — baseline", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects leading-zero event_key (would alias '01' and '1' to one DB row)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        events: [{ ...baseEvent, event_key: "01" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects window.from equal to window.to (zero-width interval)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        window: {
+          kind: "baseline_event" as const,
+          from: "2026-01-02T00:00:00Z",
+          to: "2026-01-02T00:00:00Z",
+        },
+        events: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects window.from after window.to (reversed interval)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        window: {
+          kind: "baseline_event" as const,
+          from: "2026-01-02T03:00:00Z",
+          to: "2026-01-02T01:00:00Z",
+        },
+        events: [],
+      }).success,
+    ).toBe(false);
+  });
 });
 
 describe("windowReplacePayloadSchema — story", () => {
@@ -177,6 +214,57 @@ describe("windowReplacePayloadSchema — story", () => {
       windowReplacePayloadSchema.safeParse({
         ...baseBody,
         stories: [baseStory, baseStory],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects window.from equal to window.to (zero-width interval)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        window: {
+          kind: "story" as const,
+          from: "2026-01-02T00:00:00Z",
+          to: "2026-01-02T00:00:00Z",
+        },
+        stories: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects window.from after window.to (reversed interval)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        window: {
+          kind: "story" as const,
+          from: "2026-01-02T02:00:00Z",
+          to: "2026-01-02T00:00:00Z",
+        },
+        stories: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects leading-zero story_id in payload (canonical numeric strings only)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        stories: [{ ...baseStory, story_id: "0100" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects leading-zero member event_key (would alias duplicates)", () => {
+    expect(
+      windowReplacePayloadSchema.safeParse({
+        ...baseBody,
+        stories: [
+          {
+            ...baseStory,
+            members: [{ event_key: "01", role: "primary", event: {} }],
+          },
+        ],
       }).success,
     ).toBe(false);
   });

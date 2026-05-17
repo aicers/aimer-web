@@ -394,6 +394,46 @@ describe("stringifiedBigintPositive range enforcement", () => {
   });
 });
 
+describe("canonical numeric string form (no leading zeros)", () => {
+  it("rejects leading-zero event_key (DB casts '01' and '1' to one numeric)", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [{ ...baseEvent, event_key: "01" }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts literal '0' as event_key (zero is a valid NUMERIC value)", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [{ ...baseEvent, event_key: "0" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects leading-zero story_id", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "01",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe("eventKeyString cap at NUMERIC(39, 0)", () => {
   it("accepts a 39-digit key", () => {
     const result = baselineBatchSchema.safeParse({
