@@ -99,5 +99,9 @@ export type AuditAction =
   | "phase2.ingest"
   | "phase2.ingest_failed"
   | "phase2.verification_failed"
+  // Phase 2 mutations
+  | "phase2.withdraw"
+  | "phase2.refresh_window"
+  | "phase2.backfill"
   // Audit (internal)
   | "audit.anonymize";

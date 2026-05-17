@@ -153,3 +153,159 @@ aimer-web의 상한을 올린다면 aice-web-next의 발신 측 상한도 함께
 - story: `storiesAccepted`, `storiesDuplicates`,
   `membersAccepted`, `membersDuplicates`.
 - policy-run: `runId`, `runStatus` (`"new"` 또는 `"duplicate"`).
+
+## 변경 엔드포인트
+
+위의 세 수집 엔드포인트에 더해, aimer-web은 이미 수집된 데이터를
+DELETE하거나 교체하는 세 개의 Phase 2 변경 엔드포인트를
+노출합니다. multipart 봉투 계약, 컨텍스트 토큰 검증, jti 재생
+방지 저장소, 감사 카테고리는 수집 라우트와 동일합니다.
+
+| 엔드포인트 | 스키마 버전 | 의미 |
+| --- | --- | --- |
+| `POST /api/phase2/withdraw` | `phase2.withdraw.v1` | 자연 키로 특정 행을 DELETE |
+| `POST /api/phase2/refresh-window` | `phase2.refresh_window.v1` | `[from, to)` 구간을 원자적으로 교체 |
+| `POST /api/phase2/backfill` | `phase2.backfill.v1` | refresh-window와 동일한 형식·의미. 감사 액션과 운영자 의도로만 구분 |
+
+### Withdraw
+
+페이로드는 비어 있지 않은 `withdrawals` 배열을 가지며, 각 항목은
+`kind`로 구분합니다.
+
+- `baseline_event` — `{ baseline_version, event_keys[] }`
+- `story` — `{ story_id, story_version }`
+- `policy_event` — `{ run_id, event_keys[] }`
+- `policy_run` — `{ run_id }`
+
+모든 DELETE는 단일 고객 트랜잭션에서 실행됩니다. 하나라도 실패하면
+전체가 롤백되고 응답은 `500`입니다. 응답은 `withdrawn`과
+`not_found`를 따로 보고하며, `not_found`는 이미 사라진 행에 대한
+정보용이지 오류가 아닙니다. `policy_run` 삭제 시 `policy_event`
+자식 행은 FK CASCADE로, `story` 삭제 시 `story_member` 자식 행도
+자동으로 제거됩니다. 라우트는 자식 테이블에 명시적 DELETE를 보내지
+않습니다.
+
+대상이 withdraw된 `analysis_narrative` 행은 자동으로 제거되지
+않으며 aimer-web 보존 정책으로 자연 소거됩니다(RFC 0002 §6
+withdraw).
+
+응답:
+
+```json
+{
+  "withdrawn": 3,
+  "not_found": 1,
+  "received_at": "2026-05-17T10:23:45.012Z",
+  "context_jti": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Refresh-window 및 Backfill
+
+두 엔드포인트는 반-개방 `[window.from, window.to)` 구간의 내용을
+원자적으로 교체합니다. 와이어상 동일합니다. 페이로드 형식,
+응답 형식, 윈도우별 advisory lock, DELETE 후 INSERT 의미가 모두
+같습니다. 차이는 봉투의 `schema_version` 클레임과 성공 감사
+액션(`phase2.refresh_window` vs `phase2.backfill`)뿐입니다.
+aice-web-next가 Force Rebuild를 수행했다면 `refresh-window`를,
+관리자 운영자가 트리거했다면 `backfill`을 사용합니다.
+
+페이로드:
+
+```json
+{
+  "external_key": "...",
+  "window": { "kind": "baseline_event", "from": "...", "to": "..." },
+  "baseline_version": "...",
+  "events": [ /* baseline_event 행. phase2.baseline.v1과 같은 형식 */ ]
+}
+```
+
+`story` 윈도우에는 `baseline_version` + `events` 대신 `stories`를
+사용합니다(`baseline_version`은 필요 없음). Zod 스키마가 거부하는
+경우:
+
+- `kind: "analyst_curated"`인 스토리 — 큐레이션 스토리는 이
+  엔드포인트로 절대 영향받지 않습니다(RFC 0002 §6).
+- `event_time`(baseline) 또는 `time_window.start`(story)이
+  `[from, to)`를 벗어나는 행 — 전송측 버그로 간주해 `400
+  payload_schema_invalid`로 즉시 실패시킵니다.
+- 페이로드 내부 자연 키 중복 — `(baseline_version, event_key)`,
+  `(story_id, story_version)`,
+  `(story_id, story_version, member_event_key)`가 동일한 항목.
+
+DELETE 필터:
+
+- baseline: `baseline_version = $1 AND event_time >= $from AND event_time < $to`.
+  같은 시간 윈도우의 다른 `baseline_version` 행은 보존됩니다.
+- story: `kind = 'auto_correlated' AND time_window_start >= $from AND
+  time_window_start < $to`. 시작 시각이 `from` 이전이고
+  `time_window_end`가 윈도우 안으로 연장되는 스토리는 refresh에서
+  제거되지 않습니다 — 스토리는 시작 시각에 할당되며 생산측
+  Force Rebuild 계약을 그대로 반영합니다.
+
+응답:
+
+```json
+{
+  "accepted": 12,
+  "duplicates_skipped": 0,
+  "deleted": 7,
+  "received_at": "2026-05-17T10:23:45.012Z",
+  "context_jti": "..."
+}
+```
+
+`duplicates_skipped`는 항상 `0`입니다(INSERT 전에 윈도우가
+비워지기 때문). `deleted`는 직전 DELETE가 제거한 행 수의
+정보값입니다. 같은 본문으로 backfill을 다시 실행하면 동일한 종료
+상태로 수렴합니다(`accepted`는 새 이벤트/스토리 수, `deleted`는
+이전 실행의 `accepted` 값).
+
+### Advisory lock
+
+Refresh-window와 backfill은
+`phase2_window|<window_kind>|<external_key>|<from>|<to>` 키로
+`pg_advisory_xact_lock(hashtextextended(..., 0))` (단일 bigint
+형식)을 윈도우 단위로 획득합니다. 키의 kind 세그먼트는 윈도우의
+것이지 작업의 것이 아닙니다. 같은 윈도우에 대한 refresh와
+backfill은 서로 직렬화되며, 이는 올바름의 불변식입니다(둘 다 같은
+행을 DELETE+INSERT). 감사 액션은 의도를 구분하고, lock은 윈도우를
+구분합니다.
+
+같은 시간 윈도우 안에서 서로 다른 `baseline_version` 값의
+refresh는 disjoint 행을 건드리지만 여전히 lock으로 직렬화됩니다.
+프로파일링에서 경합이 관찰되면 후속에서 lock 키에
+`baseline_version`을 포함하도록 변경할 수 있습니다.
+
+### Replay 및 DB 실패 의미
+
+변경 엔드포인트는 수집 라우트의 replay 저장소와 검증 후 실패
+의미를 공유합니다.
+
+- 재생된 `context_jti`는 `409 context_jti_replay`를 반환하며 DB
+  변경을 수행하지 않고 윈도우별 advisory lock도 획득하지
+  않습니다(재생이 같은 윈도우의 다른 동시 refresh를 멈춰서는 안
+  됨). `phase2.{withdraw,refresh_window,backfill}` 감사 행을
+  남기지 않습니다.
+- 고객 트랜잭션 내부의 DB 실패(예: 캐스트 오류, FK 위반)는
+  `500 database_error`를 반환하고 `phase2.ingest_failed` 감사
+  행을 남깁니다(액션 이름은 역사적 이유로 수집과 공유. v1에서는
+  검증 후 모든 Phase 2 변경 실패를 대표). 소비된 `jti`는
+  `phase2_consumed_jtis`에 그대로 남으며, 재시도는 새 토큰
+  발급이 필요합니다.
+
+### 감사 details
+
+성공 경로 액션:
+
+- `phase2.withdraw` — `details`에 `schemaVersion`, `withdrawn`,
+  `notFound`, `kindsTouched[]`.
+- `phase2.refresh_window`와 `phase2.backfill` — `details`에
+  `schemaVersion`, `window`, `accepted`, `deleted`, 그리고
+  `eventCountClaim`(봉투 값. 송·수신 카운트 정합용).
+
+실패 경로 액션은 `phase2.verification_failed`와
+`phase2.ingest_failed`를 재사용합니다. 라우트는 `targetType`으로
+구분합니다(`phase2_withdraw`, `phase2_refresh_window`,
+`phase2_backfill`).

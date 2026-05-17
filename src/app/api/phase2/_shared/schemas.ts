@@ -11,7 +11,7 @@ import { z } from "zod";
  * more digits would fail the `$::numeric` cast after the route has
  * already consumed the context-token `jti`.
  */
-const eventKeyString = z
+export const eventKeyString = z
   .string()
   .min(1)
   .max(39)
@@ -31,7 +31,7 @@ const eventKeyString = z
 const BIGINT_MAX = BigInt("9223372036854775807");
 const BIGINT_ONE = BigInt(1);
 
-const stringifiedBigintPositive = z
+export const stringifiedBigintPositive = z
   .string()
   .regex(/^[0-9]+$/, "must be a positive integer string (digits only)")
   .refine((s) => {

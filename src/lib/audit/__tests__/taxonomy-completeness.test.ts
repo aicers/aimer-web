@@ -83,6 +83,10 @@ const PRODUCED: Record<string, string> = {
   "phase2.ingest": "src/app/api/phase2/baseline/batch/route.ts",
   "phase2.ingest_failed": "src/app/api/phase2/_shared/handler.ts",
   "phase2.verification_failed": "src/app/api/phase2/_shared/handler.ts",
+  // Phase 2 mutations
+  "phase2.withdraw": "src/app/api/phase2/withdraw/route.ts",
+  "phase2.refresh_window": "src/app/api/phase2/refresh-window/route.ts",
+  "phase2.backfill": "src/app/api/phase2/backfill/route.ts",
   // AICE environment management (guard-level)
   "environment.created": "src/app/api/admin/environments/route.ts",
   "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",
