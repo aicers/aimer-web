@@ -76,6 +76,7 @@ RFC 0002 §6 HTTP status set:
 | 404 | `customer_not_found` | `external_key` does not resolve to a customer row |
 | 409 | `context_jti_replay` | same `jti` already consumed |
 | 413 | `events_data_too_large` | payload exceeds `BRIDGE_MAX_PAYLOAD_BYTES` |
+| 500 | `database_error` | INSERT into the customer DB failed after envelope verification (e.g., FK violation, cast failure). A `phase2.ingest_failed` audit row is emitted; the context-token `jti` is NOT released — the caller must mint fresh tokens to retry. |
 
 All non-5xx errors surface immediately to the user as 4xx without
 retry from aice-web-next's perspective.
@@ -128,8 +129,10 @@ Use this checklist when bringing up a new customer + AICE pair.
 ## Audit
 
 Every successful ingest emits one `phase2.ingest` row to the audit
-DB. Failed ingests do not (envelope / verification failures emit
-their own audit per the helper's existing pattern).
+DB. A database-side failure during the per-customer INSERT emits one
+`phase2.ingest_failed` row instead (with `details.error` carrying the
+underlying error message). Envelope / verification failures emit
+their own audit per the helper's existing pattern.
 
 Top-level columns:
 

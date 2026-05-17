@@ -7,13 +7,25 @@ import { z } from "zod";
 /**
  * `event_key` is a NUMERIC(39, 0) on the DB side. On the wire it travels
  * as a JSON string (RFC 0002 §6 — NUMERIC(39, 0) overflows JSON numbers).
- * We validate the string shape only; the DB does the numeric parse.
+ * Length is capped at 39 digits to match the DB precision; values with
+ * more digits would fail the `$::numeric` cast after the route has
+ * already consumed the context-token `jti`.
  */
 const eventKeyString = z
   .string()
   .min(1)
-  .max(40)
+  .max(39)
   .regex(/^[0-9]+$/, "event_key must be a non-negative integer string");
+
+/**
+ * Stringified BIGINT on the wire (RFC 0002 §6 — JSON numbers cannot
+ * safely represent values that may exceed 2^53). Used for `story_id`,
+ * `run_id`, and `replaces`. We reject JSON numbers at the Zod layer
+ * so malformed payloads cannot reach the `$::bigint` DB cast.
+ */
+const stringifiedBigint = z
+  .string()
+  .regex(/^-?[0-9]+$/, "must be a stringified BIGINT (digits only)");
 
 const isoTimestamp = z.string().min(1);
 
@@ -52,20 +64,22 @@ export type BaselineBatch = z.infer<typeof baselineBatchSchema>;
 // ---------------------------------------------------------------------------
 
 export const storyMemberSchema = z.object({
-  member_event_key: eventKeyString,
+  event_key: eventKeyString,
   role: z.enum(["primary", "context"]),
   event: jsonObject,
 });
 export type StoryMember = z.infer<typeof storyMemberSchema>;
 
 export const storySchema = z.object({
-  story_id: z.union([z.string().regex(/^-?[0-9]+$/), z.number().int()]),
+  story_id: stringifiedBigint,
   story_version: z.string().min(1),
   kind: z.enum(["auto_correlated", "analyst_curated"]),
   correlation_rule_id: z.string().nullable().optional(),
   primary_asset: z.string().nullable().optional(),
-  time_window_start: isoTimestamp,
-  time_window_end: isoTimestamp,
+  time_window: z.object({
+    start: isoTimestamp,
+    end: isoTimestamp,
+  }),
   score: z.number().nullable().optional(),
   summary_payload: jsonObject,
   members: z.array(storyMemberSchema),
@@ -102,20 +116,17 @@ export const policyEventSchema = z.object({
 export type PolicyEvent = z.infer<typeof policyEventSchema>;
 
 export const policyRunBodySchema = z.object({
-  run_id: z.union([z.string().regex(/^-?[0-9]+$/), z.number().int()]),
+  run_id: stringifiedBigint,
   owner_account_id: z.string().uuid().nullable().optional(),
   period_start: isoTimestamp,
   period_end: isoTimestamp,
-  created_at_source: isoTimestamp,
-  finalized_at_source: isoTimestamp.nullable().optional(),
+  created_at: isoTimestamp,
+  finalized_at: isoTimestamp.nullable().optional(),
   baseline_version: z.string().min(1),
   policies_fingerprint: z.string().min(1),
   exclusions_fingerprint: z.string().min(1),
   status: z.enum(["ready", "superseded"]),
-  replaces: z
-    .union([z.string().regex(/^-?[0-9]+$/), z.number().int()])
-    .nullable()
-    .optional(),
+  replaces: stringifiedBigint.nullable().optional(),
   summary_stats: jsonObject.nullable().optional(),
 });
 export type PolicyRunBody = z.infer<typeof policyRunBodySchema>;

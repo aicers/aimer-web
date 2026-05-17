@@ -9,7 +9,8 @@ import type { EnvelopeVerificationError } from "@/lib/auth/envelope-verify";
 export type Phase2RouteErrorCode =
   | "schema_version_mismatch"
   | "context_jti_replay"
-  | "payload_schema_invalid";
+  | "payload_schema_invalid"
+  | "database_error";
 
 /**
  * Map an {@link EnvelopeVerificationError} from the shared helper to the

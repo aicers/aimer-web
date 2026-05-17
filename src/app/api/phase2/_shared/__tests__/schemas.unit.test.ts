@@ -55,15 +55,17 @@ describe("storyBatchSchema", () => {
       external_key: "ext-1",
       stories: [
         {
-          story_id: 1,
+          story_id: "1",
           story_version: "v1",
           kind: "auto_correlated",
-          time_window_start: "2026-01-02T03:04:05Z",
-          time_window_end: "2026-01-02T03:14:05Z",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
           summary_payload: {},
           members: [
-            { member_event_key: "10", role: "primary", event: {} },
-            { member_event_key: "11", role: "context", event: {} },
+            { event_key: "10", role: "primary", event: {} },
+            { event_key: "11", role: "context", event: {} },
           ],
         },
       ],
@@ -76,13 +78,35 @@ describe("storyBatchSchema", () => {
       external_key: "ext-1",
       stories: [
         {
+          story_id: "1",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [{ event_key: "10", role: "bystander", event: {} }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a JSON-number story_id (RFC requires stringified BIGINT)", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
           story_id: 1,
           story_version: "v1",
           kind: "auto_correlated",
-          time_window_start: "2026-01-02T03:04:05Z",
-          time_window_end: "2026-01-02T03:14:05Z",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
           summary_payload: {},
-          members: [{ member_event_key: "10", role: "bystander", event: {} }],
+          members: [],
         },
       ],
     });
@@ -95,10 +119,10 @@ describe("policyRunSchema", () => {
     const result = policyRunSchema.safeParse({
       external_key: "ext-1",
       run: {
-        run_id: 100,
+        run_id: "100",
         period_start: "2026-01-02T03:04:05Z",
         period_end: "2026-01-02T03:14:05Z",
-        created_at_source: "2026-01-02T03:14:06Z",
+        created_at: "2026-01-02T03:14:06Z",
         baseline_version: "v1",
         policies_fingerprint: "pfp",
         exclusions_fingerprint: "efp",
@@ -126,16 +150,54 @@ describe("policyRunSchema", () => {
     const result = policyRunSchema.safeParse({
       external_key: "ext-1",
       run: {
-        run_id: 100,
+        run_id: "100",
         period_start: "2026-01-02T03:04:05Z",
         period_end: "2026-01-02T03:14:05Z",
-        created_at_source: "2026-01-02T03:14:06Z",
+        created_at: "2026-01-02T03:14:06Z",
         baseline_version: "v1",
         policies_fingerprint: "pfp",
         exclusions_fingerprint: "efp",
         status: "draft",
       },
       events: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a JSON-number run_id (RFC requires stringified BIGINT)", () => {
+    const result = policyRunSchema.safeParse({
+      external_key: "ext-1",
+      run: {
+        run_id: 100,
+        period_start: "2026-01-02T03:04:05Z",
+        period_end: "2026-01-02T03:14:05Z",
+        created_at: "2026-01-02T03:14:06Z",
+        baseline_version: "v1",
+        policies_fingerprint: "pfp",
+        exclusions_fingerprint: "efp",
+        status: "ready",
+      },
+      events: [],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("eventKeyString cap at NUMERIC(39, 0)", () => {
+  it("accepts a 39-digit key", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [{ ...baseEvent, event_key: "1".repeat(39) }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a 40-digit key (would overflow NUMERIC(39, 0))", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [{ ...baseEvent, event_key: "1".repeat(40) }],
     });
     expect(result.success).toBe(false);
   });

@@ -276,6 +276,48 @@ describe("createPhase2BatchHandler", () => {
     expect(mockAuditLog).not.toHaveBeenCalled();
   });
 
+  it("returns 500 database_error and emits phase2.ingest_failed audit on ingest throw", async () => {
+    const authPool = fakeAuthPool();
+    mockVerifyPhase2Multipart.mockResolvedValue({
+      contextClaims: baseContextClaims,
+      envelopeClaims: baseEnvelopeClaims,
+      eventsData: baseEventsData,
+      customerId: "11111111-2222-3333-4444-555555555555",
+      externalKey: "ext-1",
+    });
+
+    const ingest = vi.fn().mockRejectedValue(new Error("FK violation"));
+    const handler = createPhase2BatchHandler(
+      {
+        expectedSchemaVersion: "test.v1",
+        payloadSchema: testSchema,
+        auditTargetType: "test",
+        ingest,
+      },
+      {
+        getAuthPool: () => authPool,
+        getCustomerRuntimePool: () => fakeAuthPool(),
+      },
+    );
+
+    const res = await handler(makeRequest());
+    const body = (await res.json()) as { code: string };
+    expect(res.status).toBe(500);
+    expect(body.code).toBe("database_error");
+
+    // Failure audit emitted; phase2.ingest (success) is NOT emitted.
+    expect(mockAuditLog).toHaveBeenCalledOnce();
+    const auditCall = mockAuditLog.mock.calls[0][0];
+    expect(auditCall.action).toBe("phase2.ingest_failed");
+    expect(auditCall.customerId).toBe("11111111-2222-3333-4444-555555555555");
+    expect(auditCall.correlationId).toBe(baseContextClaims.jti);
+    expect(auditCall.details).toMatchObject({
+      schemaVersion: "test.v1",
+      eventCountClaim: 1,
+      error: "FK violation",
+    });
+  });
+
   it("propagates non-EnvelopeVerificationError throws", async () => {
     mockVerifyPhase2Multipart.mockRejectedValue(new Error("boom"));
     const handler = createPhase2BatchHandler(

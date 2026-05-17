@@ -106,21 +106,23 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
         source_aice_id: "aice-1",
         stories: [
           {
-            story_id: 5001,
+            story_id: "5001",
             story_version: "v1",
             kind: "auto_correlated" as const,
-            time_window_start: "2026-01-02T03:00:00Z",
-            time_window_end: "2026-01-02T03:10:00Z",
+            time_window: {
+              start: "2026-01-02T03:00:00Z",
+              end: "2026-01-02T03:10:00Z",
+            },
             score: 0.7,
             summary_payload: {},
             members: [
               {
-                member_event_key: "1",
+                event_key: "1",
                 role: "primary" as const,
                 event: {},
               },
               {
-                member_event_key: "2",
+                event_key: "2",
                 role: "context" as const,
                 event: {},
               },
@@ -151,20 +153,24 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
         external_key: "ext-1",
         stories: [
           {
-            story_id: 5100,
+            story_id: "5100",
             story_version: "v1",
             kind: "auto_correlated" as const,
-            time_window_start: "2026-01-02T03:00:00Z",
-            time_window_end: "2026-01-02T03:10:00Z",
+            time_window: {
+              start: "2026-01-02T03:00:00Z",
+              end: "2026-01-02T03:10:00Z",
+            },
             summary_payload: {},
             members: [],
           },
           {
-            story_id: 5100,
+            story_id: "5100",
             story_version: "v2",
             kind: "analyst_curated" as const,
-            time_window_start: "2026-01-02T03:00:00Z",
-            time_window_end: "2026-01-02T03:10:00Z",
+            time_window: {
+              start: "2026-01-02T03:00:00Z",
+              end: "2026-01-02T03:10:00Z",
+            },
             summary_payload: {},
             members: [],
           },
@@ -182,10 +188,10 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
       const runPayload = {
         external_key: "ext-1",
         run: {
-          run_id: 7001,
+          run_id: "7001",
           period_start: "2026-01-02T03:00:00Z",
           period_end: "2026-01-02T04:00:00Z",
-          created_at_source: "2026-01-02T04:00:01Z",
+          created_at: "2026-01-02T04:00:01Z",
           baseline_version: "pr-v1",
           policies_fingerprint: "pfp",
           exclusions_fingerprint: "efp",

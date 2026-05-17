@@ -81,6 +81,7 @@ const PRODUCED: Record<string, string> = {
   "system.settings_updated": "src/app/api/admin/session-policy/route.ts",
   // Phase 2 ingest (emitted by all three batch routes — list one)
   "phase2.ingest": "src/app/api/phase2/baseline/batch/route.ts",
+  "phase2.ingest_failed": "src/app/api/phase2/_shared/handler.ts",
   // AICE environment management (guard-level)
   "environment.created": "src/app/api/admin/environments/route.ts",
   "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",

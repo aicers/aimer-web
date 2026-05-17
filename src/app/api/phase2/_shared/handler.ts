@@ -129,13 +129,44 @@ export function createPhase2BatchHandler<TSchema extends z.ZodTypeAny>(
         );
       }
 
-      // 5. Per-customer ingest.
+      // 5. Per-customer ingest. Database failures (e.g. invalid timestamp
+      //    or INET cast that survived Zod, FK violations) are translated
+      //    to `500 + database_error` with a `phase2.ingest_failed` audit
+      //    row so operators have a route-local record of the failure;
+      //    the consumed jti is NOT released, mirroring the at-most-once
+      //    semantics of the success path.
       const customerPool = resolveCustomerPool(customerId);
-      const { counts, details: extraDetails } = await config.ingest(
-        customerPool,
-        verified,
-        validation.data as z.infer<TSchema>,
-      );
+      let counts: IngestCounts;
+      let extraDetails: Record<string, unknown> | undefined;
+      try {
+        const ingestResult = await config.ingest(
+          customerPool,
+          verified,
+          validation.data as z.infer<TSchema>,
+        );
+        counts = ingestResult.counts;
+        extraDetails = ingestResult.details;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        void auditLog({
+          actorId: contextClaims.sub,
+          action: "phase2.ingest_failed",
+          targetType: config.auditTargetType,
+          details: {
+            schemaVersion: envelopeClaims.schemaVersion,
+            eventCountClaim: envelopeClaims.eventCount,
+            error: message,
+          },
+          customerId,
+          aiceId: envelopeClaims.aiceId,
+          correlationId: contextClaims.jti,
+        });
+        return phase2ErrorResponse(
+          500,
+          "database_error",
+          "ingest failed while writing to the customer database",
+        );
+      }
 
       const receivedAt = new Date().toISOString();
 

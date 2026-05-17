@@ -74,6 +74,7 @@ RFC 0002 §6에 따라 성공 응답은 항상 다음 네 필드를 가집니다
 | 404 | `customer_not_found` | `external_key`로 고객 행을 찾을 수 없음 |
 | 409 | `context_jti_replay` | 동일한 `jti`가 이미 소비됨 |
 | 413 | `events_data_too_large` | `BRIDGE_MAX_PAYLOAD_BYTES` 초과 |
+| 500 | `database_error` | 봉투 검증 이후 고객 DB INSERT 실패(예: FK 위반, 캐스트 실패). `phase2.ingest_failed` 감사 행이 기록되며, 컨텍스트 토큰 `jti`는 해제되지 않으므로 재시도하려면 새 토큰을 발급받아야 합니다. |
 
 5xx 이외의 오류는 aice-web-next 관점에서 재시도 없이 즉시 4xx로
 사용자에게 노출됩니다.
@@ -126,8 +127,9 @@ aimer-web의 상한을 올린다면 aice-web-next의 발신 측 상한도 함께
 ## 감사
 
 성공한 수집마다 감사 DB에 `phase2.ingest` 행 한 개가 기록됩니다.
-실패한 수집은 기록하지 않습니다(봉투/검증 실패는 헬퍼의 기존
-패턴에 따라 자체 감사 행을 남깁니다).
+고객 DB INSERT 단계에서 실패하면 대신 `phase2.ingest_failed` 행
+한 개가 기록되며(`details.error`에 원본 오류 메시지 포함), 봉투/
+검증 실패는 헬퍼의 기존 패턴에 따라 자체 감사 행을 남깁니다.
 
 상위 컬럼:
 

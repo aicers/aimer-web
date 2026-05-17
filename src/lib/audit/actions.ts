@@ -97,5 +97,6 @@ export type AuditAction =
   | "system.settings_updated"
   // Phase 2 ingest
   | "phase2.ingest"
+  | "phase2.ingest_failed"
   // Audit (internal)
   | "audit.anonymize";

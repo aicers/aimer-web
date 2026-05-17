@@ -109,13 +109,13 @@ export async function ingestStoryBatch(
          )
          ON CONFLICT (story_id, story_version) DO NOTHING`,
         [
-          String(story.story_id),
+          story.story_id,
           story.story_version,
           story.kind,
           story.correlation_rule_id ?? null,
           story.primary_asset ?? null,
-          story.time_window_start,
-          story.time_window_end,
+          story.time_window.start,
+          story.time_window.end,
           story.score ?? null,
           JSON.stringify(story.summary_payload),
           sourceAiceId,
@@ -131,9 +131,9 @@ export async function ingestStoryBatch(
            ) VALUES ($1::bigint, $2, $3::numeric, $4, $5::jsonb)
            ON CONFLICT (story_id, story_version, member_event_key) DO NOTHING`,
           [
-            String(story.story_id),
+            story.story_id,
             story.story_version,
-            member.member_event_key,
+            member.event_key,
             member.role,
             JSON.stringify(member.event),
           ],
@@ -190,17 +190,17 @@ async function insertPolicyRunInTx(
      )
      ON CONFLICT (run_id) DO NOTHING`,
     [
-      String(run.run_id),
+      run.run_id,
       run.owner_account_id ?? null,
       run.period_start,
       run.period_end,
-      run.created_at_source,
-      run.finalized_at_source ?? null,
+      run.created_at,
+      run.finalized_at ?? null,
       run.baseline_version,
       run.policies_fingerprint,
       run.exclusions_fingerprint,
       run.status,
-      run.replaces == null ? null : String(run.replaces),
+      run.replaces ?? null,
       run.summary_stats == null ? null : JSON.stringify(run.summary_stats),
       sourceAiceId,
     ],
@@ -223,7 +223,7 @@ async function insertPolicyRunInTx(
        )
        ON CONFLICT (run_id, event_key) DO NOTHING`,
       [
-        String(run.run_id),
+        run.run_id,
         event.event_key,
         event.event_time,
         event.kind,
