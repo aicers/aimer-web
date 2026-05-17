@@ -128,8 +128,14 @@ aimer-web의 상한을 올린다면 aice-web-next의 발신 측 상한도 함께
 
 성공한 수집마다 감사 DB에 `phase2.ingest` 행 한 개가 기록됩니다.
 고객 DB INSERT 단계에서 실패하면 대신 `phase2.ingest_failed` 행
-한 개가 기록되며(`details.error`에 원본 오류 메시지 포함), 봉투/
-검증 실패는 헬퍼의 기존 패턴에 따라 자체 감사 행을 남깁니다.
+한 개가 기록되며 `details.error`에 원본 오류 메시지가 포함됩니다.
+봉투/검증 실패(공유 검증기가 던지는 `EnvelopeVerificationError`)는
+`phase2.verification_failed` 행 한 개를 남기며, `details.code`와
+헬퍼가 부착한 부가 필드(예: `externalKey`, 키 만료 메타데이터)가
+같이 기록됩니다. `actor_id`는 컨텍스트 토큰 검증을 통과한 이후에
+실패한 경우 토큰의 `sub`이고, 그 외에는 `unknown`입니다. `aice_id`
+및 `correlation_id`는 검증기가 컨텍스트 토큰을 이미 수락한 시점에
+실패한 경우에만 채워집니다.
 
 상위 컬럼:
 

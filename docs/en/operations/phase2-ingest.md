@@ -131,8 +131,14 @@ Use this checklist when bringing up a new customer + AICE pair.
 Every successful ingest emits one `phase2.ingest` row to the audit
 DB. A database-side failure during the per-customer INSERT emits one
 `phase2.ingest_failed` row instead (with `details.error` carrying the
-underlying error message). Envelope / verification failures emit
-their own audit per the helper's existing pattern.
+underlying error message). Envelope / verification failures (anything
+the shared verifier throws as `EnvelopeVerificationError`) emit one
+`phase2.verification_failed` row carrying `details.code` plus any
+extra fields the helper attached (e.g., `externalKey`, key-expiry
+metadata). `actor_id` is the context-token `sub` when the failure
+happens after context-token verification, and `unknown` otherwise;
+`aice_id` and `correlation_id` are populated when the verifier had
+already accepted the context token.
 
 Top-level columns:
 

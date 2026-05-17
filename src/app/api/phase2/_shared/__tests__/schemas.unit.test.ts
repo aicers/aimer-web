@@ -14,7 +14,11 @@ const baseEvent = {
   raw_score: 0.5,
   selector_tags: ["t1"],
   raw_event: { foo: "bar" },
-  score_window_context: { baseline_rank_snapshot: 0.9 },
+  score_window_context: {
+    kind_cohort_window: 3600,
+    kind_cohort_size: 128,
+    baseline_rank_snapshot: 0.9,
+  },
   window_signals: { s1: 1 },
   asset_context: { peer_event_summary: {} },
   scoring_weights_snapshot: { weights: {} },
@@ -133,7 +137,7 @@ describe("policyRunSchema", () => {
           event_key: "1",
           event_time: "2026-01-02T03:04:05Z",
           kind: "http",
-          policy_triage_snapshot: [{ policyId: "p1" }],
+          policy_triage_snapshot: [{ policyId: "p1", score: 0.42 }],
         },
         {
           event_key: "2",
@@ -144,6 +148,31 @@ describe("policyRunSchema", () => {
       ],
     });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects a policy_triage_snapshot item missing `score`", () => {
+    const result = policyRunSchema.safeParse({
+      external_key: "ext-1",
+      run: {
+        run_id: "100",
+        period_start: "2026-01-02T03:04:05Z",
+        period_end: "2026-01-02T03:14:05Z",
+        created_at: "2026-01-02T03:14:06Z",
+        baseline_version: "v1",
+        policies_fingerprint: "pfp",
+        exclusions_fingerprint: "efp",
+        status: "ready",
+      },
+      events: [
+        {
+          event_key: "1",
+          event_time: "2026-01-02T03:04:05Z",
+          kind: "http",
+          policy_triage_snapshot: [{ policyId: "p1" }],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
   });
 
   it("rejects status outside the allowed set", () => {
@@ -177,6 +206,143 @@ describe("policyRunSchema", () => {
         exclusions_fingerprint: "efp",
         status: "ready",
       },
+      events: [],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("baselineEventSchema score_window_context required fields", () => {
+  it("rejects a baseline event missing kind_cohort_window", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [
+        {
+          ...baseEvent,
+          score_window_context: {
+            kind_cohort_size: 128,
+            baseline_rank_snapshot: 0.9,
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a baseline event missing baseline_rank_snapshot", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [
+        {
+          ...baseEvent,
+          score_window_context: {
+            kind_cohort_window: 3600,
+            kind_cohort_size: 128,
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts extra unknown keys in score_window_context (passthrough)", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [
+        {
+          ...baseEvent,
+          score_window_context: {
+            kind_cohort_window: 3600,
+            kind_cohort_size: 128,
+            baseline_rank_snapshot: 0.9,
+            extra_diagnostic: "ok",
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("stringifiedBigintPositive range enforcement", () => {
+  const validRun = {
+    run_id: "100",
+    period_start: "2026-01-02T03:04:05Z",
+    period_end: "2026-01-02T03:14:05Z",
+    created_at: "2026-01-02T03:14:06Z",
+    baseline_version: "v1",
+    policies_fingerprint: "pfp",
+    exclusions_fingerprint: "efp",
+    status: "ready" as const,
+  };
+
+  it("rejects story_id beyond 2^63 - 1 before the DB cast can fail", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "999999999999999999999999",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects story_id <= 0 (BIGSERIAL-derived IDs are positive)", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "0",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts story_id at the BIGINT upper bound (2^63 - 1)", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "9223372036854775807",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects run.replaces beyond 2^63 - 1 before the DB cast can fail", () => {
+    const result = policyRunSchema.safeParse({
+      external_key: "ext-1",
+      run: { ...validRun, replaces: "999999999999999999999999" },
       events: [],
     });
     expect(result.success).toBe(false);

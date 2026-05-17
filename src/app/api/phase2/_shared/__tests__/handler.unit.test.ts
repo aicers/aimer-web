@@ -251,9 +251,16 @@ describe("createPhase2BatchHandler", () => {
     expect(mockAuditLog).not.toHaveBeenCalled();
   });
 
-  it("maps EnvelopeVerificationError codes to RFC 0002 Phase 2 statuses", async () => {
+  it("maps EnvelopeVerificationError codes to RFC 0002 Phase 2 statuses and emits phase2.verification_failed audit", async () => {
     mockVerifyPhase2Multipart.mockRejectedValue(
-      new EnvelopeVerificationError("payload_customer_not_authorized", "scope"),
+      new EnvelopeVerificationError(
+        "payload_customer_not_authorized",
+        "scope",
+        {
+          contextClaims: baseContextClaims,
+          details: { externalKey: "ext-1" },
+        },
+      ),
     );
 
     const handler = createPhase2BatchHandler(
@@ -273,7 +280,51 @@ describe("createPhase2BatchHandler", () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("payload_customer_not_authorized");
-    expect(mockAuditLog).not.toHaveBeenCalled();
+
+    expect(mockAuditLog).toHaveBeenCalledOnce();
+    const auditCall = mockAuditLog.mock.calls[0][0];
+    expect(auditCall.action).toBe("phase2.verification_failed");
+    expect(auditCall.actorId).toBe(baseContextClaims.sub);
+    expect(auditCall.aiceId).toBe(baseContextClaims.aiceId);
+    expect(auditCall.correlationId).toBe(baseContextClaims.jti);
+    expect(auditCall.details).toMatchObject({
+      code: "payload_customer_not_authorized",
+      schemaVersion: "test.v1",
+      externalKey: "ext-1",
+    });
+  });
+
+  it("emits phase2.verification_failed with UNKNOWN_ACTOR_ID when failure precedes context-token verification", async () => {
+    mockVerifyPhase2Multipart.mockRejectedValue(
+      new EnvelopeVerificationError("invalid_context_token", "bad sig"),
+    );
+
+    const handler = createPhase2BatchHandler(
+      {
+        expectedSchemaVersion: "test.v1",
+        payloadSchema: testSchema,
+        auditTargetType: "test",
+        ingest: vi.fn(),
+      },
+      {
+        getAuthPool: () => fakeAuthPool(),
+        getCustomerRuntimePool: () => fakeAuthPool(),
+      },
+    );
+
+    const res = await handler(makeRequest());
+    expect(res.status).toBe(401);
+
+    expect(mockAuditLog).toHaveBeenCalledOnce();
+    const auditCall = mockAuditLog.mock.calls[0][0];
+    expect(auditCall.action).toBe("phase2.verification_failed");
+    expect(auditCall.actorId).toBe("unknown");
+    expect(auditCall.aiceId).toBeUndefined();
+    expect(auditCall.correlationId).toBeUndefined();
+    expect(auditCall.details).toMatchObject({
+      code: "invalid_context_token",
+      schemaVersion: "test.v1",
+    });
   });
 
   it("returns 500 database_error and emits phase2.ingest_failed audit on ingest throw", async () => {

@@ -98,5 +98,6 @@ export type AuditAction =
   // Phase 2 ingest
   | "phase2.ingest"
   | "phase2.ingest_failed"
+  | "phase2.verification_failed"
   // Audit (internal)
   | "audit.anonymize";

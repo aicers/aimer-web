@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import type { Pool } from "pg";
 import type { z } from "zod";
-import { auditLog } from "@/lib/audit";
+import { auditLog, UNKNOWN_ACTOR_ID } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import {
   EnvelopeVerificationError,
@@ -77,6 +77,25 @@ export function createPhase2BatchHandler<TSchema extends z.ZodTypeAny>(
         verified = await verifyPhase2Multipart(authPool, request);
       } catch (err) {
         if (err instanceof EnvelopeVerificationError) {
+          // Record verification failures so operators see them in the
+          // audit stream alongside successful ingests. `contextClaims`
+          // is populated when the failure happens *after* context-token
+          // verification has already succeeded (envelope rejection,
+          // payload scope checks); otherwise we fall back to the
+          // unknown actor.
+          const claims = err.contextClaims;
+          void auditLog({
+            actorId: claims?.sub ?? UNKNOWN_ACTOR_ID,
+            action: "phase2.verification_failed",
+            targetType: config.auditTargetType,
+            details: {
+              code: err.code,
+              schemaVersion: config.expectedSchemaVersion,
+              ...(err.details ?? {}),
+            },
+            ...(claims ? { aiceId: claims.aiceId } : {}),
+            ...(claims ? { correlationId: claims.jti } : {}),
+          });
           return mapEnvelopeErrorToPhase2Response(err);
         }
         throw err;
