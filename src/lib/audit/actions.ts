@@ -95,5 +95,9 @@ export type AuditAction =
   // System
   | "system.policy_changed"
   | "system.settings_updated"
+  // Phase 2 ingest
+  | "phase2.ingest"
+  | "phase2.ingest_failed"
+  | "phase2.verification_failed"
   // Audit (internal)
   | "audit.anonymize";
