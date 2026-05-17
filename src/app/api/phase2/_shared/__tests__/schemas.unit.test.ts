@@ -15,7 +15,10 @@ const baseEvent = {
   selector_tags: ["t1"],
   raw_event: { foo: "bar" },
   score_window_context: {
-    kind_cohort_window: 3600,
+    kind_cohort_window: {
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-01-02T00:00:00Z",
+    },
     kind_cohort_size: 128,
     baseline_rank_snapshot: 0.9,
   },
@@ -238,8 +241,47 @@ describe("baselineEventSchema score_window_context required fields", () => {
         {
           ...baseEvent,
           score_window_context: {
+            kind_cohort_window: {
+              from: "2026-01-01T00:00:00Z",
+              to: "2026-01-02T00:00:00Z",
+            },
+            kind_cohort_size: 128,
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects kind_cohort_window when sent as a number (RFC requires { from, to })", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [
+        {
+          ...baseEvent,
+          score_window_context: {
             kind_cohort_window: 3600,
             kind_cohort_size: 128,
+            baseline_rank_snapshot: 0.9,
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects kind_cohort_window missing the `to` boundary", () => {
+    const result = baselineBatchSchema.safeParse({
+      external_key: "ext-1",
+      baseline_version: "v1",
+      events: [
+        {
+          ...baseEvent,
+          score_window_context: {
+            kind_cohort_window: { from: "2026-01-01T00:00:00Z" },
+            kind_cohort_size: 128,
+            baseline_rank_snapshot: 0.9,
           },
         },
       ],
@@ -255,7 +297,10 @@ describe("baselineEventSchema score_window_context required fields", () => {
         {
           ...baseEvent,
           score_window_context: {
-            kind_cohort_window: 3600,
+            kind_cohort_window: {
+              from: "2026-01-01T00:00:00Z",
+              to: "2026-01-02T00:00:00Z",
+            },
             kind_cohort_size: 128,
             baseline_rank_snapshot: 0.9,
             extra_diagnostic: "ok",

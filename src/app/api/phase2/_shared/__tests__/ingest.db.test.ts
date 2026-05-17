@@ -52,7 +52,10 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
             selector_tags: ["t1"],
             raw_event: {},
             score_window_context: {
-              kind_cohort_window: 3600,
+              kind_cohort_window: {
+                from: "2026-01-01T00:00:00Z",
+                to: "2026-01-02T00:00:00Z",
+              },
               kind_cohort_size: 128,
               baseline_rank_snapshot: 0.9,
             },
@@ -70,7 +73,10 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
             selector_tags: [],
             raw_event: {},
             score_window_context: {
-              kind_cohort_window: 3600,
+              kind_cohort_window: {
+                from: "2026-01-01T00:00:00Z",
+                to: "2026-01-02T00:00:00Z",
+              },
               kind_cohort_size: 128,
               baseline_rank_snapshot: 0.9,
             },

@@ -48,6 +48,19 @@ const isoTimestamp = z.string().min(1);
 const jsonObject = z.record(z.string(), z.unknown());
 
 /**
+ * The cohort window the baseline snapshot was taken against. RFC 0002
+ * §6 defines it as `{ from, to }` ISO timestamps; aimer-web stores it
+ * as-is inside the `score_window_context` JSONB column. Extra keys are
+ * accepted (passthrough) for forward-compatible additions.
+ */
+const kindCohortWindowSchema = z
+  .object({
+    from: isoTimestamp,
+    to: isoTimestamp,
+  })
+  .passthrough();
+
+/**
  * Schema for `baseline_event.score_window_context` (RFC 0002 §6 /
  * #218 AC). Requires the three baseline-context fields the read
  * helpers rely on; additional keys are accepted (passthrough) so
@@ -56,7 +69,7 @@ const jsonObject = z.record(z.string(), z.unknown());
  */
 const scoreWindowContextSchema = z
   .object({
-    kind_cohort_window: z.number(),
+    kind_cohort_window: kindCohortWindowSchema,
     kind_cohort_size: z.number().int().nonnegative(),
     baseline_rank_snapshot: z.number(),
   })
