@@ -37,6 +37,7 @@ plugins:
             - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
+            - Phase 2 Ingest: operations/phase2-ingest.md
         - locale: ko
           name: 한국어
           build: true
@@ -55,6 +56,7 @@ plugins:
             - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
+            - Phase 2 Ingest: operations/phase2-ingest.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
@@ -70,6 +72,7 @@ plugins:
             Environment Management: 환경 관리
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
+            Phase 2 Ingest: Phase 2 수집
 
 extra_css:
   - styles/lists.css

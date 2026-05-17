@@ -79,6 +79,8 @@ const PRODUCED: Record<string, string> = {
   "openbao.dek_destroyed": "src/lib/auth/delete-customer.ts",
   // System (guard-level: settings_updated)
   "system.settings_updated": "src/app/api/admin/session-policy/route.ts",
+  // Phase 2 ingest (emitted by all three batch routes — list one)
+  "phase2.ingest": "src/app/api/phase2/baseline/batch/route.ts",
   // AICE environment management (guard-level)
   "environment.created": "src/app/api/admin/environments/route.ts",
   "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",
@@ -163,6 +165,7 @@ const REQUIRED_CATEGORIES = [
   "customer_db",
   "openbao",
   "system",
+  "phase2",
   "audit",
 ];
 
@@ -181,6 +184,7 @@ const PRODUCED_CATEGORIES = [
   "customer_db",
   "openbao",
   "system",
+  "phase2",
   "audit",
 ];
 
