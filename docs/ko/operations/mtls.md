@@ -69,9 +69,17 @@ aimer의 SIGHUP 문서는
 | `MTLS_CA_PATH` | 예 | aimer 서버 인증서를 검증할 CA 번들 PEM의 파일 경로. | _(미설정 시 aimer-web이 mTLS 상태 구축을 거부합니다)_ |
 | `AIMER_GRAPHQL_ENDPOINT` | 예 | aimer GraphQL 엔드포인트 URL (예: `https://aimer.internal/graphql`). | _(미설정 시 mTLS로 라우팅된 클라이언트가 디스패치를 거부합니다)_ |
 
-값은 `src/lib/mtls.ts`가 첫 요청 시점에 (지연 초기화로) 읽고,
-SIGHUP마다 다시 읽습니다. 별도의 설정 파일은 없으며 환경 변수가
-유일한 출처입니다.
+세 개의 `MTLS_*` 경로는 `src/lib/mtls.ts`가 첫 요청 시점에 (지연
+초기화로) 읽고, SIGHUP마다 다시 읽습니다 — 인증서 파일을 회전하고
+프로세스에 신호를 보내면 재시작 없이 새 값이 반영됩니다.
+
+`AIMER_GRAPHQL_ENDPOINT`는 `src/lib/graphql/client.ts`가 매 디스패치
+시점에 `process.env`에서 읽으며, SIGHUP 리로드 경로에 **포함되지
+않습니다**. 서비스 환경 파일에서 엔드포인트를 변경한 경우에는
+aimer-web 프로세스를 재시작해야 합니다 — 인증서 파일과 달리
+SIGHUP으로는 반영되지 않습니다.
+
+별도의 설정 파일은 없으며 환경 변수가 유일한 출처입니다.
 
 동일한 인증서 쌍이 대화의 양쪽 다리를 구동합니다. TLS 핸드셰이크의
 클라이언트 인증서이자, aimer-web이 요청마다 발급하는 JWT의 서명
@@ -179,21 +187,35 @@ bootroot이 인증서를 회전한 다음, 회전 훅에서
 
 ### Kubernetes
 
-인증서 ConfigMap / Secret 회전 후 컨테이너의 PID에 신호를 보내는
-라이프사이클 훅:
+Kubernetes는 마운트된 Secret 또는 ConfigMap이 회전될 때
+라이프사이클 훅을 발화하지 **않습니다** — `postStart`는 컨테이너
+시작 시 한 번만 실행되고, `preStop`은 종료 시에 실행됩니다. 따라서
+리로드는 새 인증서 파일을 감지하고 모든 파드에 신호를 보내는
+별도의 메커니즘으로 구동해야 합니다.
 
-```yaml
-spec:
-  containers:
-    - name: aimer-web
-      lifecycle:
-        # bootroot이 마운트된 Secret을 갱신한 후, 클러스터 내
-        # 사이드카 또는 외부 회전기가 각 레플리카의 PID 1에 신호를
-        # 보내도록 구성합니다. 간단한 `kubectl exec` 루프도
-        # 가능합니다:
-        #   kubectl get pods -l app=aimer-web -o name \
-        #     | xargs -I{} kubectl exec {} -- kill -HUP 1
-```
+지원되는 두 가지 방식:
+
+1. **회전기가 구동하는 `kubectl exec` 루프** (가장 단순). bootroot이
+   마운트된 Secret을 갱신한 후, 회전기 잡이 다음을 실행합니다:
+
+   ```sh
+   kubectl get pods -l app=aimer-web -o name \
+     | xargs -I{} kubectl exec {} -- kill -HUP 1
+   ```
+
+   **모든** 파드를 순회해야 합니다 — 각 Node 프로세스는 자체
+   인메모리 인증서 상태를 보유하기 때문입니다.
+
+2. **파드 스펙 안의 사이드카 워처.** 작은 사이드카 컨테이너가 인증서
+   볼륨을 공유하며 마운트된 파일을 `inotify`로 감시하거나 폴링하고,
+   공유 프로세스 네임스페이스(`shareProcessNamespace: true`)를 통해
+   메인 컨테이너의 PID 1에 `kill -HUP 1`을 실행합니다. 리로드 트리거를
+   파드 안에 두기 때문에, 회전기 잡에 클러스터 전역의 `pods/exec`
+   권한을 부여하지 않아도 됩니다.
+
+어느 방식을 쓰든 Deployment의 모든 레플리카에 신호를 보내야 합니다 —
+bootroot은 각 노드에서 파일을 회전하므로, 일부 파드만 리로드된 상태로
+남으면 이전 인증서로 계속 서비스를 제공하는 파드가 생깁니다.
 
 ### aimer
 

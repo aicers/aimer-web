@@ -70,9 +70,19 @@ proves the wiring is correct.
 | `MTLS_CA_PATH` | Yes | Filesystem path to the CA bundle PEM that validates the aimer server certificate. | _(unset; aimer-web refuses to start the mTLS state)_ |
 | `AIMER_GRAPHQL_ENDPOINT` | Yes | URL of the aimer GraphQL endpoint (e.g. `https://aimer.internal/graphql`). | _(unset; the mTLS-routed client refuses to dispatch)_ |
 
-The values are read by `src/lib/mtls.ts` on first request (lazy
-init) and re-read on every SIGHUP. There is no separate config file:
-the environment is the source of truth.
+The three `MTLS_*` paths are read by `src/lib/mtls.ts` on first
+request (lazy init) and re-read on every SIGHUP — rotating the cert
+files and signalling the process picks up the new values without a
+restart.
+
+`AIMER_GRAPHQL_ENDPOINT` is read from `process.env` on every
+dispatch by `src/lib/graphql/client.ts` and is **not** part of the
+SIGHUP reload path. Changing the endpoint in a service env file
+requires restarting the aimer-web process — SIGHUP will not pick it
+up the way it does for rotated certificate files.
+
+There is no separate config file: the environment is the source of
+truth.
 
 The same cert pair drives both legs of the conversation: it is the
 client certificate for the TLS handshake, **and** it is the signing
@@ -178,20 +188,35 @@ After bootroot rotates the certs, the rotation hook runs
 
 ### Kubernetes
 
-A lifecycle hook that signals the container PID after a cert
-ConfigMap / Secret rotation:
+Kubernetes does **not** fire a lifecycle hook when a mounted Secret
+or ConfigMap is rotated — `postStart` runs once on container start
+and `preStop` runs on shutdown. Reload must therefore be driven
+out-of-band by something that notices the new cert files and signals
+every pod.
 
-```yaml
-spec:
-  containers:
-    - name: aimer-web
-      lifecycle:
-        # Run an in-cluster sidecar or external rotator that signals
-        # every replica's PID 1 after bootroot updates the mounted
-        # Secret. A simple `kubectl exec` loop also works:
-        #   kubectl get pods -l app=aimer-web -o name \
-        #     | xargs -I{} kubectl exec {} -- kill -HUP 1
-```
+Two supported approaches:
+
+1. **`kubectl exec` loop driven by the rotator** (simplest). After
+   bootroot updates the mounted Secret, the rotator job runs:
+
+   ```sh
+   kubectl get pods -l app=aimer-web -o name \
+     | xargs -I{} kubectl exec {} -- kill -HUP 1
+   ```
+
+   Iterating over **every** pod is required — each Node process holds
+   its own in-memory cert state.
+
+2. **Sidecar watcher in the pod spec.** A small sidecar container
+   shares the cert volume, watches the mounted files with `inotify`
+   (or polls), and runs `kill -HUP 1` against the main container via
+   a shared process namespace (`shareProcessNamespace: true`). This
+   keeps the reload trigger inside the pod and avoids needing
+   cluster-wide `pods/exec` permissions on the rotator job.
+
+Whichever approach is used, signal every replica of the Deployment —
+bootroot rotates files on each node, and a partially-reloaded
+Deployment leaves some pods serving with the old cert.
 
 ### aimer
 
