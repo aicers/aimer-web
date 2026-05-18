@@ -38,6 +38,7 @@ plugins:
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
+            - mTLS: operations/mtls.md
         - locale: ko
           name: 한국어
           build: true
@@ -57,6 +58,7 @@ plugins:
             - Audit Logs: audit-logs.md
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
+            - mTLS: operations/mtls.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
