@@ -15,6 +15,14 @@
  *
  * Viewport: 1280×720 for all shots except `mobile-menu.png` (375×667)
  * because the mobile navigation menu is only visible at narrow widths.
+ *
+ * Capture density: deviceScaleFactor 0.75, so the on-disk PNG is the
+ * effective resolution 960×540 (or 281×500 for the mobile case). The
+ * browser re-rasterises at that density rather than down-sampling a
+ * high-DPI render, which keeps Latin and Korean glyphs crisp at 1× zoom
+ * in the rendered manual while halving the per-image token cost of LLM
+ * vision reads. See docs/AUTHORING.md for the policy and #203 for the
+ * rationale (token economics, mirroring aice-web-next/#522).
  */
 
 import { randomUUID } from "node:crypto";
@@ -35,6 +43,19 @@ loadEnv();
 
 const ASSETS = resolve(process.cwd(), "docs/assets");
 const VIEWPORT = { width: 1280, height: 720 };
+/**
+ * Lower the rendered pixel density so the captured PNG is 960×540 rather
+ * than 1280×720 (or 281×500 instead of 375×667 for the mobile case),
+ * cutting per-image token cost by ~44% without shrinking the captured
+ * layout. Documented in docs/AUTHORING.md and applied to every browser
+ * context this spec creates (see browser.newContext calls below).
+ */
+const SCALE_FACTOR = 0.75;
+
+// Declared so any future test that uses the default `page` fixture inherits
+// the same density. The contexts opened explicitly via browser.newContext
+// below pass the same value through their options.
+base.use({ deviceScaleFactor: SCALE_FACTOR });
 
 /** Remove the Next.js dev overlay so it does not cover UI elements. */
 async function removeOverlay(page: Page): Promise<void> {
@@ -124,12 +145,18 @@ base.describe.serial("Manual screenshots", () => {
     // ── Browser contexts ──
     const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
 
-    adminCtx = await browser.newContext({ baseURL });
+    adminCtx = await browser.newContext({
+      baseURL,
+      deviceScaleFactor: SCALE_FACTOR,
+    });
     await injectAuthCookies(adminCtx, testData.admin, "admin");
     adminPage = await adminCtx.newPage();
     await adminPage.setViewportSize(VIEWPORT);
 
-    mgrCtx = await browser.newContext({ baseURL });
+    mgrCtx = await browser.newContext({
+      baseURL,
+      deviceScaleFactor: SCALE_FACTOR,
+    });
     await injectAuthCookies(mgrCtx, testData.manager, "general");
     mgrPage = await mgrCtx.newPage();
     await mgrPage.setViewportSize(VIEWPORT);
@@ -172,7 +199,10 @@ base.describe.serial("Manual screenshots", () => {
     // The sign-in page is the Keycloak login form. Navigate to the
     // auth redirect endpoint which sends the browser to Keycloak.
     const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
-    const ctx = await browser.newContext({ baseURL });
+    const ctx = await browser.newContext({
+      baseURL,
+      deviceScaleFactor: SCALE_FACTOR,
+    });
     const page = await ctx.newPage();
     await page.setViewportSize(VIEWPORT);
 
@@ -212,7 +242,10 @@ base.describe.serial("Manual screenshots", () => {
 
   base("deny-page.png", async ({ browser }) => {
     const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
-    const ctx = await browser.newContext({ baseURL });
+    const ctx = await browser.newContext({
+      baseURL,
+      deviceScaleFactor: SCALE_FACTOR,
+    });
     const page = await ctx.newPage();
     await page.setViewportSize(VIEWPORT);
 
