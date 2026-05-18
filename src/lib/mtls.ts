@@ -145,6 +145,14 @@ async function buildState(): Promise<MtlsState> {
     certFingerprint,
   };
 
+  // Publish the cert info to the global slot BEFORE checking/installing the
+  // timer so the (single, global) interval callback always reads the freshest
+  // value regardless of which module instance built it. The timer is installed
+  // once and lives in a `Symbol.for` global slot; after HMR re-evaluates this
+  // module, the new instance's `buildState()` updates the same global slot
+  // that the surviving timer reads, so expiry warnings track the currently
+  // loaded cert instead of a stale closure over the old module's state.
+  publishCurrentCert(built);
   checkCertExpiry(built);
   installExpiryTimer();
 
@@ -205,7 +213,7 @@ export interface MtlsRequestAuth {
   release(): void;
 }
 
-export interface MtlsRequestAuthClaims {
+interface MtlsRequestAuthClaims {
   sub: string;
   aice_id: string;
 }
@@ -293,19 +301,28 @@ export function reload(): Promise<Agent> {
 
 const EXPIRY_TIMER_SLOT = Symbol.for("aimer.mtls.expiryTimer");
 const EXPIRY_WARN_SLOT = Symbol.for("aimer.mtls.expiryWarnedAt");
+const EXPIRY_CURRENT_SLOT = Symbol.for("aimer.mtls.expiryCurrent");
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
 const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
+type ExpirySnapshot = Pick<MtlsState, "certNotAfter" | "certFingerprint">;
+
 type GlobalWithExpirySlots = typeof globalThis & {
   [EXPIRY_TIMER_SLOT]?: NodeJS.Timeout;
   [EXPIRY_WARN_SLOT]?: { fingerprint: string; at: number };
+  [EXPIRY_CURRENT_SLOT]?: ExpirySnapshot;
 };
 
-function checkCertExpiry(
-  s: Pick<MtlsState, "certNotAfter" | "certFingerprint">,
-): void {
+function publishCurrentCert(s: ExpirySnapshot): void {
+  (globalThis as GlobalWithExpirySlots)[EXPIRY_CURRENT_SLOT] = {
+    certNotAfter: s.certNotAfter,
+    certFingerprint: s.certFingerprint,
+  };
+}
+
+function checkCertExpiry(s: ExpirySnapshot): void {
   const now = Date.now();
   const msUntilExpiry = s.certNotAfter.getTime() - now;
   if (msUntilExpiry > THREE_DAYS_MS) return;
@@ -337,7 +354,13 @@ function installExpiryTimer(): void {
   const g = globalThis as GlobalWithExpirySlots;
   if (g[EXPIRY_TIMER_SLOT]) return;
   const timer = setInterval(() => {
-    if (state) checkCertExpiry(state);
+    // Read the current cert from the global slot rather than the module-local
+    // `state` variable. Under HMR, multiple module instances can exist; the
+    // timer survives in the first instance that installed it, but the global
+    // slot is updated by whichever module instance most recently ran
+    // buildState(). Closing over `state` here would warn on a stale cert.
+    const current = (globalThis as GlobalWithExpirySlots)[EXPIRY_CURRENT_SLOT];
+    if (current) checkCertExpiry(current);
   }, SIX_HOURS_MS);
   timer.unref();
   g[EXPIRY_TIMER_SLOT] = timer;

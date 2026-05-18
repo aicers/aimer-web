@@ -26,6 +26,7 @@ vi.mock("server-only", () => ({}));
 
 const EXPIRY_TIMER_SLOT = Symbol.for("aimer.mtls.expiryTimer");
 const EXPIRY_WARN_SLOT = Symbol.for("aimer.mtls.expiryWarnedAt");
+const EXPIRY_CURRENT_SLOT = Symbol.for("aimer.mtls.expiryCurrent");
 
 let workDir: string;
 
@@ -53,6 +54,7 @@ function clearGlobalSlots(): void {
   if (timer) clearInterval(timer);
   delete g[EXPIRY_TIMER_SLOT];
   delete g[EXPIRY_WARN_SLOT];
+  delete g[EXPIRY_CURRENT_SLOT];
 }
 
 function publicKeyFromCert(certPem: string): string {
@@ -488,6 +490,60 @@ describe("mtls", () => {
       l2.release();
 
       expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("timer warns on the cert loaded after HMR re-import, not a stale one", async () => {
+      // Regression test for the stale-closure bug: the timer is installed
+      // once in a global slot, but the cert it checks must be the one
+      // most recently loaded by buildState(), not the one captured by the
+      // first module instance that installed the timer.
+      const certA = makeShortLivedCert(2);
+      setEnv(certA.cert, certA.key, certA.cert);
+
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const l1 = await mtls.createMtlsRequestAuth({ sub: "u", aice_id: "a" });
+      l1.release();
+
+      const fingerprintA = new X509Certificate(certA.cert).fingerprint256;
+      expect(
+        warnSpy.mock.calls.some((c) => String(c[0]).includes(fingerprintA)),
+      ).toBe(true);
+
+      // Simulate HMR re-evaluation: clear the dedup record (a real new cert
+      // would have a different fingerprint anyway) and replace the module.
+      const g = globalThis as Record<symbol, unknown>;
+      delete g[EXPIRY_WARN_SLOT];
+      vi.resetModules();
+      const mtls2 = await import("@/lib/mtls");
+
+      // Load a DIFFERENT short-lived cert in the new module instance.
+      const certB = makeShortLivedCert(2);
+      setEnv(certB.cert, certB.key, certB.cert);
+      const l2 = await mtls2.createMtlsRequestAuth({ sub: "u", aice_id: "a" });
+      l2.release();
+
+      const fingerprintB = new X509Certificate(certB.cert).fingerprint256;
+      expect(fingerprintB).not.toBe(fingerprintA);
+
+      // Reset the warn dedup so the next timer tick can fire.
+      delete g[EXPIRY_WARN_SLOT];
+      warnSpy.mockClear();
+
+      // Drive the (original, surviving) timer's callback. With the fix it
+      // reads the global EXPIRY_CURRENT_SLOT updated by mtls2.buildState()
+      // and warns about cert B. With the bug it would close over the old
+      // module's `state` and warn about cert A (or miss entirely).
+      const timer = g[EXPIRY_TIMER_SLOT] as
+        | (NodeJS.Timeout & { _onTimeout?: () => void })
+        | undefined;
+      expect(timer).toBeDefined();
+      const onTimeout = (timer as unknown as { _onTimeout: () => void })
+        ._onTimeout;
+      onTimeout();
+
+      const messages = warnSpy.mock.calls.map((c) => String(c[0]));
+      expect(messages.some((m) => m.includes(fingerprintB))).toBe(true);
+      expect(messages.some((m) => m.includes(fingerprintA))).toBe(false);
     });
 
     it("warns at most once per 24h within the 3-day window", async () => {
