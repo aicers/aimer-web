@@ -209,10 +209,29 @@ Two supported approaches:
 
 2. **Sidecar watcher in the pod spec.** A small sidecar container
    shares the cert volume, watches the mounted files with `inotify`
-   (or polls), and runs `kill -HUP 1` against the main container via
-   a shared process namespace (`shareProcessNamespace: true`). This
-   keeps the reload trigger inside the pod and avoids needing
-   cluster-wide `pods/exec` permissions on the rotator job.
+   (or polls), and signals the main aimer-web process via a shared
+   process namespace (`shareProcessNamespace: true`). This keeps the
+   reload trigger inside the pod and avoids needing cluster-wide
+   `pods/exec` permissions on the rotator job.
+
+   **Do not** signal PID 1 from the sidecar. With
+   `shareProcessNamespace: true`, PID 1 inside the pod is the
+   Kubernetes pause container, not aimer-web (see the [Kubernetes
+   shared process namespace
+   docs](https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/)).
+   The sidecar must discover the actual aimer-web process. Either
+   have the main container write a PID file to the shared volume on
+   startup and have the sidecar `kill -HUP "$(cat /shared/aimer-web.pid)"`,
+   or discover the PID by name from the sidecar, e.g.
+   `kill -HUP "$(pgrep -f 'node .*server.js')"` (adjust the pattern
+   to match the actual command line — `next start`, `node server.js`,
+   etc.). The sidecar image must include `pgrep` (or whatever
+   discovery tool is used).
+
+   Reserve `kill -HUP 1` for the `kubectl exec` approach above, where
+   the signal lands inside the main container's own PID namespace
+   (no `shareProcessNamespace`) and PID 1 is the aimer-web process
+   itself.
 
 Whichever approach is used, signal every replica of the Deployment —
 bootroot rotates files on each node, and a partially-reloaded

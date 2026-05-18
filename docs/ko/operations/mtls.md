@@ -209,9 +209,27 @@ Kubernetes는 마운트된 Secret 또는 ConfigMap이 회전될 때
 2. **파드 스펙 안의 사이드카 워처.** 작은 사이드카 컨테이너가 인증서
    볼륨을 공유하며 마운트된 파일을 `inotify`로 감시하거나 폴링하고,
    공유 프로세스 네임스페이스(`shareProcessNamespace: true`)를 통해
-   메인 컨테이너의 PID 1에 `kill -HUP 1`을 실행합니다. 리로드 트리거를
-   파드 안에 두기 때문에, 회전기 잡에 클러스터 전역의 `pods/exec`
-   권한을 부여하지 않아도 됩니다.
+   메인 aimer-web 프로세스에 신호를 보냅니다. 리로드 트리거를 파드
+   안에 두기 때문에, 회전기 잡에 클러스터 전역의 `pods/exec` 권한을
+   부여하지 않아도 됩니다.
+
+   사이드카에서 PID 1로는 신호를 보내지 **마십시오**.
+   `shareProcessNamespace: true`인 파드에서 PID 1은 Kubernetes의
+   pause 컨테이너이며 aimer-web이 아닙니다([Kubernetes 공유 프로세스
+   네임스페이스 문서](https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/)
+   참조). 사이드카는 실제 aimer-web 프로세스를 찾아야 합니다. 시작
+   시 메인 컨테이너가 공유 볼륨에 PID 파일을 기록하고 사이드카가
+   `kill -HUP "$(cat /shared/aimer-web.pid)"`를 실행하거나, 사이드카
+   안에서 이름으로 PID를 찾는 방식을 쓸 수 있습니다. 예:
+   `kill -HUP "$(pgrep -f 'node .*server.js')"` (실제 커맨드라인에
+   맞게 패턴을 조정 — `next start`, `node server.js` 등). 사이드카
+   이미지에는 `pgrep` (또는 사용하는 발견 도구)이 포함되어 있어야
+   합니다.
+
+   `kill -HUP 1`은 위의 `kubectl exec` 방식에서만 사용하십시오. 그
+   경우 신호는 `shareProcessNamespace`가 없는 메인 컨테이너 자체의
+   PID 네임스페이스 안에서 처리되며, PID 1이 곧 aimer-web 프로세스
+   입니다.
 
 어느 방식을 쓰든 Deployment의 모든 레플리카에 신호를 보내야 합니다 —
 bootroot은 각 노드에서 파일을 회전하므로, 일부 파드만 리로드된 상태로
