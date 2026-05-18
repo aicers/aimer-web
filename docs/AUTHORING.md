@@ -31,6 +31,36 @@ familiar with the interface.
   (e.g., `![dialog](../assets/account-create.png)`).
 - Update screenshots whenever the UI changes.
 
+### Screenshot capture procedure
+
+Capture screenshots through
+`e2e/capture-manual-screenshots.spec.ts`. Do not introduce a parallel
+capture path; add a new test case to that spec for each new image.
+
+- **Viewport**: `1280×720` (the spec's `VIEWPORT` constant). The
+  `mobile-menu.png` exception captures at `375×667` because the
+  mobile navigation is only rendered at narrow widths.
+- **`deviceScaleFactor`**: `0.75`. The browser re-rasterises at the
+  lower DPI rather than down-sampling a high-DPI render, so text
+  (including Korean glyphs) stays crisp at 1× zoom in the rendered
+  manual.
+- **Effective on-disk resolution**: `960×540` (or `281×500` for the
+  mobile exception). This is roughly half the pixel area of a
+  `1280×720` capture, which cuts LLM vision token cost per image by
+  ~44%. Anthropic recommends a 1568 px max longest side; we stay
+  comfortably under that ceiling.
+- **EN / KO parity**: each capture slot produces two PNGs (image
+  text is rendered through the app's i18n strings in the captured
+  locale). Use locale-suffixed filenames like
+  `admin-environments-thumbprint-confirm.en.png` /
+  `…ko.png`, and drive the app in the matching locale before
+  snapshotting.
+
+The capture spec already declares
+`base.use({ deviceScaleFactor: 0.75 })` at the top and passes the
+same value into every explicit `browser.newContext(...)` call, so
+contributors do not need to set the scale factor per test.
+
 ### Language parity
 
 - Every page in `docs/en/` must have a corresponding page in
