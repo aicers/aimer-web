@@ -57,7 +57,7 @@
 4. 수정할 필드를 변경합니다.
 5. **저장**을 클릭합니다.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![external_key 변경 확인](../assets/admin-customers-edit-warning.ko.png)
 
 **외부 키**를 다른 값으로 바꾸는 경우, 저장 전에 닫을 수 없는
 확인 대화상자가 먼저 나타납니다. external_key는 aice-web-next

@@ -78,6 +78,7 @@ async function settle(page: Page): Promise<void> {
 let testData: TestData;
 let extraAdminId: string;
 const auditLogIds: number[] = [];
+const trustRegistryKeyIds: number[] = [];
 
 let adminCtx: BrowserContext;
 let adminPage: Page;
@@ -142,6 +143,34 @@ base.describe.serial("Manual screenshots", () => {
       await auditPool.end();
     }
 
+    // ── Trust registry keys for expires_at color signal capture (slot 5) ──
+    // Four keys with distinct expiry distances cover the neutral / yellow /
+    // red / gray bands in one screenshot.
+    const dayMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const expirySamples = [
+      { kid: "capture-neutral", expiresAt: new Date(now + 60 * dayMs) },
+      { kid: "capture-yellow", expiresAt: new Date(now + 15 * dayMs) },
+      { kid: "capture-red", expiresAt: new Date(now + 3 * dayMs) },
+      { kid: "capture-gray", expiresAt: new Date(now - 2 * dayMs) },
+    ];
+    for (const { kid, expiresAt } of expirySamples) {
+      const res = await pool.query<{ id: number }>(
+        `INSERT INTO trust_registry
+           (aice_id, issuer, kid, public_key, expires_at)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        [
+          testData.aiceEnvironment.aiceId,
+          "https://capture.example",
+          kid,
+          JSON.stringify({ kty: "RSA", n: `capture-${kid}`, e: "AQAB" }),
+          expiresAt,
+        ],
+      );
+      trustRegistryKeyIds.push(res.rows[0].id);
+    }
+
     // ── Browser contexts ──
     const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
 
@@ -186,6 +215,23 @@ base.describe.serial("Manual screenshots", () => {
         await auditPool.end();
       }
     }
+
+    // Trust registry rows must be deleted before cleanupTestData drops
+    // the aice_environments row they FK to.
+    if (trustRegistryKeyIds.length > 0) {
+      await pool.query("DELETE FROM trust_registry WHERE id = ANY($1)", [
+        trustRegistryKeyIds,
+      ]);
+    }
+    // Any environments/keys created via the JWK-thumbprint capture below
+    // (slot 4) leave a residual aice_environments row + trust_registry row.
+    // The capture uses a stable aiceId prefix so cleanup is bounded.
+    await pool.query(
+      "DELETE FROM trust_registry WHERE aice_id LIKE 'capture-thumbprint-%'",
+    );
+    await pool.query(
+      "DELETE FROM aice_environments WHERE aice_id LIKE 'capture-thumbprint-%'",
+    );
 
     await cleanupTestData(testData);
     await closePool();
@@ -643,4 +689,307 @@ base.describe.serial("Manual screenshots", () => {
       path: resolve(ASSETS, "audit-logs-details.png"),
     });
   });
+
+  // =========================================================================
+  // aimer-bridge batch (issue #203) — fills the 14 placeholders left by
+  // PRs #198/#200/#201/#202 across docs/{en,ko}/{authentication,environment-
+  // management,customer-management,cross-system-customer-identification}.md.
+  //
+  // Each of the seven slots is captured once per locale (EN + KO) — the same
+  // capture flow drives the app in the matching locale and the manual embeds
+  // its locale-specific PNG. See #203 for the slot ↔ placeholder mapping.
+  // =========================================================================
+
+  type Locale = "en" | "ko";
+  const LOCALES: readonly Locale[] = ["en", "ko"] as const;
+
+  const LOCALE_LABELS: Record<
+    Locale,
+    {
+      createCustomer: string;
+      createEnvironment: string;
+      edit: string;
+      save: string;
+      cancel: string;
+      trustRegistryKey: RegExp;
+      manageKeys: string;
+      confirmExternalKeyHeading: string;
+    }
+  > = {
+    en: {
+      createCustomer: "Create Customer",
+      createEnvironment: "Create Environment",
+      edit: "Edit",
+      save: "Save",
+      cancel: "Cancel",
+      trustRegistryKey: /Trust Registry Key/,
+      manageKeys: "Keys",
+      confirmExternalKeyHeading: "Confirm external_key change",
+    },
+    ko: {
+      createCustomer: "고객 생성",
+      createEnvironment: "환경 생성",
+      edit: "편집",
+      save: "저장",
+      cancel: "취소",
+      trustRegistryKey: /신뢰 레지스트리 키/,
+      manageKeys: "키",
+      confirmExternalKeyHeading: "external_key 변경 확인",
+    },
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 1 — Bridge entry from Aimer Console (#195)
+  // The post-bridge-POST sign-in screen is the Keycloak login form — exactly
+  // what `sign-in.png` already captures. Rather than emit a duplicate PNG,
+  // docs/{en,ko}/authentication.md reuses the existing `sign-in.png` at
+  // both the direct sign-in placeholder (line 14 / line 14) and the bridge
+  // entry placeholder (line 46 / line 44). No new capture case is needed
+  // for slot 1.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 2 — Bridge deny page revised copy (#194)
+  // Captures the deny page for a bridge-customer-mismatch — one of the
+  // bridge-specific deny reasons #194 introduced. The reason chosen renders
+  // the longest copy block, giving the manual the most representative shot.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(`auth-bridge-deny.${locale}.png`, async ({ browser }) => {
+      const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
+      const ctx = await browser.newContext({
+        baseURL,
+        deviceScaleFactor: SCALE_FACTOR,
+      });
+      const page = await ctx.newPage();
+      await page.setViewportSize(VIEWPORT);
+      try {
+        await page.goto(`/${locale}/deny?reason=bridge_customer_mismatch`);
+        await expect(page.locator("h1")).toBeVisible();
+        await page.screenshot({
+          path: resolve(ASSETS, `auth-bridge-deny.${locale}.png`),
+        });
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 3 — Key expiration policy surfacing (#193)
+  // Captures the deny page for a bridge-expired sign-in attempt, which is
+  // the user-visible surface of an expired trust_registry key.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(`auth-bridge-key-expired.${locale}.png`, async ({ browser }) => {
+      const baseURL = process.env.BASE_URL ?? "http://localhost:3000";
+      const ctx = await browser.newContext({
+        baseURL,
+        deviceScaleFactor: SCALE_FACTOR,
+      });
+      const page = await ctx.newPage();
+      await page.setViewportSize(VIEWPORT);
+      try {
+        await page.goto(`/${locale}/deny?reason=bridge_expired`);
+        await expect(page.locator("h1")).toBeVisible();
+        await page.screenshot({
+          path: resolve(ASSETS, `auth-bridge-key-expired.${locale}.png`),
+        });
+      } finally {
+        await ctx.close();
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 4 — JWK Thumbprint confirm flow (#192)
+  // Opens the Create Environment dialog, fills the basic fields, enables the
+  // Trust Registry Key sub-form, pastes a valid JWK, and waits for the
+  // server-computed thumbprint to render in both base64url and colon-hex
+  // formats. The confirm checkbox is left UNTOGGLED so the disabled-submit
+  // state — the central #192 affordance — is visible in the shot. The
+  // dialog is then cancelled without persisting anything.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(`admin-environments-thumbprint-confirm.${locale}.png`, async () => {
+      const labels = LOCALE_LABELS[locale];
+      const aiceId = `capture-thumbprint-${locale}-${randomUUID().slice(0, 8)}`;
+      const jwk = {
+        kty: "RSA",
+        n: `capture-jwk-${locale}-${randomUUID().slice(0, 12)}`,
+        e: "AQAB",
+      };
+
+      // The Create Environment dialog with the trust-registry sub-form
+      // checked is taller than the standard 720 px viewport — including
+      // both thumbprint formats (base64url + hex) and the confirm checkbox
+      // + Submit button — the central affordance of slot 4 — runs roughly
+      // 1200 px tall. Bump viewport height for this capture only; width
+      // is unchanged so layout flow stays identical to what users see at
+      // 1280×720. (Radix DialogContent caps height at 85vh, so the
+      // viewport must be at least ~1400 px for the dialog to fit fully.)
+      // The mobile-menu capture above sets the same precedent for
+      // per-shot viewport overrides.
+      await adminPage.setViewportSize({ width: 1280, height: 1400 });
+
+      await adminPage.goto(`/${locale}/admin/environments`);
+      await settle(adminPage);
+      await adminPage
+        .getByRole("button", { name: labels.createEnvironment })
+        .first()
+        .click();
+      await adminPage.locator("#env-aice-id").fill(aiceId);
+      await adminPage.locator("#env-name").fill(`Capture ${aiceId}`);
+      await adminPage
+        .getByRole("checkbox", { name: labels.trustRegistryKey })
+        .check();
+      await adminPage.locator("#env-issuer").fill("https://capture.example");
+      await adminPage.locator("#env-kid").fill("capture-key");
+      await adminPage
+        .locator("#env-public-key")
+        .fill(JSON.stringify(jwk, null, 2));
+
+      // Wait for the server-computed thumbprint to render — the dialog
+      // includes a 43-char base64url block once /api/admin/trust-registry/
+      // thumbprint resolves.
+      await expect(
+        adminPage.locator("code", { hasText: /^[A-Za-z0-9_-]{43}$/ }).first(),
+      ).toBeVisible();
+
+      await adminPage.screenshot({
+        path: resolve(
+          ASSETS,
+          `admin-environments-thumbprint-confirm.${locale}.png`,
+        ),
+      });
+
+      // Cancel without submitting — the thumbprint capture must not leave
+      // a residual environment behind.
+      await adminPage.keyboard.press("Escape");
+      await adminPage.setViewportSize(VIEWPORT);
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 5 — `expires_at` per-key row + color signals (#193)
+  // Opens the seeded environment's detail panel on the Keys tab, where the
+  // four trust_registry rows seeded in beforeAll (neutral / yellow / red /
+  // gray) render in one table. Captures the keys table area only.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(`admin-environments-expires-row.${locale}.png`, async () => {
+      await adminPage.goto(`/${locale}/admin/environments`);
+      await settle(adminPage);
+      await adminPage.waitForSelector("table tbody tr");
+
+      // The detail panel opens via the per-row keyCount button (the digit
+      // rendered in the "Keys" column), not via a row click. The button
+      // also pre-selects the Keys tab — exactly what we want to capture.
+      // We seeded 4 trust_registry rows in beforeAll, so the button text
+      // is the digit 4 within the row matched by environment name.
+      const row = adminPage.locator("tbody tr", {
+        hasText: testData.aiceEnvironment.name,
+      });
+      await row.first().getByRole("button", { name: "4", exact: true }).click();
+
+      // Detail panel is rendered below the table once a row is opened.
+      // Wait for the seeded keys to appear in the keys list.
+      await expect(adminPage.getByText(/capture-yellow/)).toBeVisible();
+      await expect(adminPage.getByText(/capture-gray/)).toBeVisible();
+
+      // Capture full page so the detail panel + colored rows are included
+      // even when they sit below the initial viewport fold.
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-environments-expires-row.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 6 — Customer edit dialog + external_key change warning (#196)
+  // Opens the seeded customer's Edit dialog, changes external_key, clicks
+  // Save, and captures the non-dismissable warning modal that intercepts
+  // the save. The change is then cancelled.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(`admin-customers-edit-warning.${locale}.png`, async () => {
+      const labels = LOCALE_LABELS[locale];
+
+      await adminPage.goto(`/${locale}/admin/customers`);
+      await settle(adminPage);
+      await adminPage.waitForSelector("table tbody tr");
+
+      const row = adminPage.locator("tbody tr", {
+        hasText: testData.customer.name,
+      });
+      await row.getByRole("button", { name: labels.edit }).click();
+
+      const keyInput = adminPage.locator("#customer-edit-external-key");
+      await keyInput.fill(`${testData.customer.externalKey}-capture`);
+
+      await adminPage.getByRole("button", { name: labels.save }).click();
+      await expect(
+        adminPage.getByRole("heading", {
+          name: labels.confirmExternalKeyHeading,
+        }),
+      ).toBeVisible();
+
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-customers-edit-warning.${locale}.png`),
+      });
+
+      // Cancel out so the PATCH does not fire and the seeded customer is
+      // returned to its original external_key for later captures / cleanup.
+      // Target the Cancel button explicitly — the warning dialog also has
+      // a "Yes, change external_key" confirm button last in DOM order, so
+      // a `.last()` shortcut would confirm rather than cancel and mutate
+      // the customer's external_key for the subsequent locale's capture.
+      const warningDialog = adminPage
+        .locator('[role="dialog"]')
+        .filter({ hasText: labels.confirmExternalKeyHeading });
+      await warningDialog.getByRole("button", { name: labels.cancel }).click();
+      await adminPage.keyboard.press("Escape");
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Slot 7 — Cross-system identification operator guide hero (#196)
+  // The hero on docs/{en,ko}/cross-system-customer-identification.md. Uses
+  // the Create Customer dialog, where the external_key field surfaces the
+  // inline help block + the link to this very operations guide — the
+  // closest in-app surface to what the guide documents.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  for (const locale of LOCALES) {
+    base(
+      `cross-system-customer-identification-hero.${locale}.png`,
+      async () => {
+        const labels = LOCALE_LABELS[locale];
+
+        await adminPage.goto(`/${locale}/admin/customers`);
+        await settle(adminPage);
+        await adminPage
+          .getByRole("button", { name: labels.createCustomer })
+          .click();
+
+        const help = adminPage.locator("#customer-external-key-help");
+        await expect(help).toBeVisible();
+
+        await adminPage.screenshot({
+          path: resolve(
+            ASSETS,
+            `cross-system-customer-identification-hero.${locale}.png`,
+          ),
+        });
+
+        await adminPage.keyboard.press("Escape");
+      },
+    );
+  }
 });

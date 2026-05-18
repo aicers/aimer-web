@@ -43,7 +43,7 @@ the browser performs a top-level multipart POST to Aimer Web's bridge
 endpoint, which validates the request and then continues into the same
 Keycloak sign-in screen described above.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![Bridge sign-in (Aimer Console entry point)](../assets/sign-in.png)
 
 The bridge POST always carries a short-lived context token identifying
 the operator, the source AICE, and the customer scope. It may
@@ -61,7 +61,7 @@ expired token), which Aimer Console surfaces back to the operator. In
 that case, return to Aimer Console and trigger **Send to Aimer** again
 to obtain a fresh context token.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![Bridge deny page — customer scope mismatch](../assets/auth-bridge-deny.en.png)
 
 ## Access denied
 
@@ -113,7 +113,7 @@ explains each one with the recovery action you should take:
     analyst, ask a System Administrator to add you to the analyst
     assignment.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![Bridge sign-in denial — bridge expired](../assets/auth-bridge-key-expired.en.png)
 
 For privacy, the deny page never names specific customers or
 environments. The exact identifiers involved are recorded in the

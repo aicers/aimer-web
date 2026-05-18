@@ -6,7 +6,7 @@ aice-web-next agree on customer identity. It covers what
 procedure, the bridge-test verification step, what mismatches look
 like, and which changes must be coordinated.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![external_key inline help in the Create Customer dialog](../assets/cross-system-customer-identification-hero.en.png)
 
 ## Why external_key exists
 
