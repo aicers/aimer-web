@@ -60,7 +60,7 @@ out-of-band secure channel.
 4. Adjust the fields you want to change.
 5. Click **Save**.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![Confirm external_key change](../assets/admin-customers-edit-warning.en.png)
 
 If you change the **External Key** to a different value, a
 non-dismissable confirmation dialog appears before the save

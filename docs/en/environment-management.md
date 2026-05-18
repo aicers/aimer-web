@@ -158,7 +158,7 @@ The server-computed thumbprint is also written to the
 `trust_registry.key_registered` audit details so the registered
 value can be verified after the fact.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![JWK Thumbprint confirm](../assets/admin-environments-thumbprint-confirm.en.png)
 
 ### Key expiration policy (`expires_at`)
 
@@ -199,7 +199,7 @@ each key:
 - **Gray "expired"** — past `expires_at`. The key is still
     listed but bridge calls signed with it are denied.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![Trust registry key expiry signals](../assets/admin-environments-expires-row.en.png)
 
 ### Enabling or disabling a key
 

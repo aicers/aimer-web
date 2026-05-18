@@ -6,7 +6,7 @@
 bridge 테스트로의 검증 단계, 불일치 시 모습, 그리고 어떤 변경을
 양쪽에서 함께 처리해야 하는지를 다룹니다.
 
-<!-- TODO: screenshot - aimer-bridge batch -->
+![고객 생성 다이얼로그의 external_key 인라인 도움말](../assets/cross-system-customer-identification-hero.ko.png)
 
 ## external_key가 필요한 이유
 
