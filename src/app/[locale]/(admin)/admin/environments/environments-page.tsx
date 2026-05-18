@@ -967,7 +967,7 @@ export function EnvironmentsPage() {
 
         {/* Register key dialog */}
         <Dialog open={registerKeyOpen} onOpenChange={setRegisterKeyOpen}>
-          <DialogContent>
+          <DialogContent className="max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{t("registerKey")}</DialogTitle>
               <DialogDescription>
