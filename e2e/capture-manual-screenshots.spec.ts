@@ -710,6 +710,7 @@ base.describe.serial("Manual screenshots", () => {
       createEnvironment: string;
       edit: string;
       save: string;
+      cancel: string;
       trustRegistryKey: RegExp;
       manageKeys: string;
       confirmExternalKeyHeading: string;
@@ -720,6 +721,7 @@ base.describe.serial("Manual screenshots", () => {
       createEnvironment: "Create Environment",
       edit: "Edit",
       save: "Save",
+      cancel: "Cancel",
       trustRegistryKey: /Trust Registry Key/,
       manageKeys: "Keys",
       confirmExternalKeyHeading: "Confirm external_key change",
@@ -729,6 +731,7 @@ base.describe.serial("Manual screenshots", () => {
       createEnvironment: "환경 생성",
       edit: "편집",
       save: "저장",
+      cancel: "취소",
       trustRegistryKey: /신뢰 레지스트리 키/,
       manageKeys: "키",
       confirmExternalKeyHeading: "external_key 변경 확인",
@@ -943,10 +946,14 @@ base.describe.serial("Manual screenshots", () => {
 
       // Cancel out so the PATCH does not fire and the seeded customer is
       // returned to its original external_key for later captures / cleanup.
+      // Target the Cancel button explicitly — the warning dialog also has
+      // a "Yes, change external_key" confirm button last in DOM order, so
+      // a `.last()` shortcut would confirm rather than cancel and mutate
+      // the customer's external_key for the subsequent locale's capture.
       const warningDialog = adminPage
         .locator('[role="dialog"]')
         .filter({ hasText: labels.confirmExternalKeyHeading });
-      await warningDialog.getByRole("button").last().click();
+      await warningDialog.getByRole("button", { name: labels.cancel }).click();
       await adminPage.keyboard.press("Escape");
     });
   }
