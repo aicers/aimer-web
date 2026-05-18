@@ -45,15 +45,30 @@ export function installMtlsSighupHandler(): Promise<void> {
         "[mtls] SIGHUP install aborted: @/lib/mtls did not export a reload() function",
       );
     }
+    // Resolve `reload()` dynamically inside the handler rather than closing
+    // over the namespace from this install. Under HMR, `@/lib/mtls` can be
+    // re-evaluated to a fresh instance with its own module-local `state`
+    // while the SIGHUP listener registered here survives in the original
+    // module instance. Closing over `mtls.reload` would then rotate the
+    // stale instance's state — disconnected from the one serving requests.
+    // A per-signal dynamic `import()` resolves to whichever instance the
+    // module resolver currently considers current, keeping reload aligned
+    // with the live `state`.
     process.on("SIGHUP", () => {
-      mtls.reload().then(
-        () => {
+      void (async () => {
+        try {
+          const current = await import("@/lib/mtls");
+          if (typeof current.reload !== "function") {
+            throw new TypeError(
+              "@/lib/mtls did not export a reload() function",
+            );
+          }
+          await current.reload();
           console.info("[mtls] SIGHUP: reloaded mTLS materials");
-        },
-        (err) => {
+        } catch (err) {
           console.error("[mtls] SIGHUP: reload failed", err);
-        },
-      );
+        }
+      })();
     });
     slot.installed = true;
   })();

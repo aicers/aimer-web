@@ -150,6 +150,44 @@ describe("installMtlsSighupHandler", () => {
     expect(getSlot()?.installed).toBe(true);
   });
 
+  it("resolves reload() dynamically so HMR re-evaluations of @/lib/mtls take effect", async () => {
+    const { installMtlsSighupHandler } = await import("../mtls-sighup");
+    await installMtlsSighupHandler();
+
+    // Simulate an HMR-like re-evaluation: `@/lib/mtls` is re-mocked with a
+    // *different* reload implementation. The previously attached SIGHUP
+    // listener must call the new reload, not the one captured at install.
+    const freshReload = vi
+      .fn<() => Promise<unknown>>()
+      .mockResolvedValue(undefined);
+    vi.resetModules();
+    vi.doMock("@/lib/mtls", () => ({ reload: freshReload }));
+
+    // Sanity-check that the dynamic import inside this test resolves to the
+    // re-mocked namespace; if Vitest's module resolver wires this through to
+    // the listener's `await import("@/lib/mtls")` correctly, the listener
+    // will see the same fresh namespace at SIGHUP time.
+    const probe = await import("@/lib/mtls");
+    expect(probe.reload).toBe(freshReload);
+
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    process.emit("SIGHUP");
+    // The listener does `await import("@/lib/mtls")` then `await reload()`;
+    // flush several macrotasks so both awaits settle before assertions.
+    for (let i = 0; i < 5; i++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(freshReload).toHaveBeenCalledTimes(1);
+    expect(reloadMock).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[mtls] SIGHUP: reloaded mTLS materials",
+    );
+  });
+
   it("rejects with TypeError when @/lib/mtls exposes reload as undefined", async () => {
     vi.resetModules();
     vi.doMock("@/lib/mtls", () => ({ reload: undefined }));
