@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   closeAdminPool,
   createTestDatabase,
@@ -8,8 +8,41 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { ingestBaselineBatch, ingestStoryBatch } from "../ingest";
-import { executeWindowReplace } from "../window-replace";
+import { buildRangeSet } from "@/lib/redaction";
+
+vi.mock("server-only", () => ({}));
+
+vi.mock("@/lib/redaction/envelope-adapter", () => ({
+  encryptRedactionMap: async (_customerId: string, map: unknown) => ({
+    ciphertext: Buffer.from(JSON.stringify(map), "utf8"),
+    wrappedDek: "test-wrap",
+  }),
+  decryptRedactionMap: async (_customerId: string, ciphertext: Buffer) =>
+    JSON.parse(ciphertext.toString("utf8")),
+}));
+
+const {
+  ingestBaselineBatch: _ingestBaselineBatch,
+  ingestStoryBatch: _ingestStoryBatch,
+} = await import("../ingest");
+const { executeWindowReplace } = await import("../window-replace");
+
+const TEST_CUSTOMER_ID = "11111111-2222-3333-4444-555555555555";
+const TEST_RANGES = buildRangeSet([]);
+
+const ingestBaselineBatch: (
+  pool: Pool,
+  payload: Parameters<typeof _ingestBaselineBatch>[1],
+  aiceId: string,
+) => ReturnType<typeof _ingestBaselineBatch> = (pool, payload, aiceId) =>
+  _ingestBaselineBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+
+const ingestStoryBatch: (
+  pool: Pool,
+  payload: Parameters<typeof _ingestStoryBatch>[1],
+  aiceId: string,
+) => ReturnType<typeof _ingestStoryBatch> = (pool, payload, aiceId) =>
+  _ingestStoryBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID_CUSTOMER = 1002;

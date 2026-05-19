@@ -2,7 +2,10 @@ import type { NextRequest } from "next/server";
 import type { AuditAction } from "@/lib/audit";
 import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
-import { storeApprovedEvents } from "@/lib/auth/event-storage";
+import {
+  InvalidPhase1PayloadError,
+  storeApprovedEvents,
+} from "@/lib/auth/event-storage";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import {
   expireStagedEvents,
@@ -10,6 +13,7 @@ import {
   updateCustomerStatus,
 } from "@/lib/auth/staged-events";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { loadCustomerRanges, RedactionInjectivityError } from "@/lib/redaction";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -140,7 +144,7 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let eventId: string | undefined;
+  let eventIds: string[] | undefined;
   let result: { updated: boolean; newStatus: string };
 
   if (body.action === "approve") {
@@ -152,6 +156,13 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
         { status: 404 },
       );
     }
+
+    // Load the customer's redaction ranges from auth_db before the
+    // approve transaction. The ranges table is rarely written and the
+    // read is cheap; pulling it outside the txn keeps the redaction
+    // engine input ready for every per-event call without holding the
+    // auth_db connection longer than necessary.
+    const ranges = await loadCustomerRanges(pool, customerId);
 
     const source = staged.connection_id ? "bridge" : "manual";
 
@@ -173,7 +184,7 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
         }
 
         // Store in customer_db while holding the auth_db row lock
-        eventId = await storeApprovedEvents({
+        eventIds = await storeApprovedEvents({
           customerId,
           aiceId: staged.aice_id,
           eventCount: staged.event_count,
@@ -182,21 +193,49 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
           connectionId: staged.connection_id,
           ingestedBy: auth.accountId,
           plaintext: decrypted.payload,
-          payloadHash: decrypted.payloadHash,
+          ranges,
         });
 
         return updateCustomerStatus(client, payloadId, customerId, "approve");
       });
     } catch (err) {
+      if (err instanceof RedactionInjectivityError) {
+        // Invariant 3 breach — emit the dedicated audit (Discussion #10
+        // §4) in addition to the generic transfer_failed row so
+        // operators can find the conflict without grepping
+        // transfer_failed details.
+        void auditLog({
+          ...auditBase,
+          action: "redaction.injectivity_violation",
+          details: {
+            customerId,
+            aiceId: staged.aice_id,
+            conflict: {
+              value: err.value,
+              existingToken: err.existingToken,
+              conflictingToken: err.conflictingToken,
+              existingKind: err.existingKind,
+              conflictingKind: err.conflictingKind,
+            },
+          },
+        });
+      }
+      const reason =
+        err instanceof InvalidPhase1PayloadError
+          ? err.reason
+          : "redaction_failed";
       void auditLog({
         ...auditBase,
         action: "detection_events.transfer_failed",
         details: {
           customerId,
-          reason: "storage_error",
+          reason,
           error: err instanceof Error ? err.message : String(err),
         },
       });
+      if (err instanceof InvalidPhase1PayloadError) {
+        return Response.json({ error: "Conflict", reason }, { status: 409 });
+      }
       throw err;
     }
   } else {
@@ -219,8 +258,8 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
   void auditLog({
     ...auditBase,
     action: completedAction,
-    details: { customerId, newStatus: result.newStatus, eventId },
+    details: { customerId, newStatus: result.newStatus, eventIds },
   });
 
-  return Response.json({ status: result.newStatus, eventId });
+  return Response.json({ status: result.newStatus, eventIds });
 });

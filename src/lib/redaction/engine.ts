@@ -70,6 +70,39 @@ const TOKEN_PREFIX_BY_KIND: Record<EntityKind, string> = {
 
 const TOKEN_SUFFIX = ">>";
 
+/**
+ * Thrown when shared-map invariant 3 (token-value injectivity) would
+ * be violated. Carries the conflicting value/tokens so ingestion sites
+ * can attach the conflict to the `redaction.injectivity_violation`
+ * audit row before rolling back the surrounding transaction.
+ *
+ * Unreachable in correct code; firing means a bug or a concurrently
+ * mis-merged map slipped past the advisory lock.
+ */
+export class RedactionInjectivityError extends Error {
+  readonly value: string;
+  readonly existingToken: string;
+  readonly conflictingToken?: string;
+  readonly existingKind: EntityKind;
+  readonly conflictingKind?: EntityKind;
+  constructor(detail: {
+    message: string;
+    value: string;
+    existingToken: string;
+    conflictingToken?: string;
+    existingKind: EntityKind;
+    conflictingKind?: EntityKind;
+  }) {
+    super(detail.message);
+    this.name = "RedactionInjectivityError";
+    this.value = detail.value;
+    this.existingToken = detail.existingToken;
+    this.conflictingToken = detail.conflictingToken;
+    this.existingKind = detail.existingKind;
+    this.conflictingKind = detail.conflictingKind;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
@@ -99,9 +132,15 @@ function initState(existingMap: RedactionMap): AssignmentState {
     // forward into the next merge.
     const priorToken = reverse.get(entry.value);
     if (priorToken !== undefined && priorToken !== token) {
-      throw new Error(
-        `redaction: existing map violates token-value injectivity: value ${JSON.stringify(entry.value)} appears under tokens ${priorToken} and ${token}`,
-      );
+      const priorEntry = forward.get(priorToken);
+      throw new RedactionInjectivityError({
+        message: `redaction: existing map violates token-value injectivity: value ${JSON.stringify(entry.value)} appears under tokens ${priorToken} and ${token}`,
+        value: entry.value,
+        existingToken: priorToken,
+        conflictingToken: token,
+        existingKind: priorEntry?.kind ?? entry.kind,
+        conflictingKind: entry.kind,
+      });
     }
     forward.set(token, entry);
     reverse.set(entry.value, token);
@@ -136,9 +175,13 @@ function assignToken(
       // Token-value injectivity is violated by the existing map.
       // Shared-map invariant 3 says this is unreachable in correct
       // code; flag it loudly rather than silently shadow.
-      throw new Error(
-        `redaction: value ${JSON.stringify(value)} already mapped to token ${existing} with kind ${entry.kind}, refusing to assign kind ${kind}`,
-      );
+      throw new RedactionInjectivityError({
+        message: `redaction: value ${JSON.stringify(value)} already mapped to token ${existing} with kind ${entry.kind}, refusing to assign kind ${kind}`,
+        value,
+        existingToken: existing,
+        existingKind: entry.kind,
+        conflictingKind: kind,
+      });
     }
     return existing;
   }

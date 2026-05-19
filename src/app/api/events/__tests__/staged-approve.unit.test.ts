@@ -5,12 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks
 // ---------------------------------------------------------------------------
 
+vi.mock("server-only", () => ({}));
+
 const mockUpdateCustomerStatus = vi.fn();
 const mockGetStagedPayloadDecrypted = vi.fn();
 const mockPoolQuery = vi.fn();
 const mockAuditLog = vi.fn();
 const mockAuthorize = vi.fn();
 const mockStoreApprovedEvents = vi.fn();
+const mockLoadCustomerRanges = vi.fn();
 
 vi.mock("@/lib/auth/staged-events", () => ({
   updateCustomerStatus: (...args: unknown[]) =>
@@ -28,8 +31,51 @@ vi.mock("@/lib/auth/authorization", () => ({
   authorize: (...args: unknown[]) => mockAuthorize(...args),
 }));
 
+// Use the real InvalidPhase1PayloadError class so the route's
+// `err instanceof InvalidPhase1PayloadError` branch can be exercised
+// from the test; storeApprovedEvents itself is mocked so its body
+// (and the redaction engine pulled in transitively) never runs here.
+class InvalidPhase1PayloadError extends Error {
+  reason: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = "InvalidPhase1PayloadError";
+    this.reason = reason;
+  }
+}
+
+class RedactionInjectivityError extends Error {
+  value: string;
+  existingToken: string;
+  conflictingToken?: string;
+  existingKind: string;
+  conflictingKind?: string;
+  constructor(detail: {
+    message: string;
+    value: string;
+    existingToken: string;
+    conflictingToken?: string;
+    existingKind: string;
+    conflictingKind?: string;
+  }) {
+    super(detail.message);
+    this.name = "RedactionInjectivityError";
+    this.value = detail.value;
+    this.existingToken = detail.existingToken;
+    this.conflictingToken = detail.conflictingToken;
+    this.existingKind = detail.existingKind;
+    this.conflictingKind = detail.conflictingKind;
+  }
+}
+
 vi.mock("@/lib/auth/event-storage", () => ({
   storeApprovedEvents: (...args: unknown[]) => mockStoreApprovedEvents(...args),
+  InvalidPhase1PayloadError,
+}));
+
+vi.mock("@/lib/redaction", () => ({
+  loadCustomerRanges: (...args: unknown[]) => mockLoadCustomerRanges(...args),
+  RedactionInjectivityError,
 }));
 
 vi.mock("@/lib/auth/guards", () => ({
@@ -93,10 +139,14 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
       payload: Buffer.from("decrypted-data"),
       payloadHash: "abc123",
     });
-    mockStoreApprovedEvents.mockResolvedValue("event-id-1");
+    mockStoreApprovedEvents.mockResolvedValue(["event-id-1"]);
     mockUpdateCustomerStatus.mockResolvedValue({
       updated: true,
       newStatus: "approved",
+    });
+    mockLoadCustomerRanges.mockResolvedValue({
+      normalisedCidrs: [],
+      ranges: [],
     });
   });
 
@@ -134,7 +184,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
 
     const body = await res.json();
     expect(body.status).toBe("approved");
-    expect(body.eventId).toBe("event-id-1");
+    expect(body.eventIds).toEqual(["event-id-1"]);
 
     expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
@@ -157,7 +207,6 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
         connectionId: null,
         ingestedBy: "acct-1",
         plaintext: Buffer.from("decrypted-data"),
-        payloadHash: "abc123",
       }),
     );
     expect(mockAuditLog).toHaveBeenCalledWith(
@@ -180,7 +229,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     });
     mockStoreApprovedEvents.mockImplementation(async () => {
       callOrder.push("store");
-      return "event-id-1";
+      return ["event-id-1"];
     });
     mockUpdateCustomerStatus.mockImplementation(async () => {
       callOrder.push("updateStatus");
@@ -231,7 +280,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
 
     const body = await res.json();
     expect(body.status).toBe("rejected");
-    expect(body.eventId).toBeUndefined();
+    expect(body.eventIds).toBeUndefined();
     expect(mockGetStagedPayloadDecrypted).not.toHaveBeenCalled();
     expect(mockStoreApprovedEvents).not.toHaveBeenCalled();
   });
@@ -334,7 +383,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
     expect(mockUpdateCustomerStatus).not.toHaveBeenCalled();
   });
 
-  it("propagates storage error, logs failure audit, and does not update status", async () => {
+  it("propagates redaction/storage error, logs failure audit, and does not update status", async () => {
     mockStoreApprovedEvents.mockRejectedValue(
       new Error("customer_db unavailable"),
     );
@@ -349,8 +398,87 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
       expect.objectContaining({
         action: "detection_events.transfer_failed",
         details: expect.objectContaining({
-          reason: "storage_error",
+          reason: "redaction_failed",
           error: "customer_db unavailable",
+        }),
+      }),
+    );
+  });
+
+  it("maps InvalidPhase1PayloadError to 409 with the typed reason and emits transfer_failed", async () => {
+    mockStoreApprovedEvents.mockRejectedValue(
+      new InvalidPhase1PayloadError("invalid_plaintext", "bad shape"),
+    );
+
+    const res = await callPATCH(PAYLOAD_ID, CUSTOMER_ID, { action: "approve" });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("invalid_plaintext");
+
+    expect(mockUpdateCustomerStatus).not.toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.transfer_failed",
+        details: expect.objectContaining({
+          reason: "invalid_plaintext",
+        }),
+      }),
+    );
+  });
+
+  it("emits redaction.injectivity_violation + transfer_failed on RedactionInjectivityError", async () => {
+    mockStoreApprovedEvents.mockRejectedValue(
+      new RedactionInjectivityError({
+        message: "engine: value '10.0.0.1' double-mapped",
+        value: "10.0.0.1",
+        existingToken: "<<REDACTED_IP_001>>",
+        conflictingToken: "<<REDACTED_IP_002>>",
+        existingKind: "ip",
+        conflictingKind: "ip",
+      }),
+    );
+
+    await expect(
+      callPATCH(PAYLOAD_ID, CUSTOMER_ID, { action: "approve" }),
+    ).rejects.toThrow("double-mapped");
+
+    expect(mockUpdateCustomerStatus).not.toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "redaction.injectivity_violation",
+        details: expect.objectContaining({
+          customerId: CUSTOMER_ID,
+          aiceId: "aice-1",
+          conflict: expect.objectContaining({
+            value: "10.0.0.1",
+            existingToken: "<<REDACTED_IP_001>>",
+            conflictingToken: "<<REDACTED_IP_002>>",
+          }),
+        }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.transfer_failed",
+        details: expect.objectContaining({ reason: "redaction_failed" }),
+      }),
+    );
+  });
+
+  it("maps event_count_mismatch InvalidPhase1PayloadError to 409 with its reason", async () => {
+    mockStoreApprovedEvents.mockRejectedValue(
+      new InvalidPhase1PayloadError("event_count_mismatch", "len mismatch"),
+    );
+
+    const res = await callPATCH(PAYLOAD_ID, CUSTOMER_ID, { action: "approve" });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("event_count_mismatch");
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.transfer_failed",
+        details: expect.objectContaining({
+          reason: "event_count_mismatch",
         }),
       }),
     );

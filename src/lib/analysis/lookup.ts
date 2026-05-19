@@ -55,14 +55,14 @@ export type AnalysisLookupResult =
  * never inspects them. RFC 0002 §8 describes the lookup key as
  * `(external_key, event_key)`; the `external_key` half is implied by the
  * caller's choice of pool. Phase 2 routes resolve the pool via
- * `src/app/api/phase2/_shared/customer-pool.ts`; consumers of this helper
+ * `src/lib/db/customer-runtime-pool.ts`; consumers of this helper
  * should do the same.
  *
  * **Input trust.** The helper passes `eventKey` through as `$1::numeric` and
  * relies on the PostgreSQL cast for shape rejection. Callers at the system
  * boundary (HTTP routes, future analysis UI) are responsible for
  * Zod-style validation (1–39 digits, non-negative) — mirroring
- * `eventKeyString` in `src/app/api/phase2/_shared/schemas.ts`. This helper is
+ * `eventKeyString` in `src/lib/event-key.ts`. This helper is
  * internal and trusts its input.
  *
  * **Resolution.**

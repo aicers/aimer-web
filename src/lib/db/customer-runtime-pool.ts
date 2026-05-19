@@ -5,10 +5,10 @@ import {
 } from "@/lib/db/customer-db";
 
 /**
- * Lazy per-customer runtime pool cache. Phase 2 ingest routes touch
- * a customer DB once per request; opening a fresh `Pool` each time
- * would burn a connection establishment per call. Keep one `Pool`
- * per customer keyed by UUID, lazily initialized.
+ * Lazy per-customer runtime pool cache. Phase 1 approve and Phase 2
+ * ingest routes touch a customer DB once per request; opening a fresh
+ * `Pool` each time would burn a connection establishment per call.
+ * Keep one `Pool` per customer keyed by UUID, lazily initialized.
  *
  * The pool uses the restricted `aimer_customer` role
  * (`CUSTOMER_DATABASE_URL`), never the owner role.
