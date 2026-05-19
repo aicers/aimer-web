@@ -5,7 +5,7 @@ import {
   redact,
   scanHallucinations,
 } from "../engine";
-import { buildRangeSet } from "../ranges";
+import { buildRangeSet, parseCidr } from "../ranges";
 import type { RedactionMap } from "../types";
 
 const EMPTY_RANGES = buildRangeSet([]);
@@ -187,6 +187,39 @@ describe("redaction engine — token assignment invariants", () => {
       "<<REDACTED_EMAIL_001>>": { kind: "email", value: "10.0.0.1" },
     };
     expect(() => redact(makeInput({ src: "10.0.0.1" }, corruptMap))).toThrow();
+  });
+
+  it("throws when an existing map has the same value under two different tokens", () => {
+    // Same value, same kind, two tokens is also a corruption: the
+    // shared-map invariant requires exactly one token per value.
+    // Silently keeping the later token would propagate the bad state
+    // through every subsequent merge.
+    const corruptMap: RedactionMap = {
+      "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
+      "<<REDACTED_IP_002>>": { kind: "ip", value: "10.0.0.1" },
+    };
+    expect(() => redact(makeInput({ src: "10.0.0.1" }, corruptMap))).toThrow(
+      /token-value injectivity/,
+    );
+  });
+});
+
+describe("redaction engine — CIDR parsing", () => {
+  it("accepts well-formed IPv4 and IPv6 CIDRs", () => {
+    expect(parseCidr("203.0.113.0/24")?.cidr).toBe("203.0.113.0/24");
+    expect(parseCidr("2001:db8::/32")?.cidr).toBe("2001:db8:0:0:0:0:0:0/32");
+  });
+
+  it("rejects CIDRs whose prefix has trailing garbage", () => {
+    // The admin/range-loading layer (#252) relies on parseCidr as the
+    // canonical validator/normaliser. `Number.parseInt` would silently
+    // accept these as `/24`, smuggling bad operator input through.
+    expect(parseCidr("203.0.113.0/24junk")).toBeNull();
+    expect(parseCidr("203.0.113.0/24/extra")).toBeNull();
+    expect(parseCidr("203.0.113.0/24.5")).toBeNull();
+    expect(parseCidr("203.0.113.0/")).toBeNull();
+    expect(parseCidr("203.0.113.0/-1")).toBeNull();
+    expect(parseCidr("203.0.113.0/+24")).toBeNull();
   });
 });
 

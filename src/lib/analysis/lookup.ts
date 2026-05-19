@@ -35,9 +35,12 @@ export interface BaselineEventRow {
  * Discriminated result of an analysis lookup by `event_key`.
  *
  * The union (rather than `BaselineEventRow | null`) is intentional: it leaves
- * room for a future `"phase1"` variant without an API break, once a plaintext
- * `event_key` index on `detection_events` lands. See the v1 limitation note
- * on {@link lookupAnalysisForEvent}.
+ * room for a future `"phase1"` variant without an API break. After the #250
+ * schema refactor `detection_events.event_key` is already a plaintext
+ * `NUMERIC(39, 0)` column, so promoting Phase 1 to a first-class analysis
+ * source is a code change in `lookupAnalysisForEvent` (and a new variant
+ * here), not a schema change. See the v1 limitation note on
+ * {@link lookupAnalysisForEvent}.
  */
 export type AnalysisLookupResult =
   | { source: "phase2"; row: BaselineEventRow }
@@ -93,8 +96,9 @@ export type AnalysisLookupResult =
  *      not reachable by `event_key` in v1 (the limitation above).
  * Recommended UI copy: "No baseline analysis available for this event"
  * rather than "Event not found." The first phrasing is true in both cases;
- * the second is misleading in case (2). A future Phase 1 plaintext
- * `event_key` index would let the UI distinguish them.
+ * the second is misleading in case (2). The plaintext `event_key` column
+ * is now present on `detection_events` (#250), so the UI can distinguish
+ * cases (1) and (2) once #254 adds a Phase 1 lookup path here.
  */
 export async function lookupAnalysisForEvent(
   customerPool: Pool,

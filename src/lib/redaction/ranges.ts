@@ -89,6 +89,12 @@ export function parseCidr(value: string): ParsedRange | null {
   if (slashIdx === -1) return null;
   const addr = value.slice(0, slashIdx);
   const prefixStr = value.slice(slashIdx + 1);
+  // Strict digits-only check: `Number.parseInt` happily accepts a
+  // trailing-garbage suffix (e.g. `24junk` -> 24, `24/extra` -> 24),
+  // which would let malformed operator input pass through to the
+  // admin layer (#252) as a valid `/24`. Reject anything that is not
+  // a pure non-empty digit string before parsing.
+  if (!/^\d+$/.test(prefixStr)) return null;
   const prefix = Number.parseInt(prefixStr, 10);
   if (!Number.isInteger(prefix) || prefix < 0) return null;
 

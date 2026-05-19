@@ -91,6 +91,18 @@ function initState(existingMap: RedactionMap): AssignmentState {
   const maxByKind: Record<EntityKind, number> = { ip: 0, email: 0, mac: 0 };
 
   for (const [token, entry] of Object.entries(existingMap)) {
+    // Shared-map invariant 3 (token-value injectivity): each entity
+    // value gets exactly one token. A corrupted/concurrently mis-merged
+    // map can carry two tokens for the same value — silently keeping
+    // the last one would propagate the corruption. Flag it loudly so a
+    // bad map is rejected at the engine boundary rather than carried
+    // forward into the next merge.
+    const priorToken = reverse.get(entry.value);
+    if (priorToken !== undefined && priorToken !== token) {
+      throw new Error(
+        `redaction: existing map violates token-value injectivity: value ${JSON.stringify(entry.value)} appears under tokens ${priorToken} and ${token}`,
+      );
+    }
     forward.set(token, entry);
     reverse.set(entry.value, token);
     const match = token.match(/_(\d+)>>$/);
