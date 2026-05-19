@@ -217,10 +217,16 @@ describe("redaction engine — hallucination scan", () => {
     const response =
       "The attacker 10.0.0.1 also reached 8.8.8.8 from eve@evil.com";
     const result = scanHallucinations(response, existingMap, EMPTY_RANGES);
+    // 10.0.0.1 echoed by the LLM is replaced by its existing token,
+    // not left as plaintext (storage contract: analysis_text holds
+    // no raw entities).
+    expect(result.scanned).toContain("<<REDACTED_IP_001>>");
+    expect(result.scanned).not.toContain("10.0.0.1");
+    // 8.8.8.8 and eve@evil.com are not in the map -> flagged.
     expect(result.scanned).toContain("<<UNVERIFIED_IP_001>>");
     expect(result.scanned).toContain("<<UNVERIFIED_EMAIL_001>>");
-    // 10.0.0.1 is in the map -> NOT flagged.
-    expect(result.scanned).toContain("10.0.0.1");
+    // Known plaintext re-tokenisation does not bump the unverified
+    // counters.
     expect(result.counts.ip).toBe(1);
     expect(result.counts.email).toBe(1);
   });

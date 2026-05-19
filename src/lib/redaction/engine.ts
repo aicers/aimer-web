@@ -275,28 +275,44 @@ export interface HallucinationScanResult {
 }
 
 /**
- * Re-run the redaction regexes against an LLM response. Any match
- * not already in `existingMap` is replaced with an
- * `<<UNVERIFIED_<KIND>_NNN>>` marker — the LLM mentioned an entity
- * the original input did not contain (training residue or
- * hallucination). Per RFC 0001 §"LLM hallucination handling", the
- * counter is per-response (resets each call).
+ * Re-run the redaction regexes against an LLM response. Three cases:
  *
- * Privacy note: matches that ARE in `existingMap` (i.e. the LLM
- * correctly returned a token we sent it) are not flagged — the
- * value being present in the map means the original event already
- * contained it.
+ *   1. The match's value is in `existingMap` — the LLM echoed a real
+ *      input value back as plaintext (e.g. it ignored a token and
+ *      restated `10.0.0.1`). Replace with the existing
+ *      `<<REDACTED_<KIND>_NNN>>` token so the stored
+ *      `analysis_text` never contains the plaintext. Not counted as
+ *      a hallucination — the value did come from the original event.
+ *   2. The match's value is NOT in `existingMap` — the LLM produced
+ *      an entity the original input did not contain (training
+ *      residue or hallucination). Replace with an
+ *      `<<UNVERIFIED_<KIND>_NNN>>` marker and increment the per-kind
+ *      counter. Per RFC 0001 §"LLM hallucination handling", the
+ *      counter is per-response (resets each call).
+ *   3. The match's value is a non-redactable public IP outside the
+ *      customer's ranges — passes through unchanged.
+ *
+ * Storage contract: `analysis_text` written to `event_analysis_result`
+ * must never contain raw plaintext entities. The UI restore path
+ * relies on token presence to redact, so a plaintext leak here is
+ * unrecoverable downstream.
  */
 export function scanHallucinations(
   response: string,
   existingMap: RedactionMap,
   ranges: RangeSet,
 ): HallucinationScanResult {
-  const knownValues = new Set(Object.values(existingMap).map((e) => e.value));
+  // Reverse index: value -> existing token. The forward map is
+  // token-keyed, so build this once for value lookups.
+  const knownTokens = new Map<string, string>();
+  for (const [token, entry] of Object.entries(existingMap)) {
+    knownTokens.set(entry.value, token);
+  }
   const counts: Record<EntityKind, number> = { ip: 0, email: 0, mac: 0 };
 
   function substitute(kind: EntityKind, original: string): string {
-    if (knownValues.has(original)) return original;
+    const existingToken = knownTokens.get(original);
+    if (existingToken) return existingToken;
     counts[kind]++;
     const n = counts[kind];
     return `${UNVERIFIED_PREFIX_BY_KIND[kind]}${String(n).padStart(3, "0")}${TOKEN_SUFFIX}`;
