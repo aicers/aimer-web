@@ -106,5 +106,9 @@ export type AuditAction =
   // Redaction
   | "redaction.injectivity_violation"
   | "redaction.engine_error"
+  // Retention sweeper
+  | "retention_sweep.tick_started"
+  | "retention_sweep.tick_completed"
+  | "retention_sweep.tick_failed"
   // Audit (internal)
   | "audit.anonymize";

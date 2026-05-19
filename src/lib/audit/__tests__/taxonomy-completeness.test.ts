@@ -108,6 +108,10 @@ const PRODUCED: Record<string, string> = {
   // Admin designation
   "admin.designated": "src/app/api/admin/admins/route.ts",
   "admin.revoked": "src/app/api/admin/admins/[accountId]/route.ts",
+  // Retention sweeper
+  "retention_sweep.tick_started": "src/lib/retention/sweeper.ts",
+  "retention_sweep.tick_completed": "src/lib/retention/sweeper.ts",
+  "retention_sweep.tick_failed": "src/lib/retention/sweeper.ts",
   // Audit (internal) — emitted via raw SQL in anonymize.ts
   "audit.anonymize": "src/lib/audit/anonymize.ts",
 } satisfies Partial<Record<AuditAction, string>>;
@@ -180,6 +184,7 @@ const REQUIRED_CATEGORIES = [
   "openbao",
   "system",
   "phase2",
+  "retention_sweep",
   "audit",
   "redaction",
 ];
@@ -200,6 +205,7 @@ const PRODUCED_CATEGORIES = [
   "openbao",
   "system",
   "phase2",
+  "retention_sweep",
   "audit",
   "redaction",
 ];

@@ -6,5 +6,7 @@ export async function register() {
       "@/lib/instrumentation/mtls-sighup"
     );
     await installMtlsSighupHandler();
+    const { installRetentionSweeper } = await import("@/lib/retention/sweeper");
+    installRetentionSweeper();
   }
 }
