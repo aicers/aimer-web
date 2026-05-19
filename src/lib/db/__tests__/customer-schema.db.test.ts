@@ -35,12 +35,13 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "SELECT version FROM _migrations ORDER BY version",
     );
     // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
-    // 0003_redaction_foundation
+    // 0003_redaction_foundation, 0004_retention_sweeper_support
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
       "0002",
       "0003",
+      "0004",
     ]);
   });
 
@@ -229,6 +230,33 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
        WHERE aice_id = 'aice-r1' AND event_key = 1`,
     );
     expect(count[0].c).toBe(2);
+  });
+
+  it("creates the sweeper-supporting indexes added by 0004", async () => {
+    // Retention sweep walks each clock column on every tick and the
+    // map cascade joins through source_aice_id; without these
+    // indexes the sweep becomes a sequence of seq-scans.
+    const { rows } = await pool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN (
+            'idx_baseline_event_received_at',
+            'idx_story_received_at',
+            'idx_policy_run_received_at',
+            'idx_baseline_event_source_aice_id_event_key',
+            'idx_story_source_aice_id',
+            'idx_policy_run_source_aice_id'
+          )
+        ORDER BY indexname`,
+    );
+    expect(rows.map((r) => r.indexname)).toEqual([
+      "idx_baseline_event_received_at",
+      "idx_baseline_event_source_aice_id_event_key",
+      "idx_policy_run_received_at",
+      "idx_policy_run_source_aice_id",
+      "idx_story_received_at",
+      "idx_story_source_aice_id",
+    ]);
   });
 
   // -- Representative inserts --
@@ -700,6 +728,23 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await rolePool.query(
         `DELETE FROM event_redaction_map
          WHERE aice_id = 'aice-grant' AND event_key = 1`,
+      );
+    });
+
+    it("can DELETE on detection_events (added by 0004)", async () => {
+      // The Phase 1 grant was SELECT/INSERT only — retention sweeper
+      // requires DELETE. Without 0004 this fails with
+      // "permission denied for table detection_events".
+      await rolePool.query(
+        `INSERT INTO detection_events
+           (aice_id, event_key, redacted_event, redaction_policy_version,
+            schema_version, payload_hash, source, ingested_by)
+         VALUES ('aice-del', 1, '{}'::jsonb, 'engine:1.0.0|ranges:empty',
+                 '1.0', 'h', 'manual', gen_random_uuid())`,
+      );
+      await rolePool.query(
+        `DELETE FROM detection_events
+         WHERE aice_id = 'aice-del' AND event_key = 1`,
       );
     });
 

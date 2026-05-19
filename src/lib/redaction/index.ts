@@ -1,3 +1,7 @@
+export {
+  buildRedactionMapCascadeDelete,
+  redactionMapReferentNotExistsClauses,
+} from "./cascade";
 export type { HallucinationScanResult } from "./engine";
 export {
   computePolicyVersion,

@@ -39,6 +39,7 @@ plugins:
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
+            - Retention Sweeper: operations/retention-sweeper.md
         - locale: ko
           name: 한국어
           build: true
@@ -59,6 +60,7 @@ plugins:
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
+            - Retention Sweeper: operations/retention-sweeper.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
@@ -75,6 +77,7 @@ plugins:
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
             Phase 2 Ingest: Phase 2 수집
+            Retention Sweeper: 보존 스위퍼
 
 extra_css:
   - styles/lists.css
