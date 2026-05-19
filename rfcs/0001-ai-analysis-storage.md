@@ -1,6 +1,6 @@
 # RFC 0001: AI analysis storage, redaction, and end-to-end flow
 
-- Status: **Draft — pending review**
+- Status: **Accepted**
 - Authors: @sehkone
 - Tracks: [#247](https://github.com/aicers/aimer-web/issues/247)
 - Part of umbrella: [#44](https://github.com/aicers/aimer-web/issues/44) Phase 7: mTLS & Aimer Daemon Communication

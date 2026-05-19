@@ -34,8 +34,14 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    // 0000_extensions, 0001_detection_events, 0002_phase2_tables
-    expect(rows.map((r) => r.version)).toEqual(["0000", "0001", "0002"]);
+    // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
+    // 0003_redaction_foundation
+    expect(rows.map((r) => r.version)).toEqual([
+      "0000",
+      "0001",
+      "0002",
+      "0003",
+    ]);
   });
 
   it("creates all six Phase 2 tables", async () => {
@@ -61,6 +67,168 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "story",
       "story_member",
     ]);
+  });
+
+  it("creates the redaction foundation tables", async () => {
+    const { rows } = await pool.query(`
+      SELECT table_name
+      FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name IN ('event_redaction_map', 'event_analysis_result')
+      ORDER BY table_name
+    `);
+    expect(rows.map((r) => r.table_name)).toEqual([
+      "event_analysis_result",
+      "event_redaction_map",
+    ]);
+  });
+
+  it("restructures detection_events into per-event rows", async () => {
+    // Old encrypted-batch columns are gone; new redacted-event
+    // columns are present. The UNIQUE (aice_id, event_key) guard
+    // backs the ingestion dedup short-circuit.
+    const { rows: cols } = await pool.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'detection_events'
+       ORDER BY column_name`,
+    );
+    const byName = new Map(cols.map((c) => [c.column_name, c]));
+
+    expect(byName.has("payload")).toBe(false);
+    expect(byName.has("wrapped_dek")).toBe(false);
+    expect(byName.has("event_count")).toBe(false);
+
+    expect(byName.get("redacted_event")?.data_type).toBe("jsonb");
+    expect(byName.get("redacted_event")?.is_nullable).toBe("NO");
+    expect(byName.get("event_key")?.data_type).toBe("numeric");
+    expect(byName.get("event_key")?.is_nullable).toBe("NO");
+    expect(byName.get("redaction_policy_version")?.data_type).toBe("text");
+    expect(byName.get("redaction_policy_version")?.is_nullable).toBe("NO");
+
+    // UNIQUE (aice_id, event_key)
+    const { rows: cons } = await pool.query<{ conname: string }>(
+      `SELECT con.conname
+       FROM pg_constraint con
+       JOIN pg_class rel ON rel.oid = con.conrelid
+       WHERE rel.relname = 'detection_events' AND con.contype = 'u'`,
+    );
+    expect(cons.length).toBeGreaterThan(0);
+
+    // Duplicate (aice_id, event_key) rejected.
+    await pool.query(
+      `INSERT INTO detection_events
+         (aice_id, event_key, redacted_event, redaction_policy_version,
+          schema_version, payload_hash, source, ingested_by)
+       VALUES ('aice-d1', 1, '{}'::jsonb, 'engine:1.0.0|ranges:empty',
+               '1.0', 'h', 'manual', gen_random_uuid())`,
+    );
+    await expect(
+      pool.query(
+        `INSERT INTO detection_events
+           (aice_id, event_key, redacted_event, redaction_policy_version,
+            schema_version, payload_hash, source, ingested_by)
+         VALUES ('aice-d1', 1, '{}'::jsonb, 'engine:1.0.0|ranges:empty',
+                 '1.0', 'h2', 'manual', gen_random_uuid())`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("changes policy_event.orig_addr / resp_addr to TEXT and adds redaction_policy_version", async () => {
+    const { rows } = await pool.query<{
+      column_name: string;
+      data_type: string;
+    }>(
+      `SELECT column_name, data_type
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'policy_event'
+         AND column_name IN ('orig_addr', 'resp_addr', 'redaction_policy_version')`,
+    );
+    const byName = new Map(rows.map((r) => [r.column_name, r.data_type]));
+    expect(byName.get("orig_addr")).toBe("text");
+    expect(byName.get("resp_addr")).toBe("text");
+    expect(byName.get("redaction_policy_version")).toBe("text");
+  });
+
+  it("adds redaction_policy_version to baseline_event and story_member but not story / policy_run", async () => {
+    const { rows } = await pool.query<{
+      table_name: string;
+      column_name: string;
+    }>(
+      `SELECT table_name, column_name
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND column_name = 'redaction_policy_version'
+       ORDER BY table_name`,
+    );
+    const tables = rows.map((r) => r.table_name);
+    expect(tables).toContain("baseline_event");
+    expect(tables).toContain("story_member");
+    expect(tables).toContain("policy_event");
+    expect(tables).toContain("event_analysis_result");
+    expect(tables).toContain("detection_events");
+    expect(tables).not.toContain("story");
+    expect(tables).not.toContain("policy_run");
+  });
+
+  it("enforces UPSERT-on-PK on event_analysis_result", async () => {
+    // First write establishes the row.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          threat_score, analysis_text, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               0.5, 'first', 'engine:1.0.0|ranges:empty',
+               gen_random_uuid())`,
+    );
+
+    // ON CONFLICT DO UPDATE on the PK replaces analysis_text for
+    // force=true re-analysis on the same model combination.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          threat_score, analysis_text, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               0.9, 'second', 'engine:1.0.0|ranges:empty',
+               gen_random_uuid())
+       ON CONFLICT (aice_id, event_key, lang, model_name, model)
+       DO UPDATE SET analysis_text = EXCLUDED.analysis_text,
+                     threat_score = EXCLUDED.threat_score,
+                     requested_at = NOW()`,
+    );
+
+    const { rows } = await pool.query<{
+      analysis_text: string;
+      threat_score: number;
+    }>(
+      `SELECT analysis_text, threat_score FROM event_analysis_result
+       WHERE aice_id = 'aice-r1' AND event_key = 1
+         AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].analysis_text).toBe("second");
+
+    // A different model produces a new row, not an overwrite.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          threat_score, analysis_text, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
+               0.1, 'gpt5', 'engine:1.0.0|ranges:empty',
+               gen_random_uuid())`,
+    );
+    const { rows: count } = await pool.query<{ c: number }>(
+      `SELECT COUNT(*)::int AS c FROM event_analysis_result
+       WHERE aice_id = 'aice-r1' AND event_key = 1`,
+    );
+    expect(count[0].c).toBe(2);
   });
 
   // -- Representative inserts --
@@ -505,6 +673,68 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
           ),
         ).rejects.toThrow(/permission denied/);
       }
+    });
+
+    // -- Redaction foundation tables (SELECT/INSERT/UPDATE/DELETE) --
+
+    it("can SELECT/INSERT/UPDATE/DELETE on event_redaction_map", async () => {
+      await rolePool.query(
+        `INSERT INTO event_redaction_map
+           (aice_id, event_key, ciphertext, wrapped_dek)
+         VALUES ('aice-grant', 1, decode('00', 'hex'), 'wrap-v1')`,
+      );
+
+      // UPDATE is required: shared-map invariant uses INSERT ... ON
+      // CONFLICT DO UPDATE, and KEK rotation issues raw UPDATEs.
+      await rolePool.query(
+        `UPDATE event_redaction_map SET wrapped_dek = 'wrap-v2'
+         WHERE aice_id = 'aice-grant' AND event_key = 1`,
+      );
+
+      const { rows } = await rolePool.query<{ wrapped_dek: string }>(
+        `SELECT wrapped_dek FROM event_redaction_map
+         WHERE aice_id = 'aice-grant' AND event_key = 1`,
+      );
+      expect(rows[0].wrapped_dek).toBe("wrap-v2");
+
+      await rolePool.query(
+        `DELETE FROM event_redaction_map
+         WHERE aice_id = 'aice-grant' AND event_key = 1`,
+      );
+    });
+
+    it("can SELECT/INSERT/UPDATE/DELETE on event_analysis_result", async () => {
+      // UPDATE rights cover force=true re-analysis (UPSERT) and any
+      // direct UPDATE the retroactive job needs to stamp the
+      // redaction_policy_version.
+      await rolePool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            threat_score, analysis_text, redaction_policy_version,
+            requested_by)
+         VALUES ('aice-ar', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 0.5, 'narr', 'engine:1.0.0|ranges:empty',
+                 gen_random_uuid())`,
+      );
+
+      await rolePool.query(
+        `UPDATE event_analysis_result SET analysis_text = 'updated'
+         WHERE aice_id = 'aice-ar' AND event_key = 1
+           AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+      );
+
+      const { rows } = await rolePool.query<{ analysis_text: string }>(
+        `SELECT analysis_text FROM event_analysis_result
+         WHERE aice_id = 'aice-ar' AND event_key = 1
+           AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+      );
+      expect(rows[0].analysis_text).toBe("updated");
+
+      await rolePool.query(
+        `DELETE FROM event_analysis_result
+         WHERE aice_id = 'aice-ar' AND event_key = 1
+           AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+      );
     });
   });
 });

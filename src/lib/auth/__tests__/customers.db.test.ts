@@ -111,6 +111,24 @@ describe.skipIf(!hasPostgres)("customer creation (DB integration)", () => {
     );
     expect(membership.rows).toHaveLength(1);
     expect(membership.rows[0].role_id).toBe(managerRoleId);
+
+    // Verify retention policy auto-insert with RFC 0001 defaults.
+    const retention = await pool.query<{
+      ingestion_days: number;
+      analysis_days: number | null;
+      updated_by: string;
+    }>(
+      `SELECT ingestion_days, analysis_days, updated_by
+       FROM customer_retention_policy
+       WHERE customer_id = $1`,
+      [result.id],
+    );
+    expect(retention.rows).toHaveLength(1);
+    expect(retention.rows[0].ingestion_days).toBe(365);
+    // analysis_days defaults to 1095 explicitly, NOT NULL — NULL is
+    // reserved for operator-opted "unlimited" via the settings UI.
+    expect(retention.rows[0].analysis_days).toBe(1095);
+    expect(retention.rows[0].updated_by).toBe(managerAccountId);
   });
 
   it("creates customer with optional description", async () => {

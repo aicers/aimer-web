@@ -70,16 +70,36 @@ describe("rotateAllKeks", () => {
     expect(deps.clearCache).toHaveBeenCalledOnce();
   });
 
-  it("rewraps detection_events in customer DBs", async () => {
-    const mockClientQuery = vi
-      .fn()
-      .mockResolvedValueOnce({
-        rows: [
-          { id: "evt-1", wrapped_dek: "vault:v1:evtdek1" },
-          { id: "evt-2", wrapped_dek: "vault:v1:evtdek2" },
-        ],
-      })
-      .mockResolvedValue({ rows: [] });
+  it("rewraps event_redaction_map rows in customer DBs", async () => {
+    const mockClientQuery = vi.fn().mockImplementation((sql: string) => {
+      if (typeof sql !== "string") return { rows: [] };
+      const lowered = sql.toLowerCase();
+      if (
+        lowered.includes("from event_redaction_map") &&
+        !lowered.includes("(aice_id, event_key) >")
+      ) {
+        // First batch — no cursor predicate.
+        return {
+          rows: [
+            {
+              aice_id: "aice-1",
+              event_key: "10",
+              wrapped_dek: "vault:v1:evtdek1",
+            },
+            {
+              aice_id: "aice-1",
+              event_key: "11",
+              wrapped_dek: "vault:v1:evtdek2",
+            },
+          ],
+        };
+      }
+      // Subsequent batch is empty -> loop terminates.
+      if (lowered.includes("from event_redaction_map")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
     const deps = createDeps({
       connectCustomerDb: vi.fn().mockResolvedValue({
         query: mockClientQuery,
@@ -96,6 +116,33 @@ describe("rotateAllKeks", () => {
 
     expect(result.eventDeksRewrapped).toBe(2);
     expect(deps.rewrapDek).toHaveBeenCalledTimes(3); // 1 customer + 2 events
+
+    // Verify each row's UPDATE uses the composite (aice_id, event_key) key.
+    const updateCalls = mockClientQuery.mock.calls.filter(
+      (c) =>
+        typeof c[0] === "string" &&
+        c[0].toLowerCase().includes("update event_redaction_map"),
+    );
+    expect(updateCalls.length).toBe(2);
+    for (const call of updateCalls) {
+      const params = call[1] as unknown[];
+      // Params: [newWrapped, aice_id, event_key]
+      expect(params).toHaveLength(3);
+      expect(typeof params[1]).toBe("string");
+      expect(typeof params[2]).toBe("string");
+    }
+
+    // Per-batch BEGIN/COMMIT is required — without it FOR UPDATE
+    // releases the row lock immediately on autocommit, defeating
+    // the ingestion-vs-rotation race guard.
+    const beginCalls = mockClientQuery.mock.calls.filter(
+      (c) => c[0] === "BEGIN",
+    );
+    const commitCalls = mockClientQuery.mock.calls.filter(
+      (c) => c[0] === "COMMIT",
+    );
+    expect(beginCalls.length).toBeGreaterThan(0);
+    expect(commitCalls.length).toBe(beginCalls.length);
   });
 
   it("rewraps staged_event_payloads", async () => {
