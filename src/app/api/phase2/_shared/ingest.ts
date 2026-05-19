@@ -3,6 +3,7 @@ import { withTransaction } from "@/lib/db/client";
 import {
   ENGINE_VERSION,
   type RangeSet,
+  RedactionInjectivityError,
   readMapWithLock,
   redact,
   writeMap,
@@ -42,12 +43,24 @@ async function redactAndMaybeUpsertMap(
     ctx.aiceId,
     ctx.eventKey,
   );
-  const out = redact({
-    payload,
-    existingMap: existing ?? {},
-    ranges: ctx.ranges,
-    engineVersion: ENGINE_VERSION,
-  });
+  let out: ReturnType<typeof redact>;
+  try {
+    out = redact({
+      payload,
+      existingMap: existing ?? {},
+      ranges: ctx.ranges,
+      engineVersion: ENGINE_VERSION,
+    });
+  } catch (err) {
+    // Engine has no per-event context — attach the failing
+    // event_key so the route handler's
+    // `redaction.injectivity_violation` audit can identify the
+    // `(aice_id, event_key)` map row that needs investigation.
+    if (err instanceof RedactionInjectivityError) {
+      err.eventKey = ctx.eventKey;
+    }
+    throw err;
+  }
   if (existing === null || out.mapChanged) {
     await writeMap(
       ctx.client,

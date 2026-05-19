@@ -85,6 +85,15 @@ export class RedactionInjectivityError extends Error {
   readonly conflictingToken?: string;
   readonly existingKind: EntityKind;
   readonly conflictingKind?: EntityKind;
+  /**
+   * Canonical `event_key` of the failing event. The engine itself has
+   * no event context, so this is populated by the ingestion call site
+   * (`storeApprovedEvents` and the Phase 2 helpers) before the error
+   * propagates out of the per-event loop, so the
+   * `redaction.injectivity_violation` audit details can name the
+   * `(aice_id, event_key)` map row that needs operator attention.
+   */
+  eventKey?: string;
   constructor(detail: {
     message: string;
     value: string;

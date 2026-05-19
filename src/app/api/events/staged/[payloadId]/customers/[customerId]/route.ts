@@ -210,6 +210,7 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
           details: {
             customerId,
             aiceId: staged.aice_id,
+            eventKey: err.eventKey,
             conflict: {
               value: err.value,
               existingToken: err.existingToken,

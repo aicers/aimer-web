@@ -9,6 +9,7 @@ import { eventKeyString } from "../event-key";
 import type { RangeSet } from "../redaction";
 import {
   ENGINE_VERSION,
+  RedactionInjectivityError,
   readMapWithLock,
   redact,
   writeMap,
@@ -147,12 +148,24 @@ export async function storeApprovedEvents(
         params.aiceId,
         eventKey,
       );
-      const out = redact({
-        payload: event,
-        existingMap: existing ?? {},
-        ranges: params.ranges,
-        engineVersion: ENGINE_VERSION,
-      });
+      let out: ReturnType<typeof redact>;
+      try {
+        out = redact({
+          payload: event,
+          existingMap: existing ?? {},
+          ranges: params.ranges,
+          engineVersion: ENGINE_VERSION,
+        });
+      } catch (err) {
+        // Engine has no per-event context — attach the failing
+        // event_key so the outer route's
+        // `redaction.injectivity_violation` audit can identify the
+        // `(aice_id, event_key)` map row that needs investigation.
+        if (err instanceof RedactionInjectivityError) {
+          err.eventKey = eventKey;
+        }
+        throw err;
+      }
 
       const redactedJson = JSON.stringify(out.redacted);
       // Per-event payload_hash (RFC 0001): SHA-256 of the redacted

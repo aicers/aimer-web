@@ -380,16 +380,16 @@ describe("createPhase2BatchHandler", () => {
       externalKey: "ext-1",
     });
 
-    const ingest = vi.fn().mockRejectedValue(
-      new RedactionInjectivityError({
-        message: "engine: value '1.2.3.4' double-mapped",
-        value: "1.2.3.4",
-        existingToken: "<<REDACTED_IP_001>>",
-        conflictingToken: "<<REDACTED_IP_002>>",
-        existingKind: "ip",
-        conflictingKind: "ip",
-      }),
-    );
+    const injErr = new RedactionInjectivityError({
+      message: "engine: value '1.2.3.4' double-mapped",
+      value: "1.2.3.4",
+      existingToken: "<<REDACTED_IP_001>>",
+      conflictingToken: "<<REDACTED_IP_002>>",
+      existingKind: "ip",
+      conflictingKind: "ip",
+    });
+    injErr.eventKey = "7";
+    const ingest = vi.fn().mockRejectedValue(injErr);
 
     const handler = createPhase2BatchHandler(
       {
@@ -418,9 +418,11 @@ describe("createPhase2BatchHandler", () => {
         (c[0] as { action: string }).action ===
         "redaction.injectivity_violation",
     );
-    expect(
-      (injCall?.[0] as { details: { conflict: unknown } }).details.conflict,
-    ).toMatchObject({
+    const injDetails = (
+      injCall?.[0] as { details: { conflict: unknown; eventKey?: string } }
+    ).details;
+    expect(injDetails.eventKey).toBe("7");
+    expect(injDetails.conflict).toMatchObject({
       value: "1.2.3.4",
       existingToken: "<<REDACTED_IP_001>>",
       conflictingToken: "<<REDACTED_IP_002>>",

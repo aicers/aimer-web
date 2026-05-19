@@ -50,6 +50,7 @@ class RedactionInjectivityError extends Error {
   conflictingToken?: string;
   existingKind: string;
   conflictingKind?: string;
+  eventKey?: string;
   constructor(detail: {
     message: string;
     value: string;
@@ -427,16 +428,16 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
   });
 
   it("emits redaction.injectivity_violation + transfer_failed on RedactionInjectivityError", async () => {
-    mockStoreApprovedEvents.mockRejectedValue(
-      new RedactionInjectivityError({
-        message: "engine: value '10.0.0.1' double-mapped",
-        value: "10.0.0.1",
-        existingToken: "<<REDACTED_IP_001>>",
-        conflictingToken: "<<REDACTED_IP_002>>",
-        existingKind: "ip",
-        conflictingKind: "ip",
-      }),
-    );
+    const injErr = new RedactionInjectivityError({
+      message: "engine: value '10.0.0.1' double-mapped",
+      value: "10.0.0.1",
+      existingToken: "<<REDACTED_IP_001>>",
+      conflictingToken: "<<REDACTED_IP_002>>",
+      existingKind: "ip",
+      conflictingKind: "ip",
+    });
+    injErr.eventKey = "42";
+    mockStoreApprovedEvents.mockRejectedValue(injErr);
 
     await expect(
       callPATCH(PAYLOAD_ID, CUSTOMER_ID, { action: "approve" }),
@@ -449,6 +450,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
         details: expect.objectContaining({
           customerId: CUSTOMER_ID,
           aiceId: "aice-1",
+          eventKey: "42",
           conflict: expect.objectContaining({
             value: "10.0.0.1",
             existingToken: "<<REDACTED_IP_001>>",

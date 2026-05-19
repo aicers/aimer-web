@@ -179,6 +179,7 @@ export function createPhase2BatchHandler<TSchema extends z.ZodTypeAny>(
             targetType: config.auditTargetType,
             details: {
               schemaVersion: envelopeClaims.schemaVersion,
+              eventKey: err.eventKey,
               conflict: {
                 value: err.value,
                 existingToken: err.existingToken,

@@ -190,4 +190,45 @@ describe("storeApprovedEvents", () => {
       }),
     ).rejects.toBeInstanceOf(InvalidPhase1PayloadError);
   });
+
+  it("attaches event_key context to RedactionInjectivityError from the engine", async () => {
+    // Seed the existing map row with two tokens pointing to the same
+    // value — the engine rejects this on load with
+    // `RedactionInjectivityError`. The per-event loop must attach the
+    // failing event_key so the outer audit row can identify the row.
+    const corruptedMap = {
+      "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
+      "<<REDACTED_IP_002>>": { kind: "ip", value: "10.0.0.1" },
+    };
+    mockClientQuery.mockImplementation((sql: string) => {
+      if (sql.includes("pg_advisory_xact_lock")) {
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      }
+      if (sql.includes("FROM event_redaction_map")) {
+        return Promise.resolve({
+          rows: [
+            {
+              ciphertext: Buffer.from(JSON.stringify(corruptedMap), "utf8"),
+              wrapped_dek: "vault:v1:map",
+            },
+          ],
+          rowCount: 1,
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0 });
+    });
+
+    let caught: unknown;
+    try {
+      await callStore({
+        eventCount: 1,
+        plaintext: plaintext([{ event_key: "99", body: "x" }]),
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as { name: string }).name).toBe("RedactionInjectivityError");
+    expect((caught as { eventKey?: string }).eventKey).toBe("99");
+  });
 });
