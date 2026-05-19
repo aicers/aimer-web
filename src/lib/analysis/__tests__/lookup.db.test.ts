@@ -157,24 +157,21 @@ describe.skipIf(!hasPostgres)("lookupAnalysisForEvent", () => {
   });
 
   it("returns { source: 'none' } for a Phase 1 detection_events row (v1 limitation)", async () => {
-    // v1 limitation case: detection_events rows carry encrypted payloads and
-    // aimer-web maintains NO plaintext event_key index on them. Even if the
-    // ad-hoc-sent payload happened to contain some event_key value, the
-    // lookup-by-event_key path is Phase 2 only in v1 and must return `none`.
-    //
-    // This test MUST NOT attempt to decrypt the payload or extract event_key
-    // from it — the whole point of the v1 limitation is that aimer-web does
-    // neither. The detection_events row below is constructed with arbitrary
-    // BYTEA bytes; the fixture-only "event_key 4242" assertion lives in
-    // this comment, not in the DB row.
+    // v1 limitation case: `lookupAnalysisForEvent` queries baseline_event
+    // only. A Phase 1 detection_events row carries event_key as a
+    // plaintext NUMERIC column after the #250 schema refactor, but the
+    // helper still does not search it — the Phase 2 row remains the
+    // canonical analysis row by design (RFC 0002 §8). This test ensures
+    // a detection_events row with a matching event_key is NOT promoted
+    // to a `phase2` match.
     await pool.query(
       `INSERT INTO detection_events
-         (aice_id, payload, wrapped_dek, event_count, schema_version,
-          payload_hash, source, ingested_by)
+         (aice_id, event_key, redacted_event, redaction_policy_version,
+          schema_version, payload_hash, source, ingested_by)
        VALUES
-         ('aice-1', $1::bytea, 'wrapped', 1, 'v1', 'hash', 'manual',
+         ('aice-1', 4242, '{"hello":"world"}'::jsonb, 'engine:1.0.0|ranges:empty',
+          'v1', 'hash', 'manual',
           '00000000-0000-0000-0000-000000000001')`,
-      [Buffer.from([0xde, 0xad, 0xbe, 0xef])],
     );
 
     const result = await lookupAnalysisForEvent(pool, "4242");

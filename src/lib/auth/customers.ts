@@ -300,6 +300,18 @@ export async function createCustomer(
       [params.managerAccountId, customerId, roleId],
     );
 
+    // Auto-insert the retention policy row. Both the retention
+    // sweeper and the settings UI treat absence as a bug — the row
+    // must exist from the moment a customer exists. analysis_days
+    // is supplied explicitly (1095 ≈ 36 months); the column default
+    // is NULL ("unlimited"), reserved for operator opt-in.
+    await client.query(
+      `INSERT INTO customer_retention_policy
+         (customer_id, ingestion_days, analysis_days, updated_by)
+       VALUES ($1, 365, 1095, $2)`,
+      [customerId, params.managerAccountId],
+    );
+
     return {
       id: customerId,
       name: params.name,

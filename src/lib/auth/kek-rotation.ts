@@ -49,6 +49,35 @@ export interface RotationDeps {
 
 const BATCH_SIZE = 100;
 
+/**
+ * Rewrap the per-event DEKs in `event_redaction_map` under the
+ * customer's freshly-rotated Transit key.
+ *
+ * Operating assumption: **no concurrent ingestion during rotation.**
+ * Rotation is an operator-triggered maintenance event today. The
+ * `FOR UPDATE` inside each batch is defence-in-depth so accidental
+ * concurrent ingestion (an ingestion `INSERT ... ON CONFLICT DO
+ * UPDATE` mutating a row the cursor has already returned) cannot
+ * silently corrupt data — ingestion's UPSERT waits on the row-level
+ * lock until the rotation's UPDATE commits.
+ *
+ * The lock does NOT cover: rows inserted by ingestion after the
+ * cursor has already passed them, rows ingestion is in the middle of
+ * inserting for the first time concurrently with the scan, or rows
+ * whose DEK ingestion obtained (cached) under the old KEK and
+ * INSERTs after rotation finishes. Closing those windows requires
+ * the operational rule above; if it ever slips, a follow-up rotation
+ * pass catches the missed rows.
+ *
+ * Pagination: keyset on the composite PK `(aice_id, event_key)`.
+ * `event_redaction_map` has no surrogate `id` column, so the first
+ * batch omits the cursor predicate (avoids inventing a sentinel
+ * tuple that the schema does not forbid).
+ *
+ * Counter accumulation: bumped only after `COMMIT` returns so a
+ * mid-batch rollback does not inflate `eventDeksRewrapped` with
+ * rows that ended up not persisted.
+ */
 async function rewrapCustomerEvents(
   client: { query: Pool["query"] },
   customerId: string,
@@ -56,31 +85,70 @@ async function rewrapCustomerEvents(
 ): Promise<number> {
   const keyName = customerTransitKeyName(customerId);
   let totalRewrapped = 0;
-  let offset = 0;
+  let cursor: { aiceId: string; eventKey: string } | null = null;
+
+  interface MapRow {
+    aice_id: string;
+    event_key: string;
+    wrapped_dek: string;
+  }
 
   for (;;) {
-    const batch = await client.query<{ id: string; wrapped_dek: string }>(
-      "SELECT id, wrapped_dek FROM detection_events ORDER BY id LIMIT $1 OFFSET $2",
-      [BATCH_SIZE, offset],
-    );
+    await client.query("BEGIN");
+    let committedThisBatch = 0;
+    try {
+      const batchRows: MapRow[] = cursor
+        ? (
+            await client.query<MapRow>(
+              `SELECT aice_id, event_key::text AS event_key, wrapped_dek
+               FROM event_redaction_map
+               WHERE (aice_id, event_key) > ($1, $2::numeric)
+               ORDER BY aice_id, event_key
+               LIMIT $3
+               FOR UPDATE`,
+              [cursor.aiceId, cursor.eventKey, BATCH_SIZE],
+            )
+          ).rows
+        : (
+            await client.query<MapRow>(
+              `SELECT aice_id, event_key::text AS event_key, wrapped_dek
+               FROM event_redaction_map
+               ORDER BY aice_id, event_key
+               LIMIT $1
+               FOR UPDATE`,
+              [BATCH_SIZE],
+            )
+          ).rows;
 
-    if (batch.rows.length === 0) break;
+      if (batchRows.length === 0) {
+        await client.query("COMMIT");
+        break;
+      }
 
-    for (const row of batch.rows) {
-      const newWrapped = await deps.rewrapDek(
-        deps.transitConfig,
-        keyName,
-        row.wrapped_dek,
-      );
-      await client.query(
-        "UPDATE detection_events SET wrapped_dek = $1 WHERE id = $2",
-        [newWrapped, row.id],
-      );
-      totalRewrapped++;
+      for (const row of batchRows) {
+        const newWrapped = await deps.rewrapDek(
+          deps.transitConfig,
+          keyName,
+          row.wrapped_dek,
+        );
+        await client.query(
+          "UPDATE event_redaction_map SET wrapped_dek = $1 WHERE aice_id = $2 AND event_key = $3::numeric",
+          [newWrapped, row.aice_id, row.event_key],
+        );
+        committedThisBatch++;
+      }
+
+      const last = batchRows[batchRows.length - 1];
+      const lastBatchSize = batchRows.length;
+      await client.query("COMMIT");
+
+      totalRewrapped += committedThisBatch;
+      cursor = { aiceId: last.aice_id, eventKey: last.event_key };
+      if (lastBatchSize < BATCH_SIZE) break;
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
     }
-
-    offset += batch.rows.length;
-    if (batch.rows.length < BATCH_SIZE) break;
   }
 
   return totalRewrapped;
@@ -112,7 +180,7 @@ function defaultDeps(): RotationDeps {
  * Rotate all Transit keys and rewrap all DEKs.
  *
  * 1. For each active customer: rotate Transit key, rewrap auth_db
- *    wrapped_dek, rewrap all detection_events in customer DB.
+ *    wrapped_dek, rewrap all event_redaction_map rows in customer DB.
  * 2. Rotate staging-events key, rewrap staged_event_payloads.
  * 3. Clear DEK cache.
  */
