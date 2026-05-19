@@ -10,7 +10,7 @@ import {
   verifyPhase2Multipart,
 } from "@/lib/auth/envelope-verify";
 import { getAuthPool } from "@/lib/db/client";
-import { getCustomerRuntimePool } from "./customer-pool";
+import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import {
   mapEnvelopeErrorToPhase2Response,
   phase2ErrorResponse,

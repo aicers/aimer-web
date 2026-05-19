@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computePolicyVersion,
   ENGINE_VERSION,
+  RedactionInjectivityError,
   redact,
   scanHallucinations,
 } from "../engine";
@@ -182,11 +183,23 @@ describe("redaction engine — token assignment invariants", () => {
   it("throws when an existing map would violate token-value injectivity", () => {
     // Same value mapped under two kinds is a corrupted map state —
     // shared-map invariant 3 says this is unreachable in correct
-    // code; the engine should flag it loudly.
+    // code; the engine should flag it loudly with the typed error so
+    // ingestion sites can attach the conflict to the audit row.
     const corruptMap: RedactionMap = {
       "<<REDACTED_EMAIL_001>>": { kind: "email", value: "10.0.0.1" },
     };
-    expect(() => redact(makeInput({ src: "10.0.0.1" }, corruptMap))).toThrow();
+    let caught: unknown;
+    try {
+      redact(makeInput({ src: "10.0.0.1" }, corruptMap));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RedactionInjectivityError);
+    const inj = caught as RedactionInjectivityError;
+    expect(inj.value).toBe("10.0.0.1");
+    expect(inj.existingToken).toBe("<<REDACTED_EMAIL_001>>");
+    expect(inj.existingKind).toBe("email");
+    expect(inj.conflictingKind).toBe("ip");
   });
 
   it("throws when an existing map has the same value under two different tokens", () => {
@@ -198,9 +211,17 @@ describe("redaction engine — token assignment invariants", () => {
       "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
       "<<REDACTED_IP_002>>": { kind: "ip", value: "10.0.0.1" },
     };
-    expect(() => redact(makeInput({ src: "10.0.0.1" }, corruptMap))).toThrow(
-      /token-value injectivity/,
-    );
+    let caught: unknown;
+    try {
+      redact(makeInput({ src: "10.0.0.1" }, corruptMap));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(RedactionInjectivityError);
+    expect((caught as Error).message).toMatch(/token-value injectivity/);
+    const inj = caught as RedactionInjectivityError;
+    expect(inj.existingToken).toBe("<<REDACTED_IP_001>>");
+    expect(inj.conflictingToken).toBe("<<REDACTED_IP_002>>");
   });
 });
 

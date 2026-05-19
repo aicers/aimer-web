@@ -103,5 +103,8 @@ export type AuditAction =
   | "phase2.withdraw"
   | "phase2.refresh_window"
   | "phase2.backfill"
+  // Redaction
+  | "redaction.injectivity_violation"
+  | "redaction.engine_error"
   // Audit (internal)
   | "audit.anonymize";

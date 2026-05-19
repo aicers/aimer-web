@@ -10,7 +10,8 @@ import {
   verifyPhase2Multipart,
 } from "@/lib/auth/envelope-verify";
 import { getAuthPool } from "@/lib/db/client";
-import { getCustomerRuntimePool } from "./customer-pool";
+import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { RedactionInjectivityError } from "@/lib/redaction";
 import {
   mapEnvelopeErrorToPhase2Response,
   phase2ErrorResponse,
@@ -167,6 +168,31 @@ export function createPhase2BatchHandler<TSchema extends z.ZodTypeAny>(
         extraDetails = ingestResult.details;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (err instanceof RedactionInjectivityError) {
+          // Invariant 3 breach — emit the dedicated audit (Discussion
+          // #10 §4) alongside the generic phase2.ingest_failed row so
+          // operators can find the conflict without grepping
+          // ingest_failed details.
+          void auditLog({
+            actorId: contextClaims.sub,
+            action: "redaction.injectivity_violation",
+            targetType: config.auditTargetType,
+            details: {
+              schemaVersion: envelopeClaims.schemaVersion,
+              eventKey: err.eventKey,
+              conflict: {
+                value: err.value,
+                existingToken: err.existingToken,
+                conflictingToken: err.conflictingToken,
+                existingKind: err.existingKind,
+                conflictingKind: err.conflictingKind,
+              },
+            },
+            customerId,
+            aiceId: envelopeClaims.aiceId,
+            correlationId: contextClaims.jti,
+          });
+        }
         void auditLog({
           actorId: contextClaims.sub,
           action: "phase2.ingest_failed",
