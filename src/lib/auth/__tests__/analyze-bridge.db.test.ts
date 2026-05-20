@@ -22,6 +22,7 @@ import { runMigrations } from "../../db/migrate";
 import {
   claimPAR,
   cleanupExpiredAnalyzeRequests,
+  expireStalePAR,
   markPARConsumed,
   markPARFailed,
 } from "../analyze-bridge";
@@ -212,6 +213,75 @@ describe.skipIf(!hasPostgres)(
           expiresInterval: "1 hour",
         });
         const ok = await claimPAR(pool, parId);
+        expect(ok).toBe(false);
+      });
+
+      it("claim on pending row past expires_at (cleanup has not run) returns false", async () => {
+        const cid = await insertConnection({
+          jti: "jti-claim-4",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "-1 minute",
+        });
+        const ok = await claimPAR(pool, parId);
+        expect(ok).toBe(false);
+        // Row is unchanged — claim refused, cleanup will sweep it later.
+        const row = await pool.query<{ status: string }>(
+          `SELECT status FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("pending");
+      });
+    });
+
+    describe("expireStalePAR", () => {
+      it("flips a pending row past expires_at to expired (true)", async () => {
+        const cid = await insertConnection({
+          jti: "jti-expire-stale-1",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "-1 minute",
+        });
+        const ok = await expireStalePAR(pool, parId);
+        expect(ok).toBe(true);
+        const row = await pool.query<{ status: string }>(
+          `SELECT status FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("expired");
+      });
+
+      it("does NOT flip a pending row still within TTL (false)", async () => {
+        const cid = await insertConnection({
+          jti: "jti-expire-stale-2",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "1 hour",
+        });
+        const ok = await expireStalePAR(pool, parId);
+        expect(ok).toBe(false);
+      });
+
+      it("does NOT flip a terminal row even past expires_at (false)", async () => {
+        const cid = await insertConnection({
+          jti: "jti-expire-stale-3",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "consumed",
+          expiresInterval: "-1 minute",
+        });
+        const ok = await expireStalePAR(pool, parId);
         expect(ok).toBe(false);
       });
     });

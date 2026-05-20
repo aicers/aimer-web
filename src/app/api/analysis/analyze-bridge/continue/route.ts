@@ -15,6 +15,7 @@ import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import {
   claimPAR,
+  expireStalePAR,
   loadPendingAnalysisRequest,
   markPARConsumed,
   markPARFailed,
@@ -353,6 +354,34 @@ async function dispatchStatus(
   par: PendingAnalysisRequest,
   auth: AuthenticatedRequest,
 ): Promise<Response | null> {
+  // Enforce PAR TTL on the request path so /continue does not depend on
+  // the periodic cleanup sweep for expiry. A `pending`/`processing` row
+  // whose `expires_at` has passed but which cleanup has not yet flipped
+  // to `expired` must not be claimed or rendered as in-progress —
+  // otherwise the five-minute PAR lifetime becomes a function of the
+  // sweeper cadence (#274 Round 6).
+  if (
+    (par.status === "pending" || par.status === "processing") &&
+    par.expiresAt.getTime() <= Date.now()
+  ) {
+    await expireStalePAR(getAuthPool(), par.id);
+    void auditLog({
+      actorId: auth.accountId,
+      authContext: "general",
+      action: "ai_analysis.continue_replayed",
+      targetType: "pending_analysis_request",
+      targetId: par.id,
+      details: {
+        outcome: "expired",
+        priorStatus: par.status,
+        externalKey: par.externalKey,
+      },
+      ipAddress: auth.meta.ipAddress,
+      sid: auth.sessionId,
+      aiceId: par.aiceId,
+    });
+    return renderSessionExpiredPage();
+  }
   switch (par.status) {
     case "consumed":
       if (par.viewUrl) {

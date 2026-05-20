@@ -566,12 +566,21 @@ GET /api/analysis/analyze-bridge/continue?id=<par_id>
      requiresAiceId: true, operationKind: 'process', bridgeScope,
    }) — styled 403 page on failure.
 4. Status dispatch:
+   - 'pending' or 'processing' AND expires_at <= NOW(): treat as
+     expired regardless of stored status. Best-effort flip the row
+     to 'expired' via CAS (`expireStalePAR`) and render the styled
+     "Session expired" page. This enforces PAR TTL on the request
+     path so the five-minute lifetime is independent of cleanup
+     sweep cadence — without this gate, a /continue request that
+     arrives after expires_at but before the next cleanup tick
+     could claim and execute a stale row.
    - 'pending':
-       a. claim via CAS UPDATE pending → processing. If the claim
-          fails, re-read PAR.status and dispatch on the new state
-          (another /continue tick already advanced the row); skip
-          the rest of this branch so runAnalyzeFlow is not
-          invoked twice.
+       a. claim via CAS UPDATE pending → processing **AND
+          expires_at > NOW()**. If the claim fails, re-read
+          PAR.status and dispatch on the new state (another
+          /continue tick already advanced the row, or the row
+          just crossed its TTL); skip the rest of this branch so
+          runAnalyzeFlow is not invoked twice.
        b. decryptPayload(payload, wrapped_dek) → event_data plaintext
        c. assert SHA-256(plaintext) === payload_hash (defence-in-depth)
        d. runAnalyzeFlow({ event_data, event_key, external_key,

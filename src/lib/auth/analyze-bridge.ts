@@ -194,8 +194,15 @@ export async function loadPARByConnectionIdWithClient(
  * Atomically claim a `pending` row by transitioning it to `processing`.
  * Returns true when the calling request now owns the right to run
  * `runAnalyzeFlow`; returns false when a concurrent `/continue` tick
- * already claimed the row (the second tick must re-read PAR.status and
- * dispatch on the new state without invoking the flow).
+ * already claimed the row, OR when the row has passed its `expires_at`
+ * but the cleanup sweep has not yet flipped it to `expired` (the
+ * losing/expired tick must re-read PAR.status and dispatch on the new
+ * state without invoking the flow).
+ *
+ * The `expires_at > NOW()` guard is what makes PAR TTL enforcement
+ * independent of cleanup-sweep cadence: a `/continue` request that
+ * arrives after the 5-minute TTL but before the next cleanup tick
+ * cannot claim and execute a stale row.
  *
  * This is the primary concurrency guard the design assumes — see
  * #272's "PAR status is the primary guard against re-execution" note.
@@ -204,7 +211,25 @@ export async function claimPAR(pool: Pool, id: string): Promise<boolean> {
   const result = await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'processing'
-     WHERE id = $1 AND status = 'pending'`,
+     WHERE id = $1 AND status = 'pending' AND expires_at > NOW()`,
+    [id],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Flip a stale `pending`/`processing` row past `expires_at` to
+ * `expired`. Used by `/continue` to enforce TTL on the request path
+ * rather than waiting for the periodic cleanup sweep. Returns true
+ * when this call performed the transition.
+ */
+export async function expireStalePAR(pool: Pool, id: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE pending_analysis_requests
+     SET status = 'expired'
+     WHERE id = $1
+       AND status IN ('pending', 'processing')
+       AND expires_at <= NOW()`,
     [id],
   );
   return (result.rowCount ?? 0) > 0;

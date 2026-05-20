@@ -7,6 +7,7 @@ const mockLoadPAR = vi.fn();
 const mockClaimPAR = vi.fn();
 const mockMarkConsumed = vi.fn();
 const mockMarkFailed = vi.fn();
+const mockExpireStale = vi.fn();
 const mockRunAnalyzeFlow = vi.fn();
 const mockDecryptPayload = vi.fn();
 const mockAuditLog = vi.fn(async (..._args: unknown[]) => {});
@@ -18,6 +19,7 @@ vi.mock("@/lib/auth/analyze-bridge", () => ({
   claimPAR: (...args: unknown[]) => mockClaimPAR(...args),
   markPARConsumed: (...args: unknown[]) => mockMarkConsumed(...args),
   markPARFailed: (...args: unknown[]) => mockMarkFailed(...args),
+  expireStalePAR: (...args: unknown[]) => mockExpireStale(...args),
 }));
 vi.mock("@/lib/analysis/run-analyze-flow", () => ({
   runAnalyzeFlow: (...args: unknown[]) => mockRunAnalyzeFlow(...args),
@@ -118,6 +120,7 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     mockClaimPAR.mockResolvedValue(true);
     mockMarkConsumed.mockResolvedValue(true);
     mockMarkFailed.mockResolvedValue(true);
+    mockExpireStale.mockResolvedValue(true);
   });
 
   it("returns 404 when id is missing", async () => {
@@ -389,6 +392,45 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     expect(mockAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "ai_analysis.continue_failed" }),
     );
+  });
+
+  it("stale pending PAR (expires_at past, cleanup has not run) renders session-expired and does NOT claim/run flow", async () => {
+    mockLoadPAR.mockResolvedValue({
+      ...basePAR,
+      status: "pending",
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(mockExpireStale).toHaveBeenCalledWith(expect.anything(), "par-1");
+    expect(mockClaimPAR).not.toHaveBeenCalled();
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockDecryptPayload).not.toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "ai_analysis.continue_replayed",
+        details: expect.objectContaining({
+          outcome: "expired",
+          priorStatus: "pending",
+        }),
+      }),
+    );
+  });
+
+  it("stale processing PAR (expires_at past, cleanup has not run) renders session-expired (not in-progress)", async () => {
+    mockLoadPAR.mockResolvedValue({
+      ...basePAR,
+      status: "processing",
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(mockExpireStale).toHaveBeenCalledWith(expect.anything(), "par-1");
+    expect(mockClaimPAR).not.toHaveBeenCalled();
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
   });
 
   it("markPARFailed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired", async () => {
