@@ -12,5 +12,9 @@ export async function register() {
       "@/lib/instrumentation/redaction-job-worker"
     );
     await installRedactionJobWorker();
+    const { installAuthPoolCleanup } = await import(
+      "@/lib/instrumentation/auth-pool-cleanup"
+    );
+    installAuthPoolCleanup();
   }
 }

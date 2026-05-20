@@ -107,16 +107,28 @@ const PRODUCED: Record<string, string> = {
   "phase2.withdraw": "src/app/api/phase2/withdraw/route.ts",
   "phase2.refresh_window": "src/app/api/phase2/refresh-window/route.ts",
   "phase2.backfill": "src/app/api/phase2/backfill/route.ts",
-  // AI analysis (emitted by POST /api/analysis/analyze)
-  "ai_analysis.request_issued": "src/app/api/analysis/analyze/route.ts",
-  "ai_analysis.result_stored": "src/app/api/analysis/analyze/route.ts",
-  "ai_analysis.aimer_call_failed": "src/app/api/analysis/analyze/route.ts",
-  "ai_analysis.hallucination_detected": "src/app/api/analysis/analyze/route.ts",
+  // AI analysis (emitted by POST /api/analysis/analyze and the shared
+  // runAnalyzeFlow helper that backs analyze-bridge)
+  "ai_analysis.request_issued": "src/lib/analysis/run-analyze-flow.ts",
+  "ai_analysis.result_stored": "src/lib/analysis/run-analyze-flow.ts",
+  "ai_analysis.aimer_call_failed": "src/lib/analysis/run-analyze-flow.ts",
+  "ai_analysis.hallucination_detected": "src/lib/analysis/run-analyze-flow.ts",
+  // AI analysis bridge (POST /api/analysis/analyze-bridge + /continue)
+  "ai_analysis.bridge_initiated":
+    "src/app/api/analysis/analyze-bridge/route.ts",
+  "ai_analysis.short_circuit_executed":
+    "src/app/api/analysis/analyze-bridge/route.ts",
+  "ai_analysis.continue_executed":
+    "src/app/api/analysis/analyze-bridge/continue/route.ts",
+  "ai_analysis.continue_failed":
+    "src/app/api/analysis/analyze-bridge/continue/route.ts",
+  "ai_analysis.continue_replayed":
+    "src/app/api/analysis/analyze-bridge/continue/route.ts",
   // Redaction (emitted by Phase 1 approve, Phase 2 handler, and the
   // analyze route's local-redaction catch)
   "redaction.injectivity_violation":
     "src/app/api/events/staged/[payloadId]/customers/[customerId]/route.ts",
-  "redaction.engine_error": "src/app/api/analysis/analyze/route.ts",
+  "redaction.engine_error": "src/lib/analysis/run-analyze-flow.ts",
   // AICE environment management (guard-level)
   "environment.created": "src/app/api/admin/environments/route.ts",
   "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",

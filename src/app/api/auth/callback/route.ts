@@ -277,12 +277,21 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         details: {
           connectionId,
           customerIds: bridgeResult.bridgeCustomerIds,
+          analyzeRequestId: bridgeResult.analyzeRequestId,
         },
         ipAddress: meta.ipAddress,
         sid: bridgeSid,
         aiceId: bridgeResult.bridgeAiceId ?? undefined,
       });
 
+      if (bridgeResult.analyzeRequestId) {
+        return NextResponse.redirect(
+          new URL(
+            `/api/analysis/analyze-bridge/continue?id=${bridgeResult.analyzeRequestId}`,
+            request.url,
+          ),
+        );
+      }
       return NextResponse.redirect(new URL("/", request.url));
     }
 

@@ -223,6 +223,56 @@ export function withAuth(
 }
 
 // ---------------------------------------------------------------------------
+// Best-effort session probe — used by routes that accept cross-site
+// entry (e.g. /api/analysis/analyze-bridge). Unlike `withAuth`, the
+// caller must NOT 401 on a missing cookie — that is the typical state
+// for cross-site top-level POSTs from aice-web-next, where SameSite=Strict
+// keeps the general-session cookies from travelling. A returned `null`
+// means "no live session — take the cross-site bridge path"; a returned
+// object means "session present, callers may run the short-circuit".
+// ---------------------------------------------------------------------------
+
+export interface OptionalGeneralSession {
+  accountId: string;
+  sessionId: string;
+  iat: number;
+  tokenVersion: number;
+  bridgeAiceId: string | null;
+  bridgeCustomerIds: string[] | null;
+}
+
+export async function tryLoadGeneralSession(): Promise<OptionalGeneralSession | null> {
+  const token = await getAuthCookie("general");
+  if (!token) return null;
+
+  let claims: VerifiedJwt;
+  try {
+    claims = await verifyJwtFull(token, "general");
+  } catch {
+    return null;
+  }
+
+  const policy = await getSessionPolicy();
+  try {
+    const session = await validateSession(
+      getAuthPool(),
+      claims.sid,
+      policy.general,
+    );
+    return {
+      accountId: claims.sub,
+      sessionId: claims.sid,
+      iat: claims.iat,
+      tokenVersion: claims.tv,
+      bridgeAiceId: session.bridgeAiceId,
+      bridgeCustomerIds: session.bridgeCustomerIds,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Shared mutation guards (origin + CSRF)
 // ---------------------------------------------------------------------------
 
