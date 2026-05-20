@@ -13,6 +13,8 @@ const mockRunAnalyzeFlow = vi.fn();
 const mockAuditLog = vi.fn(async (..._args: unknown[]) => {});
 const mockSetConnectionIdCookie = vi.fn();
 const mockClearInvitationTokenCookie = vi.fn();
+const mockAuthorize = vi.fn();
+const mockGetCustomerByExternalKey = vi.fn();
 
 vi.mock("@/lib/auth/context-token", () => ({
   verifyContextToken: (...args: unknown[]) => mockVerifyContextToken(...args),
@@ -47,6 +49,13 @@ vi.mock("@/lib/audit", () => ({
 }));
 vi.mock("@/lib/audit/correlation", () => ({
   withCorrelationId: <T>(fn: () => Promise<T>) => fn(),
+}));
+vi.mock("@/lib/auth/authorization", () => ({
+  authorize: (...args: unknown[]) => mockAuthorize(...args),
+}));
+vi.mock("@/lib/auth/customers", () => ({
+  getCustomerByExternalKey: (...args: unknown[]) =>
+    mockGetCustomerByExternalKey(...args),
 }));
 vi.mock("@/lib/auth/cookies", () => ({
   setConnectionIdCookie: mockSetConnectionIdCookie,
@@ -124,6 +133,13 @@ describe("POST /api/analysis/analyze-bridge", () => {
     mockCreatePendingConnection.mockResolvedValue("conn-id-1");
     mockCreatePAR.mockResolvedValue("par-id-1");
     mockTryLoadSession.mockResolvedValue(null);
+    mockAuthorize.mockResolvedValue({ authorized: true });
+    mockGetCustomerByExternalKey.mockResolvedValue({
+      id: "cust-1",
+      externalKey: "cust-ext-1",
+      databaseStatus: "active",
+      status: "active",
+    });
   });
 
   it("cross-site path: inserts PAR + connection, sets cookie, 302 to sign-in", async () => {
@@ -178,6 +194,59 @@ describe("POST /api/analysis/analyze-bridge", () => {
         details: expect.objectContaining({ outcome: "success" }),
       }),
     );
+  });
+
+  it("unauthorized live session falls back to PAR/OIDC path (no styled authorization_failed page)", async () => {
+    // The browser carries a valid general-session cookie, but the
+    // signed-in account is not entitled to analyze this customer.
+    // Per #274 §1, the handler must NOT short-circuit with an
+    // `authorization_failed` page — it must fall back to the
+    // cross-site PAR/OIDC path so the IdP can establish the intended
+    // bridge session.
+    mockTryLoadSession.mockResolvedValue({
+      accountId: "acc-1",
+      sessionId: "sid-1",
+      iat: 1000,
+      tokenVersion: 1,
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+    mockAuthorize.mockResolvedValue({ authorized: false });
+
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain(
+      "/api/auth/sign-in?flow=bridge",
+    );
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockCreatePendingConnection).toHaveBeenCalled();
+    expect(mockCreatePAR).toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.bridge_initiated" }),
+    );
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.short_circuit_executed" }),
+    );
+  });
+
+  it("live session whose customer cannot be resolved falls back to PAR/OIDC path", async () => {
+    mockTryLoadSession.mockResolvedValue({
+      accountId: "acc-1",
+      sessionId: "sid-1",
+      iat: 1000,
+      tokenVersion: 1,
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+    mockGetCustomerByExternalKey.mockResolvedValue(null);
+
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain(
+      "/api/auth/sign-in?flow=bridge",
+    );
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockCreatePAR).toHaveBeenCalled();
   });
 
   it("short-circuit with tampered params still rejects (no session-based bypass)", async () => {

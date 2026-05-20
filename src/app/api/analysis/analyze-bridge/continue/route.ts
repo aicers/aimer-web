@@ -90,7 +90,34 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
     }
 
     if (!isSupportedLang(par.lang)) {
-      await markPARFailed(getAuthPool(), par.id, "lang_unsupported");
+      const updated = await markPARFailed(
+        getAuthPool(),
+        par.id,
+        "lang_unsupported",
+      );
+      if (!updated) {
+        // Cleanup sweep flipped the row to `expired` (or another tick
+        // latched a terminal state) between our `processing` claim and
+        // this terminal CAS. Honour the authoritative status rather
+        // than emitting a `lang_unsupported` page a reload would not
+        // reproduce.
+        return await handleTerminalCASFalse(par.id, auth);
+      }
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "general",
+        action: "ai_analysis.continue_failed",
+        targetType: "pending_analysis_request",
+        targetId: par.id,
+        details: {
+          errorCode: "lang_unsupported",
+          stage: "lang_check",
+          externalKey: par.externalKey,
+        },
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+        aiceId: par.aiceId,
+      });
       return renderAnalyzeBridgeErrorPage(
         "lang_unsupported",
         `lang must be one of KOREAN, ENGLISH`,
@@ -116,7 +143,17 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       }
       eventData = parsed as Record<string, unknown>;
     } catch (err) {
-      await markPARFailed(getAuthPool(), par.id, "internal_error");
+      const updated = await markPARFailed(
+        getAuthPool(),
+        par.id,
+        "internal_error",
+      );
+      if (!updated) {
+        // Cleanup sweep won the race during our in-flight window —
+        // route through the same re-read dispatcher the post-flow
+        // terminal CAS uses.
+        return await handleTerminalCASFalse(par.id, auth);
+      }
       void auditLog({
         actorId: auth.accountId,
         authContext: "general",

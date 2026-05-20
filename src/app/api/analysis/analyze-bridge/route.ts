@@ -12,6 +12,7 @@ import { auditLog, UNKNOWN_ACTOR_ID } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { createPendingAnalysisRequestWithClient } from "@/lib/auth/analyze-bridge";
 import { verifyAnalyzeParamsToken } from "@/lib/auth/analyze-params-token";
+import { authorize } from "@/lib/auth/authorization";
 import { createPendingConnectionWithClient } from "@/lib/auth/bridge";
 import {
   type ContextTokenClaims,
@@ -21,6 +22,7 @@ import {
   clearInvitationTokenCookie,
   setConnectionIdCookie,
 } from "@/lib/auth/cookies";
+import { getCustomerByExternalKey } from "@/lib/auth/customers";
 import {
   PayloadTooLargeError,
   TrustRegistryKeyExpiredError,
@@ -29,7 +31,10 @@ import {
   type EventsEnvelopeClaims,
   verifyEventsEnvelope,
 } from "@/lib/auth/events-envelope";
-import { tryLoadGeneralSession } from "@/lib/auth/guards";
+import {
+  type OptionalGeneralSession,
+  tryLoadGeneralSession,
+} from "@/lib/auth/guards";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { eventKeyString } from "@/lib/event-key";
@@ -305,6 +310,49 @@ function bridgeErrorCode(
   }
 }
 
+/**
+ * Pre-authorize the live general session against the verified bridge
+ * payload's `(customerId, aiceId)`. Used as a gate on the short-circuit
+ * path so an authenticated-but-unrelated session cannot block the
+ * bridge — when this returns `false`, the handler must take the
+ * cross-site PAR/OIDC path so the IdP can establish the correct
+ * bridge session. Any error (unknown external_key, transient DB issue,
+ * etc.) is treated as "not authorized" — pessimistic denial here is
+ * safe because the cross-site path will surface the real reason after
+ * sign-in.
+ */
+async function isLiveSessionAuthorized(
+  session: OptionalGeneralSession,
+  verified: VerifiedBridgePayload,
+): Promise<boolean> {
+  try {
+    const authPool = getAuthPool();
+    const customer = await getCustomerByExternalKey(
+      authPool,
+      verified.externalKey,
+    );
+    if (!customer) return false;
+    const bridgeScope = session.bridgeCustomerIds
+      ? {
+          aiceId: session.bridgeAiceId ?? "",
+          customerIds: session.bridgeCustomerIds,
+        }
+      : null;
+    const result = await withTransaction(authPool, (client) =>
+      authorize(client, "general", session.accountId, "analyses:create", {
+        customerId: customer.id,
+        aiceId: verified.contextClaims.aiceId,
+        requiresAiceId: true,
+        operationKind: "process",
+        bridgeScope,
+      }),
+    );
+    return result.authorized;
+  } catch {
+    return false;
+  }
+}
+
 export async function POST(request: NextRequest): Promise<Response> {
   return withCorrelationId(async () => {
     const meta = extractRequestMeta(request);
@@ -345,7 +393,20 @@ export async function POST(request: NextRequest): Promise<Response> {
     // already ran — we don't bypass payload-verify just because a
     // session cookie is present. Skipping only the OIDC dance and the
     // PAR insert.
-    if (session) {
+    //
+    // Per #274 §1: short-circuit ONLY when a valid general session is
+    // present AND `authorize(...)` would pass for the verified
+    // (customer, aiceId). If the live session lacks the required
+    // privilege, fall through to the cross-site PAR/OIDC path instead
+    // of rendering a styled `authorization_failed` page — otherwise a
+    // browser carrying an unrelated existing aimer-web session would
+    // block the bridge flow before OIDC has a chance to establish the
+    // intended bridge session.
+    const shortCircuitAllowed = session
+      ? await isLiveSessionAuthorized(session, verified)
+      : false;
+
+    if (session && shortCircuitAllowed) {
       const result = await runAnalyzeFlow({
         customer: {
           kind: "externalKey",

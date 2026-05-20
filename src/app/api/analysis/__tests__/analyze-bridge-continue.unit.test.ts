@@ -297,6 +297,39 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     );
   });
 
+  it("lang_unsupported branch: markPARFailed=false re-reads PAR and renders session-expired (no stale lang_unsupported page)", async () => {
+    mockLoadPAR
+      .mockResolvedValueOnce({ ...basePAR, lang: "SPANISH" })
+      .mockResolvedValueOnce({
+        ...basePAR,
+        lang: "SPANISH",
+        status: "expired",
+      });
+    mockMarkFailed.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_failed" }),
+    );
+  });
+
+  it("decrypt-failure branch: markPARFailed=false re-reads PAR and renders session-expired (no stale internal_error page)", async () => {
+    mockLoadPAR
+      .mockResolvedValueOnce(basePAR)
+      .mockResolvedValueOnce({ ...basePAR, status: "expired" });
+    mockDecryptPayload.mockRejectedValue(new Error("decrypt boom"));
+    mockMarkFailed.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_failed" }),
+    );
+  });
+
   it("markPARFailed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired", async () => {
     const eventDataJson = JSON.stringify({ event_key: "42" });
     const plaintext = Buffer.from(eventDataJson, "utf8");
