@@ -453,6 +453,46 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     );
   });
 
+  it("result exists but detection_events swept (force=false) → re-ingest, not cache hit", async () => {
+    // Retention can sweep `detection_events` rows while the
+    // `event_analysis_result` row survives. In that state a normal
+    // `force=false` analyze call must NOT short-circuit on the stale
+    // result — RFC 0001's behaviour matrix treats "event missing" as a
+    // redact+ingest case regardless of whether a result row exists, and
+    // the source app needs the source event re-ingested so the force
+    // re-run button comes back and the result page stops showing the
+    // retention banner. The cache query embeds an EXISTS check against
+    // `detection_events`; when that side fails, the joined query returns
+    // zero rows even though `event_analysis_result` has a row, so the
+    // route falls through to the event-missing path and UPSERTs the
+    // result on top of the surviving cache row.
+    stubActiveCustomerLookup();
+    // Joined cache query: matches `FROM event_analysis_result` but the
+    // EXISTS clause against `detection_events` fails → zero rows.
+    pushStub({
+      match: (s) => s.includes("FROM event_analysis_result"),
+      rows: [],
+    });
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.cached).toBe(false);
+    expect(mockReadMapWithLock).toHaveBeenCalledOnce();
+    expect(mockGraphqlRequest).toHaveBeenCalledOnce();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "ai_analysis.request_issued",
+        details: expect.objectContaining({ cached: false, force: false }),
+      }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.result_stored" }),
+    );
+  });
+
   it("force=true skips the cache lookup", async () => {
     stubActiveCustomerLookup();
     // No cache lookup stub — force=true must not query event_analysis_result

@@ -341,12 +341,25 @@ async function handlePost(
   //   - event exists + result missing       → analyze + store
   //   - event missing                       → redact+ingest + analyze + store
   //   - force=true (any case)               → analyze + UPSERT result
+  //
+  // The cache hit is gated on the source `detection_events` row also
+  // existing. RFC 0001's behaviour matrix treats "event missing" as a
+  // redact+ingest case regardless of whether a result row survives —
+  // retention can sweep `detection_events` while the analysis row
+  // persists, and a normal `force=false` call in that state must still
+  // re-ingest so the source app's force re-run button comes back and
+  // the result page stops showing the retention banner. EXISTS keeps
+  // the check to a single round-trip.
   let cached = false;
   if (!parsed.force) {
     const cachedRow = await customerPool.query<{ requested_at: Date }>(
-      `SELECT requested_at FROM event_analysis_result
-       WHERE aice_id = $1 AND event_key = $2::numeric
-         AND lang = $3 AND model_name = $4 AND model = $5`,
+      `SELECT requested_at FROM event_analysis_result r
+       WHERE r.aice_id = $1 AND r.event_key = $2::numeric
+         AND r.lang = $3 AND r.model_name = $4 AND r.model = $5
+         AND EXISTS (
+           SELECT 1 FROM detection_events d
+           WHERE d.aice_id = $1 AND d.event_key = $2::numeric
+         )`,
       [parsed.aice_id, parsed.event_key, lang, parsed.model_name, parsed.model],
     );
     if (cachedRow.rows.length > 0) cached = true;
