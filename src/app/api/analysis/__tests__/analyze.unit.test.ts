@@ -296,6 +296,11 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "detection_events.transfer_approved",
+        // `targetId` is the synthetic `detection_events.id` so the
+        // audit row's `targetType` must be `detection_events` — not
+        // the route's default `event_analysis_result`, which would
+        // make the target id resolve against the wrong table.
+        targetType: "detection_events",
         targetId: SYNTHETIC_EVENT_ID,
         details: expect.objectContaining({
           customerId: CUSTOMER_ID,
@@ -785,6 +790,39 @@ describe("POST /api/analysis/analyze — aimer error mapping", () => {
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.error.code).toBe("aimer_unavailable");
+    expect(body.error.retryable).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Storage-error surface
+// ---------------------------------------------------------------------------
+
+describe("POST /api/analysis/analyze — storage failure mapping", () => {
+  it("writeMap() rejection surfaces as storage_failed (not redaction_failed)", async () => {
+    // RFC 0001's error table places `event_redaction_map` DB write
+    // failures in the `storage_failed` bucket (retryable). Without
+    // explicit wrapping the rejection would bubble through the route's
+    // generic catch and be reported as the non-retryable
+    // `redaction_failed`, which mis-signals the failure kind to
+    // callers and prevents legitimate retries.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    // Force the redact path: no existing detection_events row, and
+    // `mapChanged=true` so the route hits writeMap().
+    mockReadMapWithLock.mockResolvedValue(null);
+    mockRedact.mockReturnValue({
+      redacted: { event_key: EVENT_KEY, hello: "world" },
+      mergedMap: {},
+      policyVersion: "engine:1.0.0|ranges:empty",
+      mapChanged: true,
+    });
+    mockWriteMap.mockRejectedValue(new Error("connection terminated"));
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error.code).toBe("storage_failed");
     expect(body.error.retryable).toBe(true);
   });
 });

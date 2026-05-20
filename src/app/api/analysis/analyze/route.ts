@@ -395,9 +395,19 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   // `storeApprovedEvents` emits from the staged-approve route:
   // `eventIds: [<single>]`. Skipped when the route fell through to an
   // already-existing event (concurrent writer race or earlier call).
+  //
+  // Override `auditBase.targetType` to `"detection_events"`: the rest
+  // of this route's audits target the `event_analysis_result` cache
+  // row, but for this single emission the `targetId` is the
+  // `detection_events.id` of the synthetic row, so the target type
+  // must match the table the id resolves against. Otherwise the audit
+  // row would say a `detection_events`-domain action targeted an
+  // `event_analysis_result` whose id is actually a `detection_events`
+  // row id — internally inconsistent metadata.
   if (insertedEventId !== null) {
     void auditLog({
       ...auditBase,
+      targetType: "detection_events",
       action: "detection_events.transfer_approved",
       targetId: insertedEventId,
       details: { customerId: customer.id, eventIds: [insertedEventId] },
@@ -602,14 +612,25 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       ranges: params.ranges,
       engineVersion: ENGINE_VERSION,
     });
+    // `event_redaction_map` is in RFC 0001's `storage_failed` bucket
+    // (DB write failures for the analysis-storage tables). Wrap the
+    // write so a transient DB error surfaces as a retryable
+    // `storage_failed` instead of a non-retryable `redaction_failed`
+    // — the redaction itself succeeded; only the persist step failed.
     if (existing === null || out.mapChanged) {
-      await writeMap(
-        client,
-        params.customerId,
-        params.aiceId,
-        params.eventKey,
-        out.mergedMap,
-      );
+      try {
+        await writeMap(
+          client,
+          params.customerId,
+          params.aiceId,
+          params.eventKey,
+          out.mergedMap,
+        );
+      } catch (err) {
+        throw new StorageError(
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
     const redactedJson = JSON.stringify(out.redacted);
     const payloadHash = createHash("sha256").update(redactedJson).digest("hex");
