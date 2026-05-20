@@ -344,14 +344,16 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
 
   // ---- Resolve redacted event + (maybe) synthetic ingest -----------------
   // When `detection_events` has no row for this `(aice_id, event_key)`
-  // we redact the caller-supplied `event_data` and INSERT a synthetic
-  // row. When the row already exists we MUST use the stored
-  // `redacted_event` for the aimer call instead of redacting the
-  // current request body — otherwise a caller could replay the same
-  // canonical `event_key` with arbitrary `event_data` and have aimer
-  // analyse text that does not match the persisted event. The
-  // redaction engine still runs in both branches because we need the
-  // merged map to scan the LLM response for hallucinations.
+  // we redact the caller-supplied `event_data`, persist the resulting
+  // map, and INSERT a synthetic row. When the row already exists we
+  // MUST use the stored `redacted_event` for the aimer call AND scan
+  // hallucinations against the persisted map without touching it —
+  // otherwise a caller could replay the same canonical `event_key`
+  // with crafted `event_data` and (a) have aimer analyse text that
+  // does not match the persisted event or (b) inject attacker-
+  // controlled entities into the redaction map, which the
+  // hallucination scan would then treat as legitimate re-leaks and
+  // the result page would restore as plaintext.
   let redactedEvent: unknown;
   let mergedMap: import("@/lib/redaction").RedactionMap;
   try {
@@ -514,22 +516,22 @@ interface IngestAndRedactParams {
  *
  * - When `detection_events` HAS a row for `(aice_id, event_key)`, the
  *   stored `redacted_event` is authoritative; the caller-supplied
- *   `event_data` is ignored. This prevents cache poisoning where a
- *   caller replays a known `event_key` with arbitrary `event_data`
- *   and has aimer analyse text that does not match the persisted
- *   event.
- * - When NO row exists, we redact the caller-supplied `event_data`
- *   and INSERT a synthetic row (`source='manual'`,
- *   `connection_id=NULL`, `ingested_by=accountId`).
+ *   `event_data` is ignored. The persisted `event_redaction_map` is
+ *   left untouched so an attacker cannot append entities to the map
+ *   by replaying a known `event_key` with crafted `event_data`. The
+ *   hallucination scan therefore runs against the stored map, not a
+ *   merge of the request body — re-leak detection only honours
+ *   entities that originated from the persisted event.
+ * - When NO row exists, we redact the caller-supplied `event_data`,
+ *   write the resulting map, and INSERT a synthetic row
+ *   (`source='manual'`, `connection_id=NULL`,
+ *   `ingested_by=accountId`).
  *
  * Concurrency is handled by the per-`(aice_id, event_key)` Postgres
  * advisory lock taken inside `readMapWithLock`. Every other writer
  * for the same event (`storeApprovedEvents`, Phase 2 paths) takes the
  * same lock, so the SELECT-then-INSERT below cannot race past a
  * concurrent insert.
- *
- * The redaction engine still runs in BOTH branches because we need
- * the merged map to scan the LLM response for hallucinations.
  */
 async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
   redacted: unknown;
@@ -543,23 +545,38 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       params.eventKey,
     );
 
-    // The merged map is needed even when an event row already exists,
-    // because the hallucination scan must run against the entities
-    // observed in the persisted event. Redacting the current request
-    // body and merging into `existing` produces the same map as the
-    // earlier writer would have produced (the map is value-keyed, so
-    // additions are idempotent and order-independent).
+    // Inside the advisory lock, this SELECT observes any earlier
+    // insert (by this route OR `storeApprovedEvents`). If we find one,
+    // we MUST NOT redact the request body or touch the persisted map
+    // — otherwise a caller replaying a known `event_key` with crafted
+    // `event_data` could append attacker-controlled entities to the
+    // map, which the hallucination scan would then treat as a
+    // legitimate re-leak and the result page would restore as
+    // plaintext.
+    const existingEvent = await client.query<{ redacted_event: unknown }>(
+      `SELECT redacted_event FROM detection_events
+       WHERE aice_id = $1 AND event_key = $2::numeric`,
+      [params.aiceId, params.eventKey],
+    );
+    if (existingEvent.rows.length > 0) {
+      return {
+        redacted: existingEvent.rows[0].redacted_event,
+        mergedMap: existing ?? {},
+      };
+    }
+
+    // No row exists — this is the synthetic-ingest path. Redact the
+    // caller-supplied `event_data`, persist the resulting map, and
+    // INSERT the detection_events row. The advisory lock guarantees
+    // no concurrent writer can race past us, so a plain INSERT is
+    // sufficient; we still use `ON CONFLICT DO NOTHING` defensively
+    // against any future writer that does not take the lock.
     const out = redact({
       payload: params.eventData,
       existingMap: existing ?? {},
       ranges: params.ranges,
       engineVersion: ENGINE_VERSION,
     });
-
-    // Persist the map first so the row exists before any synthetic
-    // INSERT references the same `(aice_id, event_key)`. Same
-    // `existing === null || changed` rule the Phase 2 ingestion paths
-    // follow.
     if (existing === null || out.mapChanged) {
       await writeMap(
         client,
@@ -569,27 +586,6 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
         out.mergedMap,
       );
     }
-
-    // Inside the advisory lock, this SELECT observes any earlier
-    // insert (by this route OR `storeApprovedEvents`). If we find one,
-    // the stored `redacted_event` is what we send to aimer.
-    const existingEvent = await client.query<{ redacted_event: unknown }>(
-      `SELECT redacted_event FROM detection_events
-       WHERE aice_id = $1 AND event_key = $2::numeric`,
-      [params.aiceId, params.eventKey],
-    );
-    if (existingEvent.rows.length > 0) {
-      return {
-        redacted: existingEvent.rows[0].redacted_event,
-        mergedMap: out.mergedMap,
-      };
-    }
-
-    // No row exists — INSERT the synthetic detection_events row.
-    // The advisory lock guarantees no concurrent writer can race past
-    // us here, so a plain INSERT is sufficient; we still use
-    // `ON CONFLICT DO NOTHING` defensively against any future writer
-    // that does not take the lock.
     const redactedJson = JSON.stringify(out.redacted);
     const payloadHash = createHash("sha256").update(redactedJson).digest("hex");
     try {

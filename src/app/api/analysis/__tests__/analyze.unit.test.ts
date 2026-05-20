@@ -275,8 +275,14 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     // The existing detection_events row carries a DIFFERENT redacted
     // payload than the caller's request — this is the cache-poisoning
     // surface RFC 0001 explicitly defends against. The aimer call must
-    // use the STORED `redacted_event`, not the request body.
+    // use the STORED `redacted_event`, not the request body, AND the
+    // persisted `event_redaction_map` must not be mutated by this
+    // call (so attacker-supplied entities cannot be appended).
     const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    const storedMap = {
+      "<<REDACTED_IP_001>>": { kind: "ip" as const, value: "10.0.0.1" },
+    };
+    mockReadMapWithLock.mockResolvedValue(storedMap);
     pushStub({
       match: (s) =>
         /SELECT redacted_event FROM detection_events/.test(s) &&
@@ -297,12 +303,31 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
       expect.objectContaining({ eventData: storedRedacted }),
       expect.anything(),
     );
+    // The map-write side of the cache-poisoning surface: when the
+    // event already exists, the route must NOT redact the caller body
+    // or write to event_redaction_map.
+    expect(mockRedact).not.toHaveBeenCalled();
+    expect(mockWriteMap).not.toHaveBeenCalled();
+    // The hallucination scan must run against the STORED map, not a
+    // merge that includes entities derived from the request body.
+    expect(mockScanHallucinations).toHaveBeenCalledWith(
+      expect.any(String),
+      storedMap,
+      expect.anything(),
+    );
   });
 
-  it("force=true + event exists → analyze stored event (does not re-redact request body)", async () => {
+  it("force=true + event exists → analyze stored event (does not re-redact request body or mutate map)", async () => {
     stubActiveCustomerLookup();
     // No cache lookup — force=true.
     const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    const storedMap = {
+      "<<REDACTED_EMAIL_001>>": {
+        kind: "email" as const,
+        value: "real@user.example",
+      },
+    };
+    mockReadMapWithLock.mockResolvedValue(storedMap);
     pushStub({
       match: (s) =>
         /SELECT redacted_event FROM detection_events/.test(s) &&
@@ -312,12 +337,17 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     stubInsertAnalysisResult();
 
     // Caller supplies a wildly different `event_data` payload — the
-    // route must ignore it and send the stored `redacted_event`.
+    // route must ignore it and send the stored `redacted_event`. The
+    // persisted map must also be untouched so a force replay cannot
+    // inject attacker-controlled entities.
     const res = await callPOST(
       makeRequest(
         defaultBody({
           force: true,
-          event_data: { event_key: EVENT_KEY, attacker_supplied: true },
+          event_data: {
+            event_key: EVENT_KEY,
+            attacker_supplied: "1.2.3.4",
+          },
         }),
       ),
     );
@@ -325,6 +355,13 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(mockGraphqlRequest).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ eventData: storedRedacted }),
+      expect.anything(),
+    );
+    expect(mockRedact).not.toHaveBeenCalled();
+    expect(mockWriteMap).not.toHaveBeenCalled();
+    expect(mockScanHallucinations).toHaveBeenCalledWith(
+      expect.any(String),
+      storedMap,
       expect.anything(),
     );
   });

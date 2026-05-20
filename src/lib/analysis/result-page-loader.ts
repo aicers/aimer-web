@@ -81,7 +81,7 @@ export async function loadAnalysisResultPage(
   // external_key on this path.
   const authPool = getAuthPool();
   const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "analyses:create", {
+    authorize(client, "general", claims.sub, "analyses:read", {
       customerId: input.customerId,
       aiceId: input.aiceId,
       requiresAiceId: true,

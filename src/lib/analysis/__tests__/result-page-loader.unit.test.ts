@@ -142,6 +142,29 @@ describe("loadAnalysisResultPage", () => {
     expect(outcome.data.threatScore).toBe(0.42);
   });
 
+  it("authorizes the read-only result page with the analyses:read permission key", async () => {
+    // RFC 0001 + role seed split: viewing an existing analysis result is
+    // a pure read, so it must gate on `analyses:read` rather than
+    // `analyses:create`. Custom read-only roles that only carry the read
+    // permission would otherwise be locked out of the result page even
+    // though built-in roles happen to grant both keys today.
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    await callLoader();
+    expect(mockAuthorize).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      "acc-1",
+      "analyses:read",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        aiceId: AICE_ID,
+        operationKind: "read",
+      }),
+    );
+  });
+
   it("cascade-edge: source detection_events swept, analysis + map survive", async () => {
     pushResultRow();
     pushMapRow();
