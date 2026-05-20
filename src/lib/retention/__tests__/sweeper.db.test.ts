@@ -758,6 +758,13 @@ describeDb("retention sweeper integration", () => {
     const lockAcquired = createDeferred<void>();
     const release = createDeferred<void>();
 
+    // Hoisted outside the try so `finally` can await in-flight workers
+    // before releasing the underlying clients. If an assertion throws
+    // before the normal `await sweepPromise` path runs (e.g. the
+    // lock-wait poll times out), we still need to drain the started
+    // promises so the sweeper and the competing INSERT do not race
+    // into subsequent tests.
+    let startedSweep: Promise<unknown> | null = null;
     let clientBPromise: Promise<unknown> | null = null;
     let clientB: PoolClient | null = null;
     const errorHolder: {
@@ -814,6 +821,7 @@ describeDb("retention sweeper integration", () => {
         { authPool, connectCustomer: barrieredConnect },
         NOW,
       );
+      startedSweep = sweepPromise;
 
       await lockAcquired.promise;
 
@@ -881,10 +889,18 @@ describeDb("retention sweeper integration", () => {
       expect(completed?.details.deleted_by_table?.story_member).toBe(1);
     } finally {
       // If an assertion threw before release.resolve(), unblock the
-      // sweeper so the customer pool can close cleanly.
+      // sweeper so the customer pool can close cleanly, then drain any
+      // in-flight worker / competing-INSERT promises before releasing
+      // clientB. Without this, a failing assertion (e.g.
+      // `waitForLockWait` timing out because the sweeper no longer
+      // blocks) would leak the sweepCustomer transaction into
+      // subsequent tests.
       release.resolve();
+      const inFlight: Promise<unknown>[] = [];
+      if (startedSweep) inFlight.push(startedSweep);
+      if (clientBPromise) inFlight.push(clientBPromise);
+      if (inFlight.length > 0) await Promise.allSettled(inFlight);
       if (clientB) {
-        if (clientBPromise) await clientBPromise.catch(() => {});
         await clientB.query("ROLLBACK").catch(() => {});
         clientB.release();
       }
@@ -912,6 +928,10 @@ describeDb("retention sweeper integration", () => {
     const lockAcquired = createDeferred<void>();
     const release = createDeferred<void>();
 
+    // See story-cascade test above: hoisting startedSweep /
+    // clientBPromise outside the try lets `finally` await in-flight
+    // workers before releasing the underlying clients.
+    let startedSweep: Promise<unknown> | null = null;
     let clientBPromise: Promise<unknown> | null = null;
     let clientB: PoolClient | null = null;
     const errorHolder: {
@@ -964,6 +984,7 @@ describeDb("retention sweeper integration", () => {
         { authPool, connectCustomer: barrieredConnect },
         NOW,
       );
+      startedSweep = sweepPromise;
 
       await lockAcquired.promise;
 
@@ -1025,8 +1046,11 @@ describeDb("retention sweeper integration", () => {
       expect(completed?.details.deleted_by_table?.policy_event).toBe(1);
     } finally {
       release.resolve();
+      const inFlight: Promise<unknown>[] = [];
+      if (startedSweep) inFlight.push(startedSweep);
+      if (clientBPromise) inFlight.push(clientBPromise);
+      if (inFlight.length > 0) await Promise.allSettled(inFlight);
       if (clientB) {
-        if (clientBPromise) await clientBPromise.catch(() => {});
         await clientB.query("ROLLBACK").catch(() => {});
         clientB.release();
       }
@@ -1079,6 +1103,15 @@ describeDb("retention sweeper integration", () => {
     // the cascade query, so pg_stat_activity can find the right pid.
     let sweeperPid: number | null = null;
 
+    // Hoisted outside the try so `finally` can drain in-flight workers
+    // before releasing `rotationClient`. Releasing the underlying
+    // client while `rotateAllKeks` is still running queries through it
+    // (e.g. if `waitForLockWait` for the sweeper times out before the
+    // barrier is released) would race a connection back into the pool
+    // mid-transaction.
+    let startedRotation: Promise<unknown> | null = null;
+    let startedSweep: Promise<unknown> | null = null;
+
     try {
       async function sweeperConnect() {
         const client = await customerPool.connect();
@@ -1123,6 +1156,7 @@ describeDb("retention sweeper integration", () => {
         }),
         clearCache: () => {},
       });
+      startedRotation = rotationPromise;
 
       // Wait until rotation parks inside its barrier, holding FOR
       // UPDATE locks on all four seeded rows.
@@ -1134,6 +1168,7 @@ describeDb("retention sweeper integration", () => {
         { authPool, connectCustomer: sweeperConnect },
         NOW,
       );
+      startedSweep = sweepPromise;
 
       // Poll until the sweeper backend reaches Lock wait state. The
       // sweep's transaction has BEGIN'd, acquired the advisory lock,
@@ -1208,9 +1243,17 @@ describeDb("retention sweeper integration", () => {
       );
       expect(completed?.details.deleted_by_table?.event_redaction_map).toBe(2);
     } finally {
-      // Unblock anything still parked at the barrier so the test
-      // cannot leak an open transaction holding row locks.
+      // Unblock anything still parked at the barrier, then drain any
+      // in-flight rotation / sweep promises before releasing
+      // `rotationClient`. Releasing the underlying client while
+      // `rotateAllKeks` is still using it (e.g. if `waitForLockWait`
+      // for the sweeper threw after rotation started) would race a
+      // mid-transaction connection back into the pool.
       rewrapBarrier.resolve();
+      const inFlight: Promise<unknown>[] = [];
+      if (startedRotation) inFlight.push(startedRotation);
+      if (startedSweep) inFlight.push(startedSweep);
+      if (inFlight.length > 0) await Promise.allSettled(inFlight);
       rotationClient.release();
     }
   });
