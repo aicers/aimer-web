@@ -3,6 +3,7 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import { encryptPayload } from "../crypto/envelope";
 import { query, withTransaction } from "../db/client";
+import { loadPARByConnectionIdWithClient } from "./analyze-bridge";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +40,15 @@ export interface BridgeCallbackResult {
    * status-related rejection.
    */
   matchedCustomerExternalKeys?: string[];
+  /**
+   * Set when a `pending_analysis_requests` row exists for this
+   * connection — i.e. the bridge entry came from the analyze-bridge
+   * wrapping endpoint, not the Phase 1 ingest path. The callback
+   * redirects to `/api/analysis/analyze-bridge/continue?id=<par_id>`
+   * instead of `/` and the Phase 1 `staged_event_customers` insert
+   * loop is skipped.
+   */
+  analyzeRequestId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +61,35 @@ const JTI_GRACE_PERIOD_HOURS = 24;
 // ---------------------------------------------------------------------------
 // Create pending connection
 // ---------------------------------------------------------------------------
+
+/**
+ * Insert a new pending_connections row using an existing transaction
+ * client. The jti unique constraint provides replay prevention.
+ *
+ * Exposed separately so callers that need atomicity with an additional
+ * INSERT (e.g. analyze-bridge inserts both `pending_connections` and
+ * `pending_analysis_requests` in one transaction) can run both writes
+ * on the same `PoolClient`. The {@link createPendingConnection} entry
+ * point delegates here under a fresh `withTransaction`.
+ */
+export async function createPendingConnectionWithClient(
+  client: PoolClient,
+  params: {
+    jti: string;
+    issuer: string;
+    aiceId: string;
+    customerIds: string[];
+    sub: string;
+  },
+): Promise<string> {
+  const rows = await client.query<{ connection_id: string }>(
+    `INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, sub, expires_at)
+     VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '${CONNECTION_TTL_SECONDS} seconds')
+     RETURNING connection_id`,
+    [params.jti, params.issuer, params.aiceId, params.customerIds, params.sub],
+  );
+  return rows.rows[0].connection_id;
+}
 
 /**
  * Insert a new pending_connections row. The jti unique constraint
@@ -66,14 +105,9 @@ export async function createPendingConnection(
     sub: string;
   },
 ): Promise<string> {
-  const rows = await query<{ connection_id: string }>(
-    pool,
-    `INSERT INTO pending_connections (jti, issuer, aice_id, customer_ids, sub, expires_at)
-     VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '${CONNECTION_TTL_SECONDS} seconds')
-     RETURNING connection_id`,
-    [params.jti, params.issuer, params.aiceId, params.customerIds, params.sub],
+  return withTransaction(pool, (client) =>
+    createPendingConnectionWithClient(client, params),
   );
-  return rows[0].connection_id;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,13 +361,34 @@ export async function processBridgeCallback(
     );
     const sessionId = sessionResult.rows[0].sid;
 
-    // 6. Link staged events to the new session
+    // 6. Decide which downstream linkage runs.
+    //    Analyze-bridge connections own their payload inline in
+    //    `pending_analysis_requests`; they never write to
+    //    `staged_event_payloads`, so the Phase 1 UPDATE would be a
+    //    no-op match anyway. Explicit branching keeps the intent
+    //    visible to anyone tracing this code, and ensures the per-
+    //    customer `staged_event_customers` INSERT loop (which would
+    //    surface the connection on the approval queue) is skipped.
+    //    No status filter on the PAR lookup — a row in `expired` /
+    //    `failed` state must still route through /continue so its
+    //    status can be surfaced.
+    const par = await loadPARByConnectionIdWithClient(client, connectionId);
+    if (par) {
+      return {
+        sessionId,
+        bridgeAiceId: conn.aiceId,
+        bridgeCustomerIds: matchedCustomerIds,
+        analyzeRequestId: par.id,
+      };
+    }
+
+    // Phase 1 ingest path — link staged events to the new session.
     const linkedPayloads = await client.query<{ id: string }>(
       `UPDATE staged_event_payloads SET session_id = $1 WHERE connection_id = $2 RETURNING id`,
       [sessionId, connectionId],
     );
 
-    // 7. Create staged_event_customers rows for each (payload, customer) pair
+    // Create staged_event_customers rows for each (payload, customer) pair.
     for (const payload of linkedPayloads.rows) {
       for (const custId of matchedCustomerIds) {
         await client.query(

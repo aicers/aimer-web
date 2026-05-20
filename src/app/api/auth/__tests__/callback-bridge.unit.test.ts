@@ -388,6 +388,23 @@ describe("callback route — bridge flow (#33)", () => {
     });
   });
 
+  it("redirects to /api/analysis/analyze-bridge/continue when analyzeRequestId is set", async () => {
+    mockProcessBridgeCallback.mockResolvedValue({
+      sessionId: "bridge-session-001",
+      bridgeAiceId: "aice-1",
+      bridgeCustomerIds: ["cust-uuid-1"],
+      analyzeRequestId: "par-id-42",
+    });
+
+    const res = await callGET(makeCallbackRequest());
+
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain(
+      "/api/analysis/analyze-bridge/continue?id=par-id-42",
+    );
+    expect(setAuthCookies).toHaveBeenCalled();
+  });
+
   it("proceeds with standard flow when no connection_id cookie", async () => {
     const res = await callGET(makeCallbackRequest(false));
 

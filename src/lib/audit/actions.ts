@@ -116,6 +116,12 @@ export type AuditAction =
   | "ai_analysis.result_stored"
   | "ai_analysis.aimer_call_failed"
   | "ai_analysis.hallucination_detected"
+  // AI analysis bridge (POST /api/analysis/analyze-bridge + /continue)
+  | "ai_analysis.bridge_initiated"
+  | "ai_analysis.short_circuit_executed"
+  | "ai_analysis.continue_executed"
+  | "ai_analysis.continue_failed"
+  | "ai_analysis.continue_replayed"
   // Redaction
   | "redaction.injectivity_violation"
   | "redaction.engine_error"
