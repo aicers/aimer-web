@@ -485,7 +485,103 @@ The PAR row is **not** stored in `staged_event_payloads`. The Phase 1 staging ta
 
 `pending_analysis_requests` is therefore a dedicated table with ciphertext stored **inline** (reusing the same `encryptPayload` / `decryptPayload` primitives as `staged_event_payloads`, but its own row, its own status state machine — `pending`/`consumed`/`expired`/`failed` — and its own cleanup helper). `connection_id UNIQUE` enforces one analyze intent per bridge call, providing a layer of replay defence on top of `pending_connections.jti` uniqueness. TTL aligns with `pending_connections` (5 minutes), with a 24-hour grace before deletion of `expired` / `consumed` / `failed` rows for forensic purposes.
 
-The detailed schema, cleanup helper, and `/continue` dispatch state machine are specified in the wrapping-endpoint implementation issue ([#274](https://github.com/aicers/aimer-web/issues/274)) and are not duplicated here; what matters at the RFC layer is the separation: analyze-pending lifecycle is not the customer-approval lifecycle, and the two stores do not share rows.
+**Encryption reuse.** `encryptPayload` / `decryptPayload` in [src/lib/crypto/envelope.ts](../src/lib/crypto/envelope.ts) already abstract the AES-256-GCM + OpenBao Transit DEK wrapping. `pending_analysis_requests` calls the same primitives — no new crypto infrastructure, no key-management change — while keeping its row, status state machine, and reader path separate from `staged_event_payloads`.
+
+#### Schema
+
+```sql
+CREATE TABLE pending_analysis_requests (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  connection_id   UUID NOT NULL UNIQUE
+                  REFERENCES pending_connections(connection_id),
+
+  -- Verified context (post-JWS, cached for /continue re-authorize)
+  aice_id         TEXT NOT NULL,
+  external_key    TEXT NOT NULL,    -- already validated against contextClaims.customerIds
+
+  -- Verified analyze params (post-analyze_params_token JWS)
+  event_key       TEXT NOT NULL,
+  lang            TEXT NOT NULL,
+  model_name      TEXT NOT NULL,
+  model           TEXT NOT NULL,
+  force           BOOLEAN NOT NULL,
+
+  -- Encrypted event_data (reuses crypto/envelope.ts helpers)
+  payload         BYTEA NOT NULL,    -- AES-256-GCM ciphertext
+  wrapped_dek     TEXT NOT NULL,
+  payload_hash    TEXT NOT NULL,     -- SHA-256(plaintext); equals envelope's payload_hash
+
+  -- Lifecycle
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'consumed', 'expired', 'failed')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at      TIMESTAMPTZ NOT NULL,
+  consumed_at     TIMESTAMPTZ,
+  view_url        TEXT,              -- set on success
+  failure_code    TEXT,              -- one of the 13 bridge error codes, set on failure
+  failure_at      TIMESTAMPTZ
+);
+
+CREATE INDEX idx_par_cleanup ON pending_analysis_requests(expires_at)
+  WHERE status = 'pending';
+```
+
+`connection_id UNIQUE` enforces one analyze intent per bridge call — duplicate POST attempts hit the unique constraint and are rejected. The verified context columns (`aice_id`, `external_key`) and verified analyze-params columns are populated from the JWS-validated values at insert time so `/continue` can re-authorize without re-running JWS verification on the resumed leg. `payload_hash` is stored to enable the defence-in-depth re-hash check at `/continue` after decryption.
+
+#### Cleanup helper
+
+Symmetric with `cleanupExpiredConnections`:
+
+```ts
+async function cleanupExpiredAnalyzeRequests(pool: Pool): Promise<number> {
+  // Expire pending rows past TTL
+  await pool.query(
+    `UPDATE pending_analysis_requests
+     SET status = 'expired'
+     WHERE status = 'pending' AND expires_at < NOW()`,
+  );
+  // Delete after 24h grace
+  const result = await pool.query(
+    `DELETE FROM pending_analysis_requests
+     WHERE expires_at < NOW() - INTERVAL '24 hours'`,
+  );
+  return result.rowCount ?? 0;
+}
+```
+
+`consumed` and `failed` rows are retained for the same 24h forensic window, then deleted. The partial index `idx_par_cleanup` keeps the `pending`-row expiry scan O(expiring rows) rather than O(table).
+
+#### `/continue` dispatch state machine
+
+`GET /api/analysis/analyze-bridge/continue?id=<par_id>` is the dedicated landing point after OIDC sign-in. Method is GET because the 302 from the OIDC callback naturally produces a GET; reload safety comes from the PAR.status state machine, not HTTP semantics. The `id` query parameter is a UUIDv4 lookup key, **not** a capability-bearing token — the session's account must still pass `authorize(...)` against the PAR's customer.
+
+```text
+GET /api/analysis/analyze-bridge/continue?id=<par_id>
+
+1. withGeneralAuth — session required (callback created it).
+2. Load PAR row by id; styled 404 page if not found.
+3. Re-authorize: authorize(account, 'analyses:create', {
+     customerId: <resolved from external_key>, aiceId,
+     requiresAiceId: true, operationKind: 'process', bridgeScope,
+   }) — styled 403 page on failure.
+4. Status dispatch:
+   - 'pending':
+       a. decryptPayload(payload, wrapped_dek) → event_data plaintext
+       b. assert SHA-256(plaintext) === payload_hash (defence-in-depth)
+       c. runAnalyzeFlow({ event_data, event_key, external_key,
+                          aice_id, lang, model_name, model, force })
+       d. success → UPDATE PAR SET status='consumed', view_url=$1,
+                       consumed_at=NOW() WHERE id=$par
+                  → 302 to view_url
+       e. failure → UPDATE PAR SET status='failed',
+                       failure_code=$1, failure_at=NOW() WHERE id=$par
+                  → styled error page (13 bridge error code branches)
+   - 'consumed' → 302 to PAR.view_url (reload-safe)
+   - 'failed'   → styled error page from PAR.failure_code
+   - 'expired'  → styled "Session expired" page
+```
+
+**Defence-in-depth.** `/api/analysis/analyze`'s `(aice_id, event_key, lang, model_name, model)` cache means an accidental double execution of `runAnalyzeFlow` returns the cached result. PAR.status is the primary guard against re-execution; the analyze cache is the backup.
 
 ## API contract — `POST /api/analysis/analyze`
 
