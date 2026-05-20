@@ -37,6 +37,7 @@ describeDb("retention sweeper integration", () => {
   let customerDbName: string;
   let runRetentionTick: typeof import("../sweeper").runRetentionTick;
   let sweepCustomer: typeof import("../sweeper").sweepCustomer;
+  let rotateAllKeks: typeof import("../../auth/kek-rotation").rotateAllKeks;
 
   // We need to keep references to the customer pool clients we hand
   // back so each `sweepCustomer` call shares the same Postgres
@@ -97,6 +98,8 @@ describeDb("retention sweeper integration", () => {
     const mod = await import("../sweeper");
     runRetentionTick = mod.runRetentionTick;
     sweepCustomer = mod.sweepCustomer;
+    const rot = await import("../../auth/kek-rotation");
+    rotateAllKeks = rot.rotateAllKeks;
 
     // The singleton audit pool inside `db/client.ts` is what
     // `auditLog` writes through; eagerly create it so we can attach
@@ -676,4 +679,675 @@ describeDb("retention sweeper integration", () => {
     );
     expect(rows[0].c).toBe("1");
   });
+
+  // -----------------------------------------------------------------
+  // Coordinated-timing concurrency tests (issue #261)
+  // -----------------------------------------------------------------
+  //
+  // Both tests below drive the production functions end-to-end:
+  //   - sweepCustomer is driven via SweepDeps.connectCustomer with a
+  //     query wrapper that pauses the real PoolClient at a configured
+  //     barrier SQL pattern, leaving the rest of the query sequence
+  //     intact.
+  //   - rotateAllKeks is driven via RotationDeps.rewrapDek with a
+  //     barrier on the first invocation, so the rotation's per-batch
+  //     transaction holds FOR UPDATE on the seeded map rows until the
+  //     test releases it.
+  //
+  // Synchronisation is Postgres-side: a deferred Promise the test
+  // resolves after pg_stat_activity confirms the other backend has
+  // reached the contended state. No setTimeout-based timing.
+
+  interface Deferred<T> {
+    promise: Promise<T>;
+    resolve: (v: T) => void;
+    reject: (e: unknown) => void;
+  }
+  function createDeferred<T = void>(): Deferred<T> {
+    let resolve!: (v: T) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  /**
+   * Per-test Vitest timeout for the concurrency tests below. Higher
+   * than Vitest's 5s default so the test's own bounded waits and
+   * `waitForLockWait` get a chance to throw a descriptive assertion
+   * (and run the `finally` cleanup) before the runner's generic
+   * timeout fires. Synchronization waits inside the tests use
+   * `CONCURRENCY_INTERNAL_TIMEOUT_MS`, which is set comfortably below
+   * `CONCURRENCY_TEST_TIMEOUT_MS` so the failing test always surfaces
+   * its own error rather than racing the runner.
+   */
+  const CONCURRENCY_TEST_TIMEOUT_MS = 30_000;
+  const CONCURRENCY_INTERNAL_TIMEOUT_MS = 15_000;
+
+  /**
+   * Race a promise against a bounded timeout. On timeout, throws a
+   * descriptive error so the failing synchronization point lands as
+   * an assertion in the test body (which runs `finally`), not as a
+   * generic Vitest timeout that skips cleanup. The exact regressions
+   * these tests are meant to catch — e.g. the sweeper no longer
+   * acquiring `FOR UPDATE`, or `rewrapDek` never being called — would
+   * otherwise leave `lockAcquired` / `rewrapReached` unresolved
+   * forever.
+   */
+  async function raceWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    label: string,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`),
+            );
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Poll pg_stat_activity until the given backend enters a Lock
+   * wait state. Uses a fresh client from the customer pool so the
+   * polling cannot itself be blocked by the contended lock. The
+   * internal timeout sits comfortably below the per-test Vitest
+   * timeout so a missing lock-wait surfaces as this assertion rather
+   * than as a generic runner timeout.
+   */
+  async function waitForLockWait(pid: number, label: string): Promise<void> {
+    const start = Date.now();
+    const timeoutMs = CONCURRENCY_INTERNAL_TIMEOUT_MS;
+    for (;;) {
+      const r = await customerPool.query<{
+        wait_event_type: string | null;
+        state: string | null;
+      }>("SELECT wait_event_type, state FROM pg_stat_activity WHERE pid = $1", [
+        pid,
+      ]);
+      if (r.rows[0]?.wait_event_type === "Lock") return;
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(
+          `Timed out after ${timeoutMs}ms waiting for ${label} (pid=${pid}) to enter Lock wait state; current=${JSON.stringify(r.rows[0] ?? null)}`,
+        );
+      }
+      await new Promise((res) => setImmediate(res));
+    }
+  }
+
+  it(
+    "FK row-lock invariant: concurrent INSERT into story_member against locked parent blocks then fails with 23503",
+    async () => {
+      // Per-test timeout: see CONCURRENCY_TEST_TIMEOUT_MS comment.
+      const customerId = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+      await seedPolicy(customerId, "fk-story", 365, 1095);
+
+      await customerPool.query(
+        `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (1, 'v', 'auto_correlated', NOW(), NOW(), '{}', 'aice-fk', $1)`,
+        [daysAgo(400)],
+      );
+      await customerPool.query(
+        `INSERT INTO story_member
+         (story_id, story_version, member_event_key, role, event)
+       VALUES (1, 'v', 11, 'primary', '{}')`,
+      );
+
+      const lockAcquired = createDeferred<void>();
+      const release = createDeferred<void>();
+
+      // Hoisted outside the try so `finally` can await in-flight workers
+      // before releasing the underlying clients. If an assertion throws
+      // before the normal `await sweepPromise` path runs (e.g. the
+      // lock-wait poll times out), we still need to drain the started
+      // promises so the sweeper and the competing INSERT do not race
+      // into subsequent tests.
+      let startedSweep: Promise<unknown> | null = null;
+      let clientBPromise: Promise<unknown> | null = null;
+      let clientB: PoolClient | null = null;
+      const errorHolder: {
+        value: { code?: string; message: string } | null;
+      } = { value: null };
+      // Tracks query-order regressions: if the child COUNT(*) on
+      // story_member runs before the parent FOR UPDATE on story, the
+      // lock-then-count pattern has been defeated and we record a
+      // violation. Asserted at the end of the test.
+      const orderViolations: string[] = [];
+
+      try {
+        async function barrieredConnect() {
+          const client = await customerPool.connect();
+          let signaled = false;
+          let parentLocked = false;
+          const wrapped = (async (sql: string, params?: unknown[]) => {
+            const text = String(sql);
+            const isParentLock =
+              /FROM\s+story\b/i.test(text) &&
+              /FOR UPDATE/i.test(text) &&
+              !/story_member/i.test(text);
+            const isChildCount =
+              /FROM\s+story_member\b/i.test(text) && /COUNT\(\*\)/i.test(text);
+            if (isChildCount && !parentLocked) {
+              orderViolations.push(
+                "story_member COUNT(*) ran before story FOR UPDATE",
+              );
+            }
+            const result = await (
+              client.query as (s: string, p?: unknown[]) => Promise<unknown>
+            )(sql, params);
+            if (isParentLock) {
+              parentLocked = true;
+              if (!signaled) {
+                signaled = true;
+                lockAcquired.resolve();
+                await release.promise;
+              }
+            }
+            return result;
+          }) as unknown as PoolClient["query"];
+          return {
+            query: wrapped,
+            end: async () => {
+              client.release();
+            },
+          };
+        }
+
+        const sweepPromise = sweepCustomer(
+          customerId,
+          { ingestion_days: 365, analysis_days: 1095 },
+          { authPool, connectCustomer: barrieredConnect },
+          NOW,
+        );
+        startedSweep = sweepPromise;
+
+        // Bounded wait so a regression that removes `FOR UPDATE` from
+        // the parent-lock step fails with a descriptive assertion
+        // before the per-test Vitest timeout (which would otherwise
+        // skip the `finally` cleanup).
+        await raceWithTimeout(
+          lockAcquired.promise,
+          CONCURRENCY_INTERNAL_TIMEOUT_MS,
+          "sweepCustomer to issue parent FOR UPDATE on story",
+        );
+
+        clientB = await customerPool.connect();
+        const { rows: pidRows } = await clientB.query<{
+          pid: number;
+        }>("SELECT pg_backend_pid()::int AS pid");
+        const clientBPid = pidRows[0].pid;
+        // Run client B inside an explicit transaction so the INSERT
+        // statement itself blocks on the FK row-lock (IMMEDIATE FK
+        // check). Under DEFERRABLE INITIALLY DEFERRED the FK check
+        // would be queued for COMMIT and the INSERT would return
+        // immediately — `waitForLockWait` below would time out, which
+        // is exactly the failure mode we want for that regression.
+        await clientB.query("BEGIN");
+        clientBPromise = clientB
+          .query(
+            `INSERT INTO story_member
+             (story_id, story_version, member_event_key, role, event)
+           VALUES (1, 'v', 99, 'context', '{}')`,
+          )
+          .catch((err: { code?: string; message?: string }) => {
+            errorHolder.value = {
+              code: err.code,
+              message: err.message ?? String(err),
+            };
+          });
+
+        await waitForLockWait(clientBPid, "story_member INSERT");
+
+        release.resolve();
+
+        const outcome = await sweepPromise;
+        expect(outcome.status).toBe("completed");
+        // The pre-existing child was CASCADE-counted; the concurrent
+        // insert never landed because its FK check unblocked only after
+        // the parent was already gone.
+        expect(outcome.counts.story).toBe(1);
+        expect(outcome.counts.story_member).toBe(1);
+
+        await clientBPromise;
+        expect(errorHolder.value?.code).toBe("23503");
+
+        // Catches a reorder that moves the child COUNT(*) above the
+        // parent FOR UPDATE — see issue #261 acceptance.
+        expect(orderViolations).toEqual([]);
+
+        const { rows: members } = await customerPool.query<{ c: string }>(
+          "SELECT COUNT(*) AS c FROM story_member",
+        );
+        expect(members[0].c).toBe("0");
+
+        const { rows: auditRows } = await auditPool.query<{
+          action: string;
+          details: { deleted_by_table?: { story_member?: number } };
+        }>(
+          `SELECT action, details FROM audit_logs
+          WHERE target_id = $1
+          ORDER BY id`,
+          [customerId],
+        );
+        const completed = auditRows.find(
+          (r) => r.action === "retention_sweep.tick_completed",
+        );
+        expect(completed?.details.deleted_by_table?.story_member).toBe(1);
+      } finally {
+        // If an assertion threw before release.resolve(), unblock the
+        // sweeper so the customer pool can close cleanly, then drain any
+        // in-flight worker / competing-INSERT promises before releasing
+        // clientB. Without this, a failing assertion (e.g.
+        // `waitForLockWait` timing out because the sweeper no longer
+        // blocks) would leak the sweepCustomer transaction into
+        // subsequent tests.
+        release.resolve();
+        const inFlight: Promise<unknown>[] = [];
+        if (startedSweep) inFlight.push(startedSweep);
+        if (clientBPromise) inFlight.push(clientBPromise);
+        if (inFlight.length > 0) await Promise.allSettled(inFlight);
+        if (clientB) {
+          await clientB.query("ROLLBACK").catch(() => {});
+          clientB.release();
+        }
+      }
+    },
+    CONCURRENCY_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "FK row-lock invariant: concurrent INSERT into policy_event against locked parent blocks then fails with 23503",
+    async () => {
+      // Per-test timeout: see CONCURRENCY_TEST_TIMEOUT_MS comment.
+      const customerId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+      await seedPolicy(customerId, "fk-policy", 365, 1095);
+
+      await customerPool.query(
+        `INSERT INTO policy_run
+         (run_id, period_start, period_end, created_at_source,
+          baseline_version, policies_fingerprint, exclusions_fingerprint,
+          status, source_aice_id, received_at)
+       VALUES (10, NOW(), NOW(), NOW(), 'v', 'p', 'e', 'ready', 'aice-fk', $1)`,
+        [daysAgo(400)],
+      );
+      await customerPool.query(
+        `INSERT INTO policy_event
+         (run_id, event_key, event_time, kind, policy_triage_snapshot)
+       VALUES (10, 11, NOW(), 'http', '{}')`,
+      );
+
+      const lockAcquired = createDeferred<void>();
+      const release = createDeferred<void>();
+
+      // See story-cascade test above: hoisting startedSweep /
+      // clientBPromise outside the try lets `finally` await in-flight
+      // workers before releasing the underlying clients.
+      let startedSweep: Promise<unknown> | null = null;
+      let clientBPromise: Promise<unknown> | null = null;
+      let clientB: PoolClient | null = null;
+      const errorHolder: {
+        value: { code?: string; message: string } | null;
+      } = { value: null };
+      const orderViolations: string[] = [];
+
+      try {
+        async function barrieredConnect() {
+          const client = await customerPool.connect();
+          let signaled = false;
+          let parentLocked = false;
+          const wrapped = (async (sql: string, params?: unknown[]) => {
+            const text = String(sql);
+            const isParentLock =
+              /FROM\s+policy_run\b/i.test(text) &&
+              /FOR UPDATE/i.test(text) &&
+              !/policy_event/i.test(text);
+            const isChildCount =
+              /FROM\s+policy_event\b/i.test(text) && /COUNT\(\*\)/i.test(text);
+            if (isChildCount && !parentLocked) {
+              orderViolations.push(
+                "policy_event COUNT(*) ran before policy_run FOR UPDATE",
+              );
+            }
+            const result = await (
+              client.query as (s: string, p?: unknown[]) => Promise<unknown>
+            )(sql, params);
+            if (isParentLock) {
+              parentLocked = true;
+              if (!signaled) {
+                signaled = true;
+                lockAcquired.resolve();
+                await release.promise;
+              }
+            }
+            return result;
+          }) as unknown as PoolClient["query"];
+          return {
+            query: wrapped,
+            end: async () => {
+              client.release();
+            },
+          };
+        }
+
+        const sweepPromise = sweepCustomer(
+          customerId,
+          { ingestion_days: 365, analysis_days: 1095 },
+          { authPool, connectCustomer: barrieredConnect },
+          NOW,
+        );
+        startedSweep = sweepPromise;
+
+        // Bounded wait so a regression that removes `FOR UPDATE` from
+        // the parent-lock step fails with a descriptive assertion
+        // before the per-test Vitest timeout (which would otherwise
+        // skip the `finally` cleanup).
+        await raceWithTimeout(
+          lockAcquired.promise,
+          CONCURRENCY_INTERNAL_TIMEOUT_MS,
+          "sweepCustomer to issue parent FOR UPDATE on policy_run",
+        );
+
+        clientB = await customerPool.connect();
+        const { rows: pidRows } = await clientB.query<{
+          pid: number;
+        }>("SELECT pg_backend_pid()::int AS pid");
+        const clientBPid = pidRows[0].pid;
+        // Explicit transaction (see story-cascade test): catches a
+        // regression that switches the FK to DEFERRABLE INITIALLY
+        // DEFERRED. Under IMMEDIATE, the INSERT itself blocks on the
+        // parent row-lock; under DEFERRED, it would return immediately
+        // and the lock-wait poll below would time out.
+        await clientB.query("BEGIN");
+        clientBPromise = clientB
+          .query(
+            `INSERT INTO policy_event
+             (run_id, event_key, event_time, kind, policy_triage_snapshot)
+           VALUES (10, 99, NOW(), 'http', '{}')`,
+          )
+          .catch((err: { code?: string; message?: string }) => {
+            errorHolder.value = {
+              code: err.code,
+              message: err.message ?? String(err),
+            };
+          });
+
+        await waitForLockWait(clientBPid, "policy_event INSERT");
+
+        release.resolve();
+
+        const outcome = await sweepPromise;
+        expect(outcome.status).toBe("completed");
+        expect(outcome.counts.policy_run).toBe(1);
+        expect(outcome.counts.policy_event).toBe(1);
+
+        await clientBPromise;
+        expect(errorHolder.value?.code).toBe("23503");
+
+        expect(orderViolations).toEqual([]);
+
+        const { rows: events } = await customerPool.query<{ c: string }>(
+          "SELECT COUNT(*) AS c FROM policy_event",
+        );
+        expect(events[0].c).toBe("0");
+
+        const { rows: auditRows } = await auditPool.query<{
+          action: string;
+          details: { deleted_by_table?: { policy_event?: number } };
+        }>(
+          `SELECT action, details FROM audit_logs
+          WHERE target_id = $1
+          ORDER BY id`,
+          [customerId],
+        );
+        const completed = auditRows.find(
+          (r) => r.action === "retention_sweep.tick_completed",
+        );
+        expect(completed?.details.deleted_by_table?.policy_event).toBe(1);
+      } finally {
+        release.resolve();
+        const inFlight: Promise<unknown>[] = [];
+        if (startedSweep) inFlight.push(startedSweep);
+        if (clientBPromise) inFlight.push(clientBPromise);
+        if (inFlight.length > 0) await Promise.allSettled(inFlight);
+        if (clientB) {
+          await clientB.query("ROLLBACK").catch(() => {});
+          clientB.release();
+        }
+      }
+    },
+    CONCURRENCY_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "KEK rotation × sweeper: sweeper blocks on rotation's row locks, both commit without corruption",
+    async () => {
+      // Per-test timeout: see CONCURRENCY_TEST_TIMEOUT_MS comment.
+      const customerId = "12121212-1212-1212-1212-121212121212";
+      await seedPolicy(customerId, "rot-sweep", 365, 1095);
+
+      // Class R rows must remain (have an event_analysis_result with a
+      // recent requested_at). Class S rows must be deleted (no
+      // referent). PK order chosen so R/S interleave inside the
+      // rotation's batch:
+      //   ('aice-001', 1) R, ('aice-002', 1) S, ('aice-003', 1) R, ('aice-004', 1) S
+      // Per-row wrapped_dek identities so a row-level mixup in the
+      // rotation's UPDATE (e.g. swapping rows in the loop) would
+      // surface as wrong ciphertext-to-wrapped_dek pairing in the
+      // assertions below. Pairing convention: ciphertext byte X
+      // corresponds to wrap-v1-X / wrap-v2-X after rotation.
+      await customerPool.query(
+        `INSERT INTO event_redaction_map (aice_id, event_key, ciphertext, wrapped_dek)
+       VALUES ('aice-001', 1, decode('aa','hex'), 'wrap-v1-aa'),
+              ('aice-002', 1, decode('bb','hex'), 'wrap-v1-bb'),
+              ('aice-003', 1, decode('cc','hex'), 'wrap-v1-cc'),
+              ('aice-004', 1, decode('dd','hex'), 'wrap-v1-dd')`,
+      );
+      await customerPool.query(
+        `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          threat_score, analysis_text, redaction_policy_version,
+          requested_by, requested_at)
+       VALUES ('aice-001', 1, 'EN', 'openai', 'gpt-4o', 0, '', 'p',
+               '00000000-0000-0000-0000-000000000000'::uuid, $1),
+              ('aice-003', 1, 'EN', 'openai', 'gpt-4o', 0, '', 'p',
+               '00000000-0000-0000-0000-000000000000'::uuid, $1)`,
+        [daysAgo(5)],
+      );
+
+      const rewrapBarrier = createDeferred<void>();
+      const rewrapReached = createDeferred<void>();
+      let rewrapCallCount = 0;
+
+      // Rotation runs on its own dedicated PoolClient — must hold one
+      // connection for the duration of the batch transaction so the
+      // FOR UPDATE locks survive until COMMIT.
+      const rotationClient = await customerPool.connect();
+      // Sweeper PID will be captured the first time its connect wrapper
+      // returns. We rely on the wrapper running BEFORE the sweeper enters
+      // the cascade query, so pg_stat_activity can find the right pid.
+      let sweeperPid: number | null = null;
+
+      // Hoisted outside the try so `finally` can drain in-flight workers
+      // before releasing `rotationClient`. Releasing the underlying
+      // client while `rotateAllKeks` is still running queries through it
+      // (e.g. if `waitForLockWait` for the sweeper times out before the
+      // barrier is released) would race a connection back into the pool
+      // mid-transaction.
+      let startedRotation: Promise<unknown> | null = null;
+      let startedSweep: Promise<unknown> | null = null;
+
+      try {
+        async function sweeperConnect() {
+          const client = await customerPool.connect();
+          const { rows } = await client.query<{ pid: number }>(
+            "SELECT pg_backend_pid()::int AS pid",
+          );
+          sweeperPid = rows[0].pid;
+          return {
+            query: client.query.bind(client) as PoolClient["query"],
+            end: async () => {
+              client.release();
+            },
+          };
+        }
+
+        const rotationPromise = rotateAllKeks(authPool, {
+          transitConfig: { addr: "http://stub", token: "stub" },
+          ownerTemplateUrl: "postgres://unused",
+          rotateKey: async () => {},
+          rewrapDek: async (
+            _cfg: unknown,
+            _key: string,
+            wrapped: string,
+          ): Promise<string> => {
+            rewrapCallCount++;
+            if (rewrapCallCount === 1) {
+              rewrapReached.resolve();
+              await rewrapBarrier.promise;
+            }
+            // Preserve per-row identity so the test can verify each
+            // retained row carries its own post-rotation wrapped_dek
+            // (no cross-row mixup in the UPDATE loop).
+            return wrapped.replace("v1", "v2");
+          },
+          connectCustomerDb: async () => ({
+            query: rotationClient.query.bind(rotationClient) as Pool["query"],
+            end: async () => {
+              // Connection is released by the test's finally block —
+              // rotateAllKeks's per-customer finally only ends the
+              // wrapper, not the underlying PoolClient.
+            },
+          }),
+          clearCache: () => {},
+        });
+        startedRotation = rotationPromise;
+
+        // Wait until rotation parks inside its barrier, holding FOR
+        // UPDATE locks on all four seeded rows. Bounded so a
+        // regression where `rewrapDek` is never invoked (e.g. the
+        // rotation cursor returns nothing because `FOR UPDATE` was
+        // dropped from the rotation query) surfaces as a descriptive
+        // assertion that still hits `finally`, not as a generic Vitest
+        // timeout.
+        await raceWithTimeout(
+          rewrapReached.promise,
+          CONCURRENCY_INTERNAL_TIMEOUT_MS,
+          "rotateAllKeks to reach rewrapDek barrier",
+        );
+
+        const sweepPromise = sweepCustomer(
+          customerId,
+          { ingestion_days: 365, analysis_days: 1095 },
+          { authPool, connectCustomer: sweeperConnect },
+          NOW,
+        );
+        startedSweep = sweepPromise;
+
+        // Poll until the sweeper backend reaches Lock wait state. The
+        // sweep's transaction has BEGIN'd, acquired the advisory lock,
+        // walked through the empty per-table sweeps, and is now blocked
+        // on the event_redaction_map cascade FOR UPDATE OF m.
+        // sweeperPid is set the moment connectCustomer resolves, which
+        // happens before any sweep query is issued.
+        while (sweeperPid == null) {
+          await new Promise((r) => setImmediate(r));
+        }
+        await waitForLockWait(sweeperPid, "sweepCustomer event_redaction_map");
+
+        // Release the rotation barrier. Rotation rewraps the remaining
+        // rows, UPDATEs them, COMMITs, then sweeper unblocks and
+        // proceeds with its cascade DELETE.
+        rewrapBarrier.resolve();
+
+        const rotationResult = await rotationPromise;
+        expect(rotationResult.customersErrored).toBe(0);
+        expect(rotationResult.eventDeksRewrapped).toBe(4);
+
+        const sweepOutcome = await sweepPromise;
+        expect(sweepOutcome.status).toBe("completed");
+        expect(sweepOutcome.counts.event_redaction_map).toBe(2);
+
+        // Class R rows: still present, wrapped_dek bumped to v2,
+        // ciphertext untouched (rotation does not rewrite ciphertext).
+        const { rows: remaining } = await customerPool.query<{
+          aice_id: string;
+          wrapped_dek: string;
+          ciphertext_hex: string;
+        }>(
+          `SELECT aice_id, wrapped_dek, encode(ciphertext, 'hex') AS ciphertext_hex
+           FROM event_redaction_map
+          ORDER BY aice_id, event_key`,
+        );
+        expect(remaining.map((r) => r.aice_id)).toEqual([
+          "aice-001",
+          "aice-003",
+        ]);
+        // Each retained row must be paired with its OWN post-rotation
+        // wrapped_dek — a row-level mixup in the rotation's UPDATE
+        // loop would surface here as e.g. aice-001 carrying
+        // wrap-v2-cc instead of wrap-v2-aa.
+        const byAice = Object.fromEntries(
+          remaining.map((r) => [
+            r.aice_id,
+            { wrapped_dek: r.wrapped_dek, ciphertext_hex: r.ciphertext_hex },
+          ]),
+        );
+        expect(byAice["aice-001"]).toEqual({
+          wrapped_dek: "wrap-v2-aa",
+          ciphertext_hex: "aa",
+        });
+        expect(byAice["aice-003"]).toEqual({
+          wrapped_dek: "wrap-v2-cc",
+          ciphertext_hex: "cc",
+        });
+
+        const { rows: auditRows } = await auditPool.query<{
+          action: string;
+          details: { deleted_by_table?: { event_redaction_map?: number } };
+        }>(
+          `SELECT action, details FROM audit_logs
+          WHERE target_id = $1
+          ORDER BY id`,
+          [customerId],
+        );
+        const actions = auditRows.map((r) => r.action);
+        expect(actions).toContain("retention_sweep.tick_started");
+        expect(actions).toContain("retention_sweep.tick_completed");
+        expect(actions).not.toContain("retention_sweep.tick_failed");
+        const completed = auditRows.find(
+          (r) => r.action === "retention_sweep.tick_completed",
+        );
+        expect(completed?.details.deleted_by_table?.event_redaction_map).toBe(
+          2,
+        );
+      } finally {
+        // Unblock anything still parked at the barrier, then drain any
+        // in-flight rotation / sweep promises before releasing
+        // `rotationClient`. Releasing the underlying client while
+        // `rotateAllKeks` is still using it (e.g. if `waitForLockWait`
+        // for the sweeper threw after rotation started) would race a
+        // mid-transaction connection back into the pool.
+        rewrapBarrier.resolve();
+        const inFlight: Promise<unknown>[] = [];
+        if (startedRotation) inFlight.push(startedRotation);
+        if (startedSweep) inFlight.push(startedSweep);
+        if (inFlight.length > 0) await Promise.allSettled(inFlight);
+        rotationClient.release();
+      }
+    },
+    CONCURRENCY_TEST_TIMEOUT_MS,
+  );
 });
