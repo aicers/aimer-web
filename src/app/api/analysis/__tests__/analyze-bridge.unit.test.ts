@@ -221,6 +221,30 @@ describe("POST /api/analysis/analyze-bridge", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects signed non-canonical event_key without inserting a PAR", async () => {
+    mockVerifyAnalyzeParamsToken.mockResolvedValue({
+      ...validParams,
+      eventKey: "01",
+    });
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("invalid_analyze_params_token");
+    expect(mockCreatePendingConnection).not.toHaveBeenCalled();
+    expect(mockCreatePAR).not.toHaveBeenCalled();
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+  });
+
+  it("rejects signed non-numeric event_key without inserting a PAR", async () => {
+    mockVerifyAnalyzeParamsToken.mockResolvedValue({
+      ...validParams,
+      eventKey: "abc",
+    });
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(400);
+    expect(mockCreatePAR).not.toHaveBeenCalled();
+  });
+
   it("oversized events_data surfaces event_data_too_large (413), not invalid_events_envelope (400)", async () => {
     const { PayloadTooLargeError } = await import("@/lib/auth/errors");
     mockVerifyEventsEnvelope.mockRejectedValue(

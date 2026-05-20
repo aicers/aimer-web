@@ -32,6 +32,7 @@ import {
 import { tryLoadGeneralSession } from "@/lib/auth/guards";
 import { extractRequestMeta } from "@/lib/auth/request-meta";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { eventKeyString } from "@/lib/event-key";
 
 interface ParsedMultipart {
   contextToken: string;
@@ -195,6 +196,23 @@ async function verifyAll(
     return {
       kind: "invalid_analyze_params_token",
       detail: `lang must be one of ${LANG_VALUES.join(", ")}`,
+      contextClaims,
+    };
+  }
+  // The JSON `/api/analysis/analyze` route validates `event_key`
+  // against the canonical NUMERIC(39,0) string shape via Zod
+  // (`eventKeyString`). The bridge token verifier only enforces
+  // non-empty string, so apply the same canonical check here before
+  // anything writes a PAR or runs the flow — otherwise a signed but
+  // non-canonical value (`"01"`, `"abc"`, 40 digits, …) would only
+  // surface as a `$2::numeric` cast error deep inside
+  // `runAnalyzeFlow`, after a PAR row has already been persisted and
+  // (post-OIDC) potentially claimed `processing`.
+  const eventKeyCheck = eventKeyString.safeParse(paramsClaims.eventKey);
+  if (!eventKeyCheck.success) {
+    return {
+      kind: "invalid_analyze_params_token",
+      detail: "event_key is not a canonical NUMERIC(39,0) string",
       contextClaims,
     };
   }

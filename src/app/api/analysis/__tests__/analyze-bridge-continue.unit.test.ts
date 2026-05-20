@@ -116,6 +116,8 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     });
     mockAuthorize.mockResolvedValue({ authorized: true });
     mockClaimPAR.mockResolvedValue(true);
+    mockMarkConsumed.mockResolvedValue(true);
+    mockMarkFailed.mockResolvedValue(true);
   });
 
   it("returns 404 when id is missing", async () => {
@@ -260,5 +262,67 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     const res = await callGET(makeRequest("par-1"));
     expect(res.status).toBe(202);
     expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+  });
+
+  it("markPARConsumed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired, not success", async () => {
+    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const plaintext = Buffer.from(eventDataJson, "utf8");
+    const { createHash } = await import("node:crypto");
+    const computedHash = createHash("sha256")
+      .update(plaintext)
+      .digest("base64url");
+    mockLoadPAR
+      // Initial load — claim took processing.
+      .mockResolvedValueOnce({ ...basePAR, payloadHash: computedHash })
+      // Reload after markPARConsumed=false — cleanup flipped it to expired.
+      .mockResolvedValueOnce({
+        ...basePAR,
+        payloadHash: computedHash,
+        status: "expired",
+      });
+    mockDecryptPayload.mockResolvedValue(plaintext);
+    mockRunAnalyzeFlow.mockResolvedValue({
+      kind: "success",
+      viewUrl: "http://example.com/view",
+      cached: false,
+      customerId: "cust-1",
+    });
+    mockMarkConsumed.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(res.headers.get("location")).toBeNull();
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_executed" }),
+    );
+  });
+
+  it("markPARFailed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired", async () => {
+    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const plaintext = Buffer.from(eventDataJson, "utf8");
+    const { createHash } = await import("node:crypto");
+    const computedHash = createHash("sha256")
+      .update(plaintext)
+      .digest("base64url");
+    mockLoadPAR
+      .mockResolvedValueOnce({ ...basePAR, payloadHash: computedHash })
+      .mockResolvedValueOnce({
+        ...basePAR,
+        payloadHash: computedHash,
+        status: "expired",
+      });
+    mockDecryptPayload.mockResolvedValue(plaintext);
+    mockRunAnalyzeFlow.mockResolvedValue({
+      kind: "error",
+      errorCode: "aimer_unavailable",
+      message: "down",
+    });
+    mockMarkFailed.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_failed" }),
+    );
   });
 });

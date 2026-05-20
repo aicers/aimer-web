@@ -163,7 +163,15 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
 
     const authPool = getAuthPool();
     if (result.kind === "error") {
-      await markPARFailed(authPool, par.id, result.errorCode);
+      const updated = await markPARFailed(authPool, par.id, result.errorCode);
+      if (!updated) {
+        // The row left `pending`/`processing` between claim and terminal
+        // CAS — most commonly because the cleanup sweep flipped it to
+        // `expired` while `runAnalyzeFlow` was running. Re-read and
+        // dispatch on the new state so the response matches what a
+        // reload would show.
+        return await handleTerminalCASFalse(par.id, auth);
+      }
       void auditLog({
         actorId: auth.accountId,
         authContext: "general",
@@ -181,7 +189,15 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       return renderAnalyzeBridgeErrorPage(result.errorCode, result.message);
     }
 
-    await markPARConsumed(authPool, par.id, result.viewUrl);
+    const consumed = await markPARConsumed(authPool, par.id, result.viewUrl);
+    if (!consumed) {
+      // Same race as above on the success path. `runAnalyzeFlow` did
+      // complete and a `view_url` exists, but the PAR row has already
+      // left `processing` — most likely `expired` by the cleanup sweep.
+      // Honour the row's authoritative state rather than asserting
+      // success the reload would not reproduce.
+      return await handleTerminalCASFalse(par.id, auth);
+    }
     void auditLog({
       actorId: auth.accountId,
       authContext: "general",
@@ -200,6 +216,27 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
     return NextResponse.redirect(result.viewUrl, 302);
   });
 });
+
+/**
+ * Re-read the PAR and dispatch on its new status after a terminal
+ * `markPARConsumed`/`markPARFailed` CAS returned false. The row could
+ * be `expired` (cleanup sweep won the race), `consumed`/`failed`
+ * (another tick latched a result first), or, in pathological cases,
+ * gone entirely.
+ */
+async function handleTerminalCASFalse(
+  parId: string,
+  auth: AuthenticatedRequest,
+): Promise<Response> {
+  const reloaded = await loadPendingAnalysisRequest(getAuthPool(), parId);
+  if (!reloaded) return renderAnalyzeBridgeNotFoundPage();
+  const dispatched = await dispatchStatus(reloaded, auth);
+  if (dispatched) return dispatched;
+  // Still `pending` is structurally impossible — we just took the
+  // `processing` claim ourselves — but render the in-progress page as
+  // a safe default so we never echo a stale `view_url`.
+  return renderAnalyzeBridgeInProgressPage();
+}
 
 /**
  * Resolve the PAR's customer by `external_key` and run the same
