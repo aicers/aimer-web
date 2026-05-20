@@ -35,17 +35,19 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "SELECT version FROM _migrations ORDER BY version",
     );
     // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
-    // 0003_redaction_foundation, 0004_retention_sweeper_support
+    // 0003_redaction_foundation, 0004_retention_sweeper_support,
+    // 0005_drop_analysis_narrative
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
       "0002",
       "0003",
       "0004",
+      "0005",
     ]);
   });
 
-  it("creates all six Phase 2 tables", async () => {
+  it("creates the five remaining Phase 2 tables (analysis_narrative dropped in 0005)", async () => {
     const { rows } = await pool.query(`
       SELECT table_name
       FROM information_schema.tables
@@ -61,13 +63,19 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       ORDER BY table_name
     `);
     expect(rows.map((r) => r.table_name)).toEqual([
-      "analysis_narrative",
       "baseline_event",
       "policy_event",
       "policy_run",
       "story",
       "story_member",
     ]);
+  });
+
+  it("drops analysis_narrative (RFC 0001 §'analysis_narrative retirement')", async () => {
+    const { rows } = await pool.query(
+      `SELECT to_regclass('public.analysis_narrative') AS table_oid`,
+    );
+    expect(rows[0].table_oid).toBeNull();
   });
 
   it("creates the redaction foundation tables", async () => {
@@ -438,31 +446,6 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
         );
       }
     });
-
-    it("accepts an analysis_narrative row", async () => {
-      await pool.query(
-        `INSERT INTO analysis_narrative (
-          content_hash, target_kind, target_keys, narrative,
-          prompt_version, model_version
-        ) VALUES (
-          'hash-1', 'story', '{"story_id":1}'::jsonb, 'narrative text',
-          'p-v1', 'm-v1'
-        )`,
-      );
-    });
-
-    it("rejects analysis_narrative.target_kind outside the allowed set", async () => {
-      await expect(
-        pool.query(
-          `INSERT INTO analysis_narrative (
-            content_hash, target_kind, target_keys, narrative,
-            prompt_version, model_version
-          ) VALUES (
-            'hash-bad', 'invalid', '{}'::jsonb, 'n', 'pv', 'mv'
-          )`,
-        ),
-      ).rejects.toThrow();
-    });
   });
 
   // -- FK cascades + soft references --
@@ -593,7 +576,6 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "story_member",
       "policy_run",
       "policy_event",
-      "analysis_narrative",
     ];
 
     it("can SELECT on all Phase 2 tables", async () => {
@@ -654,25 +636,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
         ) VALUES (900, 1, NOW(), 'http', '[]'::jsonb)`,
       );
 
-      await rolePool.query(
-        `INSERT INTO analysis_narrative (
-          content_hash, target_kind, target_keys, narrative,
-          prompt_version, model_version
-        ) VALUES (
-          'role-test-hash', 'story', '{"story_id":900}'::jsonb, 'n',
-          'pv', 'mv'
-        )`,
-      );
-
       // DELETE children directly to confirm the DELETE grant on each
       // child table (not just the cascade from the parent).
       await rolePool.query(
         "DELETE FROM story_member WHERE story_id = 900 AND story_version = 'role-test'",
       );
       await rolePool.query("DELETE FROM policy_event WHERE run_id = 900");
-      await rolePool.query(
-        "DELETE FROM analysis_narrative WHERE content_hash = 'role-test-hash'",
-      );
       await rolePool.query(
         "DELETE FROM baseline_event WHERE baseline_version = 'role-test'",
       );
@@ -692,7 +661,6 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
         story_member: "role",
         policy_run: "source_aice_id",
         policy_event: "kind",
-        analysis_narrative: "narrative",
       };
       for (const table of phase2Tables) {
         await expect(

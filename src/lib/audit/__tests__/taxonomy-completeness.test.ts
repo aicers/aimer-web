@@ -94,9 +94,16 @@ const PRODUCED: Record<string, string> = {
   "phase2.withdraw": "src/app/api/phase2/withdraw/route.ts",
   "phase2.refresh_window": "src/app/api/phase2/refresh-window/route.ts",
   "phase2.backfill": "src/app/api/phase2/backfill/route.ts",
-  // Redaction (emitted by both Phase 1 approve and Phase 2 handler)
+  // AI analysis (emitted by POST /api/analysis/analyze)
+  "ai_analysis.request_issued": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.result_stored": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.aimer_call_failed": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.hallucination_detected": "src/app/api/analysis/analyze/route.ts",
+  // Redaction (emitted by Phase 1 approve, Phase 2 handler, and the
+  // analyze route's local-redaction catch)
   "redaction.injectivity_violation":
     "src/app/api/events/staged/[payloadId]/customers/[customerId]/route.ts",
+  "redaction.engine_error": "src/app/api/analysis/analyze/route.ts",
   // AICE environment management (guard-level)
   "environment.created": "src/app/api/admin/environments/route.ts",
   "environment.updated": "src/app/api/admin/environments/[aiceId]/route.ts",
@@ -160,11 +167,6 @@ const NOT_YET_PRODUCED: Set<AuditAction> = new Set([
   "customer_db.provision_retried",
   // Detection events — transfer_completed not yet wired
   "detection_events.transfer_completed",
-  // Redaction — engine_error is taxonomy-only; injectivity_violation
-  // is the load-bearing failure signal. Move to PRODUCED if a future
-  // change adds a per-event try/catch around redact() that distinguishes
-  // engine throws from referent insert failures.
-  "redaction.engine_error",
   // System — policy_changed not yet distinct from settings_updated
   "system.policy_changed",
 ]);
@@ -194,6 +196,7 @@ const REQUIRED_CATEGORIES = [
   "retention_sweep",
   "audit",
   "redaction",
+  "ai_analysis",
 ];
 
 /** Categories whose routes are built and must have at least one producer. */
@@ -215,6 +218,7 @@ const PRODUCED_CATEGORIES = [
   "retention_sweep",
   "audit",
   "redaction",
+  "ai_analysis",
 ];
 
 // ---------------------------------------------------------------------------

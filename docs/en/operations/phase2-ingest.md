@@ -189,10 +189,6 @@ error. FK cascade automatically removes `policy_event` children of a
 withdrawn `policy_run` and `story_member` children of a withdrawn
 `story`; the route does not issue explicit child-table DELETEs.
 
-`analysis_narrative` rows whose target was withdrawn are NOT
-automatically removed — they age out via aimer-web retention
-(RFC 0002 §6 withdraw).
-
 The Zod schema additionally rejects (with `400
 payload_schema_invalid`) payloads that combine `{ kind: "policy_run",
 run_id: R }` with any `{ kind: "policy_event", run_id: R, ... }` for

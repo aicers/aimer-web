@@ -107,6 +107,11 @@ export type AuditAction =
   | "phase2.withdraw"
   | "phase2.refresh_window"
   | "phase2.backfill"
+  // AI analysis (POST /api/analysis/analyze)
+  | "ai_analysis.request_issued"
+  | "ai_analysis.result_stored"
+  | "ai_analysis.aimer_call_failed"
+  | "ai_analysis.hallucination_detected"
   // Redaction
   | "redaction.injectivity_violation"
   | "redaction.engine_error"
