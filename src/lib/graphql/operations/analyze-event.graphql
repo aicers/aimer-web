@@ -1,0 +1,11 @@
+mutation AnalyzeEvent(
+  $eventData: JSON!
+  $name: String!
+  $model: String!
+  $lang: Language!
+) {
+  analyzeEvent(eventData: $eventData, name: $name, model: $model, lang: $lang) {
+    threatScore
+    analysis
+  }
+}

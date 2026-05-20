@@ -10,10 +10,8 @@ import {
 import { runMigrations } from "@/lib/db/migrate";
 import {
   type AnalysisLookupResult,
-  type AnalysisNarrativeRow,
   type BaselineEventRow,
   lookupAnalysisForEvent,
-  lookupAnalysisNarrative,
 } from "../lookup";
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -67,35 +65,6 @@ async function insertBaselineRow(
       JSON.stringify(opts.scoring_weights_snapshot ?? {}),
       opts.source_aice_id ?? "aice-1",
       opts.received_at,
-    ],
-  );
-}
-
-async function insertNarrativeRow(
-  pool: Pool,
-  opts: {
-    content_hash: string;
-    target_kind: "baseline_event" | "story" | "policy_run";
-    target_keys: Record<string, string>;
-    narrative?: string;
-    prompt_version?: string;
-    model_version?: string;
-    generated_at: string;
-  },
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO analysis_narrative (
-       content_hash, target_kind, target_keys, narrative,
-       prompt_version, model_version, generated_at
-     ) VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)`,
-    [
-      opts.content_hash,
-      opts.target_kind,
-      JSON.stringify(opts.target_keys),
-      opts.narrative ?? "narrative-body",
-      opts.prompt_version ?? "p1",
-      opts.model_version ?? "m1",
-      opts.generated_at,
     ],
   );
 }
@@ -221,131 +190,13 @@ describe.skipIf(!hasPostgres)("lookupAnalysisForEvent", () => {
     expect(result.row.baseline_version).toBe("vZZ");
     expect(result.row.kind).toBe("from-vZZ");
   });
-});
 
-describe.skipIf(!hasPostgres)("lookupAnalysisNarrative", () => {
-  let dbName: string;
-  let pool: Pool;
-
-  beforeAll(async () => {
-    const db = await createTestDatabase("analysis_lookup_narrative");
-    dbName = db.dbName;
-    pool = db.pool;
-    await runMigrations(pool, CUSTOMER_MIGRATIONS_DIR, LOCK_ID_CUSTOMER);
-  });
-
-  afterAll(async () => {
-    await dropTestDatabase(dbName, pool);
-    await closeAdminPool();
-  });
-
-  it("returns null when no narrative row matches", async () => {
-    const result = await lookupAnalysisNarrative(pool, "baseline_event", {
-      baseline_version: "vNope",
-      event_key: "0",
-    });
-    expect(result).toBeNull();
-  });
-
-  it("returns the matched row when a narrative exists", async () => {
-    await insertNarrativeRow(pool, {
-      content_hash: "hash-be-1",
-      target_kind: "baseline_event",
-      target_keys: { baseline_version: "vA", event_key: "1001" },
-      narrative: "Phase 2 analysis text.",
-      prompt_version: "p1",
-      model_version: "m1",
-      generated_at: "2026-02-10T00:00:00Z",
-    });
-
-    const result = await lookupAnalysisNarrative(pool, "baseline_event", {
-      baseline_version: "vA",
-      event_key: "1001",
-    });
-    expect(result).not.toBeNull();
-    const row = result as AnalysisNarrativeRow;
-    expect(row.content_hash).toBe("hash-be-1");
-    expect(row.target_kind).toBe("baseline_event");
-    expect(row.narrative).toBe("Phase 2 analysis text.");
-    expect(row.generated_at).toBeInstanceOf(Date);
-    // target_keys is intentionally typed `Record<string, unknown>` on the
-    // read side. Tests MAY assert specific string values (the wire
-    // convention is string-only) but MUST NOT cast to narrow the return
-    // type — the asymmetry between input (Record<string, string>) and
-    // output (Record<string, unknown>) is deliberate.
-    expect(row.target_keys.baseline_version).toBe("vA");
-    expect(row.target_keys.event_key).toBe("1001");
-  });
-
-  it("picks the most recent narrative across (prompt_version, model_version) pairs", async () => {
-    const keys = { baseline_version: "vB", event_key: "2002" };
-    await insertNarrativeRow(pool, {
-      content_hash: "hash-old",
-      target_kind: "baseline_event",
-      target_keys: keys,
-      narrative: "old",
-      prompt_version: "p1",
-      model_version: "m1",
-      generated_at: "2026-03-01T00:00:00Z",
-    });
-    await insertNarrativeRow(pool, {
-      content_hash: "hash-new",
-      target_kind: "baseline_event",
-      target_keys: keys,
-      narrative: "new",
-      prompt_version: "p2",
-      model_version: "m2",
-      generated_at: "2026-03-02T00:00:00Z",
-    });
-
-    const result = await lookupAnalysisNarrative(pool, "baseline_event", keys);
-    expect(result).not.toBeNull();
-    expect(result?.content_hash).toBe("hash-new");
-    expect(result?.narrative).toBe("new");
-    expect(result?.prompt_version).toBe("p2");
-    expect(result?.model_version).toBe("m2");
-  });
-
-  it("disambiguates by target_kind when target_keys shapes collide", async () => {
-    // A story_id and a run_id can both be the string "9000" but live under
-    // different target_kind values — JSONB equality alone would match both
-    // if the keys-by-shape were identical, so we ensure the helper's
-    // target_kind filter is doing real work.
-    await insertNarrativeRow(pool, {
-      content_hash: "hash-story-9000",
-      target_kind: "story",
-      target_keys: { story_id: "9000", story_version: "v1" },
-      narrative: "story narrative",
-      generated_at: "2026-04-01T00:00:00Z",
-    });
-    await insertNarrativeRow(pool, {
-      content_hash: "hash-run-9000",
-      target_kind: "policy_run",
-      target_keys: { run_id: "9000" },
-      narrative: "policy_run narrative",
-      generated_at: "2026-04-02T00:00:00Z",
-    });
-
-    const story = await lookupAnalysisNarrative(pool, "story", {
-      story_id: "9000",
-      story_version: "v1",
-    });
-    expect(story?.content_hash).toBe("hash-story-9000");
-    expect(story?.target_kind).toBe("story");
-
-    const run = await lookupAnalysisNarrative(pool, "policy_run", {
-      run_id: "9000",
-    });
-    expect(run?.content_hash).toBe("hash-run-9000");
-    expect(run?.target_kind).toBe("policy_run");
-
-    // Same string id under the wrong kind should miss.
-    const miss = await lookupAnalysisNarrative(pool, "policy_run", {
-      run_id: "9000",
-      // story_version doesn't belong to policy_run; including an
-      // extra key forces JSONB inequality even though the run_id matches.
-      story_version: "v1",
-    });
-    expect(miss).toBeNull();
+  it("does not leak analysis_narrative — the table is dropped in migration 0005", async () => {
+    // Sanity check that the retirement migration ran: the table must not
+    // exist any more. Source of truth for the cache is event_analysis_result.
+    const { rows } = await pool.query(
+      `SELECT to_regclass('public.analysis_narrative') AS table_oid`,
+    );
+    expect(rows[0].table_oid).toBeNull();
   });
 });

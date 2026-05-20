@@ -94,6 +94,11 @@ const PRODUCED: Record<string, string> = {
   "phase2.withdraw": "src/app/api/phase2/withdraw/route.ts",
   "phase2.refresh_window": "src/app/api/phase2/refresh-window/route.ts",
   "phase2.backfill": "src/app/api/phase2/backfill/route.ts",
+  // AI analysis (emitted by POST /api/analysis/analyze)
+  "ai_analysis.request_issued": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.result_stored": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.aimer_call_failed": "src/app/api/analysis/analyze/route.ts",
+  "ai_analysis.hallucination_detected": "src/app/api/analysis/analyze/route.ts",
   // Redaction (emitted by both Phase 1 approve and Phase 2 handler)
   "redaction.injectivity_violation":
     "src/app/api/events/staged/[payloadId]/customers/[customerId]/route.ts",
@@ -194,6 +199,7 @@ const REQUIRED_CATEGORIES = [
   "retention_sweep",
   "audit",
   "redaction",
+  "ai_analysis",
 ];
 
 /** Categories whose routes are built and must have at least one producer. */
@@ -215,6 +221,7 @@ const PRODUCED_CATEGORIES = [
   "retention_sweep",
   "audit",
   "redaction",
+  "ai_analysis",
 ];
 
 // ---------------------------------------------------------------------------

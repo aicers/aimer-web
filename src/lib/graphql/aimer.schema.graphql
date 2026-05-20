@@ -1,0 +1,48 @@
+# Vendored aimer GraphQL SDL (subset required by aimer-web).
+#
+# Source: aimer's exported schema at the pinned server version this PR
+# targets (aimer#384 — `analyzeEvent` stateless resolver). Refreshed
+# manually when aimer ships a schema-affecting change; the contract
+# test in `__tests__/contract.unit.test.ts` parses every checked-in
+# operation against this file so a refresh that breaks an operation
+# fails CI rather than the runtime call.
+#
+# This is intentionally a partial SDL — only the types our committed
+# operations reference are vendored. When future resolvers (e.g.
+# `analyzeStory`) come online, their operation issue adds the
+# matching types here.
+
+"Represents a JSON-encoded payload routed between aimer-web and aimer."
+scalar JSON
+
+"User-selected output language for analysis text."
+enum Language {
+  KOREAN
+  ENGLISH
+}
+
+"Stateless threat analysis result for a single event."
+type AnalysisResult {
+  "Risk score in [0.0, 1.0]; higher means more suspicious."
+  threatScore: Float!
+  "LLM-authored analysis text; may contain redaction tokens that aimer-web restores at render time."
+  analysis: String!
+}
+
+type Mutation {
+  "Analyze a single event. Stateless — aimer-web is the source of truth for redaction."
+  analyzeEvent(
+    eventData: JSON!
+    name: String!
+    model: String!
+    lang: Language!
+  ): AnalysisResult!
+}
+
+# A root Query is required by the GraphQL spec even when unused. The
+# vendored SDL keeps a no-op stub so `buildSchema` parses cleanly; the
+# field is never called from aimer-web.
+type Query {
+  "Schema metadata stub. Not called from aimer-web."
+  _service: String
+}

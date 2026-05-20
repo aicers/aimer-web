@@ -81,24 +81,7 @@ export type AnalysisLookupResult =
  * column and would be cheap to query. The Phase 2 row remains the
  * canonical analysis row by design (RFC 0002 §8); Phase 1 rows are reached
  * only through Phase 1-native surfaces (the Detection bridge audit log, or
- * a future Phase 1 list page) by their internal `detection_events.id`. If
- * #254 (or a later RFC) wants to promote Phase 1 to a first-class analysis
- * source, the path is to add a `"phase1"` variant to the union below — no
- * schema change is needed. The `AnalysisLookupResult` union is shaped to
- * admit that variant without an API break.
- *
- * **Operational meaning of `{ source: "none" }`.** Consumers (the future
- * analysis UI) MUST treat `none` as ambiguous between two cases that v1
- * cannot distinguish:
- *   1. The event was never sent to aimer-web at all.
- *   2. The event was sent via Phase 1 (Detection menu ad-hoc send) but not
- *      via Phase 2 baseline push — the `detection_events` row exists but is
- *      not reachable by `event_key` in v1 (the limitation above).
- * Recommended UI copy: "No baseline analysis available for this event"
- * rather than "Event not found." The first phrasing is true in both cases;
- * the second is misleading in case (2). The plaintext `event_key` column
- * is now present on `detection_events` (#250), so the UI can distinguish
- * cases (1) and (2) once #254 adds a Phase 1 lookup path here.
+ * a future Phase 1 list page) by their internal `detection_events.id`.
  */
 export async function lookupAnalysisForEvent(
   customerPool: Pool,
@@ -129,101 +112,4 @@ export async function lookupAnalysisForEvent(
   );
   if (rows.length === 0) return { source: "none" };
   return { source: "phase2", row: rows[0] as BaselineEventRow };
-}
-
-/**
- * Row returned by {@link lookupAnalysisNarrative}.
- *
- * `target_keys` is typed `Record<string, unknown>` (not `Record<string,
- * string>`) on the read side intentionally: the writer's payload may evolve,
- * and a stricter return type would force callers into unsafe casts. The
- * *input* `targetKeys` parameter on {@link lookupAnalysisNarrative} IS
- * `Record<string, string>` because JSONB equality is value-type-sensitive
- * (`{"story_id": 1}` ≠ `{"story_id": "1"}`) and the aice-web-next wire
- * convention serializes BIGINT/NUMERIC ids as stringified digits. The
- * asymmetry is by design.
- */
-export interface AnalysisNarrativeRow {
-  content_hash: string;
-  target_kind: "baseline_event" | "story" | "policy_run";
-  target_keys: Record<string, unknown>;
-  narrative: string;
-  prompt_version: string;
-  model_version: string;
-  generated_at: Date;
-}
-
-/**
- * Resolve `(target_kind, target_keys)` to the most recent
- * `analysis_narrative` row, or `null`.
- *
- * **`targetKeys` value-type convention (string only).** All values in
- * `targetKeys` MUST be strings. PostgreSQL JSONB equality is
- * value-type-sensitive — `{"story_id": 1}` and `{"story_id": "1"}` do NOT
- * match — and the aice-web-next wire convention sends BIGINT/NUMERIC
- * identifiers as stringified digits (`eventKeyString` /
- * `stringifiedBigintPositive` in `_shared/schemas.ts`). The writer (the
- * LLM pipeline, separate track) MUST serialize `target_keys` using the same
- * string-only convention so JSONB equality matches at read time. The
- * `Record<string, string>` parameter type makes this contract unforgeable.
- *
- * Expected shape per kind:
- *   - `baseline_event`: `{ baseline_version, event_key }`
- *   - `story`:          `{ story_id, story_version }`
- *   - `policy_run`:     `{ run_id }`
- *
- * **Re-generation semantics — INSERT-only, no UPDATE.** The
- * `analysis_narrative` table is granted `SELECT, INSERT, DELETE` for
- * `aimer_customer` — no UPDATE. A different `prompt_version` or
- * `model_version` produces a different `content_hash`, so re-generation is
- * always a fresh INSERT, never an in-place mutation. Two narratives for the
- * same target (different `(prompt_version, model_version)` pairs) coexist
- * as separate rows. This helper picks the row with the most recent
- * `generated_at` across all such pairs — the "current narrative" for the
- * target. A caller needing a specific `(prompt_version, model_version)`
- * pair must narrow on the returned row's fields and re-query; a typed
- * version selector is out of scope for v1.
- *
- * **Query plan and the v1 no-GIN decision.** The existing
- * `(target_kind, generated_at)` btree index narrows by kind and supplies
- * the `generated_at` order; the `target_keys` equality runs as a residual
- * filter. Per-kind cardinality is bounded by retention. If observed p95
- * latency on this helper exceeds 50 ms in production, the escalation path
- * is `CREATE INDEX CONCURRENTLY analysis_narrative_target_keys_idx ON
- * analysis_narrative USING GIN (target_keys)` in a follow-up migration. Do
- * not pre-emptively add the index.
- *
- * **`content_hash` is not this helper's concern.** `content_hash` is
- * computed by the writer (RFC 0002 §11.2) at INSERT time. This helper
- * queries by `(target_kind, target_keys)` directly and surfaces the stored
- * hash on the returned row.
- *
- * **Customer scoping.** Same caller contract as
- * {@link lookupAnalysisForEvent}: `customerPool` is already scoped to the
- * target customer's DB; the helper does not inspect `external_key` or
- * `customer_id`.
- */
-export async function lookupAnalysisNarrative(
-  customerPool: Pool,
-  targetKind: "baseline_event" | "story" | "policy_run",
-  targetKeys: Record<string, string>,
-): Promise<AnalysisNarrativeRow | null> {
-  const { rows } = await customerPool.query(
-    `SELECT
-       content_hash,
-       target_kind,
-       target_keys,
-       narrative,
-       prompt_version,
-       model_version,
-       generated_at
-     FROM analysis_narrative
-     WHERE target_kind = $1
-       AND target_keys = $2::jsonb
-     ORDER BY generated_at DESC
-     LIMIT 1`,
-    [targetKind, JSON.stringify(targetKeys)],
-  );
-  if (rows.length === 0) return null;
-  return rows[0] as AnalysisNarrativeRow;
 }
