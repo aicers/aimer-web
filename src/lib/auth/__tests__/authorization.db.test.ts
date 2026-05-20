@@ -1078,6 +1078,50 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
       );
       expect(customers).toHaveLength(0);
     });
+
+    it("returns effective permission keys per customer (User → :read only)", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, userAccountId),
+      );
+      const active = customers.find((c) => c.id === activeCustomerId);
+      expect(active).toBeDefined();
+      expect(active?.permissions).toContain("customer-redaction-ranges:read");
+      expect(active?.permissions).toContain("customer-retention:read");
+      expect(active?.permissions).not.toContain(
+        "customer-redaction-ranges:write",
+      );
+      expect(active?.permissions).not.toContain("customer-retention:write");
+    });
+
+    it("returns :write keys for Manager-role members", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, managerAccountId),
+      );
+      const active = customers.find((c) => c.id === activeCustomerId);
+      expect(active?.permissions).toEqual(
+        expect.arrayContaining([
+          "customer-redaction-ranges:read",
+          "customer-redaction-ranges:write",
+          "customer-retention:read",
+          "customer-retention:write",
+        ]),
+      );
+    });
+
+    it("returns :read keys via analyst-assignment union (no membership)", async () => {
+      const customers = await withClient((c) =>
+        listAccessibleCustomersDetailed(c, analystAccountId),
+      );
+      const active = customers.find((c) => c.id === activeCustomerId);
+      expect(active).toBeDefined();
+      // Analyst-only — :read keys present, :write keys absent.
+      expect(active?.permissions).toContain("customer-redaction-ranges:read");
+      expect(active?.permissions).toContain("customer-retention:read");
+      expect(active?.permissions).not.toContain(
+        "customer-redaction-ranges:write",
+      );
+      expect(active?.permissions).not.toContain("customer-retention:write");
+    });
   });
 
   // -------------------------------------------------------------------------

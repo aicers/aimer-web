@@ -208,6 +208,13 @@ export interface AccessibleCustomerDetailed extends AccessibleCustomer {
   role: string | null;
   /** Whether this account has an active analyst assignment for this customer. */
   isAnalyst: boolean;
+  /**
+   * Effective permission keys this account holds for this customer:
+   * the union of membership-role grants and analyst-assignment grants
+   * (same union `authorizeGeneral` computes). Empty array means no
+   * grants (the row would not appear at all in that case).
+   */
+  permissions: string[];
 }
 
 export async function listAccessibleCustomers(
@@ -283,12 +290,48 @@ export async function listAccessibleCustomersDetailed(
     [accountId],
   );
 
+  if (rows.rows.length === 0) {
+    return [];
+  }
+
+  // Compute effective permission keys per customer in a single round
+  // trip. Same union as `authorizeGeneral`: membership-role grants ∪
+  // analyst-assignment grants (gated by analyst_eligible).
+  const permRows = await client.query<{
+    customer_id: string;
+    permission: string;
+  }>(
+    `SELECT acm.customer_id, rp.permission
+     FROM account_customer_memberships acm
+     JOIN role_permissions rp ON rp.role_id = acm.role_id
+     WHERE acm.account_id = $1
+     UNION
+     SELECT aca.customer_id, rp.permission
+     FROM analyst_customer_assignments aca
+     JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
+     JOIN roles r ON r.name = 'Analyst' AND r.auth_context = 'general'
+     JOIN role_permissions rp ON rp.role_id = r.id
+     WHERE aca.account_id = $1`,
+    [accountId],
+  );
+
+  const permsByCustomer = new Map<string, Set<string>>();
+  for (const row of permRows.rows) {
+    let set = permsByCustomer.get(row.customer_id);
+    if (!set) {
+      set = new Set();
+      permsByCustomer.set(row.customer_id, set);
+    }
+    set.add(row.permission);
+  }
+
   const customers: AccessibleCustomerDetailed[] = rows.rows.map((r) => ({
     id: r.id,
     name: r.name,
     externalKey: r.external_key,
     role: r.role_name,
     isAnalyst: r.is_analyst,
+    permissions: Array.from(permsByCustomer.get(r.id) ?? []).sort(),
   }));
 
   return applyBridgeScope(customers, bridgeScope);

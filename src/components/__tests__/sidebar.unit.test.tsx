@@ -136,6 +136,7 @@ function mockDefaults(
         name: "Acme Corp",
         role: "Manager",
         isAnalyst: false,
+        permissions: [],
       },
     ],
     selectedCustomerId: "c1",
@@ -156,8 +157,13 @@ function mockPermissions(
     role: "Manager",
     isAnalyst: false,
     isManager: true,
+    hasPermission: () => false,
     canViewMembers: true,
     canViewCustomerSettings: true,
+    canViewRedactionRanges: true,
+    canWriteRedactionRanges: true,
+    canViewRetention: true,
+    canWriteRetention: true,
     canUseAnalystFeatures: false,
     ...overrides,
   });
@@ -283,6 +289,7 @@ describe("Sidebar", () => {
           name: "Acme Corp",
           role: "Manager",
           isAnalyst: false,
+          permissions: [],
         },
         {
           id: "c2",
@@ -290,6 +297,7 @@ describe("Sidebar", () => {
           name: "Beta Inc",
           role: "User",
           isAnalyst: false,
+          permissions: [],
         },
       ],
     });
@@ -315,6 +323,7 @@ describe("Sidebar", () => {
           name: "Acme Corp",
           role: "Manager",
           isAnalyst: false,
+          permissions: [],
         },
         {
           id: "c2",
@@ -322,6 +331,7 @@ describe("Sidebar", () => {
           name: "Beta Inc",
           role: "User",
           isAnalyst: false,
+          permissions: [],
         },
       ],
     });
