@@ -95,12 +95,21 @@ const customerPool = makePool();
 
 vi.mock("@/lib/db/client", () => ({
   getAuthPool: () => authPool,
-  withTransaction: async (_pool: unknown, fn: (client: unknown) => unknown) => {
-    // For authPool we run a no-op transaction; the actual `authorize`
-    // is mocked so the client passed here is unused.
-    return fn({
-      query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
-    });
+  withTransaction: async (
+    pool: { connect: () => Promise<{ query: unknown; release: () => void }> },
+    fn: (client: unknown) => unknown,
+  ) => {
+    // Route the transaction through the underlying pool's `connect()`
+    // so queries inside the transaction consult the same `queryQueue`
+    // tests use to stub data. Without this, every client-side query
+    // (synthetic ingest, SELECT detection_events, writeMap) would
+    // bypass test stubs and return empty results.
+    const client = await pool.connect();
+    try {
+      return await fn(client);
+    } finally {
+      client.release();
+    }
   },
 }));
 
@@ -260,11 +269,20 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     );
   });
 
-  it("event exists, result missing → analyze + store", async () => {
+  it("event exists, result missing → analyze stored event + store", async () => {
     stubActiveCustomerLookup();
     stubCacheMiss();
-    // No ingest stub needed — the route still runs the redact step,
-    // but the synthetic INSERT defaults to 0 rowCount (cache fall-through).
+    // The existing detection_events row carries a DIFFERENT redacted
+    // payload than the caller's request — this is the cache-poisoning
+    // surface RFC 0001 explicitly defends against. The aimer call must
+    // use the STORED `redacted_event`, not the request body.
+    const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    pushStub({
+      match: (s) =>
+        /SELECT redacted_event FROM detection_events/.test(s) &&
+        /WHERE aice_id = \$1/.test(s),
+      rows: [{ redacted_event: storedRedacted }],
+    });
     stubInsertAnalysisResult();
 
     const res = await callPOST(makeRequest(defaultBody()));
@@ -272,6 +290,43 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     const body = await res.json();
     expect(body.cached).toBe(false);
     expect(mockGraphqlRequest).toHaveBeenCalledOnce();
+    // The aimer call MUST receive the stored redacted_event, NOT the
+    // freshly redacted request body.
+    expect(mockGraphqlRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ eventData: storedRedacted }),
+      expect.anything(),
+    );
+  });
+
+  it("force=true + event exists → analyze stored event (does not re-redact request body)", async () => {
+    stubActiveCustomerLookup();
+    // No cache lookup — force=true.
+    const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    pushStub({
+      match: (s) =>
+        /SELECT redacted_event FROM detection_events/.test(s) &&
+        /WHERE aice_id = \$1/.test(s),
+      rows: [{ redacted_event: storedRedacted }],
+    });
+    stubInsertAnalysisResult();
+
+    // Caller supplies a wildly different `event_data` payload — the
+    // route must ignore it and send the stored `redacted_event`.
+    const res = await callPOST(
+      makeRequest(
+        defaultBody({
+          force: true,
+          event_data: { event_key: EVENT_KEY, attacker_supplied: true },
+        }),
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(mockGraphqlRequest).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ eventData: storedRedacted }),
+      expect.anything(),
+    );
   });
 
   it("event exists + result exists + force=false → cache hit, no aimer call", async () => {
@@ -355,6 +410,18 @@ describe("POST /api/analysis/analyze — validation", () => {
     expect(body.error.code).toBe("invalid_event_data");
   });
 
+  it("returns lang_unsupported for a syntactically valid but unsupported lang value", async () => {
+    // The Zod layer accepts `lang` as a free-form string so the
+    // dedicated `lang_unsupported` error code remains reachable per
+    // RFC 0001's 12-code error table. An unsupported value must NOT
+    // collapse into the generic `invalid_event_data`.
+    const res = await callPOST(makeRequest(defaultBody({ lang: "FRENCH" })));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("lang_unsupported");
+    expect(body.error.retryable).toBe(false);
+  });
+
   it("returns event_data_too_large when payload exceeds the configured cap", async () => {
     const originalEnv = process.env.BRIDGE_MAX_PAYLOAD_BYTES;
     process.env.BRIDGE_MAX_PAYLOAD_BYTES = "10";
@@ -413,7 +480,7 @@ describe("POST /api/analysis/analyze — customer resolution", () => {
     expect(json.error.code).toBe("authorization_failed");
   });
 
-  it("database_status=provisioning rejects before opening the customer DB pool", async () => {
+  it("database_status=provisioning is rejected after authorize but before the customer DB pool", async () => {
     pushStub({
       match: (s) => /FROM customers WHERE id = \$1/.test(s),
       rows: [
@@ -424,7 +491,15 @@ describe("POST /api/analysis/analyze — customer resolution", () => {
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error.code).toBe("authorization_failed");
-    expect(mockAuthorize).not.toHaveBeenCalled();
+    // authorize() runs first so the externally observable behaviour is
+    // identical to a denied authorization. Reaching the
+    // `database_status` gate requires already clearing `authorize()`.
+    expect(mockAuthorize).toHaveBeenCalledOnce();
+    // The customer DB pool must not be opened for a non-active
+    // `database_status`. The route exits before any customer-DB
+    // query (cache lookup, redaction, ingest, result write).
+    expect(customerPool.query).not.toHaveBeenCalled();
+    expect(customerPool.connect).not.toHaveBeenCalled();
   });
 
   it("database_status=failed is rejected the same way", async () => {
@@ -434,7 +509,58 @@ describe("POST /api/analysis/analyze — customer resolution", () => {
     });
     const res = await callPOST(makeRequest(defaultBody()));
     expect(res.status).toBe(403);
-    expect(mockAuthorize).not.toHaveBeenCalled();
+    expect(mockAuthorize).toHaveBeenCalledOnce();
+    expect(customerPool.query).not.toHaveBeenCalled();
+  });
+
+  it("authorization_failed responses carry an indistinguishable message body", async () => {
+    // All four `authorization_failed` paths (missing customer, denied
+    // authorize, customers.status non-active, database_status non-active)
+    // must return the same message so a probing caller cannot tell
+    // which gate rejected them.
+    const seenMessages = new Set<string>();
+
+    // 1. external_key resolves to no row.
+    mockGetCustomerByExternalKey.mockResolvedValue(null);
+    {
+      const body = defaultBody({ external_key: "ghost" });
+      delete (body as Record<string, unknown>).customer_id;
+      const res = await callPOST(makeRequest(body));
+      const json = await res.json();
+      expect(json.error.code).toBe("authorization_failed");
+      seenMessages.add(json.error.message);
+    }
+
+    // 2. authorize() returns not-authorized.
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "rbac_denied",
+    });
+    stubActiveCustomerLookup();
+    {
+      const res = await callPOST(makeRequest(defaultBody()));
+      const json = await res.json();
+      expect(json.error.code).toBe("authorization_failed");
+      seenMessages.add(json.error.message);
+    }
+
+    // 3. database_status non-active.
+    mockAuthorize.mockResolvedValue({ authorized: true });
+    pushStub({
+      match: (s) => /FROM customers WHERE id = \$1/.test(s),
+      rows: [
+        { id: CUSTOMER_ID, database_status: "provisioning", status: "active" },
+      ],
+    });
+    {
+      const res = await callPOST(makeRequest(defaultBody()));
+      const json = await res.json();
+      expect(json.error.code).toBe("authorization_failed");
+      seenMessages.add(json.error.message);
+    }
+
+    // All three responses MUST share a single message string.
+    expect(seenMessages.size).toBe(1);
   });
 
   it("database_status=active but customers.status=suspended also fails (authorize gate)", async () => {

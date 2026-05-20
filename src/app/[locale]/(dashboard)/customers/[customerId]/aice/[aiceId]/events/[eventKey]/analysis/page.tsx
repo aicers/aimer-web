@@ -98,7 +98,7 @@ export default async function AnalysisResultPage({
 
       {data.sourceEventPresent ? (
         <section className="mt-8">
-          <ForceRerunButton />
+          <ForceRerunButton aiceId={data.aiceId} eventKey={data.eventKey} />
         </section>
       ) : null}
     </div>
@@ -156,7 +156,13 @@ function AnalysisBody({ text }: { text: string }) {
   );
 }
 
-function ForceRerunButton() {
+function ForceRerunButton({
+  aiceId,
+  eventKey,
+}: {
+  aiceId: string;
+  eventKey: string;
+}) {
   // Force re-run requires `event_data`, which only aice-web-next holds
   // (RFC 0001 §"Force re-run button gating"). Open aice-web-next back
   // at the original event detail so the user can click
@@ -164,7 +170,17 @@ function ForceRerunButton() {
   //
   // The aice-web-next origin is configured at deploy time; missing
   // config renders the button as disabled so the page stays useful.
-  const target = process.env.AICE_WEB_NEXT_ORIGIN ?? "";
+  // We pass `aice_id` and `event_key` in the URL so aice-web-next can
+  // resolve the user back to the originating event — the exact
+  // routing on that side is aice-web-next's concern (aicers/aice-web-next#629).
+  const origin = process.env.AICE_WEB_NEXT_ORIGIN ?? "";
+  let target = "";
+  if (origin !== "") {
+    const params = new URLSearchParams({ aice_id: aiceId });
+    target = `${origin.replace(/\/$/, "")}/events/${encodeURIComponent(
+      eventKey,
+    )}?${params.toString()}`;
+  }
   return (
     <a
       data-testid="force-rerun-link"

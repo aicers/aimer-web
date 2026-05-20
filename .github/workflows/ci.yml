@@ -96,6 +96,7 @@ jobs:
           version: latest
       - run: pnpm check
       - run: pnpm typecheck
+      - run: pnpm graphql:check
       - uses: DavidAnson/markdownlint-cli2-action@v23
       - uses: hadolint/hadolint-action@v3.3.0
         with:

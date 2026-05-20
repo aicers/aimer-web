@@ -42,6 +42,17 @@ function getMaxPayloadBytes(): number {
 }
 
 const LANG_VALUES = ["KOREAN", "ENGLISH"] as const;
+type SupportedLang = (typeof LANG_VALUES)[number];
+
+function isSupportedLang(value: string): value is SupportedLang {
+  return (LANG_VALUES as readonly string[]).includes(value);
+}
+
+// Single canonical message body for every `authorization_failed` path
+// (missing customer, denied authorize, database_status≠active). The
+// reason must be indistinguishable to callers so they cannot tell a
+// provisioning/failed customer apart from a denied access decision.
+const AUTHORIZATION_FAILED_MESSAGE = "not authorized";
 
 // Same UUID shape the ingest route accepts (RFC 4122 layout only —
 // no version digit enforcement). aimer-web's internal customer_id
@@ -58,10 +69,11 @@ const requestSchema = z
     customer_id: z.string().regex(UUID_RE).optional(),
     external_key: z.string().min(1).optional(),
     aice_id: z.string().min(1),
-    // `lang` validated against aimer's `Language` enum exactly so a
-    // future enum extension shows up here as a type-level surprise
-    // rather than a silent passthrough.
-    lang: z.enum(LANG_VALUES),
+    // `lang` is accepted as a free-form string at this layer so the
+    // explicit `lang_unsupported` branch below can surface the
+    // dedicated error code from RFC 0001. The set of accepted values
+    // is enforced against `LANG_VALUES` after parsing.
+    lang: z.string().min(1),
     model_name: z.string().min(1),
     model: z.string().min(1),
     force: z.boolean(),
@@ -190,16 +202,18 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     );
   }
 
-  // The `lang_unsupported` error code is part of the public contract.
-  // We surface it for any value that aimer's Language enum does not
-  // accept — currently the Zod enum already rejects, but the explicit
-  // code keeps the matrix from collapsing if the schema grows.
-  if (!LANG_VALUES.includes(parsed.lang)) {
+  // The `lang_unsupported` error code is part of the public contract
+  // (RFC 0001's 12-code error table). The Zod layer accepts `lang` as
+  // a free-form string so unsupported values reach this branch and
+  // surface the dedicated code instead of collapsing into the generic
+  // `invalid_event_data`.
+  if (!isSupportedLang(parsed.lang)) {
     return analyzeErrorResponse(
       "lang_unsupported",
       `lang must be one of ${LANG_VALUES.join(", ")}`,
     );
   }
+  const lang: SupportedLang = parsed.lang;
 
   // event_key_mismatch: the explicit cache key MUST agree with
   // event_data's internal event_key, so a caller cannot supply event
@@ -222,22 +236,18 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     // enumerate registered customers.
     return analyzeErrorResponse(
       "authorization_failed",
-      "customer not found or not authorized",
+      AUTHORIZATION_FAILED_MESSAGE,
     );
   }
 
-  // database_status gate — applies to BOTH input paths after UUID
-  // resolution. The `authorize()` helper checks `customers.status`
-  // but not `customers.database_status`, so we enforce this column
-  // ourselves before opening the customer DB pool. Both columns must
-  // be `'active'` for the happy path.
-  if (customer.databaseStatus !== "active") {
-    return analyzeErrorResponse(
-      "authorization_failed",
-      "customer database is not active",
-    );
-  }
-
+  // Run authorize() first. `customers.status='active'` is enforced
+  // inside `authorize()`; only callers who clear that gate can reach
+  // the subsequent `database_status` check. This ordering, combined
+  // with the shared `AUTHORIZATION_FAILED_MESSAGE`, keeps the
+  // externally visible response body indistinguishable across the
+  // four failure modes (missing row, denied authorize, non-active
+  // customers.status, non-active database_status) so probing callers
+  // cannot use this endpoint to enumerate customer state.
   const authResult = await withTransaction(authPool, (client) =>
     authorize(client, "general", auth.accountId, "analyses:create", {
       customerId: customer.id,
@@ -266,7 +276,20 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   if (!authResult.authorized) {
     return analyzeErrorResponse(
       "authorization_failed",
-      authResult.reason ?? "authorization_failed",
+      AUTHORIZATION_FAILED_MESSAGE,
+    );
+  }
+
+  // `database_status` gate — checked AFTER `authorize()` so the
+  // distinguishable state is gated behind a legitimate authorization
+  // decision. Still applies before the customer DB pool is opened so
+  // a `provisioning` / `failed` customer's DB is never touched. Both
+  // `customers.status` and `customers.database_status` must be
+  // `'active'` for the happy path.
+  if (customer.databaseStatus !== "active") {
+    return analyzeErrorResponse(
+      "authorization_failed",
+      AUTHORIZATION_FAILED_MESSAGE,
     );
   }
 
@@ -280,7 +303,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     customer.id,
     parsed.aice_id,
     parsed.event_key,
-    parsed.lang,
+    lang,
     parsed.model_name,
     parsed.model,
   );
@@ -297,13 +320,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       `SELECT requested_at FROM event_analysis_result
        WHERE aice_id = $1 AND event_key = $2::numeric
          AND lang = $3 AND model_name = $4 AND model = $5`,
-      [
-        parsed.aice_id,
-        parsed.event_key,
-        parsed.lang,
-        parsed.model_name,
-        parsed.model,
-      ],
+      [parsed.aice_id, parsed.event_key, lang, parsed.model_name, parsed.model],
     );
     if (cachedRow.rows.length > 0) cached = true;
   }
@@ -313,7 +330,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     action: "ai_analysis.request_issued",
     targetId: `${parsed.aice_id}/${parsed.event_key}`,
     details: {
-      lang: parsed.lang,
+      lang,
       modelName: parsed.model_name,
       model: parsed.model,
       force: parsed.force,
@@ -325,12 +342,16 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     return Response.json({ view_url: viewUrl, cached: true });
   }
 
-  // ---- Redact + (maybe) synthetic ingest ---------------------------------
-  // The synthetic ingest path is reached when `detection_events` has
-  // no row for this `(aice_id, event_key)`. We always run the
-  // redaction engine — even on force re-analysis where the row
-  // already exists — because we need the merged map to scan the LLM
-  // response for hallucinations.
+  // ---- Resolve redacted event + (maybe) synthetic ingest -----------------
+  // When `detection_events` has no row for this `(aice_id, event_key)`
+  // we redact the caller-supplied `event_data` and INSERT a synthetic
+  // row. When the row already exists we MUST use the stored
+  // `redacted_event` for the aimer call instead of redacting the
+  // current request body — otherwise a caller could replay the same
+  // canonical `event_key` with arbitrary `event_data` and have aimer
+  // analyse text that does not match the persisted event. The
+  // redaction engine still runs in both branches because we need the
+  // merged map to scan the LLM response for hallucinations.
   let redactedEvent: unknown;
   let mergedMap: import("@/lib/redaction").RedactionMap;
   try {
@@ -372,7 +393,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
         eventData: redactedEvent as Record<string, unknown>,
         name: parsed.model_name,
         model: parsed.model,
-        lang: parsed.lang,
+        lang,
       },
       { accountId: auth.accountId, aiceId: parsed.aice_id },
     );
@@ -403,7 +424,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       action: "ai_analysis.hallucination_detected",
       targetId: `${parsed.aice_id}/${parsed.event_key}`,
       details: {
-        lang: parsed.lang,
+        lang,
         modelName: parsed.model_name,
         model: parsed.model,
         counts: scan.counts,
@@ -431,7 +452,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       [
         parsed.aice_id,
         parsed.event_key,
-        parsed.lang,
+        lang,
         parsed.model_name,
         parsed.model,
         aimerResponse.threatScore,
@@ -452,7 +473,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     action: "ai_analysis.result_stored",
     targetId: `${parsed.aice_id}/${parsed.event_key}`,
     details: {
-      lang: parsed.lang,
+      lang,
       modelName: parsed.model_name,
       model: parsed.model,
       force: parsed.force,
@@ -486,12 +507,29 @@ interface IngestAndRedactParams {
 }
 
 /**
- * Redact `eventData` and INSERT a synthetic `detection_events` row if
- * one does not already exist for `(aice_id, event_key)`. The
- * synthetic insert mirrors `storeApprovedEvents` so the produced
- * `event_redaction_map` row is byte-compatible across paths
- * (`source='manual'`, `connection_id=NULL`, same advisory lock + map
- * write rule).
+ * Resolve the redacted event content the aimer call will analyse, and
+ * INSERT a synthetic `detection_events` row when none exists.
+ *
+ * RFC 0001 §"Behaviour matrix" + §"API contract — Request" rules:
+ *
+ * - When `detection_events` HAS a row for `(aice_id, event_key)`, the
+ *   stored `redacted_event` is authoritative; the caller-supplied
+ *   `event_data` is ignored. This prevents cache poisoning where a
+ *   caller replays a known `event_key` with arbitrary `event_data`
+ *   and has aimer analyse text that does not match the persisted
+ *   event.
+ * - When NO row exists, we redact the caller-supplied `event_data`
+ *   and INSERT a synthetic row (`source='manual'`,
+ *   `connection_id=NULL`, `ingested_by=accountId`).
+ *
+ * Concurrency is handled by the per-`(aice_id, event_key)` Postgres
+ * advisory lock taken inside `readMapWithLock`. Every other writer
+ * for the same event (`storeApprovedEvents`, Phase 2 paths) takes the
+ * same lock, so the SELECT-then-INSERT below cannot race past a
+ * concurrent insert.
+ *
+ * The redaction engine still runs in BOTH branches because we need
+ * the merged map to scan the LLM response for hallucinations.
  */
 async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
   redacted: unknown;
@@ -504,6 +542,13 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       params.aiceId,
       params.eventKey,
     );
+
+    // The merged map is needed even when an event row already exists,
+    // because the hallucination scan must run against the entities
+    // observed in the persisted event. Redacting the current request
+    // body and merging into `existing` produces the same map as the
+    // earlier writer would have produced (the map is value-keyed, so
+    // additions are idempotent and order-independent).
     const out = redact({
       payload: params.eventData,
       existingMap: existing ?? {},
@@ -511,9 +556,10 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       engineVersion: ENGINE_VERSION,
     });
 
-    // Always ensure the map row exists / is up-to-date. The Phase 2
-    // ingestion paths follow the same `existing === null || changed`
-    // rule.
+    // Persist the map first so the row exists before any synthetic
+    // INSERT references the same `(aice_id, event_key)`. Same
+    // `existing === null || changed` rule the Phase 2 ingestion paths
+    // follow.
     if (existing === null || out.mapChanged) {
       await writeMap(
         client,
@@ -524,10 +570,26 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       );
     }
 
-    // INSERT ... ON CONFLICT DO NOTHING — if a concurrent
-    // `storeApprovedEvents` path won the race we fall through to the
-    // cache-hit branch without duplicating the row. The redacted
-    // JSONB and policy_version are stamped only when WE inserted.
+    // Inside the advisory lock, this SELECT observes any earlier
+    // insert (by this route OR `storeApprovedEvents`). If we find one,
+    // the stored `redacted_event` is what we send to aimer.
+    const existingEvent = await client.query<{ redacted_event: unknown }>(
+      `SELECT redacted_event FROM detection_events
+       WHERE aice_id = $1 AND event_key = $2::numeric`,
+      [params.aiceId, params.eventKey],
+    );
+    if (existingEvent.rows.length > 0) {
+      return {
+        redacted: existingEvent.rows[0].redacted_event,
+        mergedMap: out.mergedMap,
+      };
+    }
+
+    // No row exists — INSERT the synthetic detection_events row.
+    // The advisory lock guarantees no concurrent writer can race past
+    // us here, so a plain INSERT is sufficient; we still use
+    // `ON CONFLICT DO NOTHING` defensively against any future writer
+    // that does not take the lock.
     const redactedJson = JSON.stringify(out.redacted);
     const payloadHash = createHash("sha256").update(redactedJson).digest("hex");
     try {
@@ -591,7 +653,7 @@ function buildViewUrl(
   customerId: string,
   aiceId: string,
   eventKey: string,
-  lang: string,
+  lang: SupportedLang,
   modelName: string,
   model: string,
 ): string {
