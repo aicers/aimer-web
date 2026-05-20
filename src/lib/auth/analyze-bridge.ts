@@ -7,7 +7,12 @@ import { encryptPayload } from "../crypto/envelope";
 // Types
 // ---------------------------------------------------------------------------
 
-export type PARStatus = "pending" | "consumed" | "expired" | "failed";
+export type PARStatus =
+  | "pending"
+  | "processing"
+  | "consumed"
+  | "expired"
+  | "failed";
 
 export interface PendingAnalysisRequest {
   id: string;
@@ -186,10 +191,35 @@ export async function loadPARByConnectionIdWithClient(
 // ---------------------------------------------------------------------------
 
 /**
- * Transition `pending` → `consumed` and store the `view_url`. Returns
- * false when the row was not in `pending` state (concurrent /continue
- * tick already processed it — the second tick should re-read PAR.status
- * and dispatch on the new state).
+ * Atomically claim a `pending` row by transitioning it to `processing`.
+ * Returns true when the calling request now owns the right to run
+ * `runAnalyzeFlow`; returns false when a concurrent `/continue` tick
+ * already claimed the row (the second tick must re-read PAR.status and
+ * dispatch on the new state without invoking the flow).
+ *
+ * This is the primary concurrency guard the design assumes — see
+ * #272's "PAR status is the primary guard against re-execution" note.
+ */
+export async function claimPAR(pool: Pool, id: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE pending_analysis_requests
+     SET status = 'processing'
+     WHERE id = $1 AND status = 'pending'`,
+    [id],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Transition `processing` → `consumed` and store the `view_url`.
+ * Returns false when the row was not in `processing` state (e.g. the
+ * cleanup sweep flipped it to `expired` while `runAnalyzeFlow` was
+ * running). The /continue handler re-reads PAR.status on a failed
+ * transition and dispatches on the new state.
+ *
+ * `pending` is also accepted to preserve back-compat with any code
+ * path that did not claim first (no such callers exist today; kept
+ * to keep the helper forgiving on partial deployments).
  */
 export async function markPARConsumed(
   pool: Pool,
@@ -199,7 +229,7 @@ export async function markPARConsumed(
   const result = await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'consumed', view_url = $2, consumed_at = NOW()
-     WHERE id = $1 AND status = 'pending'`,
+     WHERE id = $1 AND status IN ('pending', 'processing')`,
     [id, viewUrl],
   );
   return (result.rowCount ?? 0) > 0;
@@ -213,7 +243,7 @@ export async function markPARFailed(
   const result = await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'failed', failure_code = $2, failure_at = NOW()
-     WHERE id = $1 AND status = 'pending'`,
+     WHERE id = $1 AND status IN ('pending', 'processing')`,
     [id, failureCode],
   );
   return (result.rowCount ?? 0) > 0;
@@ -239,7 +269,7 @@ export async function cleanupExpiredAnalyzeRequests(
   await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'expired'
-     WHERE status = 'pending' AND expires_at < NOW()`,
+     WHERE status IN ('pending', 'processing') AND expires_at < NOW()`,
   );
   const result = await pool.query(
     `DELETE FROM pending_analysis_requests

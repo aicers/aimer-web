@@ -4,14 +4,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mockLoadPAR = vi.fn();
+const mockClaimPAR = vi.fn();
 const mockMarkConsumed = vi.fn();
 const mockMarkFailed = vi.fn();
 const mockRunAnalyzeFlow = vi.fn();
 const mockDecryptPayload = vi.fn();
 const mockAuditLog = vi.fn(async (..._args: unknown[]) => {});
+const mockAuthorize = vi.fn();
+const mockGetCustomerByExternalKey = vi.fn();
 
 vi.mock("@/lib/auth/analyze-bridge", () => ({
   loadPendingAnalysisRequest: (...args: unknown[]) => mockLoadPAR(...args),
+  claimPAR: (...args: unknown[]) => mockClaimPAR(...args),
   markPARConsumed: (...args: unknown[]) => mockMarkConsumed(...args),
   markPARFailed: (...args: unknown[]) => mockMarkFailed(...args),
 }));
@@ -29,8 +33,17 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/audit/correlation", () => ({
   withCorrelationId: <T>(fn: () => Promise<T>) => fn(),
 }));
+vi.mock("@/lib/auth/authorization", () => ({
+  authorize: (...args: unknown[]) => mockAuthorize(...args),
+}));
+vi.mock("@/lib/auth/customers", () => ({
+  getCustomerByExternalKey: (...args: unknown[]) =>
+    mockGetCustomerByExternalKey(...args),
+}));
 vi.mock("@/lib/db/client", () => ({
   getAuthPool: vi.fn(() => ({})),
+  withTransaction: async <T>(_pool: unknown, fn: (c: unknown) => Promise<T>) =>
+    fn({}),
 }));
 
 // Bypass withAuth — inject a fake authenticated request through the
@@ -95,6 +108,14 @@ const basePAR = {
 describe("GET /api/analysis/analyze-bridge/continue", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetCustomerByExternalKey.mockResolvedValue({
+      id: "cust-1",
+      externalKey: "cust-ext-1",
+      databaseStatus: "active",
+      status: "active",
+    });
+    mockAuthorize.mockResolvedValue({ authorized: true });
+    mockClaimPAR.mockResolvedValue(true);
   });
 
   it("returns 404 when id is missing", async () => {
@@ -107,6 +128,36 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     mockLoadPAR.mockResolvedValue(null);
     const res = await callGET(makeRequest("par-missing"));
     expect(res.status).toBe(404);
+  });
+
+  it("denies access when authorize() rejects — does NOT dispatch consumed viewUrl", async () => {
+    mockLoadPAR.mockResolvedValue({
+      ...basePAR,
+      status: "consumed",
+      viewUrl: "http://example.com/leak",
+    });
+    mockAuthorize.mockResolvedValue({ authorized: false });
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(403);
+    expect(res.headers.get("location")).toBeNull();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "ai_analysis.continue_failed",
+        details: expect.objectContaining({ stage: "authorize" }),
+      }),
+    );
+  });
+
+  it("denies access when customer cannot be resolved", async () => {
+    mockLoadPAR.mockResolvedValue({
+      ...basePAR,
+      status: "failed",
+      failureCode: "aimer_unavailable",
+    });
+    mockGetCustomerByExternalKey.mockResolvedValue(null);
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(403);
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
   });
 
   it("consumed status redirects to stored view_url (replay path)", async () => {
@@ -144,8 +195,16 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
   });
 
+  it("processing status renders in-progress page (no flow run)", async () => {
+    mockLoadPAR.mockResolvedValue({ ...basePAR, status: "processing" });
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(202);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(mockClaimPAR).not.toHaveBeenCalled();
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+  });
+
   it("pending status decrypts + runs flow + marks consumed + 302 to view_url", async () => {
-    mockLoadPAR.mockResolvedValue(basePAR);
     const eventDataJson = JSON.stringify({ event_key: "42" });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
@@ -164,6 +223,7 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     const res = await callGET(makeRequest("par-1"));
     expect(res.status).toBe(302);
     expect(res.headers.get("location")).toBe("http://example.com/view");
+    expect(mockClaimPAR).toHaveBeenCalledWith(expect.anything(), "par-1");
     expect(mockMarkConsumed).toHaveBeenCalledWith(
       expect.anything(),
       "par-1",
@@ -172,5 +232,33 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: "ai_analysis.continue_executed" }),
     );
+  });
+
+  it("failed claim re-reads PAR; second concurrent /continue does NOT run flow", async () => {
+    mockLoadPAR
+      // First load — observed pending.
+      .mockResolvedValueOnce(basePAR)
+      // Reload after failed claim — now consumed by the other tick.
+      .mockResolvedValueOnce({
+        ...basePAR,
+        status: "consumed",
+        viewUrl: "http://example.com/winner",
+      });
+    mockClaimPAR.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("http://example.com/winner");
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
+    expect(mockDecryptPayload).not.toHaveBeenCalled();
+  });
+
+  it("failed claim with row still pending falls back to in-progress page", async () => {
+    mockLoadPAR.mockResolvedValueOnce(basePAR).mockResolvedValueOnce(basePAR); // reload also returns pending
+    mockClaimPAR.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(202);
+    expect(mockRunAnalyzeFlow).not.toHaveBeenCalled();
   });
 });

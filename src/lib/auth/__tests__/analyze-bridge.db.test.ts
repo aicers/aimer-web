@@ -19,7 +19,12 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
-import { cleanupExpiredAnalyzeRequests } from "../analyze-bridge";
+import {
+  claimPAR,
+  cleanupExpiredAnalyzeRequests,
+  markPARConsumed,
+  markPARFailed,
+} from "../analyze-bridge";
 import { cleanupExpiredConnections } from "../bridge";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
@@ -75,7 +80,7 @@ describe.skipIf(!hasPostgres)(
 
     async function insertPAR(opts: {
       connectionId: string;
-      status?: "pending" | "consumed" | "expired" | "failed";
+      status?: "pending" | "processing" | "consumed" | "expired" | "failed";
       expiresInterval: string;
     }): Promise<string> {
       const status = opts.status ?? "pending";
@@ -158,7 +163,122 @@ describe.skipIf(!hasPostgres)(
       });
     });
 
+    describe("claimPAR CAS pending → processing", () => {
+      it("first claim returns true and flips status to processing", async () => {
+        const cid = await insertConnection({
+          jti: "jti-claim-1",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "1 hour",
+        });
+        const ok = await claimPAR(pool, parId);
+        expect(ok).toBe(true);
+        const row = await pool.query<{ status: string }>(
+          `SELECT status FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("processing");
+      });
+
+      it("second concurrent claim returns false (no second pending → processing)", async () => {
+        const cid = await insertConnection({
+          jti: "jti-claim-2",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "1 hour",
+        });
+        // Both calls race; CAS guarantees exactly one transition.
+        const [a, b] = await Promise.all([
+          claimPAR(pool, parId),
+          claimPAR(pool, parId),
+        ]);
+        expect([a, b].filter(Boolean)).toHaveLength(1);
+      });
+
+      it("claim on non-pending row returns false", async () => {
+        const cid = await insertConnection({
+          jti: "jti-claim-3",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "consumed",
+          expiresInterval: "1 hour",
+        });
+        const ok = await claimPAR(pool, parId);
+        expect(ok).toBe(false);
+      });
+    });
+
+    describe("markPARConsumed / markPARFailed accept processing", () => {
+      it("processing → consumed via markPARConsumed", async () => {
+        const cid = await insertConnection({
+          jti: "jti-consume-1",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "processing",
+          expiresInterval: "1 hour",
+        });
+        const ok = await markPARConsumed(pool, parId, "http://example/view");
+        expect(ok).toBe(true);
+        const row = await pool.query<{ status: string; view_url: string }>(
+          `SELECT status, view_url FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("consumed");
+        expect(row.rows[0].view_url).toBe("http://example/view");
+      });
+
+      it("processing → failed via markPARFailed", async () => {
+        const cid = await insertConnection({
+          jti: "jti-fail-1",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "processing",
+          expiresInterval: "1 hour",
+        });
+        const ok = await markPARFailed(pool, parId, "aimer_unavailable");
+        expect(ok).toBe(true);
+        const row = await pool.query<{ status: string; failure_code: string }>(
+          `SELECT status, failure_code FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("failed");
+        expect(row.rows[0].failure_code).toBe("aimer_unavailable");
+      });
+    });
+
     describe("cleanupExpiredAnalyzeRequests two-phase", () => {
+      it("flips stale processing rows past expires_at to expired", async () => {
+        const cid = await insertConnection({
+          jti: "jti-stale-processing",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "processing",
+          expiresInterval: "-1 second",
+        });
+        await cleanupExpiredAnalyzeRequests(pool);
+        const row = await pool.query<{ status: string }>(
+          `SELECT status FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("expired");
+      });
+    });
+
+    describe("cleanupExpiredAnalyzeRequests two-phase (pending + grace)", () => {
       it("flips pending rows past expires_at to 'expired'", async () => {
         const cid = await insertConnection({
           jti: "jti-expire-1",

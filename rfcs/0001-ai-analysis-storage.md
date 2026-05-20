@@ -483,7 +483,7 @@ The wrapping endpoint introduces a hand-off via a new `pending_analysis_requests
 
 The PAR row is **not** stored in `staged_event_payloads`. The Phase 1 staging table is bound to a per-customer approval lifecycle (joined with `staged_event_customers`, with `pending`/`approved`/`rejected`/`expired` status surfaced through the operator approval UI via `listStagedEventsBySession`). Persisting "I'm waiting for OIDC + analyze to complete" rows in the same table conflates two distinct lifecycles, and the approval UI would either surface analyze-pending rows it should not, or require new filter predicates threaded through every reader.
 
-`pending_analysis_requests` is therefore a dedicated table with ciphertext stored **inline** (reusing the same `encryptPayload` / `decryptPayload` primitives as `staged_event_payloads`, but its own row, its own status state machine — `pending`/`consumed`/`expired`/`failed` — and its own cleanup helper). `connection_id UNIQUE` enforces one analyze intent per bridge call, providing a layer of replay defence on top of `pending_connections.jti` uniqueness. TTL aligns with `pending_connections` (5 minutes), with a 24-hour grace before deletion of `expired` / `consumed` / `failed` rows for forensic purposes.
+`pending_analysis_requests` is therefore a dedicated table with ciphertext stored **inline** (reusing the same `encryptPayload` / `decryptPayload` primitives as `staged_event_payloads`, but its own row, its own status state machine — `pending`/`processing`/`consumed`/`expired`/`failed` — and its own cleanup helper). `processing` is the in-flight claim taken by `/continue` via a CAS UPDATE (`pending → processing`) before invoking `runAnalyzeFlow`, so two concurrent `/continue` GETs on the same PAR cannot both run the aimer call. `connection_id UNIQUE` enforces one analyze intent per bridge call, providing a layer of replay defence on top of `pending_connections.jti` uniqueness. TTL aligns with `pending_connections` (5 minutes), with a 24-hour grace before deletion of `expired` / `consumed` / `failed` rows for forensic purposes.
 
 **Encryption reuse.** `encryptPayload` / `decryptPayload` in [src/lib/crypto/envelope.ts](../src/lib/crypto/envelope.ts) already abstract the AES-256-GCM + OpenBao Transit DEK wrapping. `pending_analysis_requests` calls the same primitives — no new crypto infrastructure, no key-management change — while keeping its row, status state machine, and reader path separate from `staged_event_payloads`.
 
@@ -513,7 +513,8 @@ CREATE TABLE pending_analysis_requests (
 
   -- Lifecycle
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'consumed', 'expired', 'failed')),
+                  CHECK (status IN ('pending', 'processing',
+                                    'consumed', 'expired', 'failed')),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at      TIMESTAMPTZ NOT NULL,
   consumed_at     TIMESTAMPTZ,
@@ -523,7 +524,7 @@ CREATE TABLE pending_analysis_requests (
 );
 
 CREATE INDEX idx_par_cleanup ON pending_analysis_requests(expires_at)
-  WHERE status = 'pending';
+  WHERE status IN ('pending', 'processing');
 ```
 
 `connection_id UNIQUE` enforces one analyze intent per bridge call — duplicate POST attempts hit the unique constraint and are rejected. The verified context columns (`aice_id`, `external_key`) and verified analyze-params columns are populated from the JWS-validated values at insert time so `/continue` can re-authorize without re-running JWS verification on the resumed leg. `payload_hash` is stored to enable the defence-in-depth re-hash check at `/continue` after decryption.
@@ -534,11 +535,11 @@ Symmetric with `cleanupExpiredConnections`:
 
 ```ts
 async function cleanupExpiredAnalyzeRequests(pool: Pool): Promise<number> {
-  // Expire pending rows past TTL
+  // Expire pending and stale processing rows past TTL
   await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'expired'
-     WHERE status = 'pending' AND expires_at < NOW()`,
+     WHERE status IN ('pending', 'processing') AND expires_at < NOW()`,
   );
   // Delete after 24h grace
   const result = await pool.query(
@@ -549,7 +550,7 @@ async function cleanupExpiredAnalyzeRequests(pool: Pool): Promise<number> {
 }
 ```
 
-`consumed` and `failed` rows are retained for the same 24h forensic window, then deleted. The partial index `idx_par_cleanup` keeps the `pending`-row expiry scan O(expiring rows) rather than O(table).
+`consumed` and `failed` rows are retained for the same 24h forensic window, then deleted. Stale `processing` rows past `expires_at` (e.g. a server crash mid-flow) are recovered by the same UPDATE pass that flips `pending` to `expired`. The partial index `idx_par_cleanup` covers both `pending` and `processing` so the expiry scan stays O(expiring rows) rather than O(table).
 
 #### `/continue` dispatch state machine
 
@@ -566,22 +567,30 @@ GET /api/analysis/analyze-bridge/continue?id=<par_id>
    }) — styled 403 page on failure.
 4. Status dispatch:
    - 'pending':
-       a. decryptPayload(payload, wrapped_dek) → event_data plaintext
-       b. assert SHA-256(plaintext) === payload_hash (defence-in-depth)
-       c. runAnalyzeFlow({ event_data, event_key, external_key,
+       a. claim via CAS UPDATE pending → processing. If the claim
+          fails, re-read PAR.status and dispatch on the new state
+          (another /continue tick already advanced the row); skip
+          the rest of this branch so runAnalyzeFlow is not
+          invoked twice.
+       b. decryptPayload(payload, wrapped_dek) → event_data plaintext
+       c. assert SHA-256(plaintext) === payload_hash (defence-in-depth)
+       d. runAnalyzeFlow({ event_data, event_key, external_key,
                           aice_id, lang, model_name, model, force })
-       d. success → UPDATE PAR SET status='consumed', view_url=$1,
+       e. success → UPDATE PAR SET status='consumed', view_url=$1,
                        consumed_at=NOW() WHERE id=$par
                   → 302 to view_url
-       e. failure → UPDATE PAR SET status='failed',
+       f. failure → UPDATE PAR SET status='failed',
                        failure_code=$1, failure_at=NOW() WHERE id=$par
                   → styled error page (13 bridge error code branches)
+   - 'processing' → styled "Analyzing…" page with meta-refresh
+                    (another tick holds the claim; the page reloads
+                    until the row transitions to consumed or failed)
    - 'consumed' → 302 to PAR.view_url (reload-safe)
    - 'failed'   → styled error page from PAR.failure_code
    - 'expired'  → styled "Session expired" page
 ```
 
-**Defence-in-depth.** `/api/analysis/analyze`'s `(aice_id, event_key, lang, model_name, model)` cache means an accidental double execution of `runAnalyzeFlow` returns the cached result. PAR.status is the primary guard against re-execution; the analyze cache is the backup.
+**Defence-in-depth.** `/api/analysis/analyze`'s `(aice_id, event_key, lang, model_name, model)` cache means an accidental double execution of `runAnalyzeFlow` returns the cached result. PAR.status is the primary guard against re-execution: the CAS claim (pending → processing) ensures a single tick owns the flow even for `force=true` requests where the cache would not absorb a duplicate. The analyze cache remains the backup safety net.
 
 ## API contract — `POST /api/analysis/analyze`
 

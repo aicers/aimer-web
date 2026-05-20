@@ -220,4 +220,17 @@ describe("POST /api/analysis/analyze-bridge", () => {
     const res = await callPOST(makeRequest(makeForm()));
     expect(res.status).toBe(400);
   });
+
+  it("oversized events_data surfaces event_data_too_large (413), not invalid_events_envelope (400)", async () => {
+    const { PayloadTooLargeError } = await import("@/lib/auth/errors");
+    mockVerifyEventsEnvelope.mockRejectedValue(
+      new PayloadTooLargeError(2_000_000, 1_048_576),
+    );
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(413);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("event_data_too_large");
+    expect(mockCreatePAR).not.toHaveBeenCalled();
+  });
 });

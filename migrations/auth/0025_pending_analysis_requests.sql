@@ -14,9 +14,17 @@
 -- against duplicate POST replays that race past the `jti` UNIQUE on
 -- `pending_connections`).
 --
--- `idx_par_cleanup` is a partial index on `expires_at WHERE status =
--- 'pending'` matching the predicate of `cleanupExpiredAnalyzeRequests`'s
--- expire-pass UPDATE.
+-- `status='processing'` is the in-flight claim that `/continue` takes
+-- before running `runAnalyzeFlow`, so two concurrent `/continue` GETs
+-- for the same PAR cannot both invoke the aimer call. The transition
+-- is `pending → processing` via CAS UPDATE; on completion the row
+-- moves to `consumed` (success) or `failed` (error). `processing`
+-- rows past `expires_at` are recovered by the cleanup pass alongside
+-- stale `pending` rows.
+--
+-- `idx_par_cleanup` is a partial index on `expires_at WHERE status IN
+-- ('pending', 'processing')` matching the predicate of
+-- `cleanupExpiredAnalyzeRequests`'s expire-pass UPDATE.
 
 CREATE TABLE pending_analysis_requests (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -41,7 +49,8 @@ CREATE TABLE pending_analysis_requests (
 
   -- Lifecycle
   status          TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'consumed', 'expired', 'failed')),
+                  CHECK (status IN ('pending', 'processing',
+                                    'consumed', 'expired', 'failed')),
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at      TIMESTAMPTZ NOT NULL,
   consumed_at     TIMESTAMPTZ,
@@ -51,6 +60,6 @@ CREATE TABLE pending_analysis_requests (
 );
 
 CREATE INDEX idx_par_cleanup ON pending_analysis_requests(expires_at)
-  WHERE status = 'pending';
+  WHERE status IN ('pending', 'processing');
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON pending_analysis_requests TO aimer_auth;

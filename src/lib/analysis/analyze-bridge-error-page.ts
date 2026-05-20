@@ -208,3 +208,59 @@ export function renderAnalyzeBridgeNotFoundPage(): Response {
     headers: { "content-type": "text/html; charset=utf-8" },
   });
 }
+
+const IN_PROGRESS_BODY = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="3" />
+  <title>Analyzing… — aimer</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f9fafb;
+      color: #111827;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f172a; color: #f1f5f9; }
+      .card { background: #1e293b; border-color: #334155; }
+    }
+    .card {
+      max-width: 36rem;
+      margin: 2rem;
+      padding: 2rem;
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.5rem;
+    }
+    h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+    p { margin: 0; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Analyzing…</h1>
+    <p>This analyze request is currently running. This page will refresh automatically; you can also reload manually.</p>
+  </main>
+</body>
+</html>`;
+
+/**
+ * Rendered when `/continue` is invoked while another tick is already
+ * running `runAnalyzeFlow` for the same PAR — the second request sees
+ * `status='processing'`. The page auto-refreshes every few seconds so
+ * the browser lands on the terminal `consumed`/`failed` dispatch once
+ * the in-flight run finishes.
+ */
+export function renderAnalyzeBridgeInProgressPage(): Response {
+  return new Response(IN_PROGRESS_BODY, {
+    status: 202,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}

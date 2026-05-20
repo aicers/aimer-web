@@ -21,7 +21,10 @@ import {
   clearInvitationTokenCookie,
   setConnectionIdCookie,
 } from "@/lib/auth/cookies";
-import { TrustRegistryKeyExpiredError } from "@/lib/auth/errors";
+import {
+  PayloadTooLargeError,
+  TrustRegistryKeyExpiredError,
+} from "@/lib/auth/errors";
 import {
   type EventsEnvelopeClaims,
   verifyEventsEnvelope,
@@ -104,6 +107,11 @@ type VerificationFailure =
       contextClaims?: ContextTokenClaims;
     }
   | {
+      kind: "event_data_too_large";
+      detail: string;
+      contextClaims?: ContextTokenClaims;
+    }
+  | {
       kind: "invalid_analyze_params_token";
       detail: string;
       contextClaims?: ContextTokenClaims;
@@ -138,6 +146,18 @@ async function verifyAll(
       contextClaims,
     );
   } catch (err) {
+    // `event_data` exceeded the configured size cap. The JSON
+    // `/api/analysis/analyze` route maps this to its dedicated
+    // `event_data_too_large` (413); the bridge endpoint surfaces the
+    // matching styled page rather than collapsing it into the generic
+    // `invalid_events_envelope` (400) branch.
+    if (err instanceof PayloadTooLargeError) {
+      return {
+        kind: "event_data_too_large",
+        detail: err.message,
+        contextClaims,
+      };
+    }
     if (err instanceof TrustRegistryKeyExpiredError) {
       return {
         kind: "invalid_events_envelope",
@@ -258,6 +278,8 @@ function bridgeErrorCode(
       return "invalid_context_token";
     case "invalid_events_envelope":
       return "invalid_events_envelope";
+    case "event_data_too_large":
+      return "event_data_too_large";
     case "invalid_analyze_params_token":
       return "invalid_analyze_params_token";
     case "malformed_payload":

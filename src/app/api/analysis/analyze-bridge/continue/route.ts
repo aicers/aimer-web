@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { type NextRequest, NextResponse } from "next/server";
 import {
   renderAnalyzeBridgeErrorPage,
+  renderAnalyzeBridgeInProgressPage,
   renderAnalyzeBridgeNotFoundPage,
   renderSessionExpiredPage,
 } from "@/lib/analysis/analyze-bridge-error-page";
@@ -13,13 +14,17 @@ import {
 import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import {
+  claimPAR,
   loadPendingAnalysisRequest,
   markPARConsumed,
   markPARFailed,
+  type PendingAnalysisRequest,
 } from "@/lib/auth/analyze-bridge";
-import { withAuth } from "@/lib/auth/guards";
+import { authorize } from "@/lib/auth/authorization";
+import { getCustomerByExternalKey } from "@/lib/auth/customers";
+import { type AuthenticatedRequest, withAuth } from "@/lib/auth/guards";
 import { decryptPayload } from "@/lib/crypto/envelope";
-import { getAuthPool } from "@/lib/db/client";
+import { getAuthPool, withTransaction } from "@/lib/db/client";
 
 export const GET = withAuth(async (request: NextRequest, auth) => {
   return withCorrelationId(async () => {
@@ -33,70 +38,55 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       return renderAnalyzeBridgeNotFoundPage();
     }
 
-    const origin = request.nextUrl.origin;
+    // Re-authorize against the PAR's (customer, aiceId) BEFORE any
+    // status-dependent branch. `withAuth` only proves the request
+    // carries a valid general-context session — it does not prove this
+    // account is permitted to view the PAR's analysis. Without this
+    // check, any authenticated account that obtains or guesses a PAR
+    // UUID could observe the stored `view_url` (consumed) or probe
+    // terminal `failed`/`expired` state. The check matches the
+    // `authorize(...)` invocation in `runAnalyzeFlow` so the pre- and
+    // post-flow surfaces stay aligned.
+    const authzResult = await authorizePARAccess(par, auth);
+    if (authzResult.kind === "denied") {
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "general",
+        action: "ai_analysis.continue_failed",
+        targetType: "pending_analysis_request",
+        targetId: par.id,
+        details: {
+          errorCode: "authorization_failed",
+          stage: "authorize",
+          externalKey: par.externalKey,
+        },
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+        aiceId: par.aiceId,
+      });
+      return renderAnalyzeBridgeErrorPage(
+        "authorization_failed",
+        "not authorized",
+      );
+    }
 
-    switch (par.status) {
-      case "consumed":
-        if (par.viewUrl) {
-          void auditLog({
-            actorId: auth.accountId,
-            authContext: "general",
-            action: "ai_analysis.continue_replayed",
-            targetType: "pending_analysis_request",
-            targetId: par.id,
-            details: { externalKey: par.externalKey },
-            ipAddress: auth.meta.ipAddress,
-            sid: auth.sessionId,
-            aiceId: par.aiceId,
-          });
-          return NextResponse.redirect(par.viewUrl, 302);
-        }
-        return renderAnalyzeBridgeErrorPage(
-          "internal_error",
-          "Consumed analyze request is missing its view_url.",
-        );
-      case "failed": {
-        const code = isBridgeErrorCode(par.failureCode)
-          ? par.failureCode
-          : ("internal_error" as const);
-        void auditLog({
-          actorId: auth.accountId,
-          authContext: "general",
-          action: "ai_analysis.continue_replayed",
-          targetType: "pending_analysis_request",
-          targetId: par.id,
-          details: {
-            outcome: "failed",
-            errorCode: code,
-            externalKey: par.externalKey,
-          },
-          ipAddress: auth.meta.ipAddress,
-          sid: auth.sessionId,
-          aiceId: par.aiceId,
-        });
-        return renderAnalyzeBridgeErrorPage(
-          code,
-          "This analyze request previously failed.",
-        );
-      }
-      case "expired":
-        void auditLog({
-          actorId: auth.accountId,
-          authContext: "general",
-          action: "ai_analysis.continue_replayed",
-          targetType: "pending_analysis_request",
-          targetId: par.id,
-          details: {
-            outcome: "expired",
-            externalKey: par.externalKey,
-          },
-          ipAddress: auth.meta.ipAddress,
-          sid: auth.sessionId,
-          aiceId: par.aiceId,
-        });
-        return renderSessionExpiredPage();
-      case "pending":
-        break;
+    const dispatch = await dispatchStatus(par, auth);
+    if (dispatch) return dispatch;
+
+    // status === "pending": claim before running the flow so concurrent
+    // /continue requests on the same PAR cannot both invoke
+    // `runAnalyzeFlow`. A failed CAS means another tick already claimed
+    // (or terminated) the row — re-read and dispatch.
+    const claimed = await claimPAR(getAuthPool(), par.id);
+    if (!claimed) {
+      const reloaded = await loadPendingAnalysisRequest(getAuthPool(), par.id);
+      if (!reloaded) return renderAnalyzeBridgeNotFoundPage();
+      const followUp = await dispatchStatus(reloaded, auth);
+      if (followUp) return followUp;
+      // Still pending after a failed claim should be impossible (a
+      // failed CAS means the row left `pending`); fall through to the
+      // in-progress page as a safe default rather than racing again.
+      return renderAnalyzeBridgeInProgressPage();
     }
 
     if (!isSupportedLang(par.lang)) {
@@ -107,7 +97,6 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       );
     }
 
-    // Decrypt and run the flow.
     let eventData: Record<string, unknown>;
     try {
       const plaintext = await decryptPayload(par.payload, par.wrappedDek);
@@ -150,6 +139,7 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       );
     }
 
+    const origin = request.nextUrl.origin;
     const result = await runAnalyzeFlow({
       customer: { kind: "externalKey", externalKey: par.externalKey },
       aiceId: par.aiceId,
@@ -210,6 +200,110 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
     return NextResponse.redirect(result.viewUrl, 302);
   });
 });
+
+/**
+ * Resolve the PAR's customer by `external_key` and run the same
+ * `authorize(...)` check `runAnalyzeFlow` performs. Called before any
+ * status-based dispatch so unauthorized accounts cannot probe
+ * `consumed`/`failed`/`expired` terminal state via a guessed PAR id.
+ */
+async function authorizePARAccess(
+  par: PendingAnalysisRequest,
+  auth: AuthenticatedRequest,
+): Promise<{ kind: "allowed" } | { kind: "denied" }> {
+  const authPool = getAuthPool();
+  const customer = await getCustomerByExternalKey(authPool, par.externalKey);
+  if (!customer) return { kind: "denied" };
+
+  const bridgeScope = auth.bridgeCustomerIds
+    ? {
+        aiceId: auth.bridgeAiceId ?? "",
+        customerIds: auth.bridgeCustomerIds,
+      }
+    : null;
+
+  const result = await withTransaction(authPool, (client) =>
+    authorize(client, "general", auth.accountId, "analyses:create", {
+      customerId: customer.id,
+      aiceId: par.aiceId,
+      requiresAiceId: true,
+      operationKind: "process",
+      bridgeScope,
+    }),
+  );
+  return result.authorized ? { kind: "allowed" } : { kind: "denied" };
+}
+
+async function dispatchStatus(
+  par: PendingAnalysisRequest,
+  auth: AuthenticatedRequest,
+): Promise<Response | null> {
+  switch (par.status) {
+    case "consumed":
+      if (par.viewUrl) {
+        void auditLog({
+          actorId: auth.accountId,
+          authContext: "general",
+          action: "ai_analysis.continue_replayed",
+          targetType: "pending_analysis_request",
+          targetId: par.id,
+          details: { externalKey: par.externalKey },
+          ipAddress: auth.meta.ipAddress,
+          sid: auth.sessionId,
+          aiceId: par.aiceId,
+        });
+        return NextResponse.redirect(par.viewUrl, 302);
+      }
+      return renderAnalyzeBridgeErrorPage(
+        "internal_error",
+        "Consumed analyze request is missing its view_url.",
+      );
+    case "failed": {
+      const code = isBridgeErrorCode(par.failureCode)
+        ? par.failureCode
+        : ("internal_error" as const);
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "general",
+        action: "ai_analysis.continue_replayed",
+        targetType: "pending_analysis_request",
+        targetId: par.id,
+        details: {
+          outcome: "failed",
+          errorCode: code,
+          externalKey: par.externalKey,
+        },
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+        aiceId: par.aiceId,
+      });
+      return renderAnalyzeBridgeErrorPage(
+        code,
+        "This analyze request previously failed.",
+      );
+    }
+    case "expired":
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "general",
+        action: "ai_analysis.continue_replayed",
+        targetType: "pending_analysis_request",
+        targetId: par.id,
+        details: {
+          outcome: "expired",
+          externalKey: par.externalKey,
+        },
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+        aiceId: par.aiceId,
+      });
+      return renderSessionExpiredPage();
+    case "processing":
+      return renderAnalyzeBridgeInProgressPage();
+    case "pending":
+      return null;
+  }
+}
 
 const BRIDGE_ERROR_CODES: ReadonlySet<string> = new Set<AnalyzeBridgeErrorCode>(
   [
