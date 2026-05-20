@@ -313,51 +313,179 @@ Retire is recommended for a greenfield: `event_analysis_result`'s PK (aice_id, e
 
 ## End-to-end flow — `Send to aimer for analysis` (button to be renamed)
 
-User in aice-web-next clicks the renamed button on a specific event:
+User in aice-web-next clicks the renamed button on a specific event. The browser cannot reach `POST /api/analysis/analyze` directly: that route is session+CSRF-gated and `verifyOrigin`-protected, and aice-web-next is a different origin / site. Entry instead goes through a wrapping endpoint, `POST /api/analysis/analyze-bridge`, that accepts a signed multipart envelope via top-level navigation (the same transport pattern as the existing `/api/auth/bridge`) and then calls the merged analyze flow server-side. The full contract for the wrapping endpoint is documented in the next sub-section, "Cross-site transport mechanics"; this section sketches the user-visible flow.
 
 ```
-aice-web-next                                                aimer-web                                aimer
-─────────────                                                ─────────                                ─────
-[Click on event X, customerId C, lang L, force=false]
+aice-web-next browser                          aimer-web                                       aimer
+─────────────────────                          ─────────                                       ─────
+[Click on event X — customerId C, lang L, model_name N, model M, force=false]
        │
-       │  POST /api/analysis/analyze
-       │  Body: { event_data: {...}, event_key: K, customer_id: C, aice_id: A,
-       │          lang: L, model_name: N, model: M, force: false }
-       │ ────────────────────────────────────────────────▶  [Authorize]
-       │                                                     authorize(account, 'analyses:create', {
-       │                                                       customerId: C, aiceId: A,
-       │                                                       requiresAiceId: true, operationKind: 'process' })
-       │                                                          │
-       │                                                     [Lookup event by (aice_id, event_key) within customer_db]
-       │                                                          │
-       │                                                     [Lookup result by (aice_id, event_key, lang, model_name, model)]
-       │                                                          │
-       │                                                     ┌─ result_exists & !force ─▶ return view_url
-       │                                                     │
-       │                                                     ┌─ event_missing ─▶ redact + insert event
-       │                                                     │                   (writes redacted form + map)
-       │                                                     │                            │
-       │                                                     │                            ▼
-       │                                                     ┌─ call analyzeEvent over mTLS
-       │                                                                                  │
-       │                                                                                  │  GraphQL `analyzeEvent`
-       │                                                                                  │  with redacted event_data
-       │                                                                                  │ ───────────────────────▶
-       │                                                                                  │
-       │                                                                                  │  ◀─── { threatScore, analysis }
-       │                                                                                  │
-       │                                                          [Scan response for hallucinated PII]
-       │                                                          [If found: substitute <<UNVERIFIED_*>> markers + audit log]
-       │                                                          │
-       │                                                          [UPSERT event_analysis_result by PK]
-       │                                                          │
-       │                                                          ▼
-       │  ◀─── 200 { view_url: "https://aimer-web/{locale}/customers/{customer_id}/aice/{aice_id}/events/{event_key}/analysis?lang=L&model_name=N&model=M", cached: bool }
+       │  Build hidden multipart <form>:
+       │    method="POST"
+       │    enctype="multipart/form-data"
+       │    target="_blank"
+       │    action="/api/analysis/analyze-bridge"
+       │    fields: context_token, events_envelope, events_data, analyze_params_token
        │
-[Open view_url in new tab]
+       │  form.submit()  ──── top-level navigation, new tab ───▶
+       │
+       │                                       [POST /api/analysis/analyze-bridge]
+       │                                       verifyContextToken(context_token)
+       │                                       verifyEventsEnvelope(events_envelope, events_data, contextClaims)
+       │                                       verifyAnalyzeParamsToken(analyze_params_token, contextClaims)
+       │                                       Cross-binding asserts:
+       │                                         params.context_jti  === contextClaims.jti
+       │                                         params.payload_hash === envelopeClaims.payloadHash
+       │                                         params.envelope_hash === base64url(sha256(events_envelope))
+       │                                       Per-parameter validation (lang ∈ LANG_VALUES,
+       │                                         external_key ∈ contextClaims.customerIds, etc.)
+       │                                            │
+       │                                            ├─ same-site re-entry with live general session?
+       │                                            │     └─ runAnalyzeFlow(...)  ────────────▶  analyzeEvent
+       │                                            │             │                            ◀──── result
+       │                                            │             ▼
+       │                                            │        302 view_url   [END — new tab lands on result page]
+       │                                            │
+       │                                            └─ cross-site (typical):
+       │                                                  INSERT pending_connections
+       │                                                  INSERT pending_analysis_requests (same transaction)
+       │                                                  set connection_id cookie
+       │                                                  302 /api/auth/sign-in?flow=bridge
+       │                                                            │
+       │                                                            ▼
+       │                                                  [Keycloak — interactive sign-in or silent SSO]
+       │                                                            │
+       │                                                            ▼
+       │                                                  [GET /api/auth/callback]
+       │                                                    consume connection, create session
+       │                                                    SELECT pending_analysis_requests by connection_id
+       │                                                    PAR row present:
+       │                                                      skip staged_event_customers insert
+       │                                                      302 /api/analysis/analyze-bridge/continue?id=<par_id>
+       │                                                            │
+       │                                                            ▼
+       │                                                  [GET /api/analysis/analyze-bridge/continue?id=<par_id>]
+       │                                                    withGeneralAuth + authorize(...) against PAR's customer
+       │                                                    PAR.status dispatch:
+       │                                                      pending  → decrypt payload, runAnalyzeFlow,
+       │                                                                 UPDATE PAR (consumed, view_url, consumed_at),
+       │                                                                 302 view_url
+       │                                                      consumed → 302 PAR.view_url (reload-safe)
+       │                                                      failed   → styled error page from PAR.failure_code
+       │                                                      expired  → styled "Session expired" page
+       │
+       │              [Original aice-web-next tab is preserved — no callback consumed]
 ```
+
+`runAnalyzeFlow(...)` is the extracted core of the merged `POST /api/analysis/analyze` handler (event lookup, result cache lookup, redaction + ingest on miss, mTLS `analyzeEvent` call, hallucination scan, `event_analysis_result` UPSERT). Both `/api/analysis/analyze` and the wrapping endpoint call it; its behaviour matrix (cached / event-missing / force) is unchanged from the API contract below.
 
 Force behaviour: identical except the lookup-cache step is skipped. The event itself is not re-redacted (event identity is the same); only the result is re-fetched and the row UPSERTed.
+
+## Cross-site transport mechanics
+
+The wrapping endpoint exists to bridge the gap between aice-web-next's cross-site browser context and aimer-web's same-site security model. This sub-section documents why a direct XHR cannot reach `/api/analysis/analyze`, what auth class the wrapping endpoint inhabits, the signed-payload contract that substitutes for session+CSRF, the OIDC continuation mechanism, and the storage isolation choice.
+
+### Why a cross-site XHR to `/api/analysis/analyze` fails
+
+Three independent gates make a direct `fetch('https://aimer-web/api/analysis/analyze', { method: 'POST', credentials: 'include', body: JSON })` from aice-web-next's browser non-viable:
+
+1. **`verifyOrigin` rejection.** [src/lib/auth/guards.ts:233](../src/lib/auth/guards.ts#L233) rejects any request whose `Origin` header is not aimer-web's own origin. aice-web-next sends `Origin: https://<aice-web-next-host>`, which never matches — hard 403 before any handler runs.
+2. **`SameSite=Strict` cookie isolation.** `setAuthCookies()` ([src/lib/auth/cookies.ts:122](../src/lib/auth/cookies.ts#L122)) sets `at`, `csrf`, and `token_exp` with `SameSite=Strict`. A cross-site request from aice-web-next carries none of these cookies even with `credentials: 'include'`, so `authorize(...)` has no session to evaluate and `verifyCsrf` has no cookie to compare against.
+3. **Cross-origin `document.cookie` isolation.** Even if the CSRF cookie were somehow present, aice-web-next's JS (different origin) cannot read aimer-web's `document.cookie` to populate the `X-CSRF-Token` header. The same-origin policy blocks the read independent of cookie attributes.
+
+All three are categorical: no combination of CORS headers, `credentials` modes, or cookie-flag relaxation makes the direct XHR work without dropping security properties that the same-site analyze callers rely on. The wrapping endpoint solves the problem at the transport layer instead — top-level navigation with a signed multipart envelope — rather than weakening `/api/analysis/analyze`'s gates.
+
+### Wrapping endpoint auth class
+
+`POST /api/analysis/analyze-bridge` is **not** session+CSRF-gated. `verifyOrigin` and `verifyCsrf` do not apply on this endpoint. It joins aimer-web's existing signed-multipart-authenticated pattern — the same auth class as `/api/auth/bridge`, which accepts cross-site multipart POSTs from aice-web-next over top-level navigation. The session+CSRF invariant remains the rule for the rest of aimer-web; the wrapping endpoint is an instance of the already-deployed exception, not a new exception class.
+
+The substitution is "different security gate, already in production for the analogous endpoint," not "no security gate." Authenticity and integrity come from the JWS contract described next; the wrapping endpoint refuses any request whose envelope, context token, or analyze-params token fails verification or cross-binding.
+
+`/api/analysis/analyze` itself is unchanged. Its three gates (`verifyOrigin`, `verifyCsrf({ ctx: "general" })`, `authorize(..., operationKind: 'process', bridgeScope)`) stay in place; the wrapping endpoint is the only new caller.
+
+### Signed payload contract
+
+The multipart body has four fields — the existing three from the Phase 1 bridge envelope plus one new field for the analyze parameters:
+
+```text
+context_token         (existing)
+events_envelope       (existing — unchanged)
+events_data           (existing)
+analyze_params_token  (NEW — sibling JWS)
+```
+
+`event_data` is protected as today: the events envelope JWS carries a `payload_hash` claim binding it to `events_data`, and the context token's claims (customer scope, AICE identity, replay-prevention JTI) gate envelope acceptance. The new `analyze_params_token` is a sibling JWS that carries the analyze-specific parameters and cross-binds them to the envelope.
+
+`analyze_params_token` JWS claims:
+
+```jsonc
+{
+  "context_jti":   "...",      // must equal contextClaims.jti
+  "payload_hash":  "...",      // must equal envelopeClaims.payloadHash
+  "envelope_hash": "...",      // = base64url(SHA-256(events_envelope JWS bytes))
+  "event_key":     "...",
+  "lang":          "KOREAN",
+  "model_name":    "...",
+  "model":         "...",
+  "force":         false,
+  "external_key":  "..."
+}
+```
+
+Verification order at the wrapping endpoint:
+
+1. `verifyContextToken(context_token)` — existing helper.
+2. `verifyEventsEnvelope(events_envelope, events_data, contextClaims)` — existing helper, unchanged.
+3. `verifyAnalyzeParamsToken(analyze_params_token, contextClaims)` — new helper, structurally a copy of the envelope verifier with a different claim shape.
+4. Cross-binding assertions: `params.context_jti === contextClaims.jti`, `params.payload_hash === envelopeClaims.payloadHash`, `params.envelope_hash === base64url(sha256(events_envelope))`.
+5. Per-parameter validation (see below).
+
+Per-parameter validation:
+
+- `lang` — enum check against `LANG_VALUES` (`KOREAN` / `ENGLISH`); `lang_unsupported` on miss.
+- `model_name` / `model` — non-empty string check only; semantic validity is delegated to the downstream aimer GraphQL call (matches `/api/analysis/analyze`'s existing approach — `z.string().min(1)`).
+- `external_key` — required. Direct membership check against `contextClaims.customerIds`, which already carries the external-key list. `authorization_failed` on miss.
+- `event_key` — required. The wrapping endpoint applies the same `event_key_mismatch` guard as `/api/analysis/analyze`: top-level `event_key` must equal the `event_key` parsed out of `event_data`.
+- `force` — boolean type-check only.
+- **`customer_id` (internal UUID) is not accepted on this endpoint.** Cross-site callers must use `external_key`. The analyze route's UUID path remains for same-origin callers where the session attests the customer directly.
+
+**Why sibling JWS over an extended envelope.** The extended-envelope option would modify `verifyEventsEnvelope` ([src/lib/auth/events-envelope.ts](../src/lib/auth/events-envelope.ts)) — a security-critical hot path used by Phase 1 and Phase 2 multipart routes. The sibling-JWS option leaves that verifier untouched. Future routes that read only the envelope cannot accidentally trust analyze params (opt-in isolation: only the wrapping endpoint invokes `verifyAnalyzeParamsToken`).
+
+**Why `envelope_hash` cross-binding (over plain `context_jti` + `payload_hash` only).** The two-field cross-binding is secure but relies on review to ensure both checks are present at every call site. Adding `envelope_hash` makes envelope-substitution attacks require a SHA-256 collision against the specific envelope JWS bytes — infeasible — and gives the sibling-JWS pattern the same "secure by construction" guarantee as an extended envelope.
+
+**Key reuse.** `analyze_params_token` is signed by the same trust registry key as the envelope (same `kid`, same `alg`). The trust registry lookup result is memoized within the request so the second JWS verify is a cache hit — no race window, no extra round-trip.
+
+### Endpoint contract surface
+
+`POST /api/analysis/analyze-bridge`:
+
+- **Request:** `multipart/form-data` with fields `context_token`, `events_envelope`, `events_data`, `analyze_params_token`. The first three are the existing bridge envelope shape; the fourth is new.
+- **Success response:** HTTP `302` to `view_url` — **not** JSON. The same-site short-circuit (live general session, payload verified, `runAnalyzeFlow` runs synchronously) returns the 302 directly from the bridge POST handler. The cross-site path returns the final 302 from `GET /api/analysis/analyze-bridge/continue?id=<par_id>` after the OIDC round-trip; the intermediate 302s go to `/api/auth/sign-in?flow=bridge` and then to `/continue`.
+- **OIDC continuation route:** `GET /api/analysis/analyze-bridge/continue?id=<par_id>` is the dedicated landing point after OIDC sign-in (instead of the existing Phase 1 `/` landing). It runs `withGeneralAuth` + `authorize(...)` against the PAR's customer, then dispatches on `PAR.status`.
+- **Error surface:** styled error page rendered in the new tab — **not** the JSON `{ error: { code, message, retryable } }` shape used by `/api/analysis/analyze`. The 12 RFC 0001 error codes are reused for the page body, **plus** the bridge-specific `invalid_analyze_params_token` defined below — i.e. the bridge-side error surface is **13 codes total**.
+- **Error taxonomy addition:** `invalid_analyze_params_token` — JWS-level failures and cross-binding mismatches on `analyze_params_token`. Distinct from `invalid_events_envelope` so diagnostics can separate the two.
+
+### OIDC round-trip continuation
+
+`/api/auth/bridge` today verifies the multipart envelope, stages the events payload keyed on `connection_id`, sets the `connection_id` cookie, and returns a 302 to `/api/auth/sign-in?flow=bridge`. The OIDC callback ([src/app/api/auth/callback/route.ts:286](../src/app/api/auth/callback/route.ts#L286)) creates the bridge session and redirects the user to `/` — it carries no caller-supplied "what to do next" state. For the analyze flow, the OIDC round-trip must resume at `runAnalyzeFlow` with the originally-verified analyze parameters, not on the default `/` landing.
+
+The wrapping endpoint introduces a hand-off via a new `pending_analysis_requests` (PAR) row plus a dedicated `/continue` route:
+
+1. **At the bridge POST handler** (cross-site path, no live session): in the same transaction that inserts `pending_connections`, insert a PAR row containing the verified context (`aice_id`, `external_key`), the verified analyze parameters (`event_key`, `lang`, `model_name`, `model`, `force`), and the encrypted `event_data` ciphertext (reusing `encryptPayload` from [src/lib/crypto/envelope.ts](../src/lib/crypto/envelope.ts)). `connection_id UNIQUE` enforces one analyze intent per bridge call.
+2. **At the OIDC callback** (after session creation, before staged-events linkage): `SELECT id FROM pending_analysis_requests WHERE connection_id = $1`. **No status filter** — PAR row presence (regardless of status) is the signal that "this connection is an analyze intent." A row in `expired`/`failed` state must still route through `/continue` so its status can be surfaced; falling through to Phase 1 would incorrectly insert `staged_event_customers` rows for an analyze flow. When the row is present, the callback **skips** the `staged_event_customers` insertion (no approval-queue exposure for analyze flows) and 302s to `/api/analysis/analyze-bridge/continue?id=<par_id>` instead of `/`.
+3. **At `/continue`** (GET): re-authorize the (now-authenticated) session against the PAR's customer; dispatch on `PAR.status`. On `pending`, decrypt the payload, assert `SHA-256(plaintext) === payload_hash` for defence-in-depth, call `runAnalyzeFlow`, update PAR to `consumed` with `view_url` and `consumed_at`, 302 to `view_url`. On `consumed`, 302 to `PAR.view_url` directly (reload-safe). On `failed`, render a styled error page from `PAR.failure_code`. On `expired`, render a styled "Session expired" page.
+
+**Why a separate `/continue` route, not callback-inline.** Folding `runAnalyzeFlow` (which includes the multi-second aimer GraphQL call) into the OIDC callback would (1) mix auth concerns with multi-second LLM concerns in a single request; (2) prevent reload-based retry, since OIDC `code` is single-use; (3) force the analyze flow's 13 error codes to share an error path with `/deny?reason=...`, which is designed for auth denials. The cost of the separate route is one extra 302 hop, negligible against OIDC + LLM latency. Reload safety comes from the PAR.status state machine, not HTTP semantics.
+
+**Live-session short-circuit.** When the wrapping endpoint sees a valid existing general-context session on the incoming request (cookie present, `authorize(...)` would pass), it **skips the OIDC round-trip and the PAR row** — it runs `runAnalyzeFlow` synchronously and 302s to `view_url` directly from the POST handler. Full Q2 payload verification (context token + events envelope + analyze-params token + three cross-binding assertions) **still runs** in this path; skipping it because a session exists would let any same-origin caller submit arbitrary `event_data` / `model` / `external_key` on the user's authority. The short-circuit only fires on same-site re-entry (e.g., an operator opening an analyze URL directly while already signed into aimer-web); for the primary cross-site path the session cookies do not travel (they are `SameSite=Strict`) and the request always takes the bridge + OIDC path. Subsequent cross-site clicks remain cheap because the IdP's own SSO (Keycloak silent re-auth via its session cookie) absorbs the OIDC dance with no interactive prompt.
+
+### Storage isolation — separate `pending_analysis_requests` table
+
+The PAR row is **not** stored in `staged_event_payloads`. The Phase 1 staging table is bound to a per-customer approval lifecycle (joined with `staged_event_customers`, with `pending`/`approved`/`rejected`/`expired` status surfaced through the operator approval UI via `listStagedEventsBySession`). Persisting "I'm waiting for OIDC + analyze to complete" rows in the same table conflates two distinct lifecycles, and the approval UI would either surface analyze-pending rows it should not, or require new filter predicates threaded through every reader.
+
+`pending_analysis_requests` is therefore a dedicated table with ciphertext stored **inline** (reusing the same `encryptPayload` / `decryptPayload` primitives as `staged_event_payloads`, but its own row, its own status state machine — `pending`/`consumed`/`expired`/`failed` — and its own cleanup helper). `connection_id UNIQUE` enforces one analyze intent per bridge call, providing a layer of replay defence on top of `pending_connections.jti` uniqueness. TTL aligns with `pending_connections` (5 minutes), with a 24-hour grace before deletion of `expired` / `consumed` / `failed` rows for forensic purposes.
+
+The detailed schema, cleanup helper, and `/continue` dispatch state machine are specified in the wrapping-endpoint implementation issue ([#274](https://github.com/aicers/aimer-web/issues/274)) and are not duplicated here; what matters at the RFC layer is the separation: analyze-pending lifecycle is not the customer-approval lifecycle, and the two stores do not share rows.
 
 ## API contract — `POST /api/analysis/analyze`
 
@@ -445,7 +573,7 @@ Per the decision in this thread (option B), the result is shown in aimer-web's o
 - Display: threat score, restored analysis narrative, `model_name` + `model` (+ `model_actual_version` / `prompt_version` if present), requested-by, requested-at, force-re-run button.
 - `<<UNVERIFIED_*>>` markers are rendered with a visual indicator (badge, tooltip) noting LLM hallucination origin. These are not restored (there is no original to restore to); the UI labels them explicitly.
 
-The button in aice-web-next opens this page in a **new tab** so the operator does not lose aice-web-next context. Same-tab navigation is rejected because aice-web-next bridge sign-in already consumes a top-level navigation slot.
+The button in aice-web-next opens this page in a **new tab** so the operator does not lose aice-web-next context.
 
 ## Customer IP range registration UI
 
@@ -652,7 +780,7 @@ After this design lands, the work is split into smaller shippable units. Each sh
 | 8 | Analysis flow — `POST /api/analysis/analyze` + storage + UI page | `event_analysis_result` writes, the new endpoint, hallucination scan, mTLS GraphQL client wiring to `analyzeEvent`, result view page at the permalink | 1, 2 |
 | 9 | Retention sweeper | Background worker enforcing per-customer retention with the map cascade rule | 1 |
 | 10 | EN/KR manual + screenshots | User-visible feature docs per `docs/AUTHORING.md` — covers Send-to-aimer flow change, analysis result page, redaction range admin, retention settings | 5, 7, 8 |
-| 11 | aice-web-next caller integration (separate repo) | Filed in `aicers/aice-web-next`: replace stub events_data with real single-event payload, rename and rewire `Send to aimer` button to call `POST /api/analysis/analyze`, open returned view_url in new tab | 8 (endpoint contract stable) |
+| 11 | aice-web-next caller integration (separate repo) | Filed in `aicers/aice-web-next`: replace stub events_data with real single-event payload, rename `Send to aimer` button, and rewire it from XHR to a hidden multipart `<form>` (`method="POST"`, `enctype="multipart/form-data"`, `target="_blank"`, `action="/api/analysis/analyze-bridge"`) carrying `context_token`, `events_envelope`, `events_data`, and `analyze_params_token`. `form.submit()` opens the result page in a new tab via top-level navigation; the original aice-web-next tab is preserved | wrapping endpoint sub-issue (aimer-web#274 — endpoint + `analyze_params_token` + PAR + `/continue`); `/api/analysis/analyze` (this row 8) remains the same-origin caller's entry and is unchanged |
 
 Aimer-side cleanup (aimer#388) is independent: it lands after this design's runtime is deployed and confirmed to be the only `analyzeEvent` caller (see "aimer-side coordination" above).
 
