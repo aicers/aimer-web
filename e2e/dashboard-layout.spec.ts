@@ -35,7 +35,9 @@ test.describe("Dashboard sidebar", () => {
     const nav = userPage.getByRole("navigation", { name: "Main" });
     await expect(nav.getByText("Home")).toBeVisible();
     await expect(nav.getByText("Members")).toBeHidden();
-    await expect(nav.getByText("Customer Settings")).toBeHidden();
+    // Customer Settings is read-only visible for User role because the role
+    // has `customer-redaction-ranges:read` and `customer-retention:read`.
+    await expect(nav.getByText("Customer Settings")).toBeVisible();
   });
 
   test("highlights active navigation item", async ({ managerPage }) => {

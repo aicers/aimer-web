@@ -58,6 +58,10 @@ export type AuditAction =
   | "customer.suspended"
   | "customer.disabled"
   | "customer.deleted"
+  // Customer redaction ranges + retention (Customer Settings UI)
+  | "customer_redaction_ranges.added"
+  | "customer_redaction_ranges.deleted"
+  | "customer_retention_policy.updated"
   // AICE environment
   | "environment.created"
   | "environment.updated"

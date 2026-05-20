@@ -29,6 +29,13 @@ export interface CustomerEntry {
   name: string;
   role: string | null;
   isAnalyst: boolean;
+  /**
+   * Effective permission keys this account holds for this customer,
+   * union of membership-role grants and analyst-assignment grants
+   * (same set `authorizeGeneral` computes server-side). Used by
+   * `usePermissions().hasPermission` for client-side gating.
+   */
+  permissions: string[];
 }
 
 export interface EnvironmentEntry {

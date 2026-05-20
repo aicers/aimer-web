@@ -56,6 +56,13 @@ const PRODUCED: Record<string, string> = {
   // Customer (guard-level: created, deleted)
   "customer.created": "src/app/api/admin/customers/route.ts",
   "customer.deleted": "src/app/api/admin/customers/[customerId]/route.ts",
+  // Customer redaction ranges + retention settings (guard-level)
+  "customer_redaction_ranges.added":
+    "src/app/api/admin/customers/[customerId]/redaction-ranges/route.ts",
+  "customer_redaction_ranges.deleted":
+    "src/app/api/admin/customers/[customerId]/redaction-ranges/[rangeId]/route.ts",
+  "customer_retention_policy.updated":
+    "src/app/api/admin/customers/[customerId]/retention/route.ts",
   // Detection event ingestion
   "detection_events.transfer_approved":
     "src/app/api/events/staged/[payloadId]/customers/[customerId]/route.ts",

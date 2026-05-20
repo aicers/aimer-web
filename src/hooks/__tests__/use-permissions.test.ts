@@ -12,6 +12,17 @@ import { usePermissions } from "../use-permissions";
 
 const mockedUseCustomerContext = vi.mocked(useCustomerContext);
 
+const USER_PERMS = [
+  "customer-redaction-ranges:read",
+  "customer-retention:read",
+];
+const MANAGER_PERMS = [
+  "customer-redaction-ranges:read",
+  "customer-redaction-ranges:write",
+  "customer-retention:read",
+  "customer-retention:write",
+];
+
 function mockContext(
   customers: CustomerEntry[],
   selectedCustomerId: string | null,
@@ -30,6 +41,7 @@ function makeCustomer(
     name: `Customer ${overrides.id}`,
     role: null,
     isAnalyst: false,
+    permissions: [],
     ...overrides,
   };
 }
@@ -37,7 +49,14 @@ function makeCustomer(
 describe("usePermissions", () => {
   it("returns Manager permissions when role is Manager", () => {
     mockContext(
-      [makeCustomer({ id: "c1", role: "Manager", isAnalyst: false })],
+      [
+        makeCustomer({
+          id: "c1",
+          role: "Manager",
+          isAnalyst: false,
+          permissions: MANAGER_PERMS,
+        }),
+      ],
       "c1",
     );
 
@@ -49,13 +68,24 @@ describe("usePermissions", () => {
       isAnalyst: false,
       canViewMembers: true,
       canViewCustomerSettings: true,
+      canViewRedactionRanges: true,
+      canWriteRedactionRanges: true,
+      canViewRetention: true,
+      canWriteRetention: true,
       canUseAnalystFeatures: false,
     });
   });
 
   it("returns User permissions when role is User", () => {
     mockContext(
-      [makeCustomer({ id: "c1", role: "User", isAnalyst: false })],
+      [
+        makeCustomer({
+          id: "c1",
+          role: "User",
+          isAnalyst: false,
+          permissions: USER_PERMS,
+        }),
+      ],
       "c1",
     );
 
@@ -65,14 +95,28 @@ describe("usePermissions", () => {
       role: "User",
       isManager: false,
       canViewMembers: false,
-      canViewCustomerSettings: false,
+      // User has :read on both surfaces — section is visible (read-only).
+      canViewCustomerSettings: true,
+      canViewRedactionRanges: true,
+      canWriteRedactionRanges: false,
+      canViewRetention: true,
+      canWriteRetention: false,
       canUseAnalystFeatures: false,
     });
   });
 
   it("returns analyst permissions", () => {
     mockContext(
-      [makeCustomer({ id: "c1", role: null, isAnalyst: true })],
+      [
+        makeCustomer({
+          id: "c1",
+          role: null,
+          isAnalyst: true,
+          // Analyst-only access still surfaces the two :read keys via
+          // the analyst-assignment union in /api/auth/customers.
+          permissions: USER_PERMS,
+        }),
+      ],
       "c1",
     );
 
@@ -82,13 +126,24 @@ describe("usePermissions", () => {
       role: null,
       isManager: false,
       isAnalyst: true,
+      canViewRedactionRanges: true,
+      canWriteRedactionRanges: false,
+      canViewRetention: true,
+      canWriteRetention: false,
       canUseAnalystFeatures: true,
     });
   });
 
   it("returns combined Manager + analyst permissions", () => {
     mockContext(
-      [makeCustomer({ id: "c1", role: "Manager", isAnalyst: true })],
+      [
+        makeCustomer({
+          id: "c1",
+          role: "Manager",
+          isAnalyst: true,
+          permissions: MANAGER_PERMS,
+        }),
+      ],
       "c1",
     );
 
@@ -100,6 +155,8 @@ describe("usePermissions", () => {
       isAnalyst: true,
       canViewMembers: true,
       canViewCustomerSettings: true,
+      canWriteRedactionRanges: true,
+      canWriteRetention: true,
       canUseAnalystFeatures: true,
     });
   });
@@ -109,12 +166,16 @@ describe("usePermissions", () => {
 
     const { result } = renderHook(() => usePermissions());
 
-    expect(result.current).toEqual({
+    expect(result.current).toMatchObject({
       role: null,
       isManager: false,
       isAnalyst: false,
       canViewMembers: false,
       canViewCustomerSettings: false,
+      canViewRedactionRanges: false,
+      canWriteRedactionRanges: false,
+      canViewRetention: false,
+      canWriteRetention: false,
       canUseAnalystFeatures: false,
     });
   });
@@ -122,8 +183,18 @@ describe("usePermissions", () => {
   it("uses customerId parameter over selectedCustomerId", () => {
     mockContext(
       [
-        makeCustomer({ id: "c1", role: "User", isAnalyst: false }),
-        makeCustomer({ id: "c2", role: "Manager", isAnalyst: true }),
+        makeCustomer({
+          id: "c1",
+          role: "User",
+          isAnalyst: false,
+          permissions: USER_PERMS,
+        }),
+        makeCustomer({
+          id: "c2",
+          role: "Manager",
+          isAnalyst: true,
+          permissions: MANAGER_PERMS,
+        }),
       ],
       "c1",
     );
@@ -136,7 +207,29 @@ describe("usePermissions", () => {
       isAnalyst: true,
       canViewMembers: true,
       canViewCustomerSettings: true,
+      canWriteRedactionRanges: true,
+      canWriteRetention: true,
       canUseAnalystFeatures: true,
     });
+  });
+
+  it("hasPermission queries the underlying permission set", () => {
+    mockContext(
+      [
+        makeCustomer({
+          id: "c1",
+          role: "User",
+          permissions: USER_PERMS,
+        }),
+      ],
+      "c1",
+    );
+
+    const { result } = renderHook(() => usePermissions());
+
+    expect(result.current.hasPermission("customer-retention:read")).toBe(true);
+    expect(result.current.hasPermission("customer-retention:write")).toBe(
+      false,
+    );
   });
 });
