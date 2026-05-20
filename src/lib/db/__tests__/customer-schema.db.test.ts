@@ -36,7 +36,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     );
     // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
     // 0003_redaction_foundation, 0004_retention_sweeper_support,
-    // 0005_drop_analysis_narrative
+    // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -44,6 +44,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0003",
       "0004",
       "0005",
+      "0006",
     ]);
   });
 
@@ -651,22 +652,149 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await rolePool.query("DELETE FROM policy_run WHERE run_id = 900");
     });
 
-    it("cannot UPDATE on any Phase 2 table", async () => {
-      // Choose a real column per table so the statement parses; if the
-      // role had UPDATE rights it would succeed (zero rows affected).
-      // Without UPDATE it fails with permission denied.
-      const updateCols: Record<string, string> = {
-        baseline_event: "source_aice_id",
+    // -- Redaction-job-worker column-scoped UPDATE grants (0005) --
+    //
+    // The worker re-stamps stale rows by issuing UPDATE against four
+    // tables under aimer_customer. Grants are column-scoped so only
+    // the redacted-payload columns and redaction_policy_version are
+    // writable; operator-only columns stay read-only.
+
+    it("can UPDATE worker-owned columns on detection_events, baseline_event, story_member, policy_event", async () => {
+      await rolePool.query(
+        `INSERT INTO detection_events
+           (aice_id, event_key, redacted_event, redaction_policy_version,
+            schema_version, payload_hash, source, ingested_by)
+         VALUES ('aice-upd', 1, '{}'::jsonb, 'engine:1.0.0|ranges:empty',
+                 '1.0', 'h', 'manual', gen_random_uuid())`,
+      );
+      await rolePool.query(
+        `UPDATE detection_events
+            SET redacted_event = '{"r":1}'::jsonb,
+                redaction_policy_version = 'engine:1.0.0|ranges:abcdef012345'
+          WHERE aice_id = 'aice-upd' AND event_key = 1`,
+      );
+      await rolePool.query(
+        `DELETE FROM detection_events
+          WHERE aice_id = 'aice-upd' AND event_key = 1`,
+      );
+
+      await rolePool.query(
+        `INSERT INTO baseline_event (
+          baseline_version, event_key, event_time, kind,
+          raw_score, raw_event, score_window_context, window_signals,
+          scoring_weights_snapshot, source_aice_id
+        ) VALUES (
+          'upd-test', 1, NOW(), 'http',
+          0.1, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb, 'aice-upd'
+        )`,
+      );
+      await rolePool.query(
+        `UPDATE baseline_event
+            SET raw_event = '{"r":1}'::jsonb,
+                redaction_policy_version = 'engine:1.0.0|ranges:abcdef012345'
+          WHERE baseline_version = 'upd-test' AND event_key = 1`,
+      );
+      await rolePool.query(
+        `DELETE FROM baseline_event WHERE baseline_version = 'upd-test'`,
+      );
+
+      await rolePool.query(
+        `INSERT INTO story (
+          story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id
+        ) VALUES (
+          901, 'upd-test', 'auto_correlated',
+          NOW(), NOW(),
+          '{}'::jsonb, 'aice-upd'
+        )`,
+      );
+      await rolePool.query(
+        `INSERT INTO story_member (
+          story_id, story_version, member_event_key, role, event
+        ) VALUES (901, 'upd-test', 1, 'primary', '{}'::jsonb)`,
+      );
+      await rolePool.query(
+        `UPDATE story_member
+            SET event = '{"r":1}'::jsonb,
+                redaction_policy_version = 'engine:1.0.0|ranges:abcdef012345'
+          WHERE story_id = 901 AND story_version = 'upd-test'
+            AND member_event_key = 1`,
+      );
+      await rolePool.query(
+        `DELETE FROM story_member WHERE story_id = 901 AND story_version = 'upd-test'`,
+      );
+      await rolePool.query(
+        `DELETE FROM story WHERE story_id = 901 AND story_version = 'upd-test'`,
+      );
+
+      await rolePool.query(
+        `INSERT INTO policy_run (
+          run_id, period_start, period_end, created_at_source,
+          baseline_version, policies_fingerprint, exclusions_fingerprint,
+          status, source_aice_id
+        ) VALUES (
+          901, NOW(), NOW(), NOW(),
+          'v1', 'p', 'e', 'ready', 'aice-upd'
+        )`,
+      );
+      await rolePool.query(
+        `INSERT INTO policy_event (
+          run_id, event_key, event_time, kind,
+          policy_triage_snapshot
+        ) VALUES (901, 1, NOW(), 'http', '[]'::jsonb)`,
+      );
+      await rolePool.query(
+        `UPDATE policy_event
+            SET orig_addr = '<<REDACTED_IP_001>>',
+                resp_addr = '<<REDACTED_IP_002>>',
+                host = NULL, dns_query = NULL, uri = NULL,
+                policy_triage_snapshot = '[]'::jsonb,
+                redaction_policy_version = 'engine:1.0.0|ranges:abcdef012345'
+          WHERE run_id = 901 AND event_key = 1`,
+      );
+      await rolePool.query(`DELETE FROM policy_event WHERE run_id = 901`);
+      await rolePool.query(`DELETE FROM policy_run WHERE run_id = 901`);
+    });
+
+    it("cannot UPDATE operator-only columns on the worker-owned tables", async () => {
+      // Column-scoped grant must not bleed into operator-only columns
+      // (PKs, source_aice_id, raw_score, kind, role, schema_version,
+      // payload_hash, source, ingested_by, etc.).
+      const operatorOnlyUpdates: Array<{ sql: string; label: string }> = [
+        {
+          label: "detection_events.schema_version",
+          sql: "UPDATE detection_events SET schema_version = 'x' WHERE false",
+        },
+        {
+          label: "baseline_event.raw_score",
+          sql: "UPDATE baseline_event SET raw_score = 0 WHERE false",
+        },
+        {
+          label: "story_member.role",
+          sql: "UPDATE story_member SET role = 'context' WHERE false",
+        },
+        {
+          label: "policy_event.kind",
+          sql: "UPDATE policy_event SET kind = 'dns' WHERE false",
+        },
+      ];
+      for (const { sql } of operatorOnlyUpdates) {
+        await expect(rolePool.query(sql)).rejects.toThrow(/permission denied/);
+      }
+    });
+
+    it("cannot UPDATE the all-read-only Phase 2 tables (story, policy_run)", async () => {
+      // These two were never written by the redaction job worker
+      // and remain SELECT/INSERT/DELETE only via aimer_customer.
+      // analysis_narrative was dropped in 0005.
+      const readOnlyForUpdate: Record<string, string> = {
         story: "source_aice_id",
-        story_member: "role",
         policy_run: "source_aice_id",
-        policy_event: "kind",
       };
-      for (const table of phase2Tables) {
+      for (const [table, col] of Object.entries(readOnlyForUpdate)) {
         await expect(
-          rolePool.query(
-            `UPDATE ${table} SET ${updateCols[table]} = 'x' WHERE false`,
-          ),
+          rolePool.query(`UPDATE ${table} SET ${col} = 'x' WHERE false`),
         ).rejects.toThrow(/permission denied/);
       }
     });

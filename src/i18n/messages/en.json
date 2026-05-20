@@ -399,7 +399,6 @@
     "rangeErrorOverlaps": "CIDR overlaps with an existing registered range.",
     "rangeErrorCapExceeded": "This customer already has the maximum number of registered ranges.",
     "applyExistingButton": "Apply to existing data",
-    "applyExistingDisabledTooltip": "Retroactive re-redact is not yet available in this build.",
     "applyExistingPreviewTitle": "Apply to existing data — preview",
     "applyExistingPreviewStaleRows": "Approximately {n} rows will be re-redacted.",
     "applyExistingPreviewEstimate": "Estimated duration: {s} seconds.",

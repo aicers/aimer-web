@@ -13,11 +13,6 @@ vi.mock("@/lib/api/client", () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }));
 
-const mockIsEnabled = vi.fn(() => false);
-vi.mock("@/lib/redaction/feature-flag", () => ({
-  isRedactionJobsEnabled: () => mockIsEnabled(),
-}));
-
 // Stable translation function — returning a fresh closure on each
 // render would re-fire the component's `reload` useEffect, wiping
 // the form back to "loading" mid-test.
@@ -26,24 +21,10 @@ vi.mock("next-intl", () => ({
   useTranslations: () => t,
 }));
 
-vi.mock("@/components/ui/tooltip", () => ({
-  TooltipProvider: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  TooltipTrigger: ({ children }: { children: React.ReactNode }) => (
-    <>{children}</>
-  ),
-  TooltipContent: ({ children }: { children: React.ReactNode }) => (
-    <span data-testid="tooltip">{children}</span>
-  ),
-}));
-
 import { RedactionRangesSection } from "../redaction-ranges-section";
 
 beforeEach(() => {
   mockApiFetch.mockReset();
-  mockIsEnabled.mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -82,7 +63,6 @@ describe("RedactionRangesSection", () => {
     );
     expect(screen.queryByLabelText("rangeAddLabel")).toBeNull();
     expect(screen.queryByRole("button", { name: "rangeAddButton" })).toBeNull();
-    // No delete buttons should be rendered.
     expect(
       screen.queryByRole("button", { name: /rangeDeleteAriaLabel/ }),
     ).toBeNull();
@@ -100,34 +80,7 @@ describe("RedactionRangesSection", () => {
     ).toBeDefined();
   });
 
-  it("renders the Apply-to-existing-data button as disabled with the feature-flag tooltip", async () => {
-    arrangeRanges([]);
-    render(<RedactionRangesSection customerId="cust-1" canWrite={true} />);
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "applyExistingButton" }),
-      ).toBeDefined(),
-    );
-    const applyBtn = screen.getByRole("button", {
-      name: "applyExistingButton",
-    }) as HTMLButtonElement;
-    expect(applyBtn.disabled).toBe(true);
-    expect(screen.getByTestId("tooltip").textContent).toBe(
-      "applyExistingDisabledTooltip",
-    );
-  });
-
-  it("hides the Apply button entirely for read-only callers", async () => {
-    arrangeRanges([]);
-    render(<RedactionRangesSection customerId="cust-1" canWrite={false} />);
-    await waitFor(() => expect(screen.getByRole("status")).toBeDefined());
-    expect(
-      screen.queryByRole("button", { name: "applyExistingButton" }),
-    ).toBeNull();
-  });
-
-  it("enables the Apply button (no tooltip) when the feature gate is on", async () => {
-    mockIsEnabled.mockReturnValue(true);
+  it("renders the Apply-to-existing-data button enabled (gate removed)", async () => {
     arrangeRanges([]);
     render(<RedactionRangesSection customerId="cust-1" canWrite={true} />);
     await waitFor(() =>
@@ -139,13 +92,18 @@ describe("RedactionRangesSection", () => {
       name: "applyExistingButton",
     }) as HTMLButtonElement;
     expect(applyBtn.disabled).toBe(false);
-    // The disabled-state tooltip wrapper should not be rendered when
-    // the gate is on — the button is wired up directly.
-    expect(screen.queryByTestId("tooltip")).toBeNull();
   });
 
-  it("posts to /redaction-jobs after the user confirms when the gate is on", async () => {
-    mockIsEnabled.mockReturnValue(true);
+  it("hides the Apply button entirely for read-only callers", async () => {
+    arrangeRanges([]);
+    render(<RedactionRangesSection customerId="cust-1" canWrite={false} />);
+    await waitFor(() => expect(screen.getByRole("status")).toBeDefined());
+    expect(
+      screen.queryByRole("button", { name: "applyExistingButton" }),
+    ).toBeNull();
+  });
+
+  it("posts to /redaction-jobs after the user confirms", async () => {
     mockApiFetch.mockImplementation((url: string, opts?: RequestInit) => {
       if (url.endsWith("/redaction-ranges") && !opts) {
         return Promise.resolve({
@@ -203,7 +161,6 @@ describe("RedactionRangesSection", () => {
   });
 
   it("surfaces an error and hides the Run button when the preview load fails", async () => {
-    mockIsEnabled.mockReturnValue(true);
     mockApiFetch.mockImplementation((url: string, opts?: RequestInit) => {
       if (url.endsWith("/redaction-ranges") && !opts) {
         return Promise.resolve({
@@ -234,13 +191,9 @@ describe("RedactionRangesSection", () => {
     await waitFor(() =>
       expect(screen.getByTestId("preview-error")).toBeDefined(),
     );
-    // The Run button must NOT be rendered while we lack a real
-    // preview response — the dialog cannot legitimately confirm a
-    // job without a server-computed row count + policy version.
     expect(
       screen.queryByRole("button", { name: "applyExistingConfirm" }),
     ).toBeNull();
-    // The trigger endpoint must not have been called.
     const triggerCalls = mockApiFetch.mock.calls.filter(
       (c) =>
         (c[0] as string).endsWith("/redaction-jobs") &&

@@ -4,7 +4,120 @@ import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { computeCustomerPolicyVersion } from "@/lib/redaction/customer-policy";
-import { isRedactionJobsEnabled } from "@/lib/redaction/feature-flag";
+
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
+
+interface ListJobRow {
+  job_id: string;
+  status: string;
+  target_policy_version: string;
+  total_rows: string | null;
+  processed_rows: string;
+  failed_rows: string;
+  started_at: Date;
+  running_started_at: Date | null;
+  completed_at: Date | null;
+  last_progress_at: Date;
+  error_message: string | null;
+  triggered_by: string;
+  cancelled_by: string | null;
+  cancellation_reason: string | null;
+}
+
+export const GET = withAuth(
+  async (req: NextRequest, auth) => {
+    const customerId = extractCustomerId(req);
+    if (!customerId) {
+      return Response.json({ error: "Invalid customer ID" }, { status: 400 });
+    }
+
+    const pool = getAuthPool();
+    const client = await pool.connect();
+    try {
+      await assertAuthorized(
+        client,
+        "general",
+        auth.accountId,
+        "customer-redaction-ranges:read",
+        { customerId },
+      );
+
+      const url = req.nextUrl;
+      const before = url.searchParams.get("before");
+      const pageSizeRaw = url.searchParams.get("page_size");
+      const pageSize = Math.min(
+        MAX_PAGE_SIZE,
+        Math.max(
+          1,
+          Number.parseInt(pageSizeRaw ?? "", 10) || DEFAULT_PAGE_SIZE,
+        ),
+      );
+
+      const params: unknown[] = [customerId];
+      let whereClause = "WHERE customer_id = $1";
+      if (before && UUID_RE.test(before)) {
+        whereClause +=
+          " AND started_at < (SELECT started_at FROM redaction_jobs WHERE id = $2)";
+        params.push(before);
+      }
+
+      const { rows } = await client.query<ListJobRow>(
+        `SELECT id AS job_id, status, target_policy_version,
+                total_rows, processed_rows, failed_rows,
+                started_at, running_started_at, completed_at,
+                last_progress_at, error_message, triggered_by,
+                cancelled_by, cancellation_reason
+           FROM redaction_jobs
+           ${whereClause}
+          ORDER BY started_at DESC
+          LIMIT ${pageSize + 1}`,
+        params,
+      );
+
+      const slice = rows.slice(0, pageSize);
+      const nextCursor =
+        rows.length > pageSize
+          ? (slice[slice.length - 1]?.job_id ?? null)
+          : null;
+
+      return Response.json({
+        jobs: slice.map(serializeJobRow),
+        next_cursor: nextCursor,
+      });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(
+          { error: err.message },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+  { ctx: "general" },
+);
+
+function serializeJobRow(row: ListJobRow) {
+  return {
+    job_id: row.job_id,
+    status: row.status,
+    target_policy_version: row.target_policy_version,
+    total_rows: row.total_rows == null ? null : Number(row.total_rows),
+    processed_rows: Number(row.processed_rows),
+    failed_rows: Number(row.failed_rows),
+    started_at: row.started_at.toISOString(),
+    running_started_at: row.running_started_at?.toISOString() ?? null,
+    completed_at: row.completed_at?.toISOString() ?? null,
+    last_progress_at: row.last_progress_at.toISOString(),
+    error_message: row.error_message,
+    triggered_by: row.triggered_by,
+    cancelled_by: row.cancelled_by,
+    cancellation_reason: row.cancellation_reason,
+  };
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,9 +156,6 @@ export const POST = withAuth(
     const pool = getAuthPool();
     const client = await pool.connect();
     try {
-      // Permission check must run before the feature-gate so callers
-      // without :write keep seeing 403, not 503. The 503 is reserved
-      // for callers who would otherwise be allowed.
       await assertAuthorized(
         client,
         "general",
@@ -53,17 +163,6 @@ export const POST = withAuth(
         "customer-redaction-ranges:write",
         { customerId, operationKind: "write" },
       );
-
-      if (!isRedactionJobsEnabled()) {
-        return Response.json(
-          {
-            error: "feature_disabled",
-            message:
-              "Retroactive re-redact is not yet available in this build.",
-          },
-          { status: 503 },
-        );
-      }
 
       // Return the existing active job if one exists for this
       // customer (the partial unique index enforces the invariant; we

@@ -46,25 +46,51 @@ export const DELETE = withAuth(
         "customer-redaction-ranges:write",
         { customerId, operationKind: "write" },
       );
-      const { rows } = await client.query<{ cidr: string }>(
-        `DELETE FROM customer_redaction_ranges
-         WHERE id = $1 AND customer_id = $2
-         RETURNING cidr::text AS cidr`,
-        [rangeId, customerId],
-      );
-      if (rows.length === 0) {
-        return Response.json({ error: "Range not found" }, { status: 404 });
+
+      // Participate in the per-customer range-mutation serialization.
+      // POST takes the same xact-scope advisory lock, and the
+      // retroactive-redaction worker takes it across hash-check +
+      // materialization + queued→running flip. Without DELETE
+      // participating, a DELETE could race into the worker's
+      // materialization window, change the live policy hash, and let
+      // live ingestion stamp rows with the new policy that the still-
+      // starting job then downgrades back to the frozen target.
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+          `redaction-ranges:${customerId}`,
+        ]);
+
+        const { rows } = await client.query<{ cidr: string }>(
+          `DELETE FROM customer_redaction_ranges
+           WHERE id = $1 AND customer_id = $2
+           RETURNING cidr::text AS cidr`,
+          [rangeId, customerId],
+        );
+        if (rows.length === 0) {
+          await client.query("ROLLBACK");
+          return Response.json({ error: "Range not found" }, { status: 404 });
+        }
+
+        await client.query("COMMIT");
+
+        auth.audit.targetId = rangeId;
+        auth.audit.customerId = customerId;
+        auth.audit.details = {
+          customerId,
+          cidr: rows[0].cidr,
+          rangeId,
+        };
+
+        return new Response(null, { status: 204 });
+      } catch (txErr) {
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          // ignore
+        }
+        throw txErr;
       }
-
-      auth.audit.targetId = rangeId;
-      auth.audit.customerId = customerId;
-      auth.audit.details = {
-        customerId,
-        cidr: rows[0].cidr,
-        rangeId,
-      };
-
-      return new Response(null, { status: 204 });
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(

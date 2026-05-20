@@ -399,7 +399,6 @@
     "rangeErrorOverlaps": "기존 등록 범위와 겹칩니다.",
     "rangeErrorCapExceeded": "이 고객의 등록 가능한 범위 수를 초과했습니다.",
     "applyExistingButton": "기존 데이터에 적용",
-    "applyExistingDisabledTooltip": "이번 빌드에서는 소급 재리댁션이 아직 활성화되지 않았습니다.",
     "applyExistingPreviewTitle": "기존 데이터 적용 — 미리보기",
     "applyExistingPreviewStaleRows": "약 {n}건의 행이 재리댁션됩니다.",
     "applyExistingPreviewEstimate": "예상 소요 시간: {s}초",

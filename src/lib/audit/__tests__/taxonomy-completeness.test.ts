@@ -63,6 +63,19 @@ const PRODUCED: Record<string, string> = {
     "src/app/api/admin/customers/[customerId]/redaction-ranges/[rangeId]/route.ts",
   "customer_retention_policy.updated":
     "src/app/api/admin/customers/[customerId]/retention/route.ts",
+  "customer_redaction_ranges.retroactive_started":
+    "src/lib/instrumentation/redaction-job-worker.ts",
+  "customer_redaction_ranges.retroactive_completed":
+    "src/lib/instrumentation/redaction-job-worker.ts",
+  "customer_redaction_ranges.retroactive_failed":
+    "src/lib/instrumentation/redaction-job-worker.ts",
+  // Cancellation: queued-status cancellations are audited by the
+  // endpoint (no worker observes them). Running-status cancellations
+  // are audited by the worker after the final checkpoint so the
+  // processedRows/failedRows in the audit are the row's final
+  // counters. The route is the primary producer cited here.
+  "customer_redaction_ranges.retroactive_cancelled":
+    "src/app/api/admin/customers/[customerId]/redaction-jobs/[jobId]/route.ts",
   // Detection event ingestion
   "detection_events.transfer_approved":
     "src/app/api/events/staged/[payloadId]/customers/[customerId]/route.ts",

@@ -8,5 +8,9 @@ export async function register() {
     await installMtlsSighupHandler();
     const { installRetentionSweeper } = await import("@/lib/retention/sweeper");
     installRetentionSweeper();
+    const { installRedactionJobWorker } = await import(
+      "@/lib/instrumentation/redaction-job-worker"
+    );
+    await installRedactionJobWorker();
   }
 }
