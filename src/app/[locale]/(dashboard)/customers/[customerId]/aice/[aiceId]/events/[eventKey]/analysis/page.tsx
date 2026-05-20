@@ -168,15 +168,21 @@ function ForceRerunButton({
   // at the original event detail so the user can click
   // Send-to-aimer with `force=true` from there.
   //
+  // `aimerForce=1` is the cross-repo caller contract from
+  // aicers/aice-web-next#629: aice-web-next reads this param on the
+  // event-detail route and, on the next Send/Analyze click, sends
+  // `force=true` once to `/api/analysis/analyze`. Without this
+  // signal the click would just open the cached analysis again.
+  //
   // The aice-web-next origin is configured at deploy time; missing
   // config renders the button as disabled so the page stays useful.
-  // We pass `aice_id` and `event_key` in the URL so aice-web-next can
-  // resolve the user back to the originating event — the exact
-  // routing on that side is aice-web-next's concern (aicers/aice-web-next#629).
   const origin = process.env.AICE_WEB_NEXT_ORIGIN ?? "";
   let target = "";
   if (origin !== "") {
-    const params = new URLSearchParams({ aice_id: aiceId });
+    const params = new URLSearchParams({
+      aice_id: aiceId,
+      aimerForce: "1",
+    });
     target = `${origin.replace(/\/$/, "")}/events/${encodeURIComponent(
       eventKey,
     )}?${params.toString()}`;

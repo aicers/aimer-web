@@ -356,6 +356,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   // the result page would restore as plaintext.
   let redactedEvent: unknown;
   let mergedMap: import("@/lib/redaction").RedactionMap;
+  let insertedEventId: string | null = null;
   try {
     const ingest = await ingestAndRedact({
       customerPool,
@@ -370,6 +371,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     });
     redactedEvent = ingest.redacted;
     mergedMap = ingest.mergedMap;
+    insertedEventId = ingest.insertedEventId;
   } catch (err) {
     void auditLog({
       ...auditBase,
@@ -384,6 +386,22 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
       err instanceof StorageError ? "storage_failed" : "redaction_failed",
       err instanceof Error ? err.message : "redaction failed",
     );
+  }
+
+  // Synthetic single-event ingest must surface in the
+  // `detection_events.transfer_*` audit stream so manual analyze-
+  // triggered ingests are not invisible to operators reviewing the
+  // detection-events approval audit feed. Match the shape that
+  // `storeApprovedEvents` emits from the staged-approve route:
+  // `eventIds: [<single>]`. Skipped when the route fell through to an
+  // already-existing event (concurrent writer race or earlier call).
+  if (insertedEventId !== null) {
+    void auditLog({
+      ...auditBase,
+      action: "detection_events.transfer_approved",
+      targetId: insertedEventId,
+      details: { customerId: customer.id, eventIds: [insertedEventId] },
+    });
   }
 
   // ---- aimer GraphQL call ------------------------------------------------
@@ -536,6 +554,12 @@ interface IngestAndRedactParams {
 async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
   redacted: unknown;
   mergedMap: import("@/lib/redaction").RedactionMap;
+  // Populated only on the synthetic-ingest path (new detection_events
+  // row written by this call). The route emits a
+  // `detection_events.transfer_approved` audit entry with this id so a
+  // manual analyze-triggered ingest appears in the same audit stream
+  // as staged-approve ingests.
+  insertedEventId: string | null;
 }> {
   return withTransaction(params.customerPool, async (client) => {
     const existing = await readMapWithLock(
@@ -562,6 +586,7 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       return {
         redacted: existingEvent.rows[0].redacted_event,
         mergedMap: existing ?? {},
+        insertedEventId: null,
       };
     }
 
@@ -588,13 +613,23 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
     }
     const redactedJson = JSON.stringify(out.redacted);
     const payloadHash = createHash("sha256").update(redactedJson).digest("hex");
+    let insertedEventId: string | null = null;
     try {
-      await client.query(
+      // `RETURNING id` so the route can attach the new row's id to the
+      // `detection_events.transfer_approved` audit entry, matching the
+      // shape `storeApprovedEvents` emits. `ON CONFLICT DO NOTHING`
+      // stays as a defensive guard against any future writer that
+      // bypasses the advisory lock — under the lock the SELECT above
+      // already proved no row exists, so the RETURNING branch fires
+      // for every legitimate synthetic ingest. If a concurrent writer
+      // races past the lock we yield to it (no audit, no duplicate).
+      const insertRes = await client.query<{ id: string }>(
         `INSERT INTO detection_events
            (aice_id, event_key, redacted_event, redaction_policy_version,
             schema_version, payload_hash, source, connection_id, ingested_by)
          VALUES ($1, $2::numeric, $3::jsonb, $4, $5, $6, 'manual', NULL, $7::uuid)
-         ON CONFLICT (aice_id, event_key) DO NOTHING`,
+         ON CONFLICT (aice_id, event_key) DO NOTHING
+         RETURNING id`,
         [
           params.aiceId,
           params.eventKey,
@@ -605,11 +640,18 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
           params.accountId,
         ],
       );
+      if (insertRes.rows.length > 0) {
+        insertedEventId = insertRes.rows[0].id;
+      }
     } catch (err) {
       throw new StorageError(err instanceof Error ? err.message : String(err));
     }
 
-    return { redacted: out.redacted, mergedMap: out.mergedMap };
+    return {
+      redacted: out.redacted,
+      mergedMap: out.mergedMap,
+      insertedEventId,
+    };
   });
 }
 

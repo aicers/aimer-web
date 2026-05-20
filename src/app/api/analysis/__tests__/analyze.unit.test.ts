@@ -198,10 +198,21 @@ function stubCacheMiss() {
   });
 }
 
-function stubInsertDetectionEvent({ rowCount = 1 } = {}) {
+const SYNTHETIC_EVENT_ID = "00000000-0000-0000-0000-00000000ee01";
+
+function stubInsertDetectionEvent({
+  rowCount = 1,
+  id = SYNTHETIC_EVENT_ID,
+  rows,
+}: {
+  rowCount?: number;
+  id?: string;
+  rows?: Record<string, unknown>[];
+} = {}) {
   pushStub({
     match: (s) => /INSERT INTO detection_events/.test(s),
     rowCount,
+    rows: rows ?? (rowCount > 0 ? [{ id }] : []),
   });
 }
 
@@ -267,6 +278,57 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: "ai_analysis.result_stored" }),
     );
+  });
+
+  it("synthetic ingest emits detection_events.transfer_approved with [<single>] eventIds", async () => {
+    // The synthetic single-event ingest path must surface in the
+    // detection_events transfer audit stream — same shape as the
+    // staged-approve route's emission — so manual analyze-triggered
+    // ingests are not invisible to operators reviewing the
+    // detection-events approval audit feed.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent({ id: SYNTHETIC_EVENT_ID });
+    stubInsertAnalysisResult();
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "detection_events.transfer_approved",
+        targetId: SYNTHETIC_EVENT_ID,
+        details: expect.objectContaining({
+          customerId: CUSTOMER_ID,
+          eventIds: [SYNTHETIC_EVENT_ID],
+        }),
+      }),
+    );
+  });
+
+  it("existing-event path does NOT emit detection_events.transfer_approved", async () => {
+    // When the route falls through to an already-existing
+    // `detection_events` row (no synthetic ingest happened), it must
+    // NOT emit a transfer_approved entry — otherwise every cache-miss
+    // analyze of an already-ingested event would forge a phantom
+    // ingest audit.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    mockReadMapWithLock.mockResolvedValue({});
+    pushStub({
+      match: (s) =>
+        /SELECT redacted_event FROM detection_events/.test(s) &&
+        /WHERE aice_id = \$1/.test(s),
+      rows: [{ redacted_event: { event_key: EVENT_KEY, stored: "yes" } }],
+    });
+    stubInsertAnalysisResult();
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+    const transferCalls = mockAuditLog.mock.calls.filter((c) => {
+      const arg = (c as unknown as Array<{ action?: string }>)[0];
+      return arg?.action === "detection_events.transfer_approved";
+    });
+    expect(transferCalls).toHaveLength(0);
   });
 
   it("event exists, result missing → analyze stored event + store", async () => {
