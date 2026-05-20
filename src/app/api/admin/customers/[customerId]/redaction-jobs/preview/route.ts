@@ -4,8 +4,8 @@ import { HttpError } from "@/lib/auth/errors";
 import { withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { PER_ROW_SECONDS } from "@/lib/instrumentation/redaction-job-worker";
 import { computeCustomerPolicyVersion } from "@/lib/redaction/customer-policy";
-import { PER_ROW_SECONDS } from "@/lib/redaction/feature-flag";
 import { countStaleRows } from "@/lib/redaction/stale-scan";
 
 const UUID_RE =

@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 const mockAssertAuthorized = vi.fn();
 const mockComputePolicy = vi.fn();
 const mockCountStaleRows = vi.fn();

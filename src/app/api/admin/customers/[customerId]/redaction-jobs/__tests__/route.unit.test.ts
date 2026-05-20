@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAssertAuthorized = vi.fn();
 const mockClientQuery = vi.fn();
@@ -46,8 +46,6 @@ function makePostRequest(): NextRequest {
   );
 }
 
-const previousEnv = process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED;
-
 describe("redaction-jobs POST", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -60,20 +58,7 @@ describe("redaction-jobs POST", () => {
     );
   });
 
-  afterEach(() => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = previousEnv;
-  });
-
-  it("returns 503 feature_disabled when the gate is off", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "";
-    const { POST } = await import("../route");
-    const res = await POST(makePostRequest());
-    expect(res.status).toBe(503);
-    expect((await res.json()).error).toBe("feature_disabled");
-  });
-
-  it("returns 403 (not 503) for callers without :write even when gate is off", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "";
+  it("returns 403 for callers without :write", async () => {
     const { HttpError } = await import("@/lib/auth/errors");
     mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
     const { POST } = await import("../route");
@@ -81,8 +66,7 @@ describe("redaction-jobs POST", () => {
     expect(res.status).toBe(403);
   });
 
-  it("inserts a new job row when the gate is on", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "1";
+  it("inserts a new job row on the happy path", async () => {
     mockClientQuery
       // existing-active lookup
       .mockResolvedValueOnce({ rows: [] })
@@ -108,7 +92,6 @@ describe("redaction-jobs POST", () => {
   });
 
   it("returns the existing active job when one is queued/running", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "1";
     mockClientQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -125,7 +108,6 @@ describe("redaction-jobs POST", () => {
   });
 
   it("returns the winning job when a concurrent insert raced and hit the partial unique index", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "1";
     const uniqueViolation = Object.assign(
       new Error("duplicate key value violates unique constraint"),
       {
@@ -134,13 +116,9 @@ describe("redaction-jobs POST", () => {
       },
     );
     mockClientQuery
-      // initial existing-active lookup — sees no active job
       .mockResolvedValueOnce({ rows: [] })
-      // computeCustomerPolicyVersion's range query
       .mockResolvedValueOnce({ rows: [] })
-      // INSERT — loser of the race, hits the partial unique index
       .mockRejectedValueOnce(uniqueViolation)
-      // re-select the winner
       .mockResolvedValueOnce({
         rows: [
           {
@@ -160,7 +138,6 @@ describe("redaction-jobs POST", () => {
   });
 
   it("propagates other 23505 violations rather than re-selecting", async () => {
-    process.env.NEXT_PUBLIC_REDACTION_RETROACTIVE_ENABLED = "1";
     const wrongViolation = Object.assign(
       new Error("duplicate key value violates unique constraint"),
       { code: "23505", constraint: "redaction_jobs_pkey" },

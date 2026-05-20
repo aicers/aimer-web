@@ -5,14 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { apiFetch } from "@/lib/api/client";
-import { isRedactionJobsEnabled } from "@/lib/redaction/feature-flag";
 
 export interface RedactionRange {
   id: string;
@@ -40,7 +33,6 @@ interface Props {
 
 export function RedactionRangesSection({ customerId, canWrite }: Props) {
   const t = useTranslations("customerSettings");
-  const retroEnabled = isRedactionJobsEnabled();
 
   const [ranges, setRanges] = useState<RedactionRange[]>([]);
   const [loading, setLoading] = useState(true);
@@ -233,38 +225,13 @@ export function RedactionRangesSection({ customerId, canWrite }: Props) {
 
       {canWrite && (
         <div className="pt-2">
-          {retroEnabled ? (
-            <Button
-              variant="outline"
-              onClick={openPreview}
-              aria-label={t("applyExistingButton")}
-            >
-              {t("applyExistingButton")}
-            </Button>
-          ) : (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  {/* The button stays in the DOM disabled (rather than
-                      hidden) so the gating tooltip remains discoverable.
-                      Wrapped in a span so the disabled button does not
-                      swallow the tooltip's pointer events. */}
-                  <span>
-                    <Button
-                      variant="outline"
-                      disabled
-                      aria-label={t("applyExistingButton")}
-                    >
-                      {t("applyExistingButton")}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("applyExistingDisabledTooltip")}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
+          <Button
+            variant="outline"
+            onClick={openPreview}
+            aria-label={t("applyExistingButton")}
+          >
+            {t("applyExistingButton")}
+          </Button>
         </div>
       )}
 
@@ -316,7 +283,7 @@ export function RedactionRangesSection({ customerId, canWrite }: Props) {
             <p className="text-sm text-destructive">{triggerError}</p>
           )}
           <div className="flex gap-2 pt-2">
-            {retroEnabled && !triggeredJob && preview && (
+            {!triggeredJob && preview && (
               <Button
                 variant="default"
                 size="sm"
@@ -357,11 +324,6 @@ function rangeErrorLabel(code: string, t: TFn): string {
   }
 }
 
-function triggerErrorLabel(code: string, t: TFn): string {
-  switch (code) {
-    case "feature_disabled":
-      return t("applyExistingDisabledTooltip");
-    default:
-      return t("applyExistingTriggerGenericError");
-  }
+function triggerErrorLabel(_code: string, t: TFn): string {
+  return t("applyExistingTriggerGenericError");
 }

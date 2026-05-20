@@ -67,8 +67,12 @@ describe("DELETE /redaction-ranges/[rangeId]", () => {
   });
 
   it("returns 204 and stamps audit details on success", async () => {
-    mockClientQuery.mockResolvedValueOnce({
-      rows: [{ cidr: "203.0.113.0/24" }],
+    // BEGIN, advisory_xact_lock, DELETE … RETURNING, COMMIT.
+    mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.startsWith("DELETE FROM")) {
+        return { rows: [{ cidr: "203.0.113.0/24" }] };
+      }
+      return { rows: [] };
     });
     const { DELETE } = await import("../route");
     const res = await DELETE(makeDeleteRequest());
@@ -80,14 +84,40 @@ describe("DELETE /redaction-ranges/[rangeId]", () => {
       cidr: "203.0.113.0/24",
       rangeId: RANGE_ID,
     });
+    // Per-customer range-mutation advisory lock acquired inside the
+    // DELETE transaction so the lock blocks concurrent POST and the
+    // retroactive-redaction worker's materialization window.
+    const sqls = mockClientQuery.mock.calls.map((c) => c[0]);
+    expect(sqls).toContain("BEGIN");
+    expect(sqls).toContain("COMMIT");
+    expect(
+      sqls.some(
+        (s) =>
+          typeof s === "string" && s.includes("pg_advisory_xact_lock(hashtext"),
+      ),
+    ).toBe(true);
+    const lockArgs = mockClientQuery.mock.calls.find(
+      ([s]) =>
+        typeof s === "string" && s.includes("pg_advisory_xact_lock(hashtext"),
+    )?.[1] as string[] | undefined;
+    expect(lockArgs?.[0]).toBe(`redaction-ranges:${CUSTOMER_ID}`);
   });
 
   it("returns 404 when the range row does not exist", async () => {
-    mockClientQuery.mockResolvedValueOnce({ rows: [] });
+    mockClientQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.startsWith("DELETE FROM")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    });
     const { DELETE } = await import("../route");
     const res = await DELETE(makeDeleteRequest());
     expect(res.status).toBe(404);
     expect(mockAuditMeta.targetId).toBeUndefined();
+    // The transaction must roll back so a subsequent client reuse does
+    // not inherit a half-open BEGIN.
+    const sqls = mockClientQuery.mock.calls.map((c) => c[0]);
+    expect(sqls).toContain("ROLLBACK");
   });
 
   it("returns 403 when the caller lacks :write", async () => {

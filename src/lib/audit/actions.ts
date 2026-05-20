@@ -61,6 +61,10 @@ export type AuditAction =
   // Customer redaction ranges + retention (Customer Settings UI)
   | "customer_redaction_ranges.added"
   | "customer_redaction_ranges.deleted"
+  | "customer_redaction_ranges.retroactive_started"
+  | "customer_redaction_ranges.retroactive_completed"
+  | "customer_redaction_ranges.retroactive_failed"
+  | "customer_redaction_ranges.retroactive_cancelled"
   | "customer_retention_policy.updated"
   // AICE environment
   | "environment.created"
