@@ -330,6 +330,67 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
     );
   });
 
+  it("runAnalyzeFlow throws after claim → marks PAR failed with internal_error, does NOT leave row processing", async () => {
+    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const plaintext = Buffer.from(eventDataJson, "utf8");
+    const { createHash } = await import("node:crypto");
+    const computedHash = createHash("sha256")
+      .update(plaintext)
+      .digest("base64url");
+    mockLoadPAR.mockResolvedValue({ ...basePAR, payloadHash: computedHash });
+    mockDecryptPayload.mockResolvedValue(plaintext);
+    mockRunAnalyzeFlow.mockRejectedValue(new Error("transient db failure"));
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("internal_error");
+    expect(mockMarkFailed).toHaveBeenCalledWith(
+      expect.anything(),
+      "par-1",
+      "internal_error",
+    );
+    expect(mockMarkConsumed).not.toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "ai_analysis.continue_failed",
+        details: expect.objectContaining({
+          errorCode: "internal_error",
+          stage: "run_analyze_flow",
+        }),
+      }),
+    );
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_executed" }),
+    );
+  });
+
+  it("runAnalyzeFlow throws + markPARFailed loses CAS → re-reads PAR and renders session-expired", async () => {
+    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const plaintext = Buffer.from(eventDataJson, "utf8");
+    const { createHash } = await import("node:crypto");
+    const computedHash = createHash("sha256")
+      .update(plaintext)
+      .digest("base64url");
+    mockLoadPAR
+      .mockResolvedValueOnce({ ...basePAR, payloadHash: computedHash })
+      .mockResolvedValueOnce({
+        ...basePAR,
+        payloadHash: computedHash,
+        status: "expired",
+      });
+    mockDecryptPayload.mockResolvedValue(plaintext);
+    mockRunAnalyzeFlow.mockRejectedValue(new Error("transient db failure"));
+    mockMarkFailed.mockResolvedValue(false);
+
+    const res = await callGET(makeRequest("par-1"));
+    expect(res.status).toBe(410);
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.continue_failed" }),
+    );
+  });
+
   it("markPARFailed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired", async () => {
     const eventDataJson = JSON.stringify({ event_key: "42" });
     const plaintext = Buffer.from(eventDataJson, "utf8");

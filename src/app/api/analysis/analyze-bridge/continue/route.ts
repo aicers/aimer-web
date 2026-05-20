@@ -177,26 +177,67 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
     }
 
     const origin = request.nextUrl.origin;
-    const result = await runAnalyzeFlow({
-      customer: { kind: "externalKey", externalKey: par.externalKey },
-      aiceId: par.aiceId,
-      eventKey: par.eventKey,
-      eventData,
-      lang: par.lang,
-      modelName: par.modelName,
-      model: par.model,
-      force: par.force,
-      accountId: auth.accountId,
-      sessionId: auth.sessionId,
-      ipAddress: auth.meta.ipAddress,
-      bridgeScope: auth.bridgeCustomerIds
-        ? {
-            aiceId: auth.bridgeAiceId ?? "",
-            customerIds: auth.bridgeCustomerIds,
-          }
-        : null,
-      origin,
-    });
+    let result: Awaited<ReturnType<typeof runAnalyzeFlow>>;
+    try {
+      result = await runAnalyzeFlow({
+        customer: { kind: "externalKey", externalKey: par.externalKey },
+        aiceId: par.aiceId,
+        eventKey: par.eventKey,
+        eventData,
+        lang: par.lang,
+        modelName: par.modelName,
+        model: par.model,
+        force: par.force,
+        accountId: auth.accountId,
+        sessionId: auth.sessionId,
+        ipAddress: auth.meta.ipAddress,
+        bridgeScope: auth.bridgeCustomerIds
+          ? {
+              aiceId: auth.bridgeAiceId ?? "",
+              customerIds: auth.bridgeCustomerIds,
+            }
+          : null,
+        origin,
+      });
+    } catch (err) {
+      // An unexpected throw after the `processing` claim — typically a
+      // transient DB error inside `loadCustomerRanges`, the cache
+      // lookup, or hallucination scanning. Without this catch the row
+      // would sit in `processing` until cleanup expires it, with no
+      // `failure_code`, no audit, and no styled error page (the request
+      // would surface as a generic Next.js 500). Mark the PAR failed
+      // with `internal_error` so reload reproduces the styled page; if
+      // the terminal CAS loses to the cleanup sweep, route through the
+      // same re-read dispatcher the success/error branches use.
+      const updated = await markPARFailed(
+        getAuthPool(),
+        par.id,
+        "internal_error",
+      );
+      if (!updated) {
+        return await handleTerminalCASFalse(par.id, auth);
+      }
+      void auditLog({
+        actorId: auth.accountId,
+        authContext: "general",
+        action: "ai_analysis.continue_failed",
+        targetType: "pending_analysis_request",
+        targetId: par.id,
+        details: {
+          errorCode: "internal_error",
+          stage: "run_analyze_flow",
+          error: err instanceof Error ? err.message : String(err),
+          externalKey: par.externalKey,
+        },
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
+        aiceId: par.aiceId,
+      });
+      return renderAnalyzeBridgeErrorPage(
+        "internal_error",
+        err instanceof Error ? err.message : "analyze flow failed",
+      );
+    }
 
     const authPool = getAuthPool();
     if (result.kind === "error") {

@@ -407,29 +407,60 @@ export async function POST(request: NextRequest): Promise<Response> {
       : false;
 
     if (session && shortCircuitAllowed) {
-      const result = await runAnalyzeFlow({
-        customer: {
-          kind: "externalKey",
-          externalKey: verified.externalKey,
-        },
-        aiceId: verified.contextClaims.aiceId,
-        eventKey: verified.eventKey,
-        eventData: verified.eventData,
-        lang: verified.lang,
-        modelName: verified.modelName,
-        model: verified.model,
-        force: verified.force,
-        accountId: session.accountId,
-        sessionId: session.sessionId,
-        ipAddress: meta.ipAddress,
-        bridgeScope: session.bridgeCustomerIds
-          ? {
-              aiceId: session.bridgeAiceId ?? "",
-              customerIds: session.bridgeCustomerIds,
-            }
-          : null,
-        origin,
-      });
+      let result: Awaited<ReturnType<typeof runAnalyzeFlow>>;
+      try {
+        result = await runAnalyzeFlow({
+          customer: {
+            kind: "externalKey",
+            externalKey: verified.externalKey,
+          },
+          aiceId: verified.contextClaims.aiceId,
+          eventKey: verified.eventKey,
+          eventData: verified.eventData,
+          lang: verified.lang,
+          modelName: verified.modelName,
+          model: verified.model,
+          force: verified.force,
+          accountId: session.accountId,
+          sessionId: session.sessionId,
+          ipAddress: meta.ipAddress,
+          bridgeScope: session.bridgeCustomerIds
+            ? {
+                aiceId: session.bridgeAiceId ?? "",
+                customerIds: session.bridgeCustomerIds,
+              }
+            : null,
+          origin,
+        });
+      } catch (err) {
+        // An unexpected throw inside `runAnalyzeFlow` — e.g. transient
+        // DB failure inside `loadCustomerRanges`, the cache-lookup
+        // query, or hallucination scanning. The JSON `/api/analysis/
+        // analyze` route maps the same class of throws to its
+        // `internal_error` response via its outer catch; the bridge
+        // short-circuit must do the equivalent or the user sees a
+        // generic Next.js 500 instead of the styled RFC error page.
+        void auditLog({
+          actorId: session.accountId,
+          authContext: "general",
+          action: "ai_analysis.short_circuit_executed",
+          targetType: "event_analysis_result",
+          details: {
+            outcome: "failure",
+            errorCode: "internal_error",
+            jti: verified.contextClaims.jti,
+            externalKey: verified.externalKey,
+            error: err instanceof Error ? err.message : String(err),
+          },
+          ipAddress: meta.ipAddress,
+          sid: session.sessionId,
+          aiceId: verified.contextClaims.aiceId,
+        });
+        return renderAnalyzeBridgeErrorPage(
+          "internal_error",
+          err instanceof Error ? err.message : "analyze flow failed",
+        );
+      }
       if (result.kind === "error") {
         void auditLog({
           actorId: session.accountId,

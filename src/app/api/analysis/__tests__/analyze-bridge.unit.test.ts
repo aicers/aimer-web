@@ -314,6 +314,34 @@ describe("POST /api/analysis/analyze-bridge", () => {
     expect(mockCreatePAR).not.toHaveBeenCalled();
   });
 
+  it("short-circuit runAnalyzeFlow throws → surfaces styled internal_error page, not generic 500", async () => {
+    mockTryLoadSession.mockResolvedValue({
+      accountId: "acc-1",
+      sessionId: "sid-1",
+      iat: 1000,
+      tokenVersion: 1,
+      bridgeAiceId: null,
+      bridgeCustomerIds: null,
+    });
+    mockRunAnalyzeFlow.mockRejectedValue(new Error("transient db failure"));
+
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("internal_error");
+    expect(mockCreatePAR).not.toHaveBeenCalled();
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "ai_analysis.short_circuit_executed",
+        details: expect.objectContaining({
+          outcome: "failure",
+          errorCode: "internal_error",
+        }),
+      }),
+    );
+  });
+
   it("oversized events_data surfaces event_data_too_large (413), not invalid_events_envelope (400)", async () => {
     const { PayloadTooLargeError } = await import("@/lib/auth/errors");
     mockVerifyEventsEnvelope.mockRejectedValue(
