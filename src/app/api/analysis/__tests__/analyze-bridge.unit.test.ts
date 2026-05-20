@@ -342,6 +342,50 @@ describe("POST /api/analysis/analyze-bridge", () => {
     );
   });
 
+  it("cross-site persistence throw → surfaces styled internal_error page, not uncaught route error", async () => {
+    // A non-replay throw inside the atomic `pending_connections` + PAR
+    // insert — modelled here as an OpenBao envelope-encryption failure
+    // inside `createPendingAnalysisRequestWithClient`. The handler
+    // must convert it to the styled `internal_error` (500) page rather
+    // than rethrowing into Next.js.
+    mockCreatePAR.mockRejectedValue(new Error("vault transit unavailable"));
+
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const body = await res.text();
+    expect(body).toContain("internal_error");
+    // The cookie / bridge_initiated audit must NOT fire on the failure
+    // branch — those happen only after the transaction commits.
+    expect(mockSetConnectionIdCookie).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "ai_analysis.bridge_initiated" }),
+    );
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "bridge.connection_denied",
+        details: expect.objectContaining({ reason: "internal_error" }),
+      }),
+    );
+  });
+
+  it("cross-site persistence throw on createPendingConnection (non-replay) → styled internal_error page", async () => {
+    // Same contract but for a failure inside the parent
+    // `createPendingConnectionWithClient` that is not the
+    // `pending_connections_jti_key` UNIQUE violation — e.g. a
+    // transient connection-pool failure.
+    mockCreatePendingConnection.mockRejectedValue(
+      new Error("connection terminated unexpectedly"),
+    );
+
+    const res = await callPOST(makeRequest(makeForm()));
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    expect(body).toContain("internal_error");
+    expect(mockCreatePAR).not.toHaveBeenCalled();
+    expect(mockSetConnectionIdCookie).not.toHaveBeenCalled();
+  });
+
   it("oversized events_data surfaces event_data_too_large (413), not invalid_events_envelope (400)", async () => {
     const { PayloadTooLargeError } = await import("@/lib/auth/errors");
     mockVerifyEventsEnvelope.mockRejectedValue(

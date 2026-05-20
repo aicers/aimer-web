@@ -556,7 +556,30 @@ export async function POST(request: NextRequest): Promise<Response> {
           "Context token already used",
         );
       }
-      throw err;
+      // Any other failure inside the atomic insert — a transient DB
+      // outage, an OpenBao envelope-encryption failure inside
+      // `createPendingAnalysisRequestWithClient`, an FK/permission
+      // problem, or anything else non-replay. The JSON `/api/analysis/
+      // analyze` route maps the same class of throws to its
+      // `internal_error` response via its outer catch; the bridge POST
+      // is a top-level browser navigation, so it must surface the
+      // styled RFC error page rather than a generic Next.js 500.
+      void auditLog({
+        actorId: verified.contextClaims.sub,
+        action: "bridge.connection_denied",
+        targetType: "bridge",
+        details: {
+          reason: "internal_error",
+          jti: verified.contextClaims.jti,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        ipAddress: meta.ipAddress,
+        aiceId: verified.contextClaims.aiceId,
+      });
+      return renderAnalyzeBridgeErrorPage(
+        "internal_error",
+        err instanceof Error ? err.message : "bridge persistence failed",
+      );
     }
 
     await setConnectionIdCookie(connectionId);
