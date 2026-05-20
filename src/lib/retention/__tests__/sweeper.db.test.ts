@@ -763,23 +763,40 @@ describeDb("retention sweeper integration", () => {
     const errorHolder: {
       value: { code?: string; message: string } | null;
     } = { value: null };
+    // Tracks query-order regressions: if the child COUNT(*) on
+    // story_member runs before the parent FOR UPDATE on story, the
+    // lock-then-count pattern has been defeated and we record a
+    // violation. Asserted at the end of the test.
+    const orderViolations: string[] = [];
 
     try {
       async function barrieredConnect() {
         const client = await customerPool.connect();
         let signaled = false;
+        let parentLocked = false;
         const wrapped = (async (sql: string, params?: unknown[]) => {
+          const text = String(sql);
+          const isParentLock =
+            /FROM\s+story\b/i.test(text) &&
+            /FOR UPDATE/i.test(text) &&
+            !/story_member/i.test(text);
+          const isChildCount =
+            /FROM\s+story_member\b/i.test(text) && /COUNT\(\*\)/i.test(text);
+          if (isChildCount && !parentLocked) {
+            orderViolations.push(
+              "story_member COUNT(*) ran before story FOR UPDATE",
+            );
+          }
           const result = await (
             client.query as (s: string, p?: unknown[]) => Promise<unknown>
           )(sql, params);
-          if (
-            !signaled &&
-            /FROM\s+story\b/i.test(String(sql)) &&
-            /FOR UPDATE/i.test(String(sql))
-          ) {
-            signaled = true;
-            lockAcquired.resolve();
-            await release.promise;
+          if (isParentLock) {
+            parentLocked = true;
+            if (!signaled) {
+              signaled = true;
+              lockAcquired.resolve();
+              await release.promise;
+            }
           }
           return result;
         }) as unknown as PoolClient["query"];
@@ -805,6 +822,13 @@ describeDb("retention sweeper integration", () => {
         pid: number;
       }>("SELECT pg_backend_pid()::int AS pid");
       const clientBPid = pidRows[0].pid;
+      // Run client B inside an explicit transaction so the INSERT
+      // statement itself blocks on the FK row-lock (IMMEDIATE FK
+      // check). Under DEFERRABLE INITIALLY DEFERRED the FK check
+      // would be queued for COMMIT and the INSERT would return
+      // immediately — `waitForLockWait` below would time out, which
+      // is exactly the failure mode we want for that regression.
+      await clientB.query("BEGIN");
       clientBPromise = clientB
         .query(
           `INSERT INTO story_member
@@ -833,6 +857,10 @@ describeDb("retention sweeper integration", () => {
       await clientBPromise;
       expect(errorHolder.value?.code).toBe("23503");
 
+      // Catches a reorder that moves the child COUNT(*) above the
+      // parent FOR UPDATE — see issue #261 acceptance.
+      expect(orderViolations).toEqual([]);
+
       const { rows: members } = await customerPool.query<{ c: string }>(
         "SELECT COUNT(*) AS c FROM story_member",
       );
@@ -857,6 +885,7 @@ describeDb("retention sweeper integration", () => {
       release.resolve();
       if (clientB) {
         if (clientBPromise) await clientBPromise.catch(() => {});
+        await clientB.query("ROLLBACK").catch(() => {});
         clientB.release();
       }
     }
@@ -888,23 +917,36 @@ describeDb("retention sweeper integration", () => {
     const errorHolder: {
       value: { code?: string; message: string } | null;
     } = { value: null };
+    const orderViolations: string[] = [];
 
     try {
       async function barrieredConnect() {
         const client = await customerPool.connect();
         let signaled = false;
+        let parentLocked = false;
         const wrapped = (async (sql: string, params?: unknown[]) => {
+          const text = String(sql);
+          const isParentLock =
+            /FROM\s+policy_run\b/i.test(text) &&
+            /FOR UPDATE/i.test(text) &&
+            !/policy_event/i.test(text);
+          const isChildCount =
+            /FROM\s+policy_event\b/i.test(text) && /COUNT\(\*\)/i.test(text);
+          if (isChildCount && !parentLocked) {
+            orderViolations.push(
+              "policy_event COUNT(*) ran before policy_run FOR UPDATE",
+            );
+          }
           const result = await (
             client.query as (s: string, p?: unknown[]) => Promise<unknown>
           )(sql, params);
-          if (
-            !signaled &&
-            /FROM\s+policy_run\b/i.test(String(sql)) &&
-            /FOR UPDATE/i.test(String(sql))
-          ) {
-            signaled = true;
-            lockAcquired.resolve();
-            await release.promise;
+          if (isParentLock) {
+            parentLocked = true;
+            if (!signaled) {
+              signaled = true;
+              lockAcquired.resolve();
+              await release.promise;
+            }
           }
           return result;
         }) as unknown as PoolClient["query"];
@@ -930,6 +972,12 @@ describeDb("retention sweeper integration", () => {
         pid: number;
       }>("SELECT pg_backend_pid()::int AS pid");
       const clientBPid = pidRows[0].pid;
+      // Explicit transaction (see story-cascade test): catches a
+      // regression that switches the FK to DEFERRABLE INITIALLY
+      // DEFERRED. Under IMMEDIATE, the INSERT itself blocks on the
+      // parent row-lock; under DEFERRED, it would return immediately
+      // and the lock-wait poll below would time out.
+      await clientB.query("BEGIN");
       clientBPromise = clientB
         .query(
           `INSERT INTO policy_event
@@ -955,6 +1003,8 @@ describeDb("retention sweeper integration", () => {
       await clientBPromise;
       expect(errorHolder.value?.code).toBe("23503");
 
+      expect(orderViolations).toEqual([]);
+
       const { rows: events } = await customerPool.query<{ c: string }>(
         "SELECT COUNT(*) AS c FROM policy_event",
       );
@@ -977,6 +1027,7 @@ describeDb("retention sweeper integration", () => {
       release.resolve();
       if (clientB) {
         if (clientBPromise) await clientBPromise.catch(() => {});
+        await clientB.query("ROLLBACK").catch(() => {});
         clientB.release();
       }
     }
@@ -991,12 +1042,17 @@ describeDb("retention sweeper integration", () => {
     // referent). PK order chosen so R/S interleave inside the
     // rotation's batch:
     //   ('aice-001', 1) R, ('aice-002', 1) S, ('aice-003', 1) R, ('aice-004', 1) S
+    // Per-row wrapped_dek identities so a row-level mixup in the
+    // rotation's UPDATE (e.g. swapping rows in the loop) would
+    // surface as wrong ciphertext-to-wrapped_dek pairing in the
+    // assertions below. Pairing convention: ciphertext byte X
+    // corresponds to wrap-v1-X / wrap-v2-X after rotation.
     await customerPool.query(
       `INSERT INTO event_redaction_map (aice_id, event_key, ciphertext, wrapped_dek)
-       VALUES ('aice-001', 1, decode('aa','hex'), 'wrap-v1'),
-              ('aice-002', 1, decode('bb','hex'), 'wrap-v1'),
-              ('aice-003', 1, decode('cc','hex'), 'wrap-v1'),
-              ('aice-004', 1, decode('dd','hex'), 'wrap-v1')`,
+       VALUES ('aice-001', 1, decode('aa','hex'), 'wrap-v1-aa'),
+              ('aice-002', 1, decode('bb','hex'), 'wrap-v1-bb'),
+              ('aice-003', 1, decode('cc','hex'), 'wrap-v1-cc'),
+              ('aice-004', 1, decode('dd','hex'), 'wrap-v1-dd')`,
     );
     await customerPool.query(
       `INSERT INTO event_analysis_result
@@ -1052,6 +1108,9 @@ describeDb("retention sweeper integration", () => {
             rewrapReached.resolve();
             await rewrapBarrier.promise;
           }
+          // Preserve per-row identity so the test can verify each
+          // retained row carries its own post-rotation wrapped_dek
+          // (no cross-row mixup in the UPDATE loop).
           return wrapped.replace("v1", "v2");
         },
         connectCustomerDb: async () => ({
@@ -1112,16 +1171,24 @@ describeDb("retention sweeper integration", () => {
           ORDER BY aice_id, event_key`,
       );
       expect(remaining.map((r) => r.aice_id)).toEqual(["aice-001", "aice-003"]);
-      for (const row of remaining) {
-        expect(row.wrapped_dek).toBe("wrap-v2");
-      }
-      // Spot-check that ciphertext was not torn — the original bytes
-      // for each row remain paired with the new wrapped_dek.
-      const cipherByAice = Object.fromEntries(
-        remaining.map((r) => [r.aice_id, r.ciphertext_hex]),
+      // Each retained row must be paired with its OWN post-rotation
+      // wrapped_dek — a row-level mixup in the rotation's UPDATE
+      // loop would surface here as e.g. aice-001 carrying
+      // wrap-v2-cc instead of wrap-v2-aa.
+      const byAice = Object.fromEntries(
+        remaining.map((r) => [
+          r.aice_id,
+          { wrapped_dek: r.wrapped_dek, ciphertext_hex: r.ciphertext_hex },
+        ]),
       );
-      expect(cipherByAice["aice-001"]).toBe("aa");
-      expect(cipherByAice["aice-003"]).toBe("cc");
+      expect(byAice["aice-001"]).toEqual({
+        wrapped_dek: "wrap-v2-aa",
+        ciphertext_hex: "aa",
+      });
+      expect(byAice["aice-003"]).toEqual({
+        wrapped_dek: "wrap-v2-cc",
+        ciphertext_hex: "cc",
+      });
 
       const { rows: auditRows } = await auditPool.query<{
         action: string;
