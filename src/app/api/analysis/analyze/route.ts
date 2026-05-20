@@ -10,7 +10,12 @@ import {
 import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { getCustomerByExternalKey } from "@/lib/auth/customers";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  type AuthenticatedRequest,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { eventKeyString } from "@/lib/event-key";
@@ -162,6 +167,28 @@ function inspectEventData(
 // ---------------------------------------------------------------------------
 
 export const POST = withAuth(async (req: NextRequest, auth) => {
+  try {
+    return await handlePost(req, auth);
+  } catch (err) {
+    // Outer catch-all so any unexpected exception from a code path
+    // outside the narrow per-stage catches (cache lookup query,
+    // `loadCustomerRanges()`, `scanHallucinations()`, auth/customer
+    // DB reads, etc.) still surfaces as the documented `internal_error`
+    // shape from RFC 0001's 12-code error table — not Next.js's
+    // generic 500 page. The specific mappings inside `handlePost`
+    // remain authoritative for known failure modes; this only catches
+    // genuinely unexpected throws.
+    return analyzeErrorResponse(
+      "internal_error",
+      err instanceof Error ? err.message : "unexpected error",
+    );
+  }
+});
+
+async function handlePost(
+  req: NextRequest,
+  auth: AuthenticatedRequest,
+): Promise<Response> {
   const originErr = verifyOrigin(req);
   if (originErr) return originErr;
 
@@ -373,15 +400,28 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
     mergedMap = ingest.mergedMap;
     insertedEventId = ingest.insertedEventId;
   } catch (err) {
-    void auditLog({
-      ...auditBase,
-      action: "ai_analysis.aimer_call_failed",
-      targetId: `${parsed.aice_id}/${parsed.event_key}`,
-      details: {
-        stage: "redact_and_ingest",
-        error: err instanceof Error ? err.message : String(err),
-      },
-    });
+    // No `ai_analysis.aimer_call_failed` here: RFC 0001 defines that
+    // action as transport/5xx from aimer, but at this point we have not
+    // yet issued the GraphQL request. The failure is local
+    // (`redaction_failed` from the engine, or `storage_failed` from
+    // `writeMap` / synthetic `detection_events` insert). Mis-naming the
+    // audit would tell operators aimer is unhealthy when it was never
+    // called. `redaction.engine_error` covers the redaction-side
+    // failures; storage-side failures rely on the `request_issued`
+    // entry already emitted plus the error response body — there is no
+    // dedicated `ai_analysis.storage_failed` action in the taxonomy and
+    // adding one is out of scope for this PR.
+    if (!(err instanceof StorageError)) {
+      void auditLog({
+        ...auditBase,
+        action: "redaction.engine_error",
+        targetId: `${parsed.aice_id}/${parsed.event_key}`,
+        details: {
+          stage: "analyze_redact",
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
     return analyzeErrorResponse(
       err instanceof StorageError ? "storage_failed" : "redaction_failed",
       err instanceof Error ? err.message : "redaction failed",
@@ -511,7 +551,7 @@ export const POST = withAuth(async (req: NextRequest, auth) => {
   });
 
   return Response.json({ view_url: viewUrl, cached: false });
-});
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

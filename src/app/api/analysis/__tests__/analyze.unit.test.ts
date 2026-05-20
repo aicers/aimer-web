@@ -824,5 +824,60 @@ describe("POST /api/analysis/analyze — storage failure mapping", () => {
     const body = await res.json();
     expect(body.error.code).toBe("storage_failed");
     expect(body.error.retryable).toBe(true);
+    // RFC 0001 defines `ai_analysis.aimer_call_failed` as transport
+    // or 5xx from aimer. A local `writeMap()` failure happens before
+    // the GraphQL request is issued — mis-emitting `aimer_call_failed`
+    // here would tell operators aimer is unhealthy when it was never
+    // called.
+    const aimerCallFailedCalls = mockAuditLog.mock.calls.filter((c) => {
+      const arg = (c as unknown as Array<{ action?: string }>)[0];
+      return arg?.action === "ai_analysis.aimer_call_failed";
+    });
+    expect(aimerCallFailedCalls).toHaveLength(0);
+  });
+
+  it("redact() rejection surfaces as redaction_failed and emits redaction.engine_error (not aimer_call_failed)", async () => {
+    // Local redaction failures must NOT emit `ai_analysis.aimer_call_failed`
+    // — the GraphQL request was never issued. `redaction.engine_error`
+    // is the correctly named audit action for an engine-side throw.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    mockReadMapWithLock.mockResolvedValue(null);
+    mockRedact.mockImplementation(() => {
+      throw new Error("engine boom");
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error.code).toBe("redaction_failed");
+
+    const auditActions = mockAuditLog.mock.calls.map((c) => {
+      const arg = (c as unknown as Array<{ action?: string }>)[0];
+      return arg?.action;
+    });
+    expect(auditActions).toContain("redaction.engine_error");
+    expect(auditActions).not.toContain("ai_analysis.aimer_call_failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Internal-error catch-all
+// ---------------------------------------------------------------------------
+
+describe("POST /api/analysis/analyze — internal_error catch-all", () => {
+  it("unexpected throws outside per-stage catches surface as internal_error", async () => {
+    // RFC 0001 lists `internal_error` as the catch-all for the 12-code
+    // error contract. Without an outer try/catch, exceptions from
+    // `loadCustomerRanges()`, the cache lookup, `scanHallucinations()`,
+    // or auth/customer DB reads would escape to Next's generic 500
+    // page and break the documented `{ error: { code, ... } }` shape.
+    stubActiveCustomerLookup();
+    mockLoadCustomerRanges.mockRejectedValueOnce(new Error("auth db down"));
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error.code).toBe("internal_error");
   });
 });

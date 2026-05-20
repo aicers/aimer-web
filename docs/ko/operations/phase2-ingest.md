@@ -185,10 +185,6 @@ DELETE하거나 교체하는 세 개의 Phase 2 변경 엔드포인트를
 자동으로 제거됩니다. 라우트는 자식 테이블에 명시적 DELETE를 보내지
 않습니다.
 
-대상이 withdraw된 `analysis_narrative` 행은 자동으로 제거되지
-않으며 aimer-web 보존 정책으로 자연 소거됩니다(RFC 0002 §6
-withdraw).
-
 Zod 스키마는 또한 `{ kind: "policy_run", run_id: R }`과 동일한
 `run_id`를 가진 `{ kind: "policy_event", run_id: R, ... }`이
 같은 페이로드에 함께 있는 경우 `400 payload_schema_invalid`로
