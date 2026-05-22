@@ -2,6 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { auditLog, UNKNOWN_ACTOR_ID } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { createPendingConnection, stageEventsPayload } from "@/lib/auth/bridge";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   clearInvitationTokenCookie,
   setConnectionIdCookie,
@@ -94,7 +95,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
 
     // Redirect to general OIDC sign-in (flow=bridge preserves connection_id cookie)
-    const origin = request.nextUrl.origin;
+    const origin = canonicalOrigin(request);
     return NextResponse.redirect(
       new URL("/api/auth/sign-in?flow=bridge", origin),
     );

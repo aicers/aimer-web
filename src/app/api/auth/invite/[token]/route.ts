@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   clearConnectionIdCookie,
   setInvitationTokenCookie,
@@ -24,7 +25,7 @@ export async function GET(
 
   if (rows.length === 0) {
     return NextResponse.redirect(
-      new URL("/deny?reason=invitation_expired", request.url),
+      new URL("/deny?reason=invitation_expired", canonicalOrigin(request)),
     );
   }
 
@@ -33,7 +34,7 @@ export async function GET(
   await setInvitationTokenCookie(token);
 
   const response = NextResponse.redirect(
-    new URL("/api/auth/sign-in?flow=invite", request.url),
+    new URL("/api/auth/sign-in?flow=invite", canonicalOrigin(request)),
   );
   response.headers.set("Referrer-Policy", "no-referrer");
   return response;

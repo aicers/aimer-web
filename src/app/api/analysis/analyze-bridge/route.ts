@@ -14,6 +14,7 @@ import { createPendingAnalysisRequestWithClient } from "@/lib/auth/analyze-bridg
 import { verifyAnalyzeParamsToken } from "@/lib/auth/analyze-params-token";
 import { authorize } from "@/lib/auth/authorization";
 import { createPendingConnectionWithClient } from "@/lib/auth/bridge";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   type ContextTokenClaims,
   verifyContextToken,
@@ -386,7 +387,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       return renderAnalyzeBridgeErrorPage(code, verified.detail);
     }
 
-    const origin = request.nextUrl.origin;
+    const origin = canonicalOrigin(request);
     const session = await tryLoadGeneralSession();
 
     // Live-session short-circuit. The full JWS verification above
