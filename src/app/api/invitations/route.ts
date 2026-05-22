@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { listPendingInvitations } from "@/lib/auth/invitation-management";
@@ -108,7 +109,7 @@ export const POST = withAuth(
         customerName: result.customerName,
         roleName: role,
         expiresAt: result.expiresAt,
-        baseUrl: req.nextUrl.origin,
+        baseUrl: canonicalOrigin(req),
       }).catch((err) =>
         console.error("[email] Failed to send invitation:", err),
       );

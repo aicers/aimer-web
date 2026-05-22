@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import { clearAllAuthCookies } from "@/lib/auth/cookies";
 import { withLogoutAuth } from "@/lib/auth/guards";
 import { buildKeycloakLogoutUrl } from "@/lib/auth/keycloak-logout";
@@ -38,6 +39,6 @@ export const POST = withLogoutAuth(async (req: NextRequest, auth) => {
     });
   }
 
-  const logoutUrl = await buildKeycloakLogoutUrl(req.nextUrl.origin);
+  const logoutUrl = await buildKeycloakLogoutUrl(canonicalOrigin(req));
   return Response.json({ logoutUrl });
 });

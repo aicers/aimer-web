@@ -22,6 +22,7 @@ import {
   type PendingAnalysisRequest,
 } from "@/lib/auth/analyze-bridge";
 import { authorize } from "@/lib/auth/authorization";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import { getCustomerByExternalKey } from "@/lib/auth/customers";
 import { type AuthenticatedRequest, withAuth } from "@/lib/auth/guards";
 import { decryptPayload } from "@/lib/crypto/envelope";
@@ -177,7 +178,7 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       );
     }
 
-    const origin = request.nextUrl.origin;
+    const origin = canonicalOrigin(request);
     let result: Awaited<ReturnType<typeof runAnalyzeFlow>>;
     try {
       result = await runAnalyzeFlow({

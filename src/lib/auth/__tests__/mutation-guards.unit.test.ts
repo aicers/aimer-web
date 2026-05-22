@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { verifyCsrf, verifyOrigin } from "../guards";
 
 // Mock server-only audit module so importing guards doesn't throw
@@ -70,6 +70,38 @@ describe("verifyOrigin", () => {
     const resp = verifyOrigin(req);
     expect(resp).not.toBeNull();
     expect(resp?.status).toBe(403);
+  });
+
+  describe("with EXPECTED_ORIGIN set (behind reverse proxy)", () => {
+    beforeEach(() => {
+      vi.stubEnv("EXPECTED_ORIGIN", "https://aimer-web.example.com");
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("accepts browser origin matching EXPECTED_ORIGIN", () => {
+      const req = makeRequest("http://0.0.0.0:3000/api/invitations", {
+        origin: "https://aimer-web.example.com",
+      });
+      expect(verifyOrigin(req)).toBeNull();
+    });
+
+    it("rejects container-internal origin as Origin header value", () => {
+      const req = makeRequest("http://0.0.0.0:3000/api/invitations", {
+        origin: "https://0.0.0.0:3000",
+      });
+      const resp = verifyOrigin(req);
+      expect(resp).not.toBeNull();
+      expect(resp?.status).toBe(403);
+    });
+
+    it("still rejects missing Origin", () => {
+      const req = makeRequest("http://0.0.0.0:3000/api/invitations");
+      const resp = verifyOrigin(req);
+      expect(resp).not.toBeNull();
+      expect(resp?.status).toBe(403);
+    });
   });
 });
 

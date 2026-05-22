@@ -11,6 +11,7 @@ import {
   LANG_VALUES,
   runAnalyzeFlow,
 } from "@/lib/analysis/run-analyze-flow";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   type AuthenticatedRequest,
   verifyCsrf,
@@ -140,7 +141,7 @@ async function handlePost(
           customerIds: auth.bridgeCustomerIds,
         }
       : null,
-    origin: req.nextUrl.origin,
+    origin: canonicalOrigin(req),
   });
 
   if (result.kind === "error") {

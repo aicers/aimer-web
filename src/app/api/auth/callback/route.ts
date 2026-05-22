@@ -3,6 +3,7 @@ import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
 import { processBridgeCallback } from "@/lib/auth/bridge";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   clearAuthCookies,
   clearConnectionIdCookie,
@@ -23,7 +24,9 @@ import { getAuthPool, query, withTransaction } from "@/lib/db/client";
 import { emitSevereAlert } from "@/lib/detection";
 
 function denyRedirect(request: NextRequest, reason: string): NextResponse {
-  return NextResponse.redirect(new URL(`/deny?reason=${reason}`, request.url));
+  return NextResponse.redirect(
+    new URL(`/deny?reason=${reason}`, canonicalOrigin(request)),
+  );
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -38,7 +41,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       return NextResponse.redirect(
         new URL(
           `/deny?reason=oidc_error&detail=${encodeURIComponent(desc)}`,
-          request.url,
+          canonicalOrigin(request),
         ),
       );
     }
@@ -69,7 +72,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       throw new Error("OIDC_GENERAL_CLIENT_SECRET must be set");
     }
 
-    const origin = request.nextUrl.origin;
+    const origin = canonicalOrigin(request);
     const redirectUri = `${origin}/api/auth/callback`;
 
     let tokens: Awaited<ReturnType<typeof exchangeCodeForTokens>>;
@@ -288,11 +291,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         return NextResponse.redirect(
           new URL(
             `/api/analysis/analyze-bridge/continue?id=${bridgeResult.analyzeRequestId}`,
-            request.url,
+            canonicalOrigin(request),
           ),
         );
       }
-      return NextResponse.redirect(new URL("/", request.url));
+      return NextResponse.redirect(new URL("/", canonicalOrigin(request)));
     }
 
     // Standard check: count accessible customers
@@ -343,6 +346,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       sid,
     });
 
-    return NextResponse.redirect(new URL("/", request.url));
+    return NextResponse.redirect(new URL("/", canonicalOrigin(request)));
   });
 }

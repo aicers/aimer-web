@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   clearConnectionIdCookie,
   clearInvitationTokenCookie,
@@ -35,7 +36,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   await setOidcTempCookies("general", { state, nonce, codeVerifier });
 
   const clientId = process.env.OIDC_GENERAL_CLIENT_ID ?? "aimer-web";
-  const origin = request.nextUrl.origin;
+  const origin = canonicalOrigin(request);
   const redirectUri = `${origin}/api/auth/callback`;
 
   const url = buildAuthorizationUrl({

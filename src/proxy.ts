@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import createIntlMiddleware from "next-intl/middleware";
 import { routing } from "./i18n/routing";
+import { canonicalOrigin } from "./lib/auth/canonical-origin";
 import { verifyJwtStateless } from "./lib/auth/jwt-verify-stateless";
 
 const intlMiddleware = createIntlMiddleware(routing);
@@ -40,14 +41,14 @@ export default async function proxy(
 
   const token = request.cookies.get(cookieName)?.value;
   if (!token) {
-    return NextResponse.redirect(new URL(signInUrl, request.url));
+    return NextResponse.redirect(new URL(signInUrl, canonicalOrigin(request)));
   }
 
   try {
     await verifyJwtStateless(token);
     return intlMiddleware(request);
   } catch {
-    return NextResponse.redirect(new URL(signInUrl, request.url));
+    return NextResponse.redirect(new URL(signInUrl, canonicalOrigin(request)));
   }
 }
 

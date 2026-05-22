@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
+import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import { clearAuthCookies, getAuthCookie } from "@/lib/auth/cookies";
 import { withLogoutAuth } from "@/lib/auth/guards";
 import { buildKeycloakLogoutUrl } from "@/lib/auth/keycloak-logout";
@@ -43,7 +44,7 @@ export const POST = withLogoutAuth(
     // No general session — terminate Keycloak SSO
     const adminClientId = process.env.OIDC_ADMIN_CLIENT_ID ?? "aimer-web-admin";
     const logoutUrl = await buildKeycloakLogoutUrl(
-      req.nextUrl.origin,
+      canonicalOrigin(req),
       adminClientId,
     );
     return Response.json({ logoutUrl });

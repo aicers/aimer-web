@@ -3,6 +3,7 @@ import { auditLog } from "../audit";
 import type { AuditAction } from "../audit/actions";
 import { withCorrelationId } from "../audit/correlation";
 import { getAuthPool } from "../db/client";
+import { canonicalOrigin } from "./canonical-origin";
 import type { AuthContext } from "./cookies";
 import { getAuthCookie, setAuthCookies } from "./cookies";
 import { validateCsrf } from "./csrf";
@@ -282,7 +283,7 @@ export async function tryLoadGeneralSession(): Promise<OptionalGeneralSession | 
  */
 export function verifyOrigin(req: NextRequest): Response | null {
   const origin = req.headers.get("origin");
-  const expectedOrigin = req.nextUrl.origin;
+  const expectedOrigin = canonicalOrigin(req);
   let originMatch = false;
   if (origin) {
     try {
