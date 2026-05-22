@@ -153,6 +153,12 @@ const CUSTOMER_ID = "a0000000-0000-0000-0000-000000000001";
 const EXTERNAL_KEY = "ext-key-1";
 const AICE_ID = "aice-1";
 const EVENT_KEY = "1001";
+// 2026-05-22T12:00:00Z in nanoseconds since epoch. Chosen as a real
+// nanosecond timestamp — distinct from EVENT_KEY — so tests assert the
+// BFF reads `timestamp` from `event_data.event_time_nanos`, not from
+// the row identifier. See `src/lib/event-key.ts` on why event_key
+// carries no timestamp semantics.
+const EVENT_TIME_NANOS = "1779789600000000000";
 
 function makeRequest(body: Record<string, unknown>): NextRequest {
   return new NextRequest("http://localhost:3000/api/analysis/analyze", {
@@ -167,7 +173,11 @@ function makeRequest(body: Record<string, unknown>): NextRequest {
 
 function defaultBody(overrides: Record<string, unknown> = {}) {
   return {
-    event_data: { event_key: EVENT_KEY, hello: "world" },
+    event_data: {
+      event_key: EVENT_KEY,
+      event_time_nanos: EVENT_TIME_NANOS,
+      hello: "world",
+    },
     event_key: EVENT_KEY,
     customer_id: CUSTOMER_ID,
     aice_id: AICE_ID,
@@ -235,7 +245,11 @@ beforeEach(() => {
   mockReadMapWithLock.mockReset().mockResolvedValue(null);
   mockWriteMap.mockReset().mockResolvedValue(undefined);
   mockRedact.mockReset().mockReturnValue({
-    redacted: { event_key: EVENT_KEY, hello: "world" },
+    redacted: {
+      event_key: EVENT_KEY,
+      event_time_nanos: EVENT_TIME_NANOS,
+      hello: "world",
+    },
     mergedMap: {},
     policyVersion: "engine:1.0.0|ranges:empty",
     mapChanged: false,
@@ -323,7 +337,15 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
       match: (s) =>
         /SELECT redacted_event FROM detection_events/.test(s) &&
         /WHERE aice_id = \$1/.test(s),
-      rows: [{ redacted_event: { event_key: EVENT_KEY, stored: "yes" } }],
+      rows: [
+        {
+          redacted_event: {
+            event_key: EVENT_KEY,
+            event_time_nanos: EVENT_TIME_NANOS,
+            stored: "yes",
+          },
+        },
+      ],
     });
     stubInsertAnalysisResult();
 
@@ -344,8 +366,15 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     // surface RFC 0001 explicitly defends against. The aimer call must
     // use the STORED `redacted_event`, not the request body, AND the
     // persisted `event_redaction_map` must not be mutated by this
-    // call (so attacker-supplied entities cannot be appended).
-    const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    // call (so attacker-supplied entities cannot be appended). The
+    // stored row also pins `event_time_nanos`, so an attacker cannot
+    // shift the rendered analysis time by supplying a different
+    // value in the request body.
+    const storedRedacted = {
+      event_key: EVENT_KEY,
+      event_time_nanos: EVENT_TIME_NANOS,
+      stored: "in-db",
+    };
     const storedMap = {
       "<<REDACTED_IP_001>>": { kind: "ip" as const, value: "10.0.0.1" },
     };
@@ -364,10 +393,17 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(body.cached).toBe(false);
     expect(mockGraphqlRequest).toHaveBeenCalledOnce();
     // The aimer call MUST receive the stored redacted_event, NOT the
-    // freshly redacted request body.
+    // freshly redacted request body. Per aimer's `auth-mtls` resolver,
+    // the wire shape is `event: String!` (JSON-stringified) and
+    // `timestamp: StringNumber!` is sourced from the stored event's
+    // `event_time_nanos` (i128 nanoseconds since epoch) — distinct
+    // from the row identifier `event_key`.
     expect(mockGraphqlRequest).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ eventData: storedRedacted }),
+      expect.objectContaining({
+        event: JSON.stringify(storedRedacted),
+        timestamp: EVENT_TIME_NANOS,
+      }),
       expect.anything(),
     );
     // The map-write side of the cache-poisoning surface: when the
@@ -387,7 +423,11 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
   it("force=true + event exists → analyze stored event (does not re-redact request body or mutate map)", async () => {
     stubActiveCustomerLookup();
     // No cache lookup — force=true.
-    const storedRedacted = { event_key: EVENT_KEY, stored: "in-db" };
+    const storedRedacted = {
+      event_key: EVENT_KEY,
+      event_time_nanos: EVENT_TIME_NANOS,
+      stored: "in-db",
+    };
     const storedMap = {
       "<<REDACTED_EMAIL_001>>": {
         kind: "email" as const,
@@ -406,13 +446,17 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     // Caller supplies a wildly different `event_data` payload — the
     // route must ignore it and send the stored `redacted_event`. The
     // persisted map must also be untouched so a force replay cannot
-    // inject attacker-controlled entities.
+    // inject attacker-controlled entities. The caller's
+    // `event_time_nanos` is the canonical one (and also matches the
+    // stored row) — but the route still re-extracts from the stored
+    // event for the GraphQL `timestamp`.
     const res = await callPOST(
       makeRequest(
         defaultBody({
           force: true,
           event_data: {
             event_key: EVENT_KEY,
+            event_time_nanos: EVENT_TIME_NANOS,
             attacker_supplied: "1.2.3.4",
           },
         }),
@@ -421,7 +465,10 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(res.status).toBe(200);
     expect(mockGraphqlRequest).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ eventData: storedRedacted }),
+      expect.objectContaining({
+        event: JSON.stringify(storedRedacted),
+        timestamp: EVENT_TIME_NANOS,
+      }),
       expect.anything(),
     );
     expect(mockRedact).not.toHaveBeenCalled();
@@ -451,6 +498,29 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
         details: expect.objectContaining({ cached: true }),
       }),
     );
+  });
+
+  it("cache hit succeeds even when event_data.event_time_nanos is absent", async () => {
+    // `event_time_nanos` is only needed to construct the `analyzeEvent`
+    // mutation's `timestamp` argument. The cache-hit branch short-
+    // circuits before any aimer call, so the route must not reject a
+    // cached read just because the caller's payload lacks the field —
+    // pre-field cached analyses and clients that have not yet adopted
+    // the new field would otherwise regress.
+    stubActiveCustomerLookup();
+    pushStub({
+      match: (s) => s.includes("FROM event_analysis_result"),
+      rows: [{ requested_at: new Date() }],
+    });
+
+    const body = defaultBody({
+      event_data: { event_key: EVENT_KEY, hello: "world" },
+    });
+    const res = await callPOST(makeRequest(body));
+    expect(res.status).toBe(200);
+    const resBody = await res.json();
+    expect(resBody).toEqual({ view_url: expect.any(String), cached: true });
+    expect(mockGraphqlRequest).not.toHaveBeenCalled();
   });
 
   it("result exists but detection_events swept (force=false) → re-ingest, not cache hit", async () => {
@@ -564,6 +634,106 @@ describe("POST /api/analysis/analyze — validation", () => {
     const body = await res.json();
     expect(body.error.code).toBe("lang_unsupported");
     expect(body.error.retryable).toBe(false);
+  });
+
+  it("returns event_time_invalid when event_data.event_time_nanos is missing", async () => {
+    // `timestamp: StringNumber!` is required by aimer's SDL. The BFF
+    // sources it from `event_data.event_time_nanos` (i128 nanoseconds
+    // since epoch, decimal string) — distinct from the row identifier
+    // `event_key`. A missing field must be rejected on the aimer-call
+    // path before ingest / redaction so the route does not burn aimer
+    // call budget on a request the upstream resolver would reject.
+    // The rejection is intentionally deferred until after the cache
+    // lookup so cache-hit reads remain unaffected (see the cache-hit
+    // coverage above).
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    const res = await callPOST(
+      makeRequest(
+        defaultBody({
+          event_data: { event_key: EVENT_KEY, hello: "world" },
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("event_time_invalid");
+  });
+
+  it("returns event_time_invalid for a non-canonical event_time_nanos value", async () => {
+    // Lexical-shape rejection at the BFF (rather than passing through
+    // and letting aimer's StringNumber parser reject) keeps the error
+    // localized to the wire format check.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    const res = await callPOST(
+      makeRequest(
+        defaultBody({
+          event_data: {
+            event_key: EVENT_KEY,
+            event_time_nanos: "01.5",
+            hello: "world",
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("event_time_invalid");
+  });
+
+  it("rejects an unsafe-integer JSON number for event_time_nanos", async () => {
+    // Real nanosecond epoch values (~1.7×10^18) exceed JS
+    // `Number.MAX_SAFE_INTEGER` (2^53 − 1 ≈ 9×10^15), so a caller that
+    // serializes `event_time_nanos` as a JSON number has already lost
+    // precision before the BFF parses it. The route must refuse to
+    // forward a rounded value as the `StringNumber` argument — accept
+    // a string (or safe-integer fixture), reject anything else.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    // Build the unsafe value at runtime so the literal does not trigger
+    // Biome's "number will lose precision" lint — losing precision is
+    // precisely what this test is asserting the BFF detects and rejects.
+    const unsafeNanos = Number("1779789600000000001");
+    expect(Number.isSafeInteger(unsafeNanos)).toBe(false);
+    const res = await callPOST(
+      makeRequest(
+        defaultBody({
+          event_data: {
+            event_key: EVENT_KEY,
+            event_time_nanos: unsafeNanos,
+            hello: "world",
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("event_time_invalid");
+  });
+
+  it("omits `lang` from the GraphQL variables when the caller omits it (aimer applies its default)", async () => {
+    // Upstream `Mutation.analyzeEvent`'s `lang: Language` is nullable.
+    // The BFF preserves caller-supplied absence end-to-end so aimer's
+    // server-side default kicks in; the persisted cache row falls back
+    // to `DEFAULT_LANG` so an explicit follow-up ENGLISH call lands on
+    // the same row rather than splitting the (aice_id, event_key,
+    // lang, model_name, model) primary key.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+
+    const body = defaultBody();
+    delete (body as Record<string, unknown>).lang;
+    const res = await callPOST(makeRequest(body));
+    expect(res.status).toBe(200);
+    expect(mockGraphqlRequest).toHaveBeenCalledOnce();
+    const variables = mockGraphqlRequest.mock.calls[0]?.[1] as
+      | Record<string, unknown>
+      | undefined;
+    expect(variables).toBeDefined();
+    expect(variables).not.toHaveProperty("lang");
   });
 
   it("returns event_data_too_large when payload exceeds the configured cap", async () => {

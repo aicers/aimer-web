@@ -30,6 +30,7 @@ export const ANALYZE_BRIDGE_ERROR_TITLES: Record<
 > = {
   invalid_event_data: "Invalid request",
   event_key_mismatch: "Event mismatch",
+  event_time_invalid: "Invalid event time",
   lang_unsupported: "Unsupported language",
   event_data_too_large: "Request too large",
   authorization_failed: "Not authorized",

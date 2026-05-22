@@ -17,7 +17,14 @@ export interface AnalyzeParamsTokenClaims {
   payloadHash: string;
   envelopeHash: string;
   eventKey: string;
-  lang: string;
+  /**
+   * Mirrors aimer's `Language` (nullable). REview MAY omit `lang` to
+   * let aimer apply its server-side default; the BFF carries the
+   * absence end-to-end. A present `lang` claim must still be a
+   * non-empty string (validated against `SupportedLang` at the route
+   * boundary).
+   */
+  lang: string | null;
   modelName: string;
   model: string;
   force: boolean;
@@ -97,7 +104,19 @@ export async function verifyAnalyzeParamsToken(
   const payloadHash = claims.payload_hash;
   const envelopeHash = claims.envelope_hash;
   const eventKey = claims.event_key;
-  const lang = claims.lang;
+  // `lang` is optional. `undefined` and the explicit JSON `null` both
+  // mean "let aimer apply its default". A present claim must still be
+  // a non-empty string (the `SupportedLang` check runs at the route
+  // boundary so this verifier stays codec-only).
+  const rawLang = claims.lang;
+  let lang: string | null;
+  if (rawLang === undefined || rawLang === null) {
+    lang = null;
+  } else if (typeof rawLang === "string" && rawLang.length > 0) {
+    lang = rawLang;
+  } else {
+    throw new Error("analyze_params_token lang must be a non-empty string");
+  }
   const modelName = claims.model_name;
   const model = claims.model;
   const force = claims.force;
@@ -114,9 +133,6 @@ export async function verifyAnalyzeParamsToken(
   }
   if (typeof eventKey !== "string" || eventKey.length === 0) {
     throw new Error("analyze_params_token missing event_key");
-  }
-  if (typeof lang !== "string" || lang.length === 0) {
-    throw new Error("analyze_params_token missing lang");
   }
   if (typeof modelName !== "string" || modelName.length === 0) {
     throw new Error("analyze_params_token missing model_name");

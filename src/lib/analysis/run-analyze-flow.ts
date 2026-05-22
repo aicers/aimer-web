@@ -39,12 +39,33 @@ export type CustomerLookup =
   | { kind: "id"; customerId: string }
   | { kind: "externalKey"; externalKey: string };
 
+/**
+ * Aimer's `Language` enum is nullable on the SDL side; when the caller
+ * omits `lang`, aimer applies its server-side default (ENGLISH per the
+ * SDL doc on `Mutation.generateReport`'s `lang` argument; the
+ * `analyzeEvent` resolver follows the same convention). The BFF
+ * mirrors that contract: `lang` is optional at the request layer, the
+ * GraphQL variable is omitted when absent, and downstream paths that
+ * need a concrete value (the (aice_id, event_key, lang, ...) cache
+ * primary key, the result-page URL, audit details) fall back to the
+ * documented upstream default so user-supplied ENGLISH and omitted-then-
+ * defaulted ENGLISH collapse to one row rather than splitting the
+ * cache.
+ */
+export const DEFAULT_LANG: SupportedLang = "ENGLISH";
+
 export interface RunAnalyzeFlowParams {
   customer: CustomerLookup;
   aiceId: string;
   eventKey: string;
   eventData: Record<string, unknown>;
-  lang: SupportedLang;
+  /**
+   * SDL maps to `Language` (nullable). `undefined` means "let aimer
+   * apply its default"; the BFF omits the variable from the GraphQL
+   * mutation in that case. See {@link DEFAULT_LANG} for the cache /
+   * view-url fallback.
+   */
+  lang: SupportedLang | undefined;
   modelName: string;
   model: string;
   force: boolean;
@@ -105,7 +126,55 @@ async function resolveCustomer(
 
 interface EventDataParseResult {
   eventKey: string | null;
+  /**
+   * i128 nanoseconds since the Unix epoch as a canonical decimal
+   * string. `null` means the field was missing or did not parse as
+   * a valid i128 decimal. Sourced from `event_data.event_time_nanos`
+   * (see {@link EVENT_TIME_NANOS_RE}). Aimer's `analyzeEvent` SDL
+   * argument `timestamp: StringNumber!` is documented as nanoseconds
+   * since epoch; the BFF surfaces a dedicated wire field rather than
+   * reusing `event_key` because `event_key` is this codebase's
+   * NUMERIC(39, 0) row identifier and carries no timestamp semantics
+   * (no upstream contract guarantees event_key == nanoseconds; see
+   * `src/lib/event-key.ts`).
+   */
+  eventTimeNanos: string | null;
   schemaVersion: string;
+}
+
+/**
+ * i128 decimal (signed) — aimer's `StringNumber` carries `i128`, which
+ * spans roughly ±1.7×10^38. `jiff::Timestamp::from_nanosecond` on the
+ * aimer side rejects values outside its valid timestamp range, but the
+ * BFF only enforces the lexical i128 shape here; a negative value
+ * (pre-1970) parses cleanly and is forwarded for aimer to accept or
+ * reject. Leading zeros are rejected for the same canonical-form
+ * reasons {@link eventKeyString} rejects them: cache-key consistency.
+ */
+const EVENT_TIME_NANOS_RE = /^(-?(0|[1-9][0-9]{0,38}))$/;
+
+function parseEventTimeNanos(raw: unknown): string | null {
+  let candidate: string | null = null;
+  if (typeof raw === "string") {
+    candidate = raw;
+  } else if (typeof raw === "number") {
+    // JS numbers cannot losslessly carry nanosecond i128 values:
+    // nanosecond epoch values are already ~1.7×10^18, well above
+    // `Number.MAX_SAFE_INTEGER` (2^53 − 1 ≈ 9×10^15), so a number
+    // received over the wire has typically already been rounded
+    // before this code runs. Reject anything that is not a safe
+    // integer so the BFF never silently forwards a rounded value
+    // as a `StringNumber`. Safe integers are still accepted to keep
+    // test fixtures and low-resolution timestamps ergonomic — for
+    // those, `String(raw)` is exact. The string form remains the
+    // contract for any value above 2^53.
+    if (!Number.isSafeInteger(raw)) return null;
+    candidate = String(raw);
+  } else if (typeof raw === "bigint") {
+    candidate = raw.toString();
+  }
+  if (candidate === null) return null;
+  return EVENT_TIME_NANOS_RE.test(candidate) ? candidate : null;
 }
 
 function inspectEventData(
@@ -120,12 +189,13 @@ function inspectEventData(
   } else if (typeof rawKey === "bigint") {
     eventKey = rawKey.toString();
   }
+  const eventTimeNanos = parseEventTimeNanos(eventData.event_time_nanos);
   const rawSchema = eventData.schema_version;
   const schemaVersion =
     typeof rawSchema === "string" && rawSchema.length > 0
       ? rawSchema
       : SCHEMA_VERSION_DEFAULT;
-  return { eventKey, schemaVersion };
+  return { eventKey, eventTimeNanos, schemaVersion };
 }
 
 class StorageError extends Error {
@@ -257,6 +327,12 @@ function buildViewUrl(
   modelName: string,
   model: string,
 ): string {
+  // `lang` here is the post-fallback concrete value (caller-supplied or
+  // {@link DEFAULT_LANG}) so the URL always carries a `lang` parameter
+  // that matches the row written to `event_analysis_result`. The result
+  // page picks the variant by `(aice_id, event_key, lang, model_name,
+  // model)`, and an absent `lang=` would not resolve to the row
+  // that aimer just produced under its default.
   const locale = "en";
   const params = new URLSearchParams({
     lang,
@@ -303,9 +379,11 @@ export async function runAnalyzeFlow(
 ): Promise<RunAnalyzeFlowResult> {
   // event_key_mismatch — the explicit cache key MUST agree with
   // event_data's internal event_key.
-  const { eventKey: payloadEventKey, schemaVersion } = inspectEventData(
-    params.eventData,
-  );
+  const {
+    eventKey: payloadEventKey,
+    eventTimeNanos: requestEventTimeNanos,
+    schemaVersion,
+  } = inspectEventData(params.eventData);
   if (payloadEventKey === null || payloadEventKey !== params.eventKey) {
     return {
       kind: "error",
@@ -364,12 +442,18 @@ export async function runAnalyzeFlow(
   const customerPool = getCustomerRuntimePool(customer.id);
   const ranges = await loadCustomerRanges(authPool, customer.id);
 
+  // Single concrete `lang` value used wherever the BFF needs to write
+  // or look up a row keyed on `lang`. Absent caller `lang` collapses
+  // to {@link DEFAULT_LANG} so the cache PK is satisfied and a later
+  // caller who explicitly passes the same default reads the same row.
+  const langForStorage: SupportedLang = params.lang ?? DEFAULT_LANG;
+
   const viewUrl = buildViewUrl(
     params.origin,
     customer.id,
     params.aiceId,
     params.eventKey,
-    params.lang,
+    langForStorage,
     params.modelName,
     params.model,
   );
@@ -387,7 +471,7 @@ export async function runAnalyzeFlow(
       [
         params.aiceId,
         params.eventKey,
-        params.lang,
+        langForStorage,
         params.modelName,
         params.model,
       ],
@@ -400,7 +484,7 @@ export async function runAnalyzeFlow(
     action: "ai_analysis.request_issued",
     targetId: `${params.aiceId}/${params.eventKey}`,
     details: {
-      lang: params.lang,
+      lang: params.lang ?? null,
       modelName: params.modelName,
       model: params.model,
       force: params.force,
@@ -410,6 +494,25 @@ export async function runAnalyzeFlow(
 
   if (cached) {
     return { kind: "success", viewUrl, cached: true, customerId: customer.id };
+  }
+
+  // Deferred until after the cache lookup: the cache-hit branch above
+  // short-circuits without an `analyzeEvent` call and therefore does
+  // not need a request-side `event_time_nanos`. For every path that
+  // does call aimer (event_missing or event_exists+result_missing),
+  // reject up-front so the route does not write a `detection_events`
+  // row, ingest into the redaction map, and burn aimer call budget
+  // before discovering the call would have failed `StringNumber`
+  // validation upstream. The aimer call itself prefers the STORED
+  // `event_time_nanos` (cache-poisoning guard) and falls back to this
+  // request value only when the stored row pre-dates the field.
+  if (requestEventTimeNanos === null) {
+    return {
+      kind: "error",
+      errorCode: "event_time_invalid",
+      message:
+        "event_data.event_time_nanos is missing or not a canonical i128 decimal string",
+    };
   }
 
   let redactedEvent: unknown;
@@ -462,13 +565,49 @@ export async function runAnalyzeFlow(
 
   let aimerResponse: { threatScore: number; analysis: string };
   try {
+    // `event: String!` — aimer's auth-mtls resolver consumes a string
+    // payload that its redact-and-LLM pipeline parses on the other side.
+    // We serialize the BFF's structured redacted event with `JSON.stringify`
+    // (default key order; aimer's downstream stages do not require any
+    // canonical ordering, only valid JSON).
+    //
+    // `timestamp: StringNumber!` — sourced from
+    // `event_data.event_time_nanos`, an i128 nanoseconds-since-epoch
+    // decimal string. We do NOT reuse `event_key`: this codebase
+    // treats `event_key` as a NUMERIC(39, 0) row identifier with no
+    // timestamp semantics (see `src/lib/event-key.ts`), and aimer
+    // turns this value into a `jiff::Timestamp` it renders into the
+    // analysis markdown — using the row identifier would either
+    // display the wrong time or fall outside the timestamp range
+    // aimer accepts.
+    //
+    // When the event already exists in `detection_events`, the call
+    // uses the STORED `redacted_event` (cache-poisoning guard) and
+    // re-extracts `event_time_nanos` from it; if the stored row pre-
+    // dates this field, we fall back to the caller's value (already
+    // validated above), since the caller has supplied a canonical
+    // i128 and the alternative is failing the whole call.
+    //
+    // `lang: Language` — nullable on the SDL side. When the BFF
+    // caller omits `lang` we omit the variable entirely so aimer
+    // applies its server default; the stored cache row uses
+    // {@link DEFAULT_LANG} so a follow-up explicit ENGLISH call
+    // collapses to the same row.
+    const storedEventTimeNanos =
+      typeof redactedEvent === "object" && redactedEvent !== null
+        ? parseEventTimeNanos(
+            (redactedEvent as Record<string, unknown>).event_time_nanos,
+          )
+        : null;
+    const timestampForAimer = storedEventTimeNanos ?? requestEventTimeNanos;
     const result = await graphqlRequest(
       AnalyzeEventDocument,
       {
-        eventData: redactedEvent as Record<string, unknown>,
+        event: JSON.stringify(redactedEvent),
+        timestamp: timestampForAimer,
         name: params.modelName,
         model: params.model,
-        lang: params.lang,
+        ...(params.lang !== undefined ? { lang: params.lang } : {}),
       },
       { accountId: params.accountId, aiceId: params.aiceId },
     );
@@ -499,7 +638,7 @@ export async function runAnalyzeFlow(
       action: "ai_analysis.hallucination_detected",
       targetId: `${params.aiceId}/${params.eventKey}`,
       details: {
-        lang: params.lang,
+        lang: params.lang ?? null,
         modelName: params.modelName,
         model: params.model,
         counts: scan.counts,
@@ -524,7 +663,7 @@ export async function runAnalyzeFlow(
       [
         params.aiceId,
         params.eventKey,
-        params.lang,
+        langForStorage,
         params.modelName,
         params.model,
         aimerResponse.threatScore,
@@ -546,7 +685,7 @@ export async function runAnalyzeFlow(
     action: "ai_analysis.result_stored",
     targetId: `${params.aiceId}/${params.eventKey}`,
     details: {
-      lang: params.lang,
+      lang: params.lang ?? null,
       modelName: params.modelName,
       model: params.model,
       force: params.force,

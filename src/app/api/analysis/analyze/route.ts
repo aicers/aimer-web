@@ -46,7 +46,12 @@ const requestSchema = z
     customer_id: z.string().regex(UUID_RE).optional(),
     external_key: z.string().min(1).optional(),
     aice_id: z.string().min(1),
-    lang: z.string().min(1),
+    // Optional to match upstream's `lang: Language` (nullable). When
+    // omitted, the BFF forwards the absence end-to-end so aimer
+    // applies its server-side default. The cache row is keyed on a
+    // concrete value (see `DEFAULT_LANG`); explicit + omitted-then-
+    // defaulted share a row.
+    lang: z.string().min(1).optional(),
     model_name: z.string().min(1),
     model: z.string().min(1),
     force: z.boolean(),
@@ -112,7 +117,9 @@ async function handlePost(
     );
   }
 
-  if (!isSupportedLang(parsed.lang)) {
+  // `lang` is optional; only validate the value when present so the
+  // explicit "let aimer apply its default" path stays reachable.
+  if (parsed.lang !== undefined && !isSupportedLang(parsed.lang)) {
     return analyzeErrorResponse(
       "lang_unsupported",
       `lang must be one of ${LANG_VALUES.join(", ")}`,

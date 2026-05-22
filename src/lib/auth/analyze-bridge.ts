@@ -20,7 +20,14 @@ export interface PendingAnalysisRequest {
   aiceId: string;
   externalKey: string;
   eventKey: string;
-  lang: string;
+  /**
+   * Nullable to match `analyze_params_token`'s nullable `lang` claim
+   * (see {@link AnalyzeParamsTokenClaims}). `null` means the caller
+   * (REview) omitted `lang` so aimer applies its server-side default
+   * — `/continue` preserves this end-to-end and forwards `undefined`
+   * into `runAnalyzeFlow`.
+   */
+  lang: string | null;
   modelName: string;
   model: string;
   force: boolean;
@@ -56,7 +63,7 @@ interface PARRow {
   aice_id: string;
   external_key: string;
   event_key: string;
-  lang: string;
+  lang: string | null;
   model_name: string;
   model: string;
   force: boolean;
@@ -105,7 +112,8 @@ export interface CreatePendingAnalysisRequestParams {
   aiceId: string;
   externalKey: string;
   eventKey: string;
-  lang: string;
+  /** `null` carries the "let aimer apply its default" semantics. */
+  lang: string | null;
   modelName: string;
   model: string;
   force: boolean;

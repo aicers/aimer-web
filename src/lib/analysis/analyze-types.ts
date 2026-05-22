@@ -26,6 +26,7 @@ export interface EventAnalysisResultRow {
 export type AnalyzeErrorCode =
   | "invalid_event_data"
   | "event_key_mismatch"
+  | "event_time_invalid"
   | "lang_unsupported"
   | "event_data_too_large"
   | "authorization_failed"
@@ -48,6 +49,7 @@ export interface AnalyzeErrorBody {
 const ERROR_RETRYABLE: Record<AnalyzeErrorCode, boolean> = {
   invalid_event_data: false,
   event_key_mismatch: false,
+  event_time_invalid: false,
   lang_unsupported: false,
   event_data_too_large: false,
   authorization_failed: false,
@@ -63,6 +65,7 @@ const ERROR_RETRYABLE: Record<AnalyzeErrorCode, boolean> = {
 const ERROR_HTTP_STATUS: Record<AnalyzeErrorCode, number> = {
   invalid_event_data: 400,
   event_key_mismatch: 400,
+  event_time_invalid: 400,
   lang_unsupported: 400,
   event_data_too_large: 413,
   authorization_failed: 403,

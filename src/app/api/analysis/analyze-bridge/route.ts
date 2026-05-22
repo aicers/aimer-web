@@ -95,7 +95,13 @@ interface VerifiedBridgePayload {
   eventsData: Uint8Array;
   eventData: Record<string, unknown>;
   eventKey: string;
-  lang: SupportedLang;
+  /**
+   * `undefined` means the verified token omitted `lang` and the BFF
+   * should let aimer apply its server-side default. Persisted as
+   * `NULL` in `pending_analysis_requests.lang` so `/continue` after
+   * OIDC can reconstruct the same absence (DB migration 0026).
+   */
+  lang: SupportedLang | undefined;
   modelName: string;
   model: string;
   force: boolean;
@@ -197,8 +203,15 @@ async function verifyAll(
     };
   }
 
-  // Per-parameter checks (Q2).
-  if (!isSupportedLang(paramsClaims.lang)) {
+  // Per-parameter checks (Q2). `lang` is allowed to be absent from
+  // the verified token (the SDL declares `lang: Language`, nullable);
+  // only validate the value when REview supplied one.
+  let lang: SupportedLang | undefined;
+  if (paramsClaims.lang === null) {
+    lang = undefined;
+  } else if (isSupportedLang(paramsClaims.lang)) {
+    lang = paramsClaims.lang;
+  } else {
     return {
       kind: "invalid_analyze_params_token",
       detail: `lang must be one of ${LANG_VALUES.join(", ")}`,
@@ -286,7 +299,7 @@ async function verifyAll(
     eventsData: parsed.eventsData,
     eventData,
     eventKey: paramsClaims.eventKey,
-    lang: paramsClaims.lang,
+    lang,
     modelName: paramsClaims.modelName,
     model: paramsClaims.model,
     force: paramsClaims.force,
@@ -521,7 +534,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           aiceId: verified.contextClaims.aiceId,
           externalKey: verified.externalKey,
           eventKey: verified.eventKey,
-          lang: verified.lang,
+          lang: verified.lang ?? null,
           modelName: verified.modelName,
           model: verified.model,
           force: verified.force,

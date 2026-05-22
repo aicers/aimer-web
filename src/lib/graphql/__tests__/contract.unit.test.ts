@@ -5,6 +5,11 @@
 // `validate`. An SDL refresh that breaks a checked-in operation fails
 // here, not at the live `analyzeEvent` runtime call.
 //
+// Also asserts `schemas/aimer.version` matches the regex documented in
+// `docs/SCHEMAS.md` (a semver tag like `0.2.0` or a 7–40-hex commit
+// SHA). Both formats are permanent, equally first-class pin formats —
+// the choice per refresh is operational, not transitional.
+//
 // Pairs with `scripts/graphql-codegen.ts check` (the CI step
 // `pnpm graphql:check`) which separately ensures the committed
 // `__generated__/*.ts` files are in sync with the `.graphql`
@@ -26,8 +31,14 @@ import {
   AnalyzeEventDocument,
 } from "../__generated__/analyze-event";
 
-const SDL_PATH = join(process.cwd(), "src/lib/graphql/aimer.schema.graphql");
+const SDL_PATH = join(process.cwd(), "schemas/aimer.graphql");
+const VERSION_PATH = join(process.cwd(), "schemas/aimer.version");
 const OPERATIONS_DIR = join(process.cwd(), "src/lib/graphql/operations");
+
+// Matches `docs/SCHEMAS.md` "Version pin format". Either:
+//   - a semver tag (`0.2.0` or `v0.2.0`)
+//   - a git commit SHA on aicers/aimer (7–40 hex chars)
+const VERSION_RE = /^v?\d+\.\d+\.\d+$|^[0-9a-f]{7,40}$/;
 
 describe("aimer GraphQL contract", () => {
   const schema = buildSchema(readFileSync(SDL_PATH, "utf-8"));
@@ -125,11 +136,58 @@ describe("aimer GraphQL contract", () => {
     const argMap = Object.fromEntries(
       analyze.args.map((a) => [a.name, String(a.type)]),
     );
+    // `lang` is NULLABLE (`Language`, not `Language!`) — aimer applies
+    // its own default when the variable is absent. Calls sites must
+    // therefore be free to pass `null`/`undefined` for `lang`.
     expect(argMap).toEqual({
-      eventData: "JSON!",
+      event: "String!",
+      timestamp: "StringNumber!",
       name: "String!",
       model: "String!",
-      lang: "Language!",
+      lang: "Language",
     });
+  });
+});
+
+describe("schemas/aimer.version", () => {
+  it("matches the accepted semver-tag or commit-SHA shape", () => {
+    const raw = readFileSync(VERSION_PATH, "utf-8");
+    const trimmed = raw.trim();
+    expect(
+      VERSION_RE.test(trimmed),
+      `schemas/aimer.version value ${JSON.stringify(trimmed)} does not match ${VERSION_RE}`,
+    ).toBe(true);
+  });
+
+  it("contains a single non-empty line", () => {
+    // Authoring guardrail — multi-line content (notes, tag annotations,
+    // accidental SDL paste) would break tooling that reads the pin as a
+    // ref. The file may include a trailing newline but no second value.
+    const raw = readFileSync(VERSION_PATH, "utf-8");
+    const lines = raw.split("\n").filter((l) => l.trim().length > 0);
+    expect(lines).toHaveLength(1);
+  });
+
+  it("regex sanity — accepts both 0.2.0 and 8e553b6", () => {
+    // The pin regex must remain symmetric across the two equally
+    // first-class formats. A refactor that, say, requires `v` prefix
+    // or drops the SHA branch would silently regress this property
+    // unless asserted directly.
+    expect(VERSION_RE.test("0.2.0")).toBe(true);
+    expect(VERSION_RE.test("v0.2.0")).toBe(true);
+    expect(VERSION_RE.test("8e553b6")).toBe(true);
+    expect(VERSION_RE.test("8e553b68661e609ccb1f65b389e599d4b7670dd6")).toBe(
+      true,
+    );
+
+    expect(VERSION_RE.test("")).toBe(false);
+    expect(VERSION_RE.test("main")).toBe(false);
+    expect(VERSION_RE.test("0.2")).toBe(false);
+    // Six hex chars is below the minimum SHA length.
+    expect(VERSION_RE.test("8e553b")).toBe(false);
+    // Forty-one hex chars exceeds full-SHA length.
+    expect(VERSION_RE.test("8e553b68661e609ccb1f65b389e599d4b7670dd6a")).toBe(
+      false,
+    );
   });
 });

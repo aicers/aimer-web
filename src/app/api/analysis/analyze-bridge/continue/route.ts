@@ -10,6 +10,7 @@ import type { AnalyzeBridgeErrorCode } from "@/lib/analysis/analyze-bridge-types
 import {
   isSupportedLang,
   runAnalyzeFlow,
+  type SupportedLang,
 } from "@/lib/analysis/run-analyze-flow";
 import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
@@ -91,7 +92,10 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
       return renderAnalyzeBridgeInProgressPage();
     }
 
-    if (!isSupportedLang(par.lang)) {
+    // `par.lang === null` is the "let aimer apply its default" path
+    // and must NOT trip the lang_unsupported guard — only validate the
+    // shape when REview supplied a value at bridge-POST time.
+    if (par.lang !== null && !isSupportedLang(par.lang)) {
       const updated = await markPARFailed(
         getAuthPool(),
         par.id,
@@ -186,7 +190,11 @@ export const GET = withAuth(async (request: NextRequest, auth) => {
         aiceId: par.aiceId,
         eventKey: par.eventKey,
         eventData,
-        lang: par.lang,
+        // Forward absence (`null` in the PAR row → `undefined` in the
+        // flow params) so runAnalyzeFlow omits the GraphQL `lang`
+        // variable. The narrowed type after the `par.lang !== null`
+        // guard above is `SupportedLang` for the non-null branch.
+        lang: par.lang === null ? undefined : (par.lang as SupportedLang),
         modelName: par.modelName,
         model: par.model,
         force: par.force,
@@ -454,6 +462,7 @@ const BRIDGE_ERROR_CODES: ReadonlySet<string> = new Set<AnalyzeBridgeErrorCode>(
   [
     "invalid_event_data",
     "event_key_mismatch",
+    "event_time_invalid",
     "lang_unsupported",
     "event_data_too_large",
     "authorization_failed",
