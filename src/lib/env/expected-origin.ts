@@ -36,6 +36,18 @@ export function validateExpectedOriginEnv(
     throw new Error(`EXPECTED_ORIGIN is malformed: ${value}`);
   }
 
+  // The value is used to build OIDC redirect_uri, browser absolute redirects,
+  // and to validate the browser-supplied `Origin` header. Only HTTP(S) origins
+  // are meaningful in that context. Schemes such as `file:`, `ftp:`, or `ws:`
+  // either parse to the literal string `"null"` for `url.origin` (opaque
+  // origin) or produce a non-HTTP origin that would later throw `Invalid URL`
+  // when concatenated with `/api/auth/callback`. Reject them here so startup
+  // fails fast with a clear configuration error.
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `EXPECTED_ORIGIN must use http: or https: scheme: ${value}`,
+    );
+  }
   if (url.pathname !== "/" && url.pathname !== "") {
     throw new Error(`EXPECTED_ORIGIN must not contain a path: ${value}`);
   }

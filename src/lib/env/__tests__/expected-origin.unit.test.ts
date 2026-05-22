@@ -57,6 +57,22 @@ describe("validateExpectedOriginEnv", () => {
     );
   });
 
+  it("throws when value uses a non-http(s) scheme", () => {
+    // `file:` parses with `url.origin === "null"` (opaque origin); without an
+    // explicit scheme check this would canonicalise to the literal string
+    // "null" and every later URL construction call would throw `Invalid URL`
+    // at request time instead of failing fast at startup.
+    expect(() =>
+      validateExpectedOriginEnv("file://localhost/", "production"),
+    ).toThrow(/must use http: or https: scheme/);
+    expect(() =>
+      validateExpectedOriginEnv("ftp://aimer-web.example.com", "production"),
+    ).toThrow(/must use http: or https: scheme/);
+    expect(() =>
+      validateExpectedOriginEnv("ws://aimer-web.example.com", "production"),
+    ).toThrow(/must use http: or https: scheme/);
+  });
+
   it("throws when value contains a path", () => {
     expect(() =>
       validateExpectedOriginEnv(
