@@ -145,6 +145,11 @@ the full list):
   ISO 8601 date-time values which `jiff::Timestamp` parses upstream.
   The BFF forwards the string verbatim (no re-serialization) so the
   source's offset / fractional-second representation is preserved.
+  Fractional seconds are capped at 9 digits to match
+  `jiff::Timestamp`'s nanosecond precision; finer-grained inputs are
+  rejected at ingest so a bad value cannot get stored in
+  `redacted_event.event_time` and win over corrected request values
+  on later retries.
 - `StringNumber` → `string`. aimer uses `StringNumber` to carry `i128`
   values (e.g. `EventSelector.timestamp`'s nanoseconds since epoch).
   It MUST map to a decimal string; `number` would lose precision past

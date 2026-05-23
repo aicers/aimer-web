@@ -17,11 +17,19 @@ describe("parseEventTime — accept", () => {
     expect(parseEventTime(input)).toBe(input);
   });
 
-  it("preserves fractional seconds verbatim", () => {
-    // Fractional precision is upstream's concern (`jiff::Timestamp`),
-    // not the BFF's; passing the input through untouched lets aimer's
-    // formatter render whatever resolution the source supplied.
+  it("preserves fractional seconds verbatim up to nanosecond precision", () => {
+    // Upstream `jiff::Timestamp` accepts up to 9 fractional digits;
+    // passing the input through untouched within that ceiling lets
+    // aimer's formatter render whatever resolution the source supplied.
     const input = "2026-05-23T05:14:22.123456789Z";
+    expect(parseEventTime(input)).toBe(input);
+  });
+
+  it.each([
+    ["1 fractional digit", "2026-05-23T05:14:22.1Z"],
+    ["3 fractional digits (milliseconds)", "2026-05-23T05:14:22.123Z"],
+    ["6 fractional digits (microseconds)", "2026-05-23T05:14:22.123456Z"],
+  ])("accepts %s", (_label, input) => {
     expect(parseEventTime(input)).toBe(input);
   });
 
@@ -53,6 +61,14 @@ describe("parseEventTime — reject (input shape)", () => {
     ["+HHMM offset without colon", "2026-05-23T14:14:22+0900"],
     ["partial offset", "2026-05-23T14:14:22+09"],
     ["trailing garbage", "2026-05-23T05:14:22Zoops"],
+    // Over-precision: upstream `jiff::Timestamp` is nanosecond
+    // precision (9 fractional digits) and rejects anything finer.
+    // Catching it here keeps the bad value out of the ingest path so
+    // it cannot get stored in `redacted_event.event_time` and win
+    // over corrected request values on later retries.
+    ["10 fractional digits", "2026-05-23T05:14:22.1234567890Z"],
+    ["12 fractional digits", "2026-05-23T05:14:22.123456789123Z"],
+    ["trailing dot, no digits", "2026-05-23T05:14:22.Z"],
   ])("rejects shape-malformed: %s", (_label, raw) => {
     expect(parseEventTime(raw)).toBeNull();
   });

@@ -8,9 +8,15 @@
  * Naive local times (no offset) are rejected: aimer rendering would
  * otherwise depend on the BFF process's timezone, which is not part of
  * the wire contract.
+ *
+ * Fractional seconds are capped at 9 digits because `jiff::Timestamp`
+ * on the upstream side is nanosecond-precision and rejects anything
+ * finer. Catching it here keeps an over-precision payload from
+ * reaching `runAnalyzeFlow`'s ingest/write step and poisoning the
+ * stored `redacted_event.event_time` that later retries prefer.
  */
 const RFC3339_RE =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
  * Validate an `event_time` wire value. Returns the original string on
