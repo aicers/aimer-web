@@ -12,6 +12,16 @@ describe("analyzeErrorResponse — RFC 0001 error table", () => {
     expect(body.error.retryable).toBe(false);
   });
 
+  it("maps event_time_invalid to 400 with retryable=false", async () => {
+    const res = analyzeErrorResponse("event_time_invalid", "x");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as {
+      error: { code: string; retryable: boolean };
+    };
+    expect(body.error.code).toBe("event_time_invalid");
+    expect(body.error.retryable).toBe(false);
+  });
+
   it("maps event_data_too_large to 413", async () => {
     const res = analyzeErrorResponse("event_data_too_large", "x");
     expect(res.status).toBe(413);

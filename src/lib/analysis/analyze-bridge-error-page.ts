@@ -13,6 +13,7 @@ import {
 const ERROR_HTTP_STATUS: Record<AnalyzeBridgeErrorCode, number> = {
   invalid_event_data: 400,
   event_key_mismatch: 400,
+  event_time_invalid: 400,
   lang_unsupported: 400,
   event_data_too_large: 413,
   authorization_failed: 403,

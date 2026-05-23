@@ -1,0 +1,294 @@
+type AnalysisResult {
+	"""
+	Threat score from 0.0 to 1.0
+	"""
+	threatScore: Float!
+	"""
+	Markdown-formatted analysis
+	"""
+	analysis: String!
+}
+
+type ChatChoice {
+	message: OpenAiChatMessage!
+	index: Int!
+	finishReason: String
+}
+
+type EventAnalysisResult {
+	"""
+	Event selector that identifies which event this analysis corresponds to
+	"""
+	event: EventSelector!
+	"""
+	Analysis results for this event (vector to support multiple LLM analyses)
+	"""
+	result: [AnalysisResult!]!
+}
+
+type EventSelector {
+	"""
+	Sensor name (typically the hostname)
+	"""
+	sensor: String!
+	"""
+	Event timestamp as nanoseconds since epoch
+	"""
+	timestamp: StringNumber!
+}
+
+input EventSelectorInput {
+	"""
+	Sensor name (typically the hostname)
+	"""
+	sensor: String!
+	"""
+	Event timestamp as nanoseconds since epoch
+	"""
+	timestamp: StringNumber!
+}
+
+type GenerateResponse {
+	model: String!
+	createdAt: String!
+	response: String!
+	done: Boolean!
+	context: [Int!]
+	totalDuration: Int
+	loadDuration: Int
+	promptEvalCount: Int
+	promptEvalDuration: Int
+	evalCount: Int
+	evalDuration: Int
+}
+
+enum Language {
+	KOREAN
+	ENGLISH
+}
+
+type Mutation {
+	"""
+	Analyzes a security event using an LLM and returns the threat analysis.
+	
+	Stateless variant under `auth-mtls`: the BFF (aicers/aimer-web#44) supplies
+	plaintext events and stores results on its own side, so aimer persists
+	nothing here — no cache lookup, no cache write, no in-flight dedup.
+	
+	PII is redacted before being sent to the LLM and restored in the
+	returned analysis so third-party LLM exposure stays bounded.
+	
+	# Errors
+	
+	Returns an error if:
+	- Input validation fails (empty `event` or `model`)
+	- The requested LLM server `name` is not registered
+	- PII redaction or LLM analysis fails
+	"""
+	analyzeEvent(event: String!, timestamp: StringNumber!, name: String!, model: String!, lang: Language): AnalysisResult!
+	"""
+	Generates a report for a given customer.
+	
+	- The `customer_id` parameter specifies the customer ID for which to generate the report.
+	- The `review_hostname` is extracted from the `kid` field of the external REview-signed JWT.
+	- The `report_type` parameter specifies the type of report to generate:
+	- `DAILY`: Generates a report for the specified date.
+	- `WEEKLY`, `MONTHLY`: Aggregates top threats from daily reports within the period.
+	Missing daily reports are generated if possible; days with no data are skipped. At least
+	one daily report must exist or be creatable for the report generation to succeed.
+	- The `date` is for which to generate the report. It is in `YYYY-MM-DD` format. The date is
+	interpreted as a date in the "Asia/Seoul" timezone.
+	- The `name` parameter specifies the LLM provider/server to use for report generation.
+	- The `model` parameter specifies the LLM model to use for report generation.
+	- The `lang` parameter, if provided, sets the language for the analysis report (defaults to
+	English if not specified).
+	- The `force` parameter, if set to `true`, forces re-generation even if a cached result
+	exists (defaults to `false` if not specified).
+	
+	# Errors
+	
+	Returns an error if:
+	- External REview-signed JWT with `kid` is not provided
+	- Input validation fails
+	- LLM server is not found or unavailable
+	- Database operations fail
+	- No event analysis data exists for the requested date (`DAILY`) or for any dates in the
+	target period (`WEEKLY`/`MONTHLY`)
+	- LLM response parsing fails
+	"""
+	generateReport(customerId: ID!, name: String!, model: String!, reportType: ReportType!, date: String!, lang: Language, force: Boolean): ReportResult!
+}
+
+type OllamaChatMessage {
+	role: String!
+	content: String!
+}
+
+input OllamaChatMessageInput {
+	role: String!
+	content: String!
+}
+
+type OllamaChatResponse {
+	model: String!
+	createdAt: String!
+	message: OllamaChatMessage!
+	done: Boolean!
+	totalDuration: Int
+	loadDuration: Int
+	promptEvalCount: Int
+	promptEvalDuration: Int
+	evalCount: Int
+	evalDuration: Int
+}
+
+type OpenAiChatMessage {
+	role: String!
+	content: String!
+}
+
+input OpenAiChatMessageInput {
+	role: String!
+	content: String!
+}
+
+type OpenAiChatResponse {
+	id: String!
+	model: String!
+	choices: [ChatChoice!]!
+	usage: Usage
+}
+
+type Query {
+	hello: String!
+	"""
+	Retrieves cached event analyses for specified events.
+	
+	This method only returns previously cached analyses and does not generate new analyses.
+	If no cached analysis exists for an event, it will be omitted from the results.
+	
+	For users with the `User` role, only the single most recent analysis is returned per event.
+	If `name` and `model` are provided, the most recent analysis matching those parameters is returned.
+	If `name` and `model` are `None`, the most recent analysis across all name/model combinations is returned.
+	For users with the `Administrator` role, all analyses for all LLM name/model combinations
+	are returned.
+	
+	- The `customer_id` parameter specifies the customer identifier.
+	- The `events` parameter contains an array of event identifiers (sensor, timestamp pairs).
+	The array must contain at least one element.
+	- The `name` parameter, if provided, filters results to analyses from a specific LLM server.
+	- The `model` parameter, if provided, filters results to analyses from a specific LLM model.
+	- The `lang` parameter, if provided, specifies the language of the analysis report.
+	
+	# Errors
+	
+	Returns an error if:
+	- No kid is found in the JWT token (external REview-signed JWT required)
+	- Input validation fails (empty `customer_id`, empty events array, etc.)
+	- Database operations fail
+	"""
+	eventAnalyses(customerId: ID!, events: [EventSelectorInput!]!, name: String, model: String, lang: Language): [EventAnalysisResult!]!
+	ollamaGenerate(name: String!, model: String!, prompt: String!): GenerateResponse!
+	ollamaChat(name: String!, model: String!, messages: [OllamaChatMessageInput!]!): OllamaChatResponse!
+	openAiChat(name: String!, model: String!, messages: [OpenAiChatMessageInput!]!, maxTokens: Int): OpenAiChatResponse!
+	"""
+	Retrieves reports for a given user based on flexible date ranges and report types.
+	
+	This method only returns previously cached reports and does not generate new reports.
+	If no cached report exists for a period, it will be omitted from the results.
+	
+	- The `customer_id` parameter specifies the customer ID whose reports to retrieve.
+	- The `review_hostname` is extracted from the `kid` field of the external REview-signed JWT.
+	- The `report_type` parameter is the type of reports to retrieve (DAILY, WEEKLY, or MONTHLY).
+	- The `start` parameter specifies the start date (inclusive) in YYYY-MM-DD format.
+	- The `end` parameter specifies the end date (exclusive) in YYYY-MM-DD format.
+	- The optional `lang` parameter sets the language for the reports (defaults to English if not specified).
+	
+	For DAILY reports, returns a list of daily reports for each day in [start, end).
+	For WEEKLY reports, returns a list of weekly reports for each week that overlaps with at least one day in [start, end).
+	For MONTHLY reports, returns a list of monthly reports for each month that overlaps or falls in [start, end).
+	
+	If any reports are missing for the requested range, they will be omitted from the response.
+	The API returns only the existing reports in the result array.
+	
+	# Errors
+	
+	Returns an error if:
+	- External REview-signed JWT with `kid` is not provided
+	- Input validation fails
+	- Date parsing fails
+	- Database operations fail
+	"""
+	reports(customerId: ID!, reportType: ReportType!, start: String!, end: String!, lang: Language): [ReportItem!]!
+}
+
+type ReportItem {
+	"""
+	The type of report (DAILY, WEEKLY, or MONTHLY)
+	"""
+	reportType: ReportType!
+	"""
+	The date or period this report covers (YYYY-MM-DD for daily, YYYY-Www for weekly, YYYY-MM for monthly)
+	"""
+	period: String!
+	"""
+	Detailed report content in Markdown format
+	"""
+	detail: String!
+	"""
+	Summary report content in Markdown format
+	"""
+	summary: String!
+	"""
+	Report generation time
+	"""
+	createdAt: TimestampIso8601!
+}
+
+type ReportResult {
+	"""
+	Detailed report content in Markdown format
+	"""
+	detail: String!
+	"""
+	Summary report content in Markdown format
+	"""
+	summary: String!
+	"""
+	Whether response is from cache
+	"""
+	cached: Boolean!
+	"""
+	Report generation time
+	"""
+	createdAt: TimestampIso8601!
+}
+
+enum ReportType {
+	DAILY
+	WEEKLY
+	MONTHLY
+}
+
+scalar StringNumber
+
+scalar TimestampIso8601
+
+type Usage {
+	promptTokens: Int!
+	completionTokens: Int!
+	totalTokens: Int!
+}
+
+"""
+Directs the executor to include this field or fragment only when the `if` argument is true.
+"""
+directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Directs the executor to skip this field or fragment when the `if` argument is true.
+"""
+directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+schema {
+	query: Query
+	mutation: Mutation
+}

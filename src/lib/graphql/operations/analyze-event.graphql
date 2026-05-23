@@ -1,10 +1,17 @@
 mutation AnalyzeEvent(
-  $eventData: JSON!
+  $event: String!
+  $timestamp: StringNumber!
   $name: String!
   $model: String!
-  $lang: Language!
+  $lang: Language
 ) {
-  analyzeEvent(eventData: $eventData, name: $name, model: $model, lang: $lang) {
+  analyzeEvent(
+    event: $event
+    timestamp: $timestamp
+    name: $name
+    model: $model
+    lang: $lang
+  ) {
     threatScore
     analysis
   }

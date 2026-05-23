@@ -208,4 +208,51 @@ describe("analyze_params_token cross-binding", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it("accepts an omitted `lang` claim and surfaces it as null", async () => {
+    // Aimer's `Mutation.analyzeEvent`'s `lang` is `Language` (nullable
+    // on the SDL side). The verified token must carry the absence
+    // through so the BFF can omit the GraphQL variable and let aimer
+    // apply its server-side default.
+    setupTrustRegistry();
+    const token = await signParamsToken({ lang: undefined });
+    const result = await verifyAnalyzeParamsToken(
+      fakePool,
+      token,
+      FAKE_ENVELOPE_JWS,
+      baseContext,
+      baseEnvelope,
+    );
+    expect(result.lang).toBeNull();
+  });
+
+  it("accepts an explicit JSON null `lang` claim and surfaces it as null", async () => {
+    setupTrustRegistry();
+    const token = await signParamsToken({ lang: null });
+    const result = await verifyAnalyzeParamsToken(
+      fakePool,
+      token,
+      FAKE_ENVELOPE_JWS,
+      baseContext,
+      baseEnvelope,
+    );
+    expect(result.lang).toBeNull();
+  });
+
+  it("rejects a present-but-empty `lang` claim", async () => {
+    // A present claim must still be a non-empty string — the empty
+    // string would otherwise pass through to the route layer's
+    // `SupportedLang` check as an obviously-malformed value.
+    setupTrustRegistry();
+    const token = await signParamsToken({ lang: "" });
+    await expect(
+      verifyAnalyzeParamsToken(
+        fakePool,
+        token,
+        FAKE_ENVELOPE_JWS,
+        baseContext,
+        baseEnvelope,
+      ),
+    ).rejects.toThrow("lang must be a non-empty string");
+  });
 });
