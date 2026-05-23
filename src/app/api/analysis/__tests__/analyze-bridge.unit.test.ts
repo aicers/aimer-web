@@ -103,11 +103,16 @@ const validParams = {
   externalKey: "cust-ext-1",
 };
 
+const EVENT_TIME = "2026-05-23T05:14:22Z";
+
 function makeForm(): FormData {
   const form = new FormData();
   form.append("context_token", "ctx-jwt");
   form.append("events_envelope", "env-jws");
-  form.append("events_data", JSON.stringify({ event_key: "42" }));
+  form.append(
+    "events_data",
+    JSON.stringify({ event_key: "42", event_time: EVENT_TIME }),
+  );
   form.append("analyze_params_token", "params-jwt");
   return form;
 }
@@ -188,6 +193,14 @@ describe("POST /api/analysis/analyze-bridge", () => {
     expect(res.headers.get("location")).toContain("/analysis");
     expect(mockCreatePendingConnection).not.toHaveBeenCalled();
     expect(mockCreatePAR).not.toHaveBeenCalled();
+    expect(mockRunAnalyzeFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventData: expect.objectContaining({
+          event_key: "42",
+          event_time: EVENT_TIME,
+        }),
+      }),
+    );
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "ai_analysis.short_circuit_executed",

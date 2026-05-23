@@ -85,6 +85,8 @@ async function callGET(req: NextRequest): Promise<Response> {
   return GET(req);
 }
 
+const EVENT_TIME = "2026-05-23T05:14:22Z";
+
 const basePAR = {
   id: "par-1",
   connectionId: "conn-1",
@@ -210,7 +212,10 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
   });
 
   it("pending status decrypts + runs flow + marks consumed + 302 to view_url", async () => {
-    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const eventDataJson = JSON.stringify({
+      event_key: "42",
+      event_time: EVENT_TIME,
+    });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
     const computedHash = createHash("sha256")
@@ -233,6 +238,14 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
       expect.anything(),
       "par-1",
       "http://example.com/view",
+    );
+    expect(mockRunAnalyzeFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventData: expect.objectContaining({
+          event_key: "42",
+          event_time: EVENT_TIME,
+        }),
+      }),
     );
     expect(mockAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ action: "ai_analysis.continue_executed" }),
@@ -268,7 +281,10 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
   });
 
   it("markPARConsumed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired, not success", async () => {
-    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const eventDataJson = JSON.stringify({
+      event_key: "42",
+      event_time: EVENT_TIME,
+    });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
     const computedHash = createHash("sha256")
@@ -334,7 +350,10 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
   });
 
   it("runAnalyzeFlow throws after claim → marks PAR failed with internal_error, does NOT leave row processing", async () => {
-    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const eventDataJson = JSON.stringify({
+      event_key: "42",
+      event_time: EVENT_TIME,
+    });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
     const computedHash = createHash("sha256")
@@ -370,7 +389,10 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
   });
 
   it("runAnalyzeFlow throws + markPARFailed loses CAS → re-reads PAR and renders session-expired", async () => {
-    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const eventDataJson = JSON.stringify({
+      event_key: "42",
+      event_time: EVENT_TIME,
+    });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
     const computedHash = createHash("sha256")
@@ -434,7 +456,10 @@ describe("GET /api/analysis/analyze-bridge/continue", () => {
   });
 
   it("markPARFailed=false (cleanup expired row during flow) → re-reads PAR and renders session-expired", async () => {
-    const eventDataJson = JSON.stringify({ event_key: "42" });
+    const eventDataJson = JSON.stringify({
+      event_key: "42",
+      event_time: EVENT_TIME,
+    });
     const plaintext = Buffer.from(eventDataJson, "utf8");
     const { createHash } = await import("node:crypto");
     const computedHash = createHash("sha256")
