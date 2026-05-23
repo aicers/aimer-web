@@ -1,13 +1,13 @@
 mutation AnalyzeEvent(
   $event: String!
-  $timestamp: StringNumber!
+  $eventTime: DateTime!
   $name: String!
   $model: String!
   $lang: Language
 ) {
   analyzeEvent(
     event: $event
-    timestamp: $timestamp
+    eventTime: $eventTime
     name: $name
     model: $model
     lang: $lang

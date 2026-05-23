@@ -10,7 +10,7 @@ import { type DocumentNode, parse } from "graphql";
 
 export interface AnalyzeEventVariables {
   event: string;
-  timestamp: string;
+  eventTime: string;
   name: string;
   model: string;
   lang?: "KOREAN" | "ENGLISH" | null;
@@ -27,14 +27,14 @@ export interface AnalyzeEventResponse {
 
 export const ANALYZE_EVENT_SOURCE = `mutation AnalyzeEvent(
   $event: String!
-  $timestamp: StringNumber!
+  $eventTime: DateTime!
   $name: String!
   $model: String!
   $lang: Language
 ) {
   analyzeEvent(
     event: $event
-    timestamp: $timestamp
+    eventTime: $eventTime
     name: $name
     model: $model
     lang: $lang

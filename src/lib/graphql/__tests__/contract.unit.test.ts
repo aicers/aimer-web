@@ -141,11 +141,20 @@ describe("aimer GraphQL contract", () => {
     // therefore be free to pass `null`/`undefined` for `lang`.
     expect(argMap).toEqual({
       event: "String!",
-      timestamp: "StringNumber!",
+      eventTime: "DateTime!",
       name: "String!",
       model: "String!",
       lang: "Language",
     });
+  });
+
+  it("SDL exposes a DateTime scalar", () => {
+    // `Mutation.analyzeEvent`'s `eventTime` argument relies on the
+    // `DateTime` custom scalar; the codegen's `SCALAR_TS_MAP` only
+    // maps it correctly if it actually appears as a scalar in the SDL.
+    const dateTime = schema.getType("DateTime");
+    expect(dateTime).toBeDefined();
+    expect(String(dateTime)).toBe("DateTime");
   });
 });
 
@@ -168,15 +177,15 @@ describe("schemas/aimer.version", () => {
     expect(lines).toHaveLength(1);
   });
 
-  it("regex sanity — accepts both 0.2.0 and 8e553b6", () => {
+  it("regex sanity — accepts both 0.2.0 and 29e722f", () => {
     // The pin regex must remain symmetric across the two equally
     // first-class formats. A refactor that, say, requires `v` prefix
     // or drops the SHA branch would silently regress this property
     // unless asserted directly.
     expect(VERSION_RE.test("0.2.0")).toBe(true);
     expect(VERSION_RE.test("v0.2.0")).toBe(true);
-    expect(VERSION_RE.test("8e553b6")).toBe(true);
-    expect(VERSION_RE.test("8e553b68661e609ccb1f65b389e599d4b7670dd6")).toBe(
+    expect(VERSION_RE.test("29e722f")).toBe(true);
+    expect(VERSION_RE.test("29e722f890c5a31bca5242c4c69cdc1749c11e8b")).toBe(
       true,
     );
 
@@ -184,9 +193,9 @@ describe("schemas/aimer.version", () => {
     expect(VERSION_RE.test("main")).toBe(false);
     expect(VERSION_RE.test("0.2")).toBe(false);
     // Six hex chars is below the minimum SHA length.
-    expect(VERSION_RE.test("8e553b")).toBe(false);
+    expect(VERSION_RE.test("29e722")).toBe(false);
     // Forty-one hex chars exceeds full-SHA length.
-    expect(VERSION_RE.test("8e553b68661e609ccb1f65b389e599d4b7670dd6a")).toBe(
+    expect(VERSION_RE.test("29e722f890c5a31bca5242c4c69cdc1749c11e8bf")).toBe(
       false,
     );
   });
