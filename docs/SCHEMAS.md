@@ -47,8 +47,8 @@ contract is "copy what's checked in upstream".
   release semantics: stable known-good points, release branches,
   production deploys.
 - **Git commit SHA** of `aicers/aimer` — 7–40 hex chars, e.g.
-  `8e553b6` or
-  `8e553b68661e609ccb1f65b389e599d4b7670dd6`. Use this when you need
+  `29e722f` or
+  `29e722f890c5a31bca5242c4c69cdc1749c11e8b`. Use this when you need
   to track an in-flight aimer change before it lands in a release, or
   when the consumer wants to pin a specific commit regardless of
   release state.
@@ -128,7 +128,7 @@ swap, etc.).
    before merging the refresh PR. Type-checking and unit tests verify
    shape conformance; only an end-to-end call confirms that the BFF's
    serialization choices (notably `event` JSON encoding and
-   `timestamp` units) still match aimer's resolver expectations.
+   `eventTime` formatting) still match aimer's resolver expectations.
 
 ## Custom scalar mapping
 
@@ -141,10 +141,19 @@ mapping is decided explicitly.
 Current mappings (load-bearing notes only — see `SCALAR_TS_MAP` for
 the full list):
 
+- `DateTime` → `string`. aimer's `DateTime` carries RFC 3339 /
+  ISO 8601 date-time values which `jiff::Timestamp` parses upstream.
+  The BFF forwards the string verbatim (no re-serialization) so the
+  source's offset / fractional-second representation is preserved.
+  Fractional seconds are capped at 9 digits to match
+  `jiff::Timestamp`'s nanosecond precision; finer-grained inputs are
+  rejected at ingest so a bad value cannot get stored in
+  `redacted_event.event_time` and win over corrected request values
+  on later retries.
 - `StringNumber` → `string`. aimer uses `StringNumber` to carry `i128`
-  values (e.g. nanosecond-resolution timestamps). It MUST map to a
-  decimal string; `number` would lose precision past `2^53`, and call
-  sites must never coerce via `Number(...)`.
+  values (e.g. `EventSelector.timestamp`'s nanoseconds since epoch).
+  It MUST map to a decimal string; `number` would lose precision past
+  `2^53`, and call sites must never coerce via `Number(...)`.
 - `TimestampIso8601` → `string`. ISO-8601 date-time strings round-trip
   through the BFF as strings without parsing.
 
@@ -155,11 +164,13 @@ rules still hold for `Mutation.analyzeEvent`:
 
 - `event: String!` — `JSON.stringify(redactedEvent)` with default key
   order. aimer's downstream redact / LLM stages accept any valid JSON.
-- `timestamp: StringNumber!` — sourced from
-  `event_data.event_time_nanos` (i128 nanoseconds since epoch, decimal
-  string). NOT from the BFF's `event_key`: that column is a
-  `NUMERIC(39, 0)` row identifier and carries no timestamp semantics
-  in this codebase (see `src/lib/event-key.ts`). When the route
+- `eventTime: DateTime!` — sourced from `event_data.event_time`, an
+  RFC 3339 / ISO 8601 date-time string. The value flows untouched
+  from request → (optional cache-poisoning extraction from the stored
+  `redacted_event`) → upstream, where aimer parses it with
+  `jiff::Timestamp`. NOT sourced from the BFF's `event_key`: that
+  column is a `NUMERIC(39, 0)` row identifier and carries no
+  timestamp semantics (see `src/lib/event-key.ts`). When the route
   short-circuits on an existing `detection_events` row, the value is
   re-extracted from the STORED `redacted_event` so attacker-supplied
   payloads cannot shift the rendered analysis time.

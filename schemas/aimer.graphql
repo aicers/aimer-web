@@ -15,6 +15,8 @@ type ChatChoice {
 	finishReason: String
 }
 
+scalar DateTime
+
 type EventAnalysisResult {
 	"""
 	Event selector that identifies which event this analysis corresponds to
@@ -85,7 +87,7 @@ type Mutation {
 	- The requested LLM server `name` is not registered
 	- PII redaction or LLM analysis fails
 	"""
-	analyzeEvent(event: String!, timestamp: StringNumber!, name: String!, model: String!, lang: Language): AnalysisResult!
+	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
 	"""
 	Generates a report for a given customer.
 	
@@ -288,6 +290,10 @@ directive @include(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
 Directs the executor to skip this field or fragment when the `if` argument is true.
 """
 directive @skip(if: Boolean!) on FIELD | FRAGMENT_SPREAD | INLINE_FRAGMENT
+"""
+Provides a scalar specification URL for specifying the behavior of custom scalar types.
+"""
+directive @specifiedBy(url: String!) on SCALAR
 schema {
 	query: Query
 	mutation: Mutation

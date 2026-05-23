@@ -74,6 +74,7 @@ const DEFAULT_OUT_DIR = join(REPO_ROOT, "src/lib/graphql/__generated__");
 // timestamps). It MUST map to a decimal `string` — `number` would lose
 // precision past 2^53, and call sites must never coerce via `Number(...)`.
 const SCALAR_TS_MAP: Record<string, string> = {
+  DateTime: "string",
   StringNumber: "string",
   TimestampIso8601: "string",
   // Built-in fallback covered in renderType; listed here for
