@@ -16,8 +16,8 @@ same 4-column shape (`Name | Required | Description | Default`).
 | `MTLS_CA_PATH` | Yes | Filesystem path to the CA bundle PEM that validates the aimer server certificate. See [mTLS](operations/mtls.md). | _(unset)_ |
 | `AIMER_GRAPHQL_ENDPOINT` | Yes | URL of the aimer GraphQL endpoint (e.g. `https://aimer.internal/graphql`). The mTLS-routed GraphQL client refuses to dispatch if this is unset. | _(unset)_ |
 | `EXPECTED_ORIGIN` | Yes (production) | Public canonical origin of the deployed BFF. Required in production because the BFF normally runs behind a reverse proxy and Next.js cannot infer the public origin from forwarded headers. Used to build OIDC `redirect_uri`, callback / logout URLs, invitation links, absolute redirects, and to validate the `Origin` header in CSRF checks. A trailing slash is allowed and is normalised away at startup; path, query, or hash components are rejected. Example: `https://aimer-web.example.com`. | _(unset)_ |
-| `KC_HOSTNAME` | Yes (production) | Canonical public URL Keycloak uses when building OIDC URLs (issuer, `redirect_uri`, password-reset links, account console). Must be a full URL with scheme — Keycloak 26 rejects a bare hostname when `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (which the prod profile forces). No path, no query, no trailing slash. The prod compose profile refuses to start without it. Pair with `EXPECTED_ORIGIN` so the BFF and Keycloak agree on the public URL. Example: `https://aimer-web.example.com`. | _(unset)_ |
-| `KC_HTTP_RELATIVE_PATH` | No | Path prefix Keycloak is mounted at when the reverse proxy preserves the prefix during proxying. The prod compose healthcheck appends this when probing the OIDC discovery endpoint, so it must match Keycloak's actual mount point. Leave at `/` when the reverse proxy strips the prefix (the default for the bundled `nginx-prod`). Set to `/auth` (or another prefix) only when the prefix is preserved end-to-end. | `/` |
+| `KC_HOSTNAME` | Yes (production) | Canonical public URL Keycloak uses when building OIDC URLs (issuer, `redirect_uri`, password-reset links, account console). Must be a full URL with scheme — Keycloak 26 rejects a bare hostname when `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (which the prod profile forces). A public-path suffix is allowed and is required when the reverse proxy mounts Keycloak under a subpath; the bundled `nginx-prod` mounts it at `/auth`, so the bundled-proxy value is `https://aimer-web.example.com/auth`. No query, no trailing slash. The prod compose profile refuses to start without it. Pair with `EXPECTED_ORIGIN` so the BFF and Keycloak agree on the public origin (scheme + host + port). Examples: `https://aimer-web.example.com/auth` (bundled proxy), `https://aimer-web.example.com` (Keycloak at the apex), `https://auth.aimer-web.example.com` (Keycloak on its own host). | _(unset)_ |
+| `KC_HTTP_RELATIVE_PATH` | No | Path prefix the Keycloak process itself listens on. The prod compose healthcheck appends this when probing the OIDC discovery endpoint, so it must match Keycloak's actual mount point. Leave at `/` when the reverse proxy strips the public prefix before proxying (the bundled `nginx-prod` strips `/auth/`, so Keycloak still sees `/`). Set to `/auth` (or another prefix) only when the proxy preserves the prefix end-to-end. The public-facing path lives in `KC_HOSTNAME`, not here. | `/` |
 | `DATA_DIR` | No | Filesystem directory where next-app reads (and in dev writes) the session JWT signing key pair at `${DATA_DIR}/keys/ec-private.pem` (PKCS8) and `${DATA_DIR}/keys/ec-public.pem` (SPKI). In dev the BFF generates the pair on first start. In production the BFF refuses to start if either file is missing — operators must seed `${DATA_DIR}/keys/` with a pre-generated ES256 PEM pair before traffic reaches next-app. The prod compose profile pins this to `/app/data` and binds the `next-app-data` named volume there. See [Session JWT key persistence](#session-jwt-key-persistence) for the pre-generation recipe. | `./data` (prod compose: `/app/data`) |
 
 ## Production deployment notes
@@ -30,22 +30,33 @@ URL Keycloak emits in OIDC payloads:
 - `KC_HOSTNAME` pins the canonical public URL Keycloak uses to
   build every user-facing URL (issuer, `redirect_uri`,
   password-reset link, account console). It must be a full URL
-  with scheme (e.g. `https://aimer-web.example.com`) — Keycloak
-  26 rejects a bare hostname when `KC_HOSTNAME_BACKCHANNEL_DYNAMIC`
-  is `true`. The prod compose profile refuses to start without it.
+  with scheme — Keycloak 26 rejects a bare hostname when
+  `KC_HOSTNAME_BACKCHANNEL_DYNAMIC` is `true`. The prod compose
+  profile refuses to start without it. The URL may include a
+  public-path suffix when the reverse proxy mounts Keycloak under
+  a subpath; whatever path appears in `KC_HOSTNAME` is what
+  Keycloak prepends to every browser-facing OIDC URL it emits.
+  Pick the form that matches your proxy layout:
+  - Bundled `nginx-prod`: use
+    `https://aimer-web.example.com/auth` because nginx exposes
+    Keycloak under `/auth/`.
+  - Keycloak on its own hostname or at the apex of a dedicated
+    proxy: use `https://auth.aimer-web.example.com` (no path).
 - `KC_HOSTNAME_STRICT` is forced to `"true"` in the prod profile
   so Keycloak never derives URLs from incoming `Host` headers.
   This eliminates a class of hostname-drift bugs where users
   reaching Keycloak through a non-canonical hostname or
   port-forward see login forms, redirects, and email links
   pointing at the wrong host.
-- `KC_HTTP_RELATIVE_PATH` matches the path prefix preserved by
-  the reverse proxy. The default `/` is sufficient for the prod
-  compose healthcheck. Set it to `/auth` (or another prefix)
-  only when your reverse proxy preserves that prefix end-to-end
-  to Keycloak; the bundled `nginx-prod` strips `/auth/` before
-  proxying, so its healthcheck passes at `/` even though OIDC
-  URLs would need a non-stripping proxy to be fully correct.
+- `KC_HTTP_RELATIVE_PATH` is the path prefix the Keycloak process
+  itself listens on, independent of the public path encoded in
+  `KC_HOSTNAME`. Leave it at the default `/` when the reverse
+  proxy strips the public prefix before proxying — the bundled
+  `nginx-prod` strips `/auth/`, so Keycloak still receives
+  requests at `/`. Set it to `/auth` (or another prefix) only
+  when the proxy preserves that prefix end-to-end to Keycloak.
+  The prod compose healthcheck appends this value to the probe
+  URL, so it must match what Keycloak actually serves.
 
 The bundled `nginx-prod` terminates TLS and proxies HTTP to
 `keycloak-prod:8080`, so the prod profile sets
@@ -61,12 +72,18 @@ typically the in-cluster address (e.g. `http://keycloak-prod:8080`).
 when Keycloak emits browser-facing URLs. They must point at the
 same realm but rarely share a value.
 
-`EXPECTED_ORIGIN` (the BFF-side equivalent of `KC_HOSTNAME`) must
-agree with `KC_HOSTNAME` so the BFF and Keycloak emit consistent
-URLs. With `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (also forced by
-the prod profile), Keycloak still resolves the BFF's
-backchannel-only URLs from forwarded headers, which is the
-correct behavior behind a reverse proxy.
+`EXPECTED_ORIGIN` is the BFF's canonical public origin (scheme +
+host + port) and must agree with the origin component of
+`KC_HOSTNAME` so the BFF and Keycloak emit consistent URLs.
+`EXPECTED_ORIGIN` is origin-only (path / query / hash are
+rejected), while `KC_HOSTNAME` may include the public path the
+proxy mounts Keycloak under — for the bundled `nginx-prod`,
+`EXPECTED_ORIGIN=https://aimer-web.example.com` pairs with
+`KC_HOSTNAME=https://aimer-web.example.com/auth`. With
+`KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (also forced by the prod
+profile), Keycloak still resolves the BFF's backchannel-only URLs
+from forwarded headers, which is the correct behavior behind a
+reverse proxy.
 
 ### Session JWT key persistence
 
@@ -107,13 +124,25 @@ openssl pkey -in ./data/keys/ec-private.pem -pubout \
 Then seed them into the compose-managed volume so next-app finds
 them at `/app/data/keys/`. Running the seeding step through
 `docker compose run` lets Compose resolve the project-scoped
-volume name automatically — no need to know it on the host:
+volume name automatically — no need to know it on the host.
+`openssl genpkey` writes the private key as mode `0600` owned by
+the host user, so the seeding container must run as root
+(`--user 0`) to read the bind mount, and then `install` the
+files into the volume with the runtime user/group (UID 1001,
+GID 1001 — `nextjs:nodejs` from the Dockerfile) so next-app can
+read them after `--user` resets back to `nextjs` on the next
+start:
 
 ```sh
 docker compose --profile prod run --rm --no-deps \
   -v "$PWD/data/keys:/src:ro" \
+  --user 0 \
   --entrypoint sh next-app \
-  -c 'mkdir -p /app/data/keys && cp -a /src/. /app/data/keys/'
+  -c '
+    mkdir -p /app/data/keys &&
+    install -o 1001 -g 1001 -m 600 /src/ec-private.pem /app/data/keys/ec-private.pem &&
+    install -o 1001 -g 1001 -m 644 /src/ec-public.pem  /app/data/keys/ec-public.pem
+  '
 ```
 
 After that, `docker compose --profile prod up -d` starts cleanly.
@@ -128,8 +157,11 @@ Deployments started before this hardening pass relied on
 volume. Before upgrading:
 
 1. Set `KC_HOSTNAME` in `.env` to the canonical public URL with
-   scheme (e.g. `https://aimer-web.example.com`, no trailing
-   slash). The prod profile fails fast without it.
+   scheme and the public path your proxy mounts Keycloak under
+   (bundled `nginx-prod`: `https://aimer-web.example.com/auth`;
+   apex / dedicated host: `https://aimer-web.example.com` or
+   `https://auth.aimer-web.example.com`). No trailing slash. The
+   prod profile fails fast without it.
 2. Confirm the reverse proxy forwards a stable `Host` header
    matching `KC_HOSTNAME` and sets `X-Forwarded-*` headers
    (the bundled `nginx-prod` does both).

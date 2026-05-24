@@ -81,7 +81,7 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak_db
       KC_DB_USERNAME: ${KC_DB_USERNAME:-keycloak}
       KC_DB_PASSWORD: ${KC_DB_PASSWORD:-changeme}
-      KC_HOSTNAME: ${KC_HOSTNAME:?KC_HOSTNAME is required for the prod profile — set it to the canonical public URL with scheme, e.g. https://aimer-web.example.com}
+      KC_HOSTNAME: ${KC_HOSTNAME:?KC_HOSTNAME is required for the prod profile — set it to the canonical public URL with scheme and the public path your proxy mounts Keycloak under, e.g. https://aimer-web.example.com/auth for the bundled nginx-prod, or https://auth.aimer-web.example.com when Keycloak is on its own host}
       KC_HOSTNAME_STRICT: "true"
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HTTP_RELATIVE_PATH: ${KC_HTTP_RELATIVE_PATH:-/}
