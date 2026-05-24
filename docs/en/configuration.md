@@ -18,7 +18,7 @@ same 4-column shape (`Name | Required | Description | Default`).
 | `EXPECTED_ORIGIN` | Yes (production) | Public canonical origin of the deployed BFF. Required in production because the BFF normally runs behind a reverse proxy and Next.js cannot infer the public origin from forwarded headers. Used to build OIDC `redirect_uri`, callback / logout URLs, invitation links, absolute redirects, and to validate the `Origin` header in CSRF checks. A trailing slash is allowed and is normalised away at startup; path, query, or hash components are rejected. Example: `https://aimer-web.example.com`. | _(unset)_ |
 | `KC_HOSTNAME` | Yes (production) | Canonical public URL Keycloak uses when building OIDC URLs (issuer, `redirect_uri`, password-reset links, account console). Must be a full URL with scheme — Keycloak 26 rejects a bare hostname when `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (which the prod profile forces). No path, no query, no trailing slash. The prod compose profile refuses to start without it. Pair with `EXPECTED_ORIGIN` so the BFF and Keycloak agree on the public URL. Example: `https://aimer-web.example.com`. | _(unset)_ |
 | `KC_HTTP_RELATIVE_PATH` | No | Path prefix Keycloak is mounted at when the reverse proxy preserves the prefix during proxying. The prod compose healthcheck appends this when probing the OIDC discovery endpoint, so it must match Keycloak's actual mount point. Leave at `/` when the reverse proxy strips the prefix (the default for the bundled `nginx-prod`). Set to `/auth` (or another prefix) only when the prefix is preserved end-to-end. | `/` |
-| `DATA_DIR` | No | Filesystem directory where next-app persists generated state — most importantly the session JWT signing key pair at `${DATA_DIR}/keys/ec-private.pem` and `${DATA_DIR}/keys/ec-public.pem`. These keys must persist across container restarts; recreating them invalidates every issued session cookie. The prod compose profile pins this to `/app/data` and binds the `next-app-data` named volume there; a documented operator-managed bind mount over the same path works as well. In production the BFF refuses to start if the keys are missing — they must be pre-generated or restored from a previous deploy. | `./data` (prod compose: `/app/data`) |
+| `DATA_DIR` | No | Filesystem directory where next-app reads (and in dev writes) the session JWT signing key pair at `${DATA_DIR}/keys/ec-private.pem` (PKCS8) and `${DATA_DIR}/keys/ec-public.pem` (SPKI). In dev the BFF generates the pair on first start. In production the BFF refuses to start if either file is missing — operators must seed `${DATA_DIR}/keys/` with a pre-generated ES256 PEM pair before traffic reaches next-app. The prod compose profile pins this to `/app/data` and binds the `next-app-data` named volume there. See [Session JWT key persistence](#session-jwt-key-persistence) for the pre-generation recipe. | `./data` (prod compose: `/app/data`) |
 
 ## Production deployment notes
 
@@ -70,21 +70,56 @@ correct behavior behind a reverse proxy.
 
 ### Session JWT key persistence
 
-next-app writes its session JWT key pair to
-`${DATA_DIR}/keys/ec-private.pem` and
-`${DATA_DIR}/keys/ec-public.pem` on first start. In production
-`DATA_DIR` is pinned to `/app/data` and bound to the
-`next-app-data` named volume, so the key pair survives
-`docker compose --profile prod up -d --force-recreate next-app`.
-If the volume is recreated (`docker volume rm next-app-data`)
-the keys are regenerated and every issued session cookie becomes
-invalid. Operators who prefer a bind mount can mount any host
-path onto `/app/data` instead; the named volume is the default
-because it removes the host-side setup step.
+next-app signs every session cookie with an ES256 key pair stored
+at `${DATA_DIR}/keys/ec-private.pem` (PKCS8 PEM) and
+`${DATA_DIR}/keys/ec-public.pem` (SPKI PEM). In dev the BFF
+generates the pair on first start. In production the BFF refuses
+to start if either file is missing — the keys must already exist
+in `${DATA_DIR}/keys/` before traffic reaches next-app. This is
+intentional: silent regeneration in production would invalidate
+every issued session cookie at the worst possible moment.
 
-In production the BFF refuses to start if the key files are
-missing — they must be pre-generated (or restored from a
-previous deploy) before traffic reaches next-app.
+In the prod compose profile `DATA_DIR` is pinned to `/app/data`
+and bound to the `next-app-data` named volume (Compose scopes the
+on-disk name with the project name, e.g.
+`aimer-web_next-app-data`), so the key pair survives
+`docker compose --profile prod up -d --force-recreate next-app`.
+If the volume is destroyed the next prod start fails until the
+keys are re-seeded — they will not be auto-regenerated. Operators
+who prefer a bind mount can mount any host path onto `/app/data`
+instead; the named volume is the default because it removes the
+host-side setup step.
+
+#### Pre-generating the keys for a fresh deploy
+
+The keys must be a P-256 EC pair: PKCS8 PEM for the private half,
+SPKI PEM for the public half. Generate them on the host with
+openssl:
+
+```sh
+mkdir -p ./data/keys
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out ./data/keys/ec-private.pem
+openssl pkey -in ./data/keys/ec-private.pem -pubout \
+  -out ./data/keys/ec-public.pem
+```
+
+Then seed them into the compose-managed volume so next-app finds
+them at `/app/data/keys/`. Running the seeding step through
+`docker compose run` lets Compose resolve the project-scoped
+volume name automatically — no need to know it on the host:
+
+```sh
+docker compose --profile prod run --rm --no-deps \
+  -v "$PWD/data/keys:/src:ro" \
+  --entrypoint sh next-app \
+  -c 'mkdir -p /app/data/keys && cp -a /src/. /app/data/keys/'
+```
+
+After that, `docker compose --profile prod up -d` starts cleanly.
+Back the host-side `./data/keys/` directory up so you can recover
+from accidental volume destruction; rotating the keys in place
+invalidates every active session.
 
 ### Migration note
 
@@ -98,20 +133,11 @@ volume. Before upgrading:
 2. Confirm the reverse proxy forwards a stable `Host` header
    matching `KC_HOSTNAME` and sets `X-Forwarded-*` headers
    (the bundled `nginx-prod` does both).
-3. Copy any existing `${DATA_DIR}/keys/` contents into the new
-   `next-app-data` named volume before the first
-   `up --force-recreate`; otherwise the BFF will refuse to
-   start in production. Named volumes are not writable from the
-   host directly — seed them with a one-off helper container,
-   e.g. (run from the compose project directory):
-
-   ```sh
-   docker volume create next-app-data
-   docker run --rm \
-     -v next-app-data:/dst \
-     -v "$PWD/data/keys:/src:ro" \
-     alpine sh -c 'mkdir -p /dst/keys && cp -a /src/. /dst/keys/'
-   ```
-
-   Restoring is a one-time step — once the keys live in the
-   named volume, future recreates leave them alone.
+3. Seed the new `next-app-data` named volume with the existing
+   deployment's `${DATA_DIR}/keys/` contents before the first
+   `up --force-recreate`; otherwise the BFF will refuse to start
+   in production. Use the same `docker compose run` seeding
+   recipe shown above, pointing its bind-mount source at the
+   previous deployment's `${DATA_DIR}/keys/`. Restoring is a
+   one-time step — once the keys live in the named volume, future
+   recreates leave them alone.

@@ -174,4 +174,3 @@ volumes:
   bao-data:
   bao-init:
   next-app-data:
-    name: next-app-data
