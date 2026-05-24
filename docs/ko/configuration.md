@@ -47,6 +47,13 @@ aimer-web은 프로세스 환경 변수에서 설정값을 읽습니다. 아래 
   제거하므로 `/`로도 헬스체크는 통과하지만, OIDC URL이 완전히
   올바르게 발급되려면 접두사를 보존하는 프록시가 필요합니다.
 
+번들된 `nginx-prod`는 TLS를 종단하고 `keycloak-prod:8080`로
+HTTP를 프록시하므로, 프로덕션 프로파일은 `keycloak-prod`가 HTTP를
+수신할 수 있도록 `KC_HTTP_ENABLED=true`를 설정합니다. 리버스
+프록시는 클라이언트에는 여전히 HTTPS를 제공하고
+`X-Forwarded-Proto=https`를 전달하므로, Keycloak이 발급하는 OIDC
+URL은 `KC_HOSTNAME`의 `https://` 스킴을 그대로 유지합니다.
+
 `KEYCLOAK_URL`은 별개의 설정입니다. BFF → Keycloak 서버 간
 디스커버리 및 토큰 교환에 사용되는 URL로, 보통 클러스터 내부
 주소입니다(예: `http://keycloak-prod:8080`). `KC_HOSTNAME`은

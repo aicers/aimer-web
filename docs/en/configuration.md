@@ -47,6 +47,13 @@ URL Keycloak emits in OIDC payloads:
   proxying, so its healthcheck passes at `/` even though OIDC
   URLs would need a non-stripping proxy to be fully correct.
 
+The bundled `nginx-prod` terminates TLS and proxies HTTP to
+`keycloak-prod:8080`, so the prod profile sets
+`KC_HTTP_ENABLED=true` on `keycloak-prod` to let it listen on
+HTTP. The reverse proxy still presents HTTPS to clients and
+forwards `X-Forwarded-Proto=https`, so OIDC URLs Keycloak emits
+keep the `https://` scheme from `KC_HOSTNAME`.
+
 `KEYCLOAK_URL` is a different setting: it is the BFF → Keycloak
 URL used for server-to-server discovery and token exchange,
 typically the in-cluster address (e.g. `http://keycloak-prod:8080`).
