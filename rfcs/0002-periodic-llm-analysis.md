@@ -4,7 +4,7 @@
 - Authors: @sehkone
 - Tracks: [#292](https://github.com/aicers/aimer-web/issues/292)
 - Depends on: RFC 0001 (analysis storage, redaction)
-- Server-side counterpart: aimer (new mutations `analyzeStory`, `generatePeriodicSecurityReport`; timezone-aware cache keys)
+- Server-side counterpart: aimer (new mutations `analyzeStory`, `generatePeriodicSecurityReport`, exposed on auth-mtls only and stateless on the aimer side)
 - Sender-side counterpart: aice-web-next (optional `cursor_event_time` watermark on Phase 2 envelopes; deep-link entry points)
 
 ## Summary
@@ -141,11 +141,13 @@ If a feature both produces and consumes (e.g., feedback button), it lives in aim
                       ┌─────────────────────┐
                       │       aimer         │
                       │  analyzeEvent       │
+                      │  (jwt, unchanged)   │
                       │  analyzeStory   (new)│
                       │  generatePeriodic-  │
                       │  SecurityReport(new)│
-                      │  cache key includes │
-                      │  timezone        (new)│
+                      │  new mutations:     │
+                      │  auth-mtls only,    │
+                      │  stateless          │
                       └─────────────────────┘
 ```
 
@@ -637,7 +639,7 @@ Can run in parallel with Phase 1.
 
 Goal: per-story LLM analysis, end-to-end.
 
-- **aimer**: PR 5 — `analyzeStory` mutation + `STORY_PROMPT` + cache keyspace `STORY_ANALYSIS`.
+- **aimer**: PR 5 — `analyzeStory` mutation (auth-mtls only, stateless) + `STORY_PROMPT`. No keyspace, no cache.
 - **aimer-web**: PR 6 — worker calls `analyzeStory` on ready story jobs; result storage with priority tier; story detail page in aimer-web; force-regenerate UI; redaction integration.
 - **aice-web-next**: PR 7 — story detail page deep-link badge.
 
@@ -647,7 +649,7 @@ Verification gate: 20–50 stories manually reviewed by an operator for quality;
 
 Goal: time-windowed digests covering stories + single events + baseline aggregates.
 
-- **aimer**: PR 8 — `generatePeriodicSecurityReport(period, ...)` + `PERIODIC_SECURITY_REPORT_PROMPT` + cache keyspace.
+- **aimer**: PR 8 — `generatePeriodicSecurityReport(period, ...)` (auth-mtls only, stateless) + `PERIODIC_SECURITY_REPORT_PROMPT`. No keyspace, no cache.
 - **aimer-web**: PR 9 — worker generates LIVE every 60min and DAILY at settle; baseline aggregator (counts, category distribution, delta-vs-previous); report view in aimer-web with priority-graded sectioning.
 - **aice-web-next**: PR 10 — customer dashboard "Latest digest" and "Today's report" cards.
 
@@ -714,3 +716,4 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 6): `ANALYSIS_MAX_GENERATION` guardrail re-scoped from "single bucket" to "single variant job" — both story and periodic variant jobs are subject to the cap, matching the post-split model. Force regenerate remains exempt.
 - 2026-05-25 (review round 7): round 2 entry annotated to show post-round-3 column distribution between `*_state` and `*_job` tables; Phase 4 visibility item re-scoped from "per-bucket" to "per-variant-job" with UI rollup note. Status moved Draft → Accepted.
 - 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
+- 2026-05-25 (review round 9): stale cache/keyspace references cleaned up — top-of-file metadata, architecture diagram, and Phase 1/Phase 2 bullets in §"Phased delivery" no longer suggest aimer holds a cache or keyspace for the new mutations. All remaining "cache" mentions are explicit negations ("no aimer-side cache", "no keyspace, no cache key") or refer to aimer-web's cache, not aimer's.
