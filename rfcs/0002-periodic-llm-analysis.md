@@ -141,7 +141,7 @@ If a feature both produces and consumes (e.g., feedback button), it lives in aim
                       ┌─────────────────────┐
                       │       aimer         │
                       │  analyzeEvent       │
-                      │  (jwt, unchanged)   │
+                      │  (existing)         │
                       │  analyzeStory   (new)│
                       │  generatePeriodic-  │
                       │  SecurityReport(new)│
