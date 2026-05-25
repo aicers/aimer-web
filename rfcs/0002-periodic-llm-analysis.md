@@ -31,9 +31,9 @@ All LLM-bound work is scheduled by background workers in aimer-web. aice-web-nex
 
 In scope:
 
-- New aimer mutations: `analyzeStory`, `generatePeriodicSecurityReport(period, date, timezone, ...)`.
-- aimer cache-key timezone awareness, single-customer timezone column.
-- aimer-web background worker for story and periodic report generation; force-regenerate API; priority tiering; dedup; readiness/settle/dirty state machine.
+- New aimer mutations: `analyzeStory`, `generatePeriodicSecurityReport(period, date, timezone, ...)`, exposed on **auth-mtls only** and **stateless on the aimer side**.
+- Single-customer timezone column owned by aimer-web. aimer itself stores nothing for this RFC; it only renders time strings in the supplied timezone inside prompt output.
+- aimer-web background worker for story and periodic report generation; force-regenerate API; priority tiering; dedup; readiness/settle/dirty state machine; **sole holder of analysis results and cache**.
 - aice-web-next: optional `cursor_event_time` watermark on Phase 2 envelopes; deep links into aimer-web for the surfaces defined in §"Cross-project surfaces".
 
 Out of scope (deferred or separate):
@@ -42,6 +42,7 @@ Out of scope (deferred or separate):
 - Translation-based multi-language outputs (currently each language is a separate LLM call; revisit in Phase 4).
 - Real-time streaming (websocket/SSE) push to the operator UI. UI polls or uses standard refresh in v1.
 - Account-level timezone for boundary calculation (account.timezone stays UI-display-only; boundaries are customer-level).
+- **Any modification of the existing auth-jwt GraphQL surface in aimer.** auth-jwt code may be reused as in-process helpers (LLM client, prompt loader, redaction utilities) but the JWT mutations / queries themselves are not changed by this RFC. The auth-jwt surface will be removed wholesale in a future effort outside this RFC.
 
 ---
 
@@ -51,7 +52,7 @@ Three repositories cooperate:
 
 | Project | Role |
 |---|---|
-| **aimer** (Rust daemon) | Owns the LLM. Exposes stateless and JWT-backed GraphQL mutations. Holds caches keyed by (review_hostname, customer_id, ..., **timezone**). Knows nothing about story/baseline domain semantics beyond what the prompt input describes. |
+| **aimer** (Rust daemon) | Owns the LLM. **For this RFC, exposes new mutations on auth-mtls only and stores nothing** — every new mutation is stateless. The pre-existing auth-jwt surface and its caches remain untouched (deletion deferred to a separate effort). Knows nothing about story/baseline domain semantics beyond what the prompt input describes. |
 | **aimer-web** (Next.js BFF) | Owns the full AI feature surface. Schedules background analysis, stores results, applies redaction, computes priority tiers, dedups across Phase 1/Phase 2, enforces force-regenerate, surfaces full UI. **All AI features live here.** |
 | **aice-web-next** | Owns event ingestion (Phase 1 bridge + Phase 2 push). Surfaces deep links into aimer-web at narrowly-defined points (see below). Does **not** host AI analysis UI itself. |
 
@@ -171,7 +172,7 @@ Day/week/month boundaries used by aimer-web schedulers and aimer report inputs a
   - All existing `done` result rows for the customer with `tz != new_tz` are marked `superseded_at = NOW()` (visible only via history; hidden from default UI).
   - Old `periodic_report_state` rows with `tz != new_tz` are moved to terminal status `archived` (no further regeneration). Their underlying `periodic_report_job` rows are left as-is (no new work will be scheduled because the parent state is archived). Reactivation is manual (admin tool) if the customer reverts.
   - `story_analysis_state` / `story_analysis_job` rows are unaffected (no calendar boundary).
-- **aimer** [breaking-ish change]: `ReportKey` (and the new `PeriodicSecurityReportKey`) includes `timezone`; `generateReport` and `generatePeriodicSecurityReport` take `timezone: String!`. `analyzeStory` does **not** take `timezone` — story analysis output is UTC and timezone is a render-time concern (see §aimer changes). Hardcoded `"Asia/Seoul"` literals removed across the board.
+- **aimer** [new mutations only]: `generatePeriodicSecurityReport` takes `timezone: String!` and uses it strictly for rendering time strings inside the prompt — there is no aimer-side cache for it, so timezone is not a cache key. `analyzeStory` does **not** take `timezone` — story analysis output is UTC and timezone is an aimer-web render-time concern. The pre-existing auth-jwt `generateReport` and its `ReportKey` are **not** modified by this RFC (they will be deleted with the rest of the auth-jwt surface in a separate effort).
 - **aice-web-next**: no change required. Deep links into aimer-web do not need to carry timezone; aimer-web resolves from the customer.
 
 ### Account-level timezone (existing)
@@ -490,7 +491,7 @@ Behavior:
 - Does **not** touch the corresponding `state` row's status. Force is a variant-level operation; sibling variants are untouched.
 - Returns `202 Accepted` with `{state_pk, variant: {tz, lang, model_name, model}, generation}`.
 - Worker on next tick picks up the `queued` job; result row written with the new `generation`; prior result row for the same `(state_pk, variant)` gets `superseded_at = NOW()`.
-- aimer call uses `force: true` to bypass aimer's own cache.
+- The aimer call carries no `force` flag — the new aimer mutations are stateless and have no cache to bypass. Force regenerate is entirely an aimer-web-side concern: aimer-web bypasses its own result cache by writing a fresh `generation` row.
 
 Story regenerate has no `tz` parameter (story analysis output is timezone-independent; see §aimer changes); `lang`/`model_name`/`model` work the same way.
 
@@ -572,18 +573,18 @@ UI cross-reference: when a `detection_event` is also a `story_member`, the event
 
 The following changes land in the aimer Rust repo. They are sequenced **before** aimer-web Phase 1.
 
+All items below are **new code on auth-mtls** and are **stateless** (aimer stores nothing for any of them). The pre-existing auth-jwt surface — including `generateReport` and `ReportKey` — is **not modified** by this RFC; it will be deleted wholesale in a future effort outside this RFC. auth-jwt code may be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
+
 | Item | Change |
 |---|---|
-| `ReportKey` (and equivalent for new mutations) | Add `timezone: String` field, include in cache key |
-| `generateReport(...)` | Add `timezone: String!` parameter; remove hardcoded `"Asia/Seoul"` |
-| `analyzeStory(customer_id, story_id, members: [StoryMemberInput!]!, story_metadata, lang, model, name, force)` | New mutation. `members` carry the redacted event content from `story_member.event` only, with tokens already namespaced per §"Token namespacing for multi-event LLM inputs". `story_metadata` is non-PII story facts (id, time range as UTC ISO 8601, member count, role distribution) — explicitly **does not** include `story.summary_payload`. **No `timezone` parameter**: story analysis output uses UTC; the aimer-web UI renders local times on display. Stateless on auth-mtls; cached on auth-jwt with key `(review_hostname, customer_id, story_id, lang, model_name, model)`. |
-| `generatePeriodicSecurityReport(customer_id, period, date, timezone, lang, model, name, inputs, force)` | New mutation. `inputs` is a structured object: `{story_analyses: [...], event_analyses: [...], baseline_aggregates: {...}}`. Time strings inside the prompt are rendered in the supplied `timezone`. Caches per `(customer_id, period, date, timezone, lang, model_name, model)`. |
+| `analyzeStory(customer_id, story_id, members: [StoryMemberInput!]!, story_metadata, lang, model, name)` | New mutation on **auth-mtls only**. `members` carry the redacted event content from `story_member.event` only, with tokens already namespaced per §"Token namespacing for multi-event LLM inputs". `story_metadata` is non-PII story facts (id, time range as UTC ISO 8601, member count, role distribution) — explicitly **does not** include `story.summary_payload`. **No `timezone` parameter** (story output is UTC). **No `force` parameter** (no aimer-side cache to bypass). Stateless: no keyspace, no cache key. |
+| `generatePeriodicSecurityReport(customer_id, period, date, timezone, lang, model, name, inputs)` | New mutation on **auth-mtls only**. `inputs` is a structured object: `{story_analyses: [...], event_analyses: [...], baseline_aggregates: {...}}`. `timezone` is retained and used **only** to render time strings inside the prompt (e.g., "events between 14:00–16:30 KST"); it is not a cache key dimension because there is no cache. **No `force` parameter**. Stateless. |
 | `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
 | `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim (the prompt sees report-scope tokens, not story-scope, after the input builder's rewrite). |
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
 
-mTLS exposure: both new mutations exposed on the mTLS surface (called by aimer-web's worker). JWT exposure: same mutations, since the report mutation may also be called interactively from aimer-web for force-regenerate by an admin who is signed in.
+**Surface**: mTLS-only. The aimer-web background worker calls these mutations over mTLS for both automatic generation and operator-initiated force regenerate; the latter does not require a different surface because aimer is stateless either way.
 
 ---
 
@@ -619,7 +620,7 @@ Each phase ends with a verification gate before the next begins.
 
 Goal: state machinery, schemas, timezone column, worker skeleton.
 
-- **aimer**: PR 1 — timezone in cache key + mutation signatures (no story/periodic mutations yet). Merge first.
+- **aimer**: no work. (The originally-planned PR-1 — adding timezone to `ReportKey` and `generateReport` — was cancelled in round 8 because the new mutations are auth-mtls only and stateless from day 1, and the existing auth-jwt surface is not modified by this RFC.)
 - **aimer-web**: PR 2 — migrations (`customers.timezone`, `story_analysis_state`, `story_analysis_job`, `periodic_report_state`, `periodic_report_job`, `story_analysis_result`, `periodic_report_result`); `analysis-job-worker.ts` skeleton with state worker + job dispatcher (logs state transitions and would-be-queued jobs, no LLM call); ingest hooks for dirty marking on state rows; force-regenerate API endpoint stub returning 202; admin SQL-only timezone change (no UI yet); unit tests for state ready/dirty transitions and job enqueue logic.
 - **aice-web-next**: nothing (PR optional in parallel — see Phase 0.5).
 
@@ -669,6 +670,8 @@ Verification gate: weeklies do not read as concatenated dailies.
 - Translation strategy revisit (original-language + machine translation cache vs per-language regeneration).
 - Generation cap monitoring + alerting.
 
+The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC** — tracked as its own separate effort. It must not block any Phase 0–4 work here.
+
 ---
 
 ## Open questions
@@ -710,3 +713,4 @@ Verification gate: weeklies do not read as concatenated dailies.
 - 2026-05-25 (review round 6): dirty-transition intro generalized from "at least one `done` job" to "at least one job in `processing` or `done`" so the story-side rule (which fires while a variant is still processing) reads consistently.
 - 2026-05-25 (review round 6): `ANALYSIS_MAX_GENERATION` guardrail re-scoped from "single bucket" to "single variant job" — both story and periodic variant jobs are subject to the cap, matching the post-split model. Force regenerate remains exempt.
 - 2026-05-25 (review round 7): round 2 entry annotated to show post-round-3 column distribution between `*_state` and `*_job` tables; Phase 4 visibility item re-scoped from "per-bucket" to "per-variant-job" with UI rollup note. Status moved Draft → Accepted.
+- 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
