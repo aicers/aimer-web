@@ -285,15 +285,47 @@ describe("POST /api/admin/environments", () => {
     expect(body.error).toContain("name");
   });
 
-  it("returns 400 for invalid aiceId format", async () => {
+  it.each([
+    ["has spaces!"],
+    ["aice_web_next"],
+    ["aice-"],
+    ["-aice"],
+    ["aice..web"],
+    [""],
+    [`${"a".repeat(64)}`],
+    [
+      `${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.${"e".repeat(10)}`,
+    ],
+  ])("returns 400 for invalid aiceId %j", async (aiceId) => {
     const { POST } = await import("../route");
-    const res = await POST(
-      makePostRequest({ ...VALID_POST_BODY, aiceId: "has spaces!" }),
-    );
+    const res = await POST(makePostRequest({ ...VALID_POST_BODY, aiceId }));
 
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toContain("alphanumeric");
+    expect(body.error.toLowerCase()).toContain("aiceid");
+  });
+
+  it.each([
+    ["aiceweb001"],
+    ["001.aice-web-next.test.local"],
+    ["a"],
+    [`${"a".repeat(63)}`],
+  ])("accepts valid RFC 1123 hostname aiceId %j", async (aiceId) => {
+    mockTxQuery.mockReset().mockResolvedValueOnce({
+      rows: [
+        {
+          id: 1,
+          aice_id: aiceId,
+          name: "Test Environment",
+          description: null,
+          status: "active",
+        },
+      ],
+    });
+    const { POST } = await import("../route");
+    const res = await POST(makePostRequest({ ...VALID_POST_BODY, aiceId }));
+
+    expect(res.status).toBe(201);
   });
 
   it("returns 400 for invalid status value", async () => {

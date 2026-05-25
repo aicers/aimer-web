@@ -73,7 +73,16 @@ export const GET = withAuth(
   { ctx: "admin" },
 );
 
-const AICE_ID_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+// aice_id must be an RFC 1123 hostname so it stays portable as a JWT `iss`
+// claim and a `trust_registry` lookup key. This mirrors aice-web-next's
+// validator (the issuer side); see issue #301.
+const HOSTNAME_LABEL_RE = /^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$/;
+
+function isValidAiceId(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  const labels = value.split(".");
+  return labels.every((label) => HOSTNAME_LABEL_RE.test(label));
+}
 
 export const POST = withAuth(
   async (req: NextRequest, auth) => {
@@ -137,9 +146,9 @@ export const POST = withAuth(
       );
     }
 
-    if (!AICE_ID_RE.test(aiceId)) {
+    if (!isValidAiceId(aiceId)) {
       return Response.json(
-        { error: "aiceId must be alphanumeric with hyphens/underscores" },
+        { error: "aiceId must be a valid RFC 1123 hostname" },
         { status: 400 },
       );
     }
