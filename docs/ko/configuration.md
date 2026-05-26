@@ -64,10 +64,27 @@ URL은 `KC_HOSTNAME`의 `https://` 스킴을 그대로 유지합니다.
 
 `KEYCLOAK_URL`은 별개의 설정입니다. BFF → Keycloak 서버 간
 디스커버리 및 토큰 교환에 사용되는 URL로, 보통 클러스터 내부
-주소입니다(예: `http://keycloak-prod:8080`). `KC_HOSTNAME`은
-Keycloak이 자신의 공개 URL을 인식하는 값으로, 브라우저용 URL을
-생성할 때 사용합니다. 두 값은 같은 렐름을 가리키지만 값이
-같은 경우는 드뭅니다.
+주소입니다. 번들된 프로덕션 프로파일에서는
+`http://keycloak-prod:8080` — 내부 compose 주소이며 경로 접미사
+없음 — 을 권장합니다. 프로덕션 프로파일이 `KC_HTTP_RELATIVE_PATH=/`를
+유지하기 때문입니다. `KC_HTTP_RELATIVE_PATH`를 변경한 경우
+`KEYCLOAK_URL`의 경로 구성요소도 동일하게 맞춰야 합니다.
+`KC_HOSTNAME`은 Keycloak이 자신의 공개 URL을 인식하는 값으로,
+브라우저용 URL을 생성할 때 사용합니다. 두 값은 같은 렐름을
+가리키지만 값이 같은 경우는 드뭅니다.
+
+`KEYCLOAK_URL`을 공개 프록시 URL(`KC_HOSTNAME` 값)로 설정하지
+마십시오. 프로덕션 프로파일이 강제하는
+`KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`로 인해 Keycloak은 들어오는
+`Host` 헤더와 `KC_HTTP_RELATIVE_PATH`로부터 백채널 URL을 해석합니다.
+BFF가 공개 프록시 URL을 통해 디스커버리를 받아오면 응답이
+_분리_됩니다 — 프런트채널 URL(`issuer`, `authorization_endpoint`)은
+공개 `/auth` 접두사를 포함하지만 백채널 URL(`token_endpoint`,
+`jwks_uri`)은 포함하지 않습니다. 그 결과 BFF가 인가 코드를
+교환하는 POST 요청은 nginx가 `next-app`으로 라우팅하는 경로로
+가게 되며, 로그인이 `token_exchange_failed`에서 실패합니다.
+`KEYCLOAK_URL`을 내부 주소로 유지하면 이러한 분리 자체가
+발생하지 않습니다.
 
 `EXPECTED_ORIGIN`은 BFF의 정규 공개 오리진(스킴+호스트+포트)이며,
 `KC_HOSTNAME`의 오리진 구성요소와 일치해야 BFF와 Keycloak이
