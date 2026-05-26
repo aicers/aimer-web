@@ -84,7 +84,7 @@ The specific deep-link surfaces (v1):
 
 | aice-web-next location | Surface | Links to (aimer-web) |
 |---|---|---|
-| Event detail page (Phase 1 detection) | "AI analysis" badge if result exists, with threat score | `/analysis/event/{aice_id}/{event_key}` |
+| Event detail page (Phase 1 detection) | "AI analysis" badge if result exists, with priority tier | `/analysis/event/{aice_id}/{event_key}` |
 | Story detail page | "AI narrative analysis" badge with priority tier | `/analysis/story/{story_id}` |
 | Customer dashboard | "Latest security digest" card showing LIVE summary headline | `/analysis/reports/live` |
 | Customer dashboard | "Today's report" card showing DAILY top-1 highlight | `/analysis/reports/daily/{date}` |
@@ -258,8 +258,9 @@ CREATE TABLE story_analysis_result (
   model_actual_version     TEXT         NOT NULL,         -- as reported by the provider (e.g. snapshot id)
   prompt_version           TEXT         NOT NULL,         -- aimer-side prompt revision tag
   generation               INT          NOT NULL,
-  threat_score             DOUBLE PRECISION NOT NULL,
-  priority_tier            TEXT         NOT NULL,         -- CRITICAL|HIGH|MEDIUM|LOW
+  severity_score           DOUBLE PRECISION NOT NULL,     -- 0.0–1.0; "if real, how bad" (impact, blast radius)
+  likelihood_score         DOUBLE PRECISION NOT NULL,     -- 0.0–1.0; "how likely this is a real threat" (evidence quality)
+  priority_tier            TEXT         NOT NULL,         -- CRITICAL|HIGH|MEDIUM|LOW; derived from (severity, likelihood) matrix
   analysis_text            TEXT         NOT NULL,
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
   input_hash               TEXT         NOT NULL,         -- sha256 of the canonical LLM input (members + metadata + refs)
@@ -289,8 +290,9 @@ CREATE TABLE periodic_report_result (
   model_actual_version     TEXT         NOT NULL,
   prompt_version           TEXT         NOT NULL,
   generation               INT          NOT NULL,
-  aggregate_threat_score   DOUBLE PRECISION NOT NULL,     -- derived; see "Priority tiering"
-  priority_tier            TEXT         NOT NULL,
+  aggregate_severity_score   DOUBLE PRECISION NOT NULL,   -- informational; max over included severities + baseline drift severity (NOT a priority_tier input)
+  aggregate_likelihood_score DOUBLE PRECISION NOT NULL,   -- informational; max over included likelihoods + baseline drift likelihood (NOT a priority_tier input)
+  priority_tier            TEXT         NOT NULL,         -- derived as max(included leaf priority_tiers, matrix(baseline_drift_severity, baseline_drift_likelihood)); see §"Priority tiering"
   sections_jsonb           JSONB        NOT NULL,         -- {executive_summary, story_highlights, baseline_drift, notable_events, recommendations}
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
   input_story_refs         JSONB        NOT NULL,         -- ordered [{story_id}, ...] for citation backlinks
@@ -304,7 +306,7 @@ CREATE TABLE periodic_report_result (
 );
 ```
 
-`aggregate_threat_score` is computed at write time (see §"Priority tiering"). `input_watermark` records the upstream cursor that was treated as "complete enough" for this generation; refresh-window arrivals past this watermark are the trigger to mark `dirty`.
+`aggregate_severity_score` and `aggregate_likelihood_score` are computed at write time (see §"Priority tiering"). `input_watermark` records the upstream cursor that was treated as "complete enough" for this generation; refresh-window arrivals past this watermark are the trigger to mark `dirty`.
 
 ### Source state and per-variant jobs (auth DB)
 
@@ -508,39 +510,82 @@ aice-web-next: **no force UI**. Regeneration is a producer-side operation and st
 
 ## Priority tiering
 
-Computed by aimer-web at write time and stored on the result row.
+Computed by aimer-web at write time and stored on the result row. Inputs are two orthogonal axes returned by (or derived from) the LLM:
 
-### For per-event and per-story results
+- **severity_score** (0.0–1.0): "if this turned out to be a real attack, how bad is it" — impact, blast radius, asset criticality.
+- **likelihood_score** (0.0–1.0): "how likely is this actually malicious rather than noise / false positive" — evidence quality, IoC matches, plausible benign explanations.
 
-Uses the LLM-returned `threat_score`:
+The two axes are kept separate everywhere they appear on disk (`*_analysis_result.severity_score`/`likelihood_score`, `periodic_report_result.aggregate_severity_score`/`aggregate_likelihood_score`). `priority_tier` is always a deterministic, code-computed value — never a stored LLM judgement. For leaf rows it is a matrix lookup on the pair; for periodic reports it is derived from included leaf tiers + baseline drift (see §"For periodic reports" below). The aggregate scores on `periodic_report_result` are informational max-per-axis values, not the priority input.
 
-```
-CRITICAL : threat_score ≥ 0.8  AND (member_count ≥ N  OR  known_ioc_hit)
-HIGH     : threat_score ≥ 0.6
-MEDIUM   : threat_score ≥ 0.4
-LOW      : otherwise
-```
+### Matrix (per-event and per-story results)
+
+|              | L < 0.4 | 0.4 ≤ L < 0.6 | 0.6 ≤ L < 0.8 | L ≥ 0.8  |
+|--------------|---------|---------------|---------------|----------|
+| S ≥ 0.8      | MEDIUM  | HIGH          | CRITICAL      | CRITICAL |
+| 0.6 ≤ S < 0.8 | LOW     | MEDIUM        | HIGH          | HIGH     |
+| 0.4 ≤ S < 0.6 | LOW     | LOW           | MEDIUM        | MEDIUM   |
+| S < 0.4      | LOW     | LOW           | LOW           | LOW      |
+
+Both per-axis thresholds (`0.4 / 0.6 / 0.8`) and the cell-to-tier mapping are env-configurable (`ANALYSIS_PRIORITY_SEVERITY_THRESHOLDS`, `ANALYSIS_PRIORITY_LIKELIHOOD_THRESHOLDS`, `ANALYSIS_PRIORITY_MATRIX`). Admin UI for runtime tuning is a Phase 4 item.
+
+The previous single-threshold upgrade clauses (`member_count ≥ N`, `known_ioc_hit`) are folded into the **likelihood** axis rather than priority, since each is evidence that the threat is real, not evidence that it is severe:
+
+- `known_ioc_hit` forces a floor: effective likelihood = `max(stored_likelihood, 0.95)`.
+- A high correlated-member count (≥ N, env-configurable) adds a smaller floor (`max(stored_likelihood, 0.7)`).
+
+These floors are applied by aimer-web **only at matrix-lookup time** when computing `priority_tier`. The stored `likelihood_score` column always holds the LLM's unmodified estimate; the floor adjustment is not persisted. This preserves calibration data (`👍`/`👎` feedback vs raw model output) and makes the floor policy auditable and revisable without rewriting historical rows. Reading the stored row gives the model's raw estimate; only `priority_tier` reflects the floored value.
 
 ### For periodic reports
 
-A periodic report has no LLM-returned `threat_score` (the report prompt summarizes; it does not score). aimer-web derives `aggregate_threat_score` at write time from the same input bundle that was sent to the LLM:
+A periodic report has no LLM-returned scores (the report prompt summarizes; it does not score). aimer-web derives two **informational** aggregate scores at write time — these answer "how high did severity and likelihood get across the period, axis by axis" for display and analytics — but the report's `priority_tier` is computed by a separate rule (see below):
 
 ```
-aggregate_threat_score =
-    max(
-        max(included story_analysis_result.threat_score),
-        max(included event_analysis_result.threat_score),
-        baseline_drift_score(period)   -- 0.0–1.0, computed from baseline aggregate deltas
-    )
+aggregate_severity_score = max(
+    max(included story_analysis_result.severity_score),
+    max(included event_analysis_result.severity_score),
+    baseline_drift_severity(period)     -- 0.0–1.0
+)
+
+aggregate_likelihood_score = max(
+    max(included story_analysis_result.likelihood_score),
+    max(included event_analysis_result.likelihood_score),
+    baseline_drift_likelihood(period)   -- 0.0–1.0
+)
 ```
 
-`baseline_drift_score` is a deterministic function over the baseline aggregate inputs (e.g., normalized z-score of the largest category delta against the prior period). The exact formula is fixed in code and documented alongside `analysis-job-worker.ts`; thresholds are env-configurable.
+Taking max **independently** per axis means the entity contributing the aggregate severity can differ from the entity contributing the aggregate likelihood. That is acceptable for an informational maximum.
 
-The same tier table (CRITICAL/HIGH/MEDIUM/LOW) is then applied with `aggregate_threat_score`. The `member_count`/`known_ioc_hit` upgrade condition does not apply at the report level.
+`baseline_drift_severity` and `baseline_drift_likelihood` map the statistical signal onto both axes:
 
-### Configuration
+- **severity**: normalized magnitude of the largest category delta vs the prior period (e.g., min-max scaled z-score, clamped to `[0, 1]`).
+- **likelihood**: `1.0` if any delta exceeds the configured noise threshold, else `0.0`. Statistical drift, when it exceeds noise, is treated as a high-confidence signal — the data does not lie about its own distribution.
 
-Thresholds are env-configurable (`ANALYSIS_PRIORITY_*`). Admin UI for runtime tuning is a Phase 4 item.
+Exact formulas are fixed in code and documented alongside `analysis-job-worker.ts`; noise thresholds are env-configurable.
+
+The report's `priority_tier` is computed **from included leaf tiers**, not from the aggregate scores:
+
+```
+report_priority_tier = max over {
+    each included story_analysis_result.priority_tier,
+    each included event_analysis_result.priority_tier,
+    matrix(baseline_drift_severity, baseline_drift_likelihood)
+}
+```
+
+This guarantees **leaf monotonicity**: a report can never be tagged at a lower tier than the worst-priority leaf it cites, and baseline drift contributes via its own (severity, likelihood) → matrix evaluation. Deriving `priority_tier` from the aggregate scores would silently downgrade reports that include a leaf whose effective likelihood was raised by `known_ioc_hit` or a high `member_count` — those floors are leaf-tier-lookup-only per the previous section, so the raw `likelihood_score` on the leaf row does not reflect them, and `aggregate_likelihood_score = max(raw leaf likelihoods, ...)` would miss the adjustment. Using leaf tiers directly sidesteps the issue without persisting floor inputs.
+
+### LLM contract
+
+`STORY_PROMPT` and the event-analysis prompt (RFC 0001) ask the model to return `severity_score` and `likelihood_score` as two distinct fields with the axis definitions above. `PERIODIC_SECURITY_REPORT_PROMPT` does **not** ask for scores — aggregation is computed by aimer-web from already-stored leaf rows.
+
+### Why two axes, not one
+
+A single composite collapses two cases operators triage differently:
+
+- `(severity=1.0, likelihood=0.5)`: "if this is real it's catastrophic, but it's only ~50% real" → monitor closely, prepare response.
+- `(severity=0.5, likelihood=1.0)`: "confirmed real, but limited impact" → routine handling.
+
+Both collapse to the same `0.5` under a composite. The matrix preserves the difference. Splitting also makes the priority decision auditable in code (matrix lookup) rather than opaque inside the LLM's score, and gives a clean prompt definition for each axis. The split additionally subsumes the role a separate "LLM self-confidence" field would have played: `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics.
 
 UI policy:
 
@@ -581,10 +626,12 @@ All items below are **new code on auth-mtls** and are **stateless** (aimer store
 |---|---|
 | `analyzeStory(customer_id, story_id, members: [StoryMemberInput!]!, story_metadata, lang, model, name)` | New mutation on **auth-mtls only**. `members` carry the redacted event content from `story_member.event` only, with tokens already namespaced per §"Token namespacing for multi-event LLM inputs". `story_metadata` is non-PII story facts (id, time range as UTC ISO 8601, member count, role distribution) — explicitly **does not** include `story.summary_payload`. **No `timezone` parameter** (story output is UTC). **No `force` parameter** (no aimer-side cache to bypass). Stateless: no keyspace, no cache key. |
 | `generatePeriodicSecurityReport(customer_id, period, date, timezone, lang, model, name, inputs)` | New mutation on **auth-mtls only**. `inputs` is a structured object: `{story_analyses: [...], event_analyses: [...], baseline_aggregates: {...}}`. `timezone` is retained and used **only** to render time strings inside the prompt (e.g., "events between 14:00–16:30 KST"); it is not a cache key dimension because there is no cache. **No `force` parameter**. Stateless. |
-| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
-| `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim (the prompt sees report-scope tokens, not story-scope, after the input builder's rewrite). |
+| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Returns **two separate scores**, `severity_score` and `likelihood_score` (each `0.0–1.0`), with axis definitions per §"Priority tiering" embedded in the prompt. Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
+| `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Does **not** return scores; aimer-web aggregates `severity_score` / `likelihood_score` from leaf rows (see §"Priority tiering"). Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim (the prompt sees report-scope tokens, not story-scope, after the input builder's rewrite). |
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
+
+**Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severityScore` and `likelihoodScore` as separate `Float!` fields on the GraphQL wire (camelCase to match existing aimer SDL convention; aimer-web maps them to the snake_case storage columns), each clamped server-side to `[0.0, 1.0]`. There is no single `threatScore` field on the wire.
 
 **Surface**: mTLS-only. The aimer-web background worker calls these mutations over mTLS for both automatic generation and operator-initiated force regenerate; the latter does not require a different surface because aimer is stateless either way.
 
@@ -606,7 +653,7 @@ Minimal — sender-side stays mostly intact. Two additions:
 
 Add five entry points (see §"What aice-web-next surfaces" table). Each is a single-row badge or card component that:
 
-- Reads from a small aimer-web endpoint (`GET /api/analysis/{...}/summary`) returning only `{exists, priority_tier, score, score_kind, link}`. `score_kind` is `"threat"` for event/story summaries and `"aggregate"` for periodic-report summaries; `score` is the corresponding `threat_score` or `aggregate_threat_score` value. This shape is uniform across all surface types so aice-web-next has one client.
+- Reads from a small aimer-web endpoint (`GET /api/analysis/{...}/summary`) returning only `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}`. `score_kind` is `"leaf"` for event/story summaries (scores came from an LLM call) and `"aggregate"` for periodic-report summaries (scores were derived by aimer-web from included leaf rows + baseline drift). This shape is uniform across all surface types so aice-web-next has one client.
 - Does **not** fetch or render the analysis content itself.
 - Opens the aimer-web URL in a new tab (or in-app modal if same-origin permits).
 
@@ -696,13 +743,13 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 2): `story.summary_payload` excluded from LLM input in v1; story-level redaction map deferred to a future RFC.
 - 2026-05-25 (review round 2): customer timezone change does not dirty existing buckets; old-tz buckets are archived/superseded and new-tz buckets are created lazily (resolves PK conflict with prior wording).
 - 2026-05-25 (review round 2): `first_member_at`, `created_at`, `processing_started_at`, `last_generated_at`, `next_due_at` added so readiness conditions (story 6h max-wait, LIVE 60min cadence) have concrete columns to read. After the round 3 split these distribute as: `first_member_at`/`last_member_at`/`created_at` on `*_state`; `processing_started_at`/`last_generated_at`/`next_due_at` on `*_job` (per-variant).
-- 2026-05-25 (review round 2): `aggregate_threat_score` added to `periodic_report_result` with a documented derivation from max(story scores, event scores, baseline drift); resolves the prior gap where reports had no score to feed priority tiering.
+- 2026-05-25 (review round 2): `aggregate_threat_score` added to `periodic_report_result` with a documented derivation from max(story scores, event scores, baseline drift); resolves the prior gap where reports had no score to feed priority tiering. (Superseded by round 10: split into `aggregate_severity_score` + `aggregate_likelihood_score`.)
 - 2026-05-25 (review round 2): `prompt_version`, `model_actual_version`, `input_hash` added to both result tables for drift attribution.
 - 2026-05-25 (review round 2): force-regenerate API contract clarified — path call defaults to current tz + default lang/model; optional query params target specific variants.
 - 2026-05-25 (review round 3): multi-event LLM inputs use deterministic scope-unique token rewrite (`<<REDACTED_TYPE_E{i}_NNN>>`) at prompt-build time; `input_event_refs JSONB` stored on result rows for demap. No new encrypted map introduced; existing per-event maps remain the source of truth.
 - 2026-05-25 (review round 3): state and per-variant job split into two tables each (`*_analysis_state` / `*_analysis_job`, `periodic_report_state` / `periodic_report_job`). Source readiness lives at state level; per-variant work (queued/processing/done/failed, generation, attempts, force) lives at job level. Resolves the issue that one bucket row could not represent independent Korean/English generation counters.
 - 2026-05-25 (review round 3): `analyzeStory` no longer takes `timezone` and is not keyed by `tz` in either aimer cache or aimer-web result PK. Story analysis output uses UTC; localized time strings are an aimer-web render-time concern. (Superseded in part by round 8: aimer holds no cache at all for `analyzeStory`, so only the aimer-web result PK matters.)
-- 2026-05-25 (review round 3): deep-link summary endpoint generalizes the score field to `{score, score_kind}` (`threat` | `aggregate`) so periodic reports fit the same shape as per-event / per-story summaries.
+- 2026-05-25 (review round 3): deep-link summary endpoint generalizes the score field to `{score, score_kind}` (`threat` | `aggregate`) so periodic reports fit the same shape as per-event / per-story summaries. (Superseded by round 10: shape becomes `{severity_score, likelihood_score, score_kind}` with `score_kind ∈ {leaf, aggregate}`.)
 - 2026-05-25 (review round 3): aimer mutations `analyzeStory` / `generatePeriodicSecurityReport` must always return `prompt_version` and `model_actual_version`; aimer-web stores them `NOT NULL`. Providers without a real `model_actual_version` substitute the requested `model` string.
 - 2026-05-25 (review round 4): report-scope token rewrite added — periodic report input builder rewrites story-scope `E{i}` tokens (and event-scope tokens) found inside included `analysis_text` into report-scope `R{j}` tokens, indexed against the report's merged `input_event_refs`. Mechanism is recursive and supports future report-cites-report cases.
 - 2026-05-25 (review round 4): force-regenerate is now strictly a variant-job operation; removed from the dirty-transition trigger list. State rows only become dirty when source data actually changes (refresh_window/backfill or stray late ingest).
@@ -717,3 +764,4 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 7): round 2 entry annotated to show post-round-3 column distribution between `*_state` and `*_job` tables; Phase 4 visibility item re-scoped from "per-bucket" to "per-variant-job" with UI rollup note. Status moved Draft → Accepted.
 - 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
 - 2026-05-25 (review round 9): stale cache/keyspace references cleaned up — top-of-file metadata, architecture diagram, and Phase 1/Phase 2 bullets in §"Phased delivery" no longer suggest aimer holds a cache or keyspace for the new mutations. All remaining "cache" mentions are explicit negations ("no aimer-side cache", "no keyspace, no cache key") or refer to aimer-web's cache, not aimer's.
+- 2026-05-26 (review round 10): `threat_score` split into two orthogonal axes `severity_score` and `likelihood_score` across all analysis result tables (`story_analysis_result`, `periodic_report_result` here; `event_analysis_result` in RFC 0001). `priority_tier` is now a deterministic 4×4 matrix lookup over the pair rather than a single-threshold formula. The previous `known_ioc_hit` / `member_count ≥ N` upgrade clauses fold into floors on `likelihood_score`, since each is evidence of being real, not of being severe. Floors apply only at matrix-lookup time; the stored `likelihood_score` always holds the LLM's raw estimate to preserve calibration data and let the floor policy evolve without rewriting history. `baseline_drift_score` similarly splits into severity and likelihood. Periodic report `priority_tier` is derived as `max(each included leaf's priority_tier, matrix(baseline_drift_severity, baseline_drift_likelihood))` rather than from the aggregate scores — this preserves leaf monotonicity (the report is never below the worst leaf in it) under the lookup-only floor policy, since the raw `likelihood_score` on leaves does not reflect floors. `aggregate_severity_score` / `aggregate_likelihood_score` remain stored as informational max-per-axis values for display and analytics. Summary endpoint shape becomes `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}` with `score_kind ∈ {leaf, aggregate}`. LLM contract: `analyzeStory` and the RFC 0001 event-analysis mutation return both scores as separate `Float!` fields (camelCase `severityScore` / `likelihoodScore` on the GraphQL wire); `PERIODIC_SECURITY_REPORT_PROMPT` returns no scores (aggregation in aimer-web). A separate "LLM self-confidence" field was considered and rejected — `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics. Done before any production data accumulated; coordinated with RFC 0001 in the same PR.
