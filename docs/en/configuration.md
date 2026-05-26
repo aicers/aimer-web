@@ -67,10 +67,26 @@ keep the `https://` scheme from `KC_HOSTNAME`.
 
 `KEYCLOAK_URL` is a different setting: it is the BFF → Keycloak
 URL used for server-to-server discovery and token exchange,
-typically the in-cluster address (e.g. `http://keycloak-prod:8080`).
-`KC_HOSTNAME` is Keycloak's view of its own public URL, used
-when Keycloak emits browser-facing URLs. They must point at the
-same realm but rarely share a value.
+typically the in-cluster address. For the bundled prod profile the
+recommended value is `http://keycloak-prod:8080` — the internal
+compose address with no path suffix, since the prod profile leaves
+`KC_HTTP_RELATIVE_PATH=/`. If `KC_HTTP_RELATIVE_PATH` is customized,
+the path component of `KEYCLOAK_URL` must match it. `KC_HOSTNAME`
+is Keycloak's view of its own public URL, used when Keycloak emits
+browser-facing URLs. They must point at the same realm but rarely
+share a value.
+
+Do not point `KEYCLOAK_URL` at the public proxy URL (the value of
+`KC_HOSTNAME`). With `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true` (which
+the prod profile forces), Keycloak resolves backchannel URLs from
+the incoming `Host` header plus `KC_HTTP_RELATIVE_PATH`. If the BFF
+fetches discovery through the public proxy URL, the returned
+document is _split_: the frontchannel URLs (`issuer`,
+`authorization_endpoint`) carry the public `/auth` prefix, while
+the backchannel URLs (`token_endpoint`, `jwks_uri`) do not. The BFF
+then POSTs the authorization code to a path nginx routes to
+`next-app`, and sign-in fails at `token_exchange_failed`. Keeping
+`KEYCLOAK_URL` on the internal address avoids the split entirely.
 
 `EXPECTED_ORIGIN` is the BFF's canonical public origin (scheme +
 host + port) and must agree with the origin component of
