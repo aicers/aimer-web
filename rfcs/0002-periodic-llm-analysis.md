@@ -290,9 +290,9 @@ CREATE TABLE periodic_report_result (
   model_actual_version     TEXT         NOT NULL,
   prompt_version           TEXT         NOT NULL,
   generation               INT          NOT NULL,
-  aggregate_severity_score   DOUBLE PRECISION NOT NULL,   -- derived; max over included severities + baseline drift severity
-  aggregate_likelihood_score DOUBLE PRECISION NOT NULL,   -- derived; max over included likelihoods + baseline drift likelihood
-  priority_tier            TEXT         NOT NULL,         -- derived from (aggregate_severity, aggregate_likelihood) matrix
+  aggregate_severity_score   DOUBLE PRECISION NOT NULL,   -- informational; max over included severities + baseline drift severity (NOT a priority_tier input)
+  aggregate_likelihood_score DOUBLE PRECISION NOT NULL,   -- informational; max over included likelihoods + baseline drift likelihood (NOT a priority_tier input)
+  priority_tier            TEXT         NOT NULL,         -- derived as max(included leaf priority_tiers, matrix(baseline_drift_severity, baseline_drift_likelihood)); see §"Priority tiering"
   sections_jsonb           JSONB        NOT NULL,         -- {executive_summary, story_highlights, baseline_drift, notable_events, recommendations}
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
   input_story_refs         JSONB        NOT NULL,         -- ordered [{story_id}, ...] for citation backlinks
@@ -515,7 +515,7 @@ Computed by aimer-web at write time and stored on the result row. Inputs are two
 - **severity_score** (0.0–1.0): "if this turned out to be a real attack, how bad is it" — impact, blast radius, asset criticality.
 - **likelihood_score** (0.0–1.0): "how likely is this actually malicious rather than noise / false positive" — evidence quality, IoC matches, plausible benign explanations.
 
-The two axes are kept separate everywhere they appear on disk (`*_analysis_result.severity_score`/`likelihood_score`, `periodic_report_result.aggregate_severity_score`/`aggregate_likelihood_score`). `priority_tier` is a deterministic function of the pair, never a stored LLM judgement.
+The two axes are kept separate everywhere they appear on disk (`*_analysis_result.severity_score`/`likelihood_score`, `periodic_report_result.aggregate_severity_score`/`aggregate_likelihood_score`). `priority_tier` is always a deterministic, code-computed value — never a stored LLM judgement. For leaf rows it is a matrix lookup on the pair; for periodic reports it is derived from included leaf tiers + baseline drift (see §"For periodic reports" below). The aggregate scores on `periodic_report_result` are informational max-per-axis values, not the priority input.
 
 ### Matrix (per-event and per-story results)
 
