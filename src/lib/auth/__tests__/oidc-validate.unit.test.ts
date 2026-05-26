@@ -60,6 +60,7 @@ describe("validateIdToken", () => {
     });
 
     const claims = await validateIdToken({ idToken, ...baseParams });
+    expect(claims.iss).toBe("http://localhost:8080/realms/aimer");
     expect(claims.sub).toBe("user-123");
     expect(claims.preferred_username).toBe("testuser");
     expect(claims.name).toBe("Test User");

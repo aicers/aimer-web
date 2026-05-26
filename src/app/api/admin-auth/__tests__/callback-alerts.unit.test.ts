@@ -18,16 +18,22 @@ vi.mock("@/lib/auth/cookies", () => ({
   setAuthCookies: vi.fn(),
 }));
 
+// Simulate the documented prod profile from #307: getIssuerUrl()
+// returns the BFF-internal back-channel form, while the validated
+// id_token.iss carries Keycloak's canonical public hostname.
+const INTERNAL_ISSUER_URL = "http://keycloak-internal:8080/realms/aimer";
+const CANONICAL_ISSUER = "https://idp.example.com/auth/realms/aimer";
+
 vi.mock("@/lib/auth/oidc-discovery", () => ({
   getOidcDiscovery: vi.fn(async () => ({
-    token_endpoint: "https://idp.test/token",
-    jwks_uri: "https://idp.test/jwks",
-    issuer: "https://idp.test",
+    token_endpoint: "https://idp.example.com/auth/token",
+    jwks_uri: "https://idp.example.com/auth/jwks",
+    issuer: "https://idp.example.com/auth/realms/aimer",
   })),
 }));
 
 vi.mock("@/lib/auth/oidc", () => ({
-  getIssuerUrl: vi.fn(() => "https://idp.test"),
+  getIssuerUrl: vi.fn(() => "http://keycloak-internal:8080/realms/aimer"),
   exchangeCodeForTokens: vi.fn(async () => ({
     id_token: "fake-id-token",
     access_token: "fake-access-token",
@@ -36,6 +42,7 @@ vi.mock("@/lib/auth/oidc", () => ({
 
 vi.mock("@/lib/auth/oidc-validate", () => ({
   validateIdToken: vi.fn(async () => ({
+    iss: "https://idp.example.com/auth/realms/aimer",
     sub: "user-sub-001",
     preferred_username: "admin",
     name: "Admin User",
@@ -208,5 +215,28 @@ describe("admin-auth callback — emitSevereAlert integration", () => {
     expect(res.status).toBe(307);
 
     expect(mockEmitSevereAlert).not.toHaveBeenCalled();
+  });
+
+  // Regression for #307: upsertAccount must key on the validated
+  // id_token.iss claim, not the config-derived getIssuerUrl() string.
+  // The mocks deliberately set the two to different values so a
+  // regression back to upsertAccount(client, issuerUrl, idClaims)
+  // would fail this assertion.
+  it("keys upsertAccount on validated id_token.iss, not getIssuerUrl()", async () => {
+    mockUpsertAccount.mockResolvedValue({
+      id: "admin-001",
+      status: "active",
+      token_version: 1,
+      admin_eligible: true,
+      locale: null,
+    });
+    mockVerifyAdminClaims.mockReturnValue(null);
+
+    await callGET(makeCallbackRequest());
+
+    expect(mockUpsertAccount).toHaveBeenCalledTimes(1);
+    const [, issuerArg] = mockUpsertAccount.mock.calls[0];
+    expect(issuerArg).toBe(CANONICAL_ISSUER);
+    expect(issuerArg).not.toBe(INTERNAL_ISSUER_URL);
   });
 });
