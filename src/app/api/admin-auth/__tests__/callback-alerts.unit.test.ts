@@ -36,6 +36,7 @@ vi.mock("@/lib/auth/oidc", () => ({
 
 vi.mock("@/lib/auth/oidc-validate", () => ({
   validateIdToken: vi.fn(async () => ({
+    iss: "https://idp.test",
     sub: "user-sub-001",
     preferred_username: "admin",
     name: "Admin User",

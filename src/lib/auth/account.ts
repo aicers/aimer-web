@@ -13,10 +13,15 @@ export interface UpsertedAccount {
 /**
  * Insert or update an account based on OIDC issuer + subject.
  * Returns the account row regardless of whether it was created or updated.
+ *
+ * `issuer` must be the validated `iss` claim from the ID token (per OIDC
+ * Core 1.0 §3.1.3.7 and §5.7), not a config-derived URL. Storing the
+ * config-derived form silently forks rows when the BFF's back-channel
+ * URL differs from Keycloak's canonical hostname.
  */
 export async function upsertAccount(
   client: PoolClient,
-  issuerUrl: string,
+  issuer: string,
   claims: IdTokenClaims,
 ): Promise<UpsertedAccount> {
   const result = await client.query<UpsertedAccount>(
@@ -30,7 +35,7 @@ export async function upsertAccount(
        updated_at = NOW()
      RETURNING id, status, token_version, admin_eligible, locale`,
     [
-      issuerUrl,
+      issuer,
       claims.sub,
       claims.preferred_username,
       claims.name ?? claims.preferred_username,

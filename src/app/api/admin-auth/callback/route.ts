@@ -102,9 +102,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const meta = extractRequestMeta(request);
     const pool = getAuthPool();
 
-    // Account upsert
+    // Account upsert — key on the validated id_token.iss claim (the
+    // authoritative OIDC issuer), not the config-derived KEYCLOAK_URL.
     const account = await withTransaction(pool, (client) =>
-      upsertAccount(client, issuerUrl, idClaims),
+      upsertAccount(client, idClaims.iss, idClaims),
     );
 
     // Status check

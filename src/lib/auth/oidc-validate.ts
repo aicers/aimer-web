@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
 
 export interface IdTokenClaims extends JWTPayload {
+  iss: string;
   sub: string;
   preferred_username: string;
   name: string;
@@ -37,6 +38,10 @@ export async function validateIdToken(params: {
 
   if (payload.nonce !== params.nonce) {
     throw new Error("ID token nonce mismatch");
+  }
+
+  if (!payload.iss) {
+    throw new Error("ID token missing iss claim");
   }
 
   if (!payload.sub) {
