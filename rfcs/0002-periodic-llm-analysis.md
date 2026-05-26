@@ -621,7 +621,7 @@ All items below are **new code on auth-mtls** and are **stateless** (aimer store
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
 
-**Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severity_score` and `likelihood_score` as separate `Float!` fields, each clamped server-side to `[0.0, 1.0]`. There is no single `threat_score` field on the wire. Providers that fail to produce one of the two scores must return a documented sentinel (`null` is **not** acceptable on the response — aimer substitutes `0.5` and surfaces a `score_estimated: true` flag on the response) so aimer-web can mark the row for operator review.
+**Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severity_score` and `likelihood_score` as separate `Float!` fields, each clamped server-side to `[0.0, 1.0]`. There is no single `threat_score` field on the wire.
 
 **Surface**: mTLS-only. The aimer-web background worker calls these mutations over mTLS for both automatic generation and operator-initiated force regenerate; the latter does not require a different surface because aimer is stateless either way.
 
