@@ -84,7 +84,7 @@ The specific deep-link surfaces (v1):
 
 | aice-web-next location | Surface | Links to (aimer-web) |
 |---|---|---|
-| Event detail page (Phase 1 detection) | "AI analysis" badge if result exists, with threat score | `/analysis/event/{aice_id}/{event_key}` |
+| Event detail page (Phase 1 detection) | "AI analysis" badge if result exists, with priority tier | `/analysis/event/{aice_id}/{event_key}` |
 | Story detail page | "AI narrative analysis" badge with priority tier | `/analysis/story/{story_id}` |
 | Customer dashboard | "Latest security digest" card showing LIVE summary headline | `/analysis/reports/live` |
 | Customer dashboard | "Today's report" card showing DAILY top-1 highlight | `/analysis/reports/daily/{date}` |
@@ -530,10 +530,10 @@ Both per-axis thresholds (`0.4 / 0.6 / 0.8`) and the cell-to-tier mapping are en
 
 The previous single-threshold upgrade clauses (`member_count ≥ N`, `known_ioc_hit`) are folded into the **likelihood** axis rather than priority, since each is evidence that the threat is real, not evidence that it is severe:
 
-- `known_ioc_hit` forces a floor: `likelihood_score = max(likelihood_score, 0.95)`.
-- A high correlated-member count (≥ N, env-configurable) adds a smaller floor (`max(likelihood_score, 0.7)`).
+- `known_ioc_hit` forces a floor: effective likelihood = `max(stored_likelihood, 0.95)`.
+- A high correlated-member count (≥ N, env-configurable) adds a smaller floor (`max(stored_likelihood, 0.7)`).
 
-These floors are applied by aimer-web before the matrix lookup, not by the LLM. Operators reading raw LLM output therefore see the model's unmodified estimate; the stored `likelihood_score` reflects the floored value used for tiering.
+These floors are applied by aimer-web **only at matrix-lookup time** when computing `priority_tier`. The stored `likelihood_score` column always holds the LLM's unmodified estimate; the floor adjustment is not persisted. This preserves calibration data (`👍`/`👎` feedback vs raw model output) and makes the floor policy auditable and revisable without rewriting historical rows. Reading the stored row gives the model's raw estimate; only `priority_tier` reflects the floored value.
 
 ### For periodic reports
 
@@ -621,7 +621,7 @@ All items below are **new code on auth-mtls** and are **stateless** (aimer store
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
 
-**Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severity_score` and `likelihood_score` as separate `Float!` fields, each clamped server-side to `[0.0, 1.0]`. There is no single `threat_score` field on the wire.
+**Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severityScore` and `likelihoodScore` as separate `Float!` fields on the GraphQL wire (camelCase to match existing aimer SDL convention; aimer-web maps them to the snake_case storage columns), each clamped server-side to `[0.0, 1.0]`. There is no single `threatScore` field on the wire.
 
 **Surface**: mTLS-only. The aimer-web background worker calls these mutations over mTLS for both automatic generation and operator-initiated force regenerate; the latter does not require a different surface because aimer is stateless either way.
 
@@ -739,7 +739,7 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 3): multi-event LLM inputs use deterministic scope-unique token rewrite (`<<REDACTED_TYPE_E{i}_NNN>>`) at prompt-build time; `input_event_refs JSONB` stored on result rows for demap. No new encrypted map introduced; existing per-event maps remain the source of truth.
 - 2026-05-25 (review round 3): state and per-variant job split into two tables each (`*_analysis_state` / `*_analysis_job`, `periodic_report_state` / `periodic_report_job`). Source readiness lives at state level; per-variant work (queued/processing/done/failed, generation, attempts, force) lives at job level. Resolves the issue that one bucket row could not represent independent Korean/English generation counters.
 - 2026-05-25 (review round 3): `analyzeStory` no longer takes `timezone` and is not keyed by `tz` in either aimer cache or aimer-web result PK. Story analysis output uses UTC; localized time strings are an aimer-web render-time concern. (Superseded in part by round 8: aimer holds no cache at all for `analyzeStory`, so only the aimer-web result PK matters.)
-- 2026-05-25 (review round 3): deep-link summary endpoint generalizes the score field to `{score, score_kind}` (`threat` | `aggregate`) so periodic reports fit the same shape as per-event / per-story summaries.
+- 2026-05-25 (review round 3): deep-link summary endpoint generalizes the score field to `{score, score_kind}` (`threat` | `aggregate`) so periodic reports fit the same shape as per-event / per-story summaries. (Superseded by round 10: shape becomes `{severity_score, likelihood_score, score_kind}` with `score_kind ∈ {leaf, aggregate}`.)
 - 2026-05-25 (review round 3): aimer mutations `analyzeStory` / `generatePeriodicSecurityReport` must always return `prompt_version` and `model_actual_version`; aimer-web stores them `NOT NULL`. Providers without a real `model_actual_version` substitute the requested `model` string.
 - 2026-05-25 (review round 4): report-scope token rewrite added — periodic report input builder rewrites story-scope `E{i}` tokens (and event-scope tokens) found inside included `analysis_text` into report-scope `R{j}` tokens, indexed against the report's merged `input_event_refs`. Mechanism is recursive and supports future report-cites-report cases.
 - 2026-05-25 (review round 4): force-regenerate is now strictly a variant-job operation; removed from the dirty-transition trigger list. State rows only become dirty when source data actually changes (refresh_window/backfill or stray late ingest).
