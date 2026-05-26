@@ -537,7 +537,7 @@ These floors are applied by aimer-web **only at matrix-lookup time** when comput
 
 ### For periodic reports
 
-A periodic report has no LLM-returned scores (the report prompt summarizes; it does not score). aimer-web derives both axes at write time from the same input bundle that was sent to the LLM, independently per axis:
+A periodic report has no LLM-returned scores (the report prompt summarizes; it does not score). aimer-web derives two **informational** aggregate scores at write time — these answer "how high did severity and likelihood get across the period, axis by axis" for display and analytics — but the report's `priority_tier` is computed by a separate rule (see below):
 
 ```
 aggregate_severity_score = max(
@@ -553,7 +553,7 @@ aggregate_likelihood_score = max(
 )
 ```
 
-Taking max **independently** per axis means the entity contributing the aggregate severity can differ from the entity contributing the aggregate likelihood. That is acceptable: the priority tier represents the worst-case (severity, likelihood) operators must respond to within the period, not the score of any single contributing entity.
+Taking max **independently** per axis means the entity contributing the aggregate severity can differ from the entity contributing the aggregate likelihood. That is acceptable for an informational maximum.
 
 `baseline_drift_severity` and `baseline_drift_likelihood` map the statistical signal onto both axes:
 
@@ -562,7 +562,17 @@ Taking max **independently** per axis means the entity contributing the aggregat
 
 Exact formulas are fixed in code and documented alongside `analysis-job-worker.ts`; noise thresholds are env-configurable.
 
-The same matrix is then applied with `(aggregate_severity_score, aggregate_likelihood_score)`. The `member_count` / `known_ioc_hit` likelihood floors do not apply at the report level; those are leaf-level adjustments already reflected in the included rows.
+The report's `priority_tier` is computed **from included leaf tiers**, not from the aggregate scores:
+
+```
+report_priority_tier = max over {
+    each included story_analysis_result.priority_tier,
+    each included event_analysis_result.priority_tier,
+    matrix(baseline_drift_severity, baseline_drift_likelihood)
+}
+```
+
+This guarantees **leaf monotonicity**: a report can never be tagged at a lower tier than the worst-priority leaf it cites, and baseline drift contributes via its own (severity, likelihood) → matrix evaluation. Deriving `priority_tier` from the aggregate scores would silently downgrade reports that include a leaf whose effective likelihood was raised by `known_ioc_hit` or a high `member_count` — those floors are leaf-tier-lookup-only per the previous section, so the raw `likelihood_score` on the leaf row does not reflect them, and `aggregate_likelihood_score = max(raw leaf likelihoods, ...)` would miss the adjustment. Using leaf tiers directly sidesteps the issue without persisting floor inputs.
 
 ### LLM contract
 
@@ -754,4 +764,4 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 7): round 2 entry annotated to show post-round-3 column distribution between `*_state` and `*_job` tables; Phase 4 visibility item re-scoped from "per-bucket" to "per-variant-job" with UI rollup note. Status moved Draft → Accepted.
 - 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
 - 2026-05-25 (review round 9): stale cache/keyspace references cleaned up — top-of-file metadata, architecture diagram, and Phase 1/Phase 2 bullets in §"Phased delivery" no longer suggest aimer holds a cache or keyspace for the new mutations. All remaining "cache" mentions are explicit negations ("no aimer-side cache", "no keyspace, no cache key") or refer to aimer-web's cache, not aimer's.
-- 2026-05-26 (review round 10): `threat_score` split into two orthogonal axes `severity_score` and `likelihood_score` across all analysis result tables (`story_analysis_result`, `periodic_report_result` here; `event_analysis_result` in RFC 0001). `priority_tier` is now a deterministic 4×4 matrix lookup over the pair rather than a single-threshold formula. The previous `known_ioc_hit` / `member_count ≥ N` upgrade clauses fold into floors on `likelihood_score`, since each is evidence of being real, not of being severe. `baseline_drift_score` similarly splits into severity and likelihood. Summary endpoint shape becomes `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}` with `score_kind ∈ {leaf, aggregate}`. LLM contract: `analyzeStory` and the RFC 0001 event-analysis mutation return both scores as separate `Float!` fields; `PERIODIC_SECURITY_REPORT_PROMPT` returns no scores (aggregation in aimer-web). A separate "LLM self-confidence" field was considered and rejected — `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics. Done before any production data accumulated; coordinated with RFC 0001 in the same PR.
+- 2026-05-26 (review round 10): `threat_score` split into two orthogonal axes `severity_score` and `likelihood_score` across all analysis result tables (`story_analysis_result`, `periodic_report_result` here; `event_analysis_result` in RFC 0001). `priority_tier` is now a deterministic 4×4 matrix lookup over the pair rather than a single-threshold formula. The previous `known_ioc_hit` / `member_count ≥ N` upgrade clauses fold into floors on `likelihood_score`, since each is evidence of being real, not of being severe. Floors apply only at matrix-lookup time; the stored `likelihood_score` always holds the LLM's raw estimate to preserve calibration data and let the floor policy evolve without rewriting history. `baseline_drift_score` similarly splits into severity and likelihood. Periodic report `priority_tier` is derived as `max(each included leaf's priority_tier, matrix(baseline_drift_severity, baseline_drift_likelihood))` rather than from the aggregate scores — this preserves leaf monotonicity (the report is never below the worst leaf in it) under the lookup-only floor policy, since the raw `likelihood_score` on leaves does not reflect floors. `aggregate_severity_score` / `aggregate_likelihood_score` remain stored as informational max-per-axis values for display and analytics. Summary endpoint shape becomes `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}` with `score_kind ∈ {leaf, aggregate}`. LLM contract: `analyzeStory` and the RFC 0001 event-analysis mutation return both scores as separate `Float!` fields (camelCase `severityScore` / `likelihoodScore` on the GraphQL wire); `PERIODIC_SECURITY_REPORT_PROMPT` returns no scores (aggregation in aimer-web). A separate "LLM self-confidence" field was considered and rejected — `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics. Done before any production data accumulated; coordinated with RFC 0001 in the same PR.
