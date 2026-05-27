@@ -595,18 +595,30 @@ async function deriveAllBuckets(
             (date_trunc('month', ts AT TIME ZONE $1))::date::text AS bucket_date
        FROM src
      UNION
-     -- Round-20 review item 1: half-open LIVE window
-     -- ts in NOW()-24h .. NOW(). The unioned baseline.event_time /
-     -- story.time_window_* values can be future-dated; without the
-     -- upper bound a future-dated baseline event (or a story window
-     -- whose endpoints both sit in the future) would seed a LIVE row
-     -- whose source data is not actually in the rolling LIVE window.
+     -- Round-20 review item 1: half-open LIVE window for baseline
+     -- event_time (point-in-window). Round-21 review item 1: stories
+     -- are ranges, not points -- a story whose
+     -- [time_window_start, time_window_end] overlaps the rolling LIVE
+     -- window must seed LIVE even when neither endpoint lies inside
+     -- the trailing 24h (e.g. a long-running story spanning
+     -- [NOW()-48h, NOW()+1h)). The previous gate UNION-ALL'd the two
+     -- story endpoints into the src union and checked endpoint
+     -- membership, which missed that class. Mirror the same range-
+     -- overlap predicate used by loadLatestStoryActivity and
+     -- computeLiveEnvelopeActivity so the reconcile LIVE seed gate
+     -- stays in lockstep with the loaders that feed it and with the
+     -- envelope hook's dirty trigger.
      SELECT 'LIVE'::text AS period,
             $2::date::text AS bucket_date
        WHERE EXISTS (
-         SELECT 1 FROM src
-          WHERE ts >= NOW() - INTERVAL '24 hours'
-            AND ts <  NOW()
+         SELECT 1 FROM baseline_event
+          WHERE event_time >= NOW() - INTERVAL '24 hours'
+            AND event_time <  NOW()
+       )
+          OR EXISTS (
+         SELECT 1 FROM latest_versions
+          WHERE time_window_start <  NOW()
+            AND time_window_end   >= NOW() - INTERVAL '24 hours'
        )`,
     [tz, LIVE_BUCKET_DATE],
   );

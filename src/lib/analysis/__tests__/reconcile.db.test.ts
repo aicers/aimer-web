@@ -1789,6 +1789,100 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.periodicStatesPatched).toBe(0);
   });
 
+  it("seeds LIVE when a story's window overlaps the rolling 24h with both endpoints outside it (round-21 review item 1)", async () => {
+    // Round-21 r1: the LIVE seed gate in `deriveAllBuckets` was
+    // endpoint-membership-based (`ts in [NOW()-24h, NOW())` over a
+    // UNION ALL of baseline.event_time / story.time_window_start /
+    // story.time_window_end), but stories are ranges. A long-running
+    // story whose [time_window_start, time_window_end] spans the
+    // rolling LIVE window with BOTH endpoints outside `[NOW()-24h,
+    // NOW())` -- e.g. start = NOW()-48h, end = NOW()+1h -- never
+    // satisfied the endpoint gate and so no LIVE row was seeded for
+    // story-only customers, even though `loadLatestStoryActivity`
+    // and `computeLiveEnvelopeActivity` correctly treat the story as
+    // overlapping LIVE. The fix mirrors the range-overlap predicate
+    // (`time_window_start < NOW() AND time_window_end >= NOW()-24h`)
+    // in the LIVE seed gate.
+    const customer = "00000000-0000-0000-0000-0000000000e5";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r21-span', 'R21Span', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    // Story spanning [NOW()-48h, NOW()+1h). Both endpoints sit
+    // OUTSIDE the rolling LIVE window `[NOW()-24h, NOW())` -- start
+    // is 24h before the window, end is in the future -- yet the
+    // story range fully covers the window and is part of the rolling
+    // LIVE input. `seedStory()` writes a 5-minute window, so insert
+    // directly to control both endpoints.
+    const start = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const end = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (9501::bigint, 'v1', 'auto_correlated',
+               $1::timestamptz, $2::timestamptz,
+               '{}'::jsonb, 'aice-1', $1::timestamptz)`,
+      [start, end],
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows: live } = await authPool.query<{
+      status: string;
+      last_event_at: Date | null;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT status, last_event_at, last_story_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'LIVE'
+          AND bucket_date = DATE '1970-01-01'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    // LIVE row exists despite both story endpoints being outside the
+    // rolling 24h window, because the story's RANGE overlaps LIVE.
+    // The LIVE seed path stamps `status = 'ready'` and pulls
+    // `last_story_received_at` from `loadLatestStoryActivity`, which
+    // uses the same range-overlap predicate so the seeded value
+    // matches the story's `received_at`.
+    expect(live.length).toBe(1);
+    expect(live[0].status).toBe("ready");
+    expect(live[0].last_event_at).toBeNull();
+    expect(live[0].last_story_received_at?.toISOString()).toBe(
+      new Date(start).toISOString(),
+    );
+
+    // Second pass is a no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {
     // Round-8 review item 2: the customer-level timezone change
     // (admin SQL path, no UI in Phase 0) must archive any existing
