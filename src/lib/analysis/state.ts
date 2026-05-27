@@ -182,10 +182,12 @@ export async function dirtyStoryStatesInRange(
 export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
 
 /**
- * Record that a Phase 2 baseline batch landed for a customer. Phase 0
- * only seeds/forward-patches the LIVE bucket per the configured `tz`
- * — DAILY/WEEKLY/MONTHLY bucket seeding is handled by the reconcile
- * scan (decision 2) which the worker invokes on its own cadence.
+ * Record that a Phase 2 baseline batch landed for a customer. The
+ * ingest hook only seeds/forward-patches the LIVE bucket per the
+ * configured `tz` — DAILY/WEEKLY/MONTHLY bucket seeding is handled by
+ * the reconcile scan (decision 2) in `analysis-reconcile-worker.ts`,
+ * which derives the full bucket set from `customers.timezone` plus
+ * observed source timestamps on its own cadence.
  */
 export async function recordBaselineActivity(
   client: PoolClient,

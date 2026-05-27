@@ -4,10 +4,11 @@
 // Hook failure response policy (issue #294, decision 2): the customer-
 // DB commit is the source of truth; auth-DB writes here are best-effort.
 // A failure is logged at `error` level and the ingest's normal success
-// response is still returned to the sender. The reconcile scan
-// (Phase 1+) seeds/forward-patches any missing rows on its own cadence.
-// Returning 500 after a successful customer-DB commit would tell the
-// sender to retry an ingest whose JTI is already consumed.
+// response is still returned to the sender. The reconcile scan in
+// `analysis-reconcile-worker.ts` seeds and forward-patches any missing
+// rows on its own cadence (default 15min). Returning 500 after a
+// successful customer-DB commit would tell the sender to retry an
+// ingest whose JTI is already consumed.
 
 import "server-only";
 
