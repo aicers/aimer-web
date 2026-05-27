@@ -751,7 +751,9 @@ Action on match:
 - `ai_analysis.request_issued` — every `analyze` call (cache hit or miss), with `customerId`, `aiceId`, `eventKey`, `lang`, `force`, `cached`.
 - `ai_analysis.result_stored` — successful UPSERT, with model/prompt versions.
 - `ai_analysis.aimer_call_failed` — transport or 5xx from aimer.
-- `ai_analysis.hallucination_detected` — see above.
+- `ai_analysis.hallucination_detected` — PII re-leak detection; see "LLM hallucination handling" above. Payload: `(customer_id, aice_id, event_key)`, `pattern_kind`, `occurrence_count`. This action is scoped to the PII unmasking case; the structured-output quality drops below (`ttp_tag_dropped`, `factor_dropped`) have their own action names so alerting policies can target each kind separately.
+- `ai_analysis.ttp_tag_dropped` — at least one LLM-returned `ttp_tags` ID was filtered before storage. Payload: target `(customer_id, aice_id, event_key)` for event-level, `(customer_id, story_id)` for story-level (set whichever applies; the other is NULL); `dropped_ids: string[]`; `reason: 'not_in_vendored_mitre' | 'invalid_format'`; `mitre_vendor_version` snapshot. Emitted at most once per analysis row write — multiple dropped IDs for the same row coalesce into one audit row.
+- `ai_analysis.factor_dropped` — at least one item in `severity_factors` or `likelihood_factors` was filtered before storage. Payload: target identifiers as above; `axis: 'severity' | 'likelihood'`; `dropped_items: string[]`; `reason: 'sentence_start' | 'oversized' | 'empty' | 'all_items_filtered'`; `replaced_with_sentinel: boolean` — `true` when post-filter recovery substituted `["insufficient evidence"]`. Emitted once per `(row, axis)` that lost items.
 - `customer_redaction_ranges.added`, `customer_redaction_ranges.removed` — config audit.
 - `customer_redaction_ranges.retroactive_started`, `customer_redaction_ranges.retroactive_completed`, `customer_redaction_ranges.retroactive_failed` — job lifecycle.
 

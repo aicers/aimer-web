@@ -580,15 +580,25 @@ This guarantees **leaf monotonicity**: a report can never be tagged at a lower t
 
 ### LLM contract
 
+The pipeline has **four explicit layers** for scores; the same field name appears in different units at each layer and the RFC text below names each layer to avoid double-normalization or missing-normalization bugs:
+
+| Layer | Names | Units / shape |
+|---|---|---|
+| 1. LLM JSON output (prompt's structured-output schema) | `severity_score`, `likelihood_score` | integer `0..100`, inclusive |
+| 2. aimer normalization | (in `normalize_score`) | integer/100 → `Float` clamped to `[0.0, 1.0]` |
+| 3. GraphQL wire (auth-mtls SDL) | `severityScore`, `likelihoodScore` | `Float!`, `[0.0, 1.0]` |
+| 4. aimer-web storage (customer DB) | `severity_score`, `likelihood_score` | `DOUBLE PRECISION NOT NULL`, `[0.0, 1.0]` |
+
 `STORY_PROMPT` and the event-analysis prompt (RFC 0001) ask the model to return five structured fields alongside the markdown `analysis`:
 
-- `severity_score` (integer 0–100, normalized to `Float` 0.0–1.0 on the wire)
-- `likelihood_score` (same shape)
-- `severity_factors` (array of short noun phrases, see §"Score factor articulation")
-- `likelihood_factors` (same shape)
-- `ttp_tags` (array of MITRE ATT&CK technique IDs, see §"MITRE ATT&CK TTP tagging")
+- `severity_score`, `likelihood_score` — at the LLM JSON layer (integer `0..100`).
+- `severity_factors` (array of short noun phrases, see §"Score factor articulation").
+- `likelihood_factors` (same shape).
+- `ttp_tags` (array of MITRE ATT&CK technique IDs, see §"MITRE ATT&CK TTP tagging").
 
-`PERIODIC_SECURITY_REPORT_PROMPT` does **not** ask for scores or factors — aggregation is computed by aimer-web from already-stored leaf rows. The prompt is, however, given the union of included-leaf `ttp_tags` as part of its input bundle and is instructed to reference techniques by ID when relevant in the narrative ("the highest-likelihood narrative this period mapped to T1078 and T1110.001").
+aimer normalizes scores once between layers 1 and 2 via the existing `normalize_score` helper, called twice per response (once per axis). aimer-web never re-normalizes. The GraphQL wire and storage shapes share the same numeric range and only differ in naming convention (camelCase wire vs snake_case columns).
+
+`PERIODIC_SECURITY_REPORT_PROMPT` does **not** ask for scores or factors — aggregation is computed by aimer-web from already-stored leaf rows (already in storage units, `[0.0, 1.0]`). The prompt is, however, given the union of included-leaf `ttp_tags` as part of its input bundle and is instructed to reference techniques by ID when relevant in the narrative ("the highest-likelihood narrative this period mapped to T1078 and T1110.001").
 
 ### Why two axes, not one
 
@@ -646,7 +656,7 @@ Before storage, aimer-web's write path filters each LLM-returned `ttp_tags` valu
 - Tags present in the vendored list → kept.
 - Tags absent (hallucinated or post-vendored-version techniques) → dropped, count incremented in an `analysis_ttp_hallucination_total` metric for monitoring.
 
-The dropped raw value is preserved in an audit log row (not on the result row) for debugging prompt drift.
+When at least one tag is dropped, aimer-web emits an `ai_analysis.ttp_tag_dropped` audit row (see RFC 0001 §"Audit logging — new actions") carrying the target `(customer_id, aice_id, event_key)` (or `story_id` for story-level), the dropped IDs, and a `reason` of `'not_in_vendored_mitre'` (absent from the snapshot) or `'invalid_format'` (failed the regex at the JSON-schema layer for some reason). The dropped IDs are stored on the audit row, never on the result row.
 
 ### Aggregation
 
@@ -708,13 +718,14 @@ This is the **only** approved padding output and is explicitly distinguished fro
 
 ### Validation
 
-Shape-only at the aimer-web write path:
+Shape-only at the aimer-web write path, applied per axis independently:
 
-- Each item: non-empty string, ≤ 80 characters.
-- Items starting with `"The "` or `"This "` (sentence detectors) are dropped — keeps the chip column purely noun-phrase.
-- Array capped at 5 after filtering.
+1. Drop items that are empty or > 80 characters.
+2. Drop items starting with `"The "` or `"This "` (sentence detectors) — keeps the chip column purely noun-phrase.
+3. Cap the array at 5 after filtering (keep first 5; LLM ordered most impactful first).
+4. **Post-filter empty-array recovery**: if step 1–3 leave the array empty even though the LLM returned `minItems: 1`-respecting output, replace with `["insufficient evidence"]` and emit an `ai_analysis.factor_dropped` audit row (see RFC 0001 §"Audit logging — new actions") carrying `axis`, the original dropped items, and `reason: 'all_items_filtered'`. This honors the wire contract (`severityFactors` / `likelihoodFactors` always carry ≥ 1 item) while keeping the analysis surface visible to operators and preserving the dropped raw text for prompt-drift debugging.
 
-No content validation — the LLM owns articulation quality, monitored via metrics and Phase 4 feedback.
+No content validation beyond shape — the LLM owns articulation quality, monitored via the metrics above, the `ai_analysis.factor_dropped` audit rate, and Phase 4 feedback.
 
 ### UI
 
@@ -771,7 +782,7 @@ All items below are **new code on auth-mtls** and are **stateless** (aimer store
 |---|---|
 | `analyzeStory(customer_id, story_id, members: [StoryMemberInput!]!, story_metadata, lang, model, name)` | New mutation on **auth-mtls only**. `members` carry the redacted event content from `story_member.event` only, with tokens already namespaced per §"Token namespacing for multi-event LLM inputs". `story_metadata` is non-PII story facts (id, time range as UTC ISO 8601, member count, role distribution) — explicitly **does not** include `story.summary_payload`. **No `timezone` parameter** (story output is UTC). **No `force` parameter** (no aimer-side cache to bypass). Stateless: no keyspace, no cache key. |
 | `generatePeriodicSecurityReport(customer_id, period, date, timezone, lang, model, name, inputs)` | New mutation on **auth-mtls only**. `inputs` is a structured object: `{story_analyses: [...], event_analyses: [...], baseline_aggregates: {...}}`. `timezone` is retained and used **only** to render time strings inside the prompt (e.g., "events between 14:00–16:30 KST"); it is not a cache key dimension because there is no cache. **No `force` parameter**. Stateless. |
-| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Returns the markdown `analysis` plus five structured fields: `severity_score`, `likelihood_score` (each `0.0–1.0`), `severity_factors`, `likelihood_factors` (short noun phrases, see §"Score factor articulation"), and `ttp_tags` (MITRE ATT&CK technique IDs, see §"MITRE ATT&CK TTP tagging"). Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
+| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). The LLM-level JSON schema emits scores as integer `0..100` and aimer normalizes per the four-layer pipeline documented in §"LLM contract" before exposing the result on the wire. The wire-level return type is `StoryAnalysisResult` with markdown `analysis`, scores `severityScore` / `likelihoodScore` (`Float!`, `[0.0, 1.0]`), articulation `severityFactors` / `likelihoodFactors` (`[String!]!`, see §"Score factor articulation"), and taxonomy `ttpTags` (`[String!]!`, see §"MITRE ATT&CK TTP tagging"). Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
 | `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Receives included-leaf `ttp_tags` / `severity_factors` / `likelihood_factors` in its input bundle and is instructed to weave them into the narrative. Does **not** return its own scores or factors; aimer-web aggregates `severity_score` / `likelihood_score` / `ttp_tags` from leaf rows. Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim. |
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
