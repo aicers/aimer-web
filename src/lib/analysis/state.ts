@@ -48,6 +48,16 @@ export type StateStatus = "pending" | "ready" | "dirty" | "archived";
  * Idempotent: replaying the same member-arrival call is a no-op once
  * `last_member_at >= memberArrivedAt`. `first_member_at` is set on
  * first insert only (per RFC 0002 §"Source state additions").
+ *
+ * Archived → pending on re-insertion: per issue #294 decision 1, all
+ * three source timestamps are RESET to NULL (not the hook-time
+ * `memberArrivedAt`). The reconcile forward-patch path can only roll
+ * timestamps forward; writing the hook-time value here would let the
+ * archived run's stale `last_member_at` survive when it is newer than
+ * the reintroduced story's canonical `story.received_at`. NULLing both
+ * lets the next worker tick / reconcile pass re-derive readiness from
+ * the canonical source. Stale jobs from the archived run are deleted
+ * regardless of how the row got back to `pending`.
  */
 export async function recordStoryMemberArrival(
   client: PoolClient,
@@ -60,9 +70,23 @@ export async function recordStoryMemberArrival(
        (customer_id, story_id, status, first_member_at, last_member_at)
      VALUES ($1, $2::bigint, 'pending', $3, $3)
      ON CONFLICT (customer_id, story_id) DO UPDATE
-       SET last_member_at = GREATEST(
-             story_analysis_state.last_member_at, EXCLUDED.last_member_at
-           ),
+       SET first_member_at = CASE
+             -- Decision 1: unarchive in place clears ALL source
+             -- timestamps so canonical re-derivation wins over
+             -- hook-time values that reconcile cannot roll back.
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE story_analysis_state.first_member_at
+           END,
+           last_member_at = CASE
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE GREATEST(
+               story_analysis_state.last_member_at, EXCLUDED.last_member_at
+             )
+           END,
+           last_ready_at = CASE
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE story_analysis_state.last_ready_at
+           END,
            -- Archived → pending takes priority over the dirty trigger
            -- (decision 1: unarchive in place starts a fresh narrative).
            -- Late member on a ready story with at least one processing/
@@ -80,17 +104,6 @@ export async function recordStoryMemberArrival(
                )
              THEN 'dirty'
              ELSE story_analysis_state.status
-           END,
-           -- Archived → pending on re-insertion (unarchive in place per
-           -- decision 1). Clear the timestamps so the next worker tick
-           -- re-derives readiness from the new canonical version.
-           first_member_at = CASE
-             WHEN story_analysis_state.status = 'archived' THEN EXCLUDED.first_member_at
-             ELSE story_analysis_state.first_member_at
-           END,
-           last_ready_at = CASE
-             WHEN story_analysis_state.status = 'archived' THEN NULL
-             ELSE story_analysis_state.last_ready_at
            END,
            updated_at = NOW()`,
     [customerId, storyId, memberArrivedAt.toISOString()],
@@ -255,6 +268,14 @@ export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
  * dirties rows that already exist; if reconcile has not yet seeded
  * the historical bucket, reconcile will pick it up on its next pass
  * with the correct `last_event_at` already derivable from the source.
+ *
+ * Archived periodic rows are SKIPPED: per RFC 0002 §"Timezone
+ * lifecycle" and issue #294 decision 2, archived periodic rows are
+ * terminal. A later baseline batch must not roll an archived row
+ * back to dirty or forward-patch its `last_event_at`. A customer
+ * reverting a timezone change requires explicit reactivation, not
+ * an accidental ingest-driven resurrection. The reconcile scan
+ * already enforces the same rule on the forward-patch side.
  */
 export async function recordBaselineActivity(
   client: PoolClient,
@@ -267,7 +288,8 @@ export async function recordBaselineActivity(
 
   // LIVE: rolling state, so it stamps the MAX event_time as
   // last_event_at and dirties the row if a done/processing job
-  // already exists.
+  // already exists. The ON CONFLICT WHERE clause excludes archived
+  // rows so a terminal-archived LIVE row stays archived.
   await client.query(
     `WITH max_t AS (
        SELECT MAX(t) AS t FROM unnest($4::timestamptz[]) AS t
@@ -280,7 +302,7 @@ export async function recordBaselineActivity(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at
            ),
            status = CASE
-             WHEN periodic_report_state.status IN ('ready', 'archived')
+             WHEN periodic_report_state.status = 'ready'
                AND EXISTS (
                  SELECT 1 FROM periodic_report_job j
                   WHERE j.customer_id  = periodic_report_state.customer_id
@@ -292,7 +314,8 @@ export async function recordBaselineActivity(
              THEN 'dirty'
              ELSE periodic_report_state.status
            END,
-           updated_at = NOW()`,
+           updated_at = NOW()
+       WHERE periodic_report_state.status <> 'archived'`,
     [customerId, LIVE_BUCKET_DATE, tz, isoTimes],
   );
 
@@ -302,7 +325,8 @@ export async function recordBaselineActivity(
   // max-event-time-inside-the-bucket) tuples so a single UPDATE can
   // touch all affected rows, and each row's last_event_at picks up
   // the latest event THAT FELL INSIDE THE BUCKET — not the global
-  // batch max. Existing-only — seeding is reconcile's job.
+  // batch max. Existing-only — seeding is reconcile's job. Archived
+  // rows are skipped so they stay terminal.
   await client.query(
     `WITH events(t) AS (
        SELECT t FROM unnest($3::timestamptz[]) AS t
@@ -329,7 +353,7 @@ export async function recordBaselineActivity(
      UPDATE periodic_report_state s
         SET last_event_at = GREATEST(s.last_event_at, b.max_t),
             status = CASE
-              WHEN s.status IN ('ready', 'archived')
+              WHEN s.status = 'ready'
                 AND EXISTS (
                   SELECT 1 FROM periodic_report_job j
                    WHERE j.customer_id = s.customer_id
@@ -346,7 +370,8 @@ export async function recordBaselineActivity(
       WHERE s.customer_id = $1
         AND s.tz          = $2
         AND s.period      = b.period
-        AND s.bucket_date = b.bucket_date`,
+        AND s.bucket_date = b.bucket_date
+        AND s.status      <> 'archived'`,
     [customerId, tz, isoTimes],
   );
 }

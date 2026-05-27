@@ -218,7 +218,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }
   });
 
-  it("unarchive in place: re-ingest after archive resets to pending and clears stale jobs", async () => {
+  it("unarchive in place: re-ingest after archive resets to pending, clears all source timestamps, and deletes stale jobs (round-5 review item 1)", async () => {
     const client = await pool.connect();
     try {
       await recordStoryMemberArrival(
@@ -232,9 +232,15 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }
     const row = await getStoryState(pool, CUSTOMER_A, "1001");
     expect(row?.status).toBe("pending");
-    expect(row?.first_member_at?.toISOString()).toBe(
-      "2026-05-27T20:00:00.000Z",
-    );
+    // Decision 1: archived → pending clears ALL source timestamps so
+    // the worker tick / reconcile pass re-derives readiness from the
+    // canonical customer-DB `story.received_at`. Writing the hook-time
+    // `memberArrivedAt` here would let the archived run's stale
+    // `last_member_at` survive when it is newer than the canonical
+    // value, because reconcile's forward-patch path cannot roll it
+    // back.
+    expect(row?.first_member_at).toBeNull();
+    expect(row?.last_member_at).toBeNull();
 
     const jobs = await countStoryJobs(pool, CUSTOMER_A, "1001");
     // Stale archived-run jobs were deleted; new generation starts fresh.
@@ -822,5 +828,87 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(byKey.get("MONTHLY|2026-05-01")).toBe("dirty");
     // Out-of-envelope DAILY must remain ready.
     expect(byKey.get("DAILY|2026-04-30")).toBe("ready");
+  });
+
+  it("recordBaselineActivity skips archived periodic rows (round-5 review item 2)", async () => {
+    // RFC 0002 §"Timezone lifecycle" + issue #294 decision 2: archived
+    // periodic rows are terminal — a later baseline batch must not
+    // resurrect them to `dirty` or forward-patch `last_event_at`.
+    // Reconcile already enforces this; the ingest hook must too.
+    const customer = "00000000-0000-0000-0000-0000000000f4";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-k', 'K')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    const baseline = new Date("2024-06-01T00:00:00Z");
+    // Archived LIVE + archived DAILY/WEEKLY/MONTHLY rows with prior
+    // done jobs from the previous tz era, each pre-stamped with an
+    // older `last_event_at` so we can detect forward-patching.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, last_event_at)
+       VALUES
+         ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'archived', $2),
+         ($1, 'DAILY',   DATE '2024-06-01', 'Asia/Seoul', 'archived', $2),
+         ($1, 'WEEKLY',  DATE '2024-05-27', 'Asia/Seoul', 'archived', $2),
+         ($1, 'MONTHLY', DATE '2024-06-01', 'Asia/Seoul', 'archived', $2)`,
+      [customer, baseline.toISOString()],
+    );
+    for (const [period, bucketDate] of [
+      ["LIVE", "1970-01-01"],
+      ["DAILY", "2024-06-01"],
+      ["WEEKLY", "2024-05-27"],
+      ["MONTHLY", "2024-06-01"],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model,
+            status, generation, dry_run,
+            processing_started_at, last_generated_at)
+         VALUES ($1, $2, $3::date, 'Asia/Seoul',
+                 COALESCE($4, 'ENGLISH'),
+                 COALESCE($5, 'openai'),
+                 COALESCE($6, 'gpt-4o'),
+                 'done', 1, TRUE, NOW(), NOW())`,
+        [
+          customer,
+          period,
+          bucketDate,
+          process.env.ANALYSIS_DEFAULT_LANG ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+        ],
+      );
+    }
+
+    // A baseline batch whose event_time lands inside every existing
+    // bucket window must NOT touch the archived rows.
+    const later = new Date("2024-06-15T03:00:00Z");
+    const client = await pool.connect();
+    try {
+      await recordBaselineActivity(client, customer, "Asia/Seoul", [later]);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query<{
+      period: string;
+      bucket_date: string;
+      status: string;
+      last_event_at: Date | null;
+    }>(
+      `SELECT period, bucket_date::text AS bucket_date, status, last_event_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period, bucket_date`,
+      [customer],
+    );
+    for (const row of rows) {
+      expect(row.status).toBe("archived");
+      expect(row.last_event_at?.toISOString()).toBe(baseline.toISOString());
+    }
   });
 });
