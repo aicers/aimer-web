@@ -405,9 +405,17 @@ export async function recordBaselineActivity(
          FROM unnest($4::timestamptz[], $5::timestamptz[]) AS u(t, rcv)
      ),
      in_window AS (
+       -- Round-20 review item 1: half-open LIVE window
+       -- t in NOW()-24h .. NOW(). Without the upper bound a
+       -- future-dated event_time would seed/patch LIVE and stamp
+       -- last_event_at to a future instant even though the rolling
+       -- LIVE input has not actually changed. Mirrors the story LIVE
+       -- path (time_window_start < NOW()) and the delete-flag CTE in
+       -- executeWindowReplace.
        SELECT MAX(t) AS max_t, MAX(rcv) AS max_rcv
          FROM events
         WHERE t >= NOW() - INTERVAL '24 hours'
+          AND t <  NOW()
      )
      INSERT INTO periodic_report_state
        (customer_id, period, bucket_date, tz, status,

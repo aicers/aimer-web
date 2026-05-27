@@ -595,11 +595,18 @@ async function deriveAllBuckets(
             (date_trunc('month', ts AT TIME ZONE $1))::date::text AS bucket_date
        FROM src
      UNION
+     -- Round-20 review item 1: half-open LIVE window
+     -- ts in NOW()-24h .. NOW(). The unioned baseline.event_time /
+     -- story.time_window_* values can be future-dated; without the
+     -- upper bound a future-dated baseline event (or a story window
+     -- whose endpoints both sit in the future) would seed a LIVE row
+     -- whose source data is not actually in the rolling LIVE window.
      SELECT 'LIVE'::text AS period,
             $2::date::text AS bucket_date
        WHERE EXISTS (
          SELECT 1 FROM src
           WHERE ts >= NOW() - INTERVAL '24 hours'
+            AND ts <  NOW()
        )`,
     [tz, LIVE_BUCKET_DATE],
   );
@@ -865,15 +872,23 @@ async function loadLatestBaselineActivity(
     max_received_at: Date | null;
     live_active: boolean;
   }>(
+    // Round-20 review item 1: half-open LIVE window
+    // event_time in NOW()-24h .. NOW(). Without event_time < NOW() a
+    // future-dated baseline event would feed the LIVE maxima or trip
+    // live_active, advancing last_event_at / dirtying LIVE on input
+    // that is not actually inside the rolling LIVE window.
     `SELECT MAX(event_time)  FILTER (
               WHERE event_time >= NOW() - INTERVAL '24 hours'
+                AND event_time <  NOW()
             ) AS max_event_at,
             MAX(received_at) FILTER (
               WHERE event_time >= NOW() - INTERVAL '24 hours'
+                AND event_time <  NOW()
             ) AS max_received_at,
             EXISTS (
               SELECT 1 FROM baseline_event
                WHERE event_time >= NOW() - INTERVAL '24 hours'
+                 AND event_time <  NOW()
             ) AS live_active
        FROM baseline_event`,
   );

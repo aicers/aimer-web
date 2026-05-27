@@ -330,16 +330,27 @@ async function computeLiveEnvelopeActivity(
         ORDER BY story_id, received_at DESC, story_version DESC
      ),
      live_baseline AS (
+       -- Round-20 review item 1: half-open LIVE window
+       -- event_time in NOW()-24h .. NOW(). The outer WHERE bounds the
+       -- LIVE maxima forwarded to dirtyPeriodicStatesOverlapping, and
+       -- the inner EXISTS bounds baselineTouched; without
+       -- event_time < NOW() a future-dated baseline_event inside the
+       -- envelope (or globally) would dirty / forward-patch LIVE on
+       -- input that is not actually in the rolling LIVE window. The
+       -- delete-flag CTE in executeWindowReplace already uses the
+       -- half-open form; this is the post-commit counterpart.
        SELECT MAX(event_time)  AS max_event_at,
               MAX(received_at) AS max_received_at,
               EXISTS (
                 SELECT 1 FROM baseline_event
                  WHERE event_time >= NOW() - INTERVAL '24 hours'
+                   AND event_time <  NOW()
                    AND event_time >= $1::timestamptz
                    AND event_time <  $2::timestamptz
               ) AS touched
          FROM baseline_event
         WHERE event_time >= NOW() - INTERVAL '24 hours'
+          AND event_time <  NOW()
      ),
      live_story AS (
        SELECT MAX(received_at) AS max_received_at,

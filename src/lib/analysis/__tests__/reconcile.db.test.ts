@@ -1649,6 +1649,146 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(rows[0].bucket_date).toBe("2024-08-11");
   });
 
+  it("does not seed or dirty LIVE on a future-dated baseline event (round-20 review item 1)", async () => {
+    // Round-20 r1: the rolling LIVE window is half-open
+    // `[NOW()-24h, NOW())`. The baseline LIVE filters previously only
+    // pinned the lower bound, so a future-dated baseline_event (the
+    // Phase 2 schemas accept arbitrary ISO `event_time` values without
+    // rejecting future timestamps) would seed LIVE on
+    // `deriveAllBuckets` and feed its filtered MAX in
+    // `loadLatestBaselineActivity`, advancing the LIVE row's
+    // `last_event_at` / `last_event_received_at` to a future instant
+    // even though the rolling LIVE input has not actually changed.
+    // The fix adds `event_time < NOW()` so a future-dated event is a
+    // no-op for LIVE.
+    const customer = "00000000-0000-0000-0000-0000000000e4";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r20-future', 'R20Future', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    // Sole source row: a baseline event one hour in the future. Under
+    // the old one-sided filter this would have seeded a LIVE row and
+    // stamped `last_event_at` to the future instant. Under the
+    // half-open filter the LIVE EXISTS predicate sees nothing and the
+    // filtered MAX is NULL.
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await seedBaselineEvent(customerPool, "9401", future);
+
+    let outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows: afterSeed } = await authPool.query<{ period: string }>(
+      `SELECT period
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period`,
+      [customer],
+    );
+    // DAILY/WEEKLY/MONTHLY may still be derived from the future
+    // event's bucket truncation (the historical bucket-derivation
+    // branch is intentionally unbounded above so a same-day backfill
+    // of historical events still seeds its buckets); LIVE must NOT
+    // appear.
+    expect(afterSeed.map((r) => r.period)).not.toContain("LIVE");
+
+    // Now seed a current rolling-window baseline event so LIVE does
+    // exist with a known `last_event_at`. The future-dated event must
+    // not subsequently advance the LIVE row.
+    const current = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    await seedBaselineEvent(customerPool, "9402", current);
+
+    outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    // Persist a done dry-run job so the dirty predicate gate is
+    // satisfied (worker has produced a generation for this LIVE row).
+    // Without this, the LIVE row stays `ready` regardless of source
+    // movement and the assertion would not isolate the future-dated
+    // guard.
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    // Append another future-dated baseline event — the dirty trigger
+    // must NOT fire because the rolling LIVE input has not changed.
+    const future2 = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+    await seedBaselineEvent(customerPool, "9403", future2);
+
+    outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows: live } = await authPool.query<{
+      status: string;
+      last_event_at: Date | null;
+    }>(
+      `SELECT status, last_event_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'LIVE'
+          AND bucket_date = DATE '1970-01-01'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(live[0]?.status).toBe("ready");
+    // `last_event_at` is the rolling-window event's event_time, NOT
+    // the future-dated one.
+    expect(live[0]?.last_event_at?.toISOString()).toBe(
+      new Date(current).toISOString(),
+    );
+
+    // Second pass is a no-op — confirms the half-open filter stays
+    // stable across cycles even with future-dated rows sitting in the
+    // customer DB.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {
     // Round-8 review item 2: the customer-level timezone change
     // (admin SQL path, no UI in Phase 0) must archive any existing
