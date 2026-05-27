@@ -50,8 +50,8 @@ two-column grid:
 - **Model snapshot** — the provider-reported specific model version, if
   the upstream response carried one.
 - **Prompt version** — the aimer prompt template version, if reported.
-- **Requested by** — the account that triggered the analysis (rendered
-  as "deleted user" if the account no longer exists).
+- **Requested by** — the account id that triggered the analysis, as
+  stored on the analysis row.
 - **Requested at** — ISO 8601 timestamp of the request.
 
 ## Analysis body
