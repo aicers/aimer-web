@@ -5,6 +5,8 @@
 `/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis` 경로로
 직접 접근할 수 있습니다.
 
+![우선순위 배지와 심각도 / 신뢰도 점수가 포함된 분석 결과 페이지](../assets/analysis-result.ko.png)
+
 ## 우선순위와 점수
 
 상단 영역에는 점수 관련 세 가지 항목이 표시됩니다.

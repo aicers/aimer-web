@@ -5,6 +5,8 @@ It is reached from aice-web-next by opening an event detail and following
 the deep link to aimer-web, or directly via
 `/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis`.
 
+![Analysis result page with priority badge and severity / likelihood scores](../assets/analysis-result.en.png)
+
 ## Priority and scores
 
 The header section shows three score-related fields:
