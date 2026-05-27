@@ -20,15 +20,24 @@ export interface IngestCounts {
  * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
  * DB commit returns. See `src/lib/analysis/ingest-hooks.ts`.
  *
- * `acceptedEventTimes` lists every accepted `event_time` so the hook
- * can dirty ALL affected DAILY/WEEKLY/MONTHLY buckets (RFC 0002 §
- * "Dirty transitions" rule 1, applied per affected bucket). Earlier
- * versions of this hook passed only the batch's max event_time, which
- * silently dropped dirty transitions on every other done bucket the
- * batch overran.
+ * `acceptedEvents` lists every accepted event paired with the canonical
+ * customer-DB `baseline_event.received_at` value RETURNING-ed at INSERT
+ * time. The hook uses these `(eventTime, receivedAt)` tuples both to
+ * dirty ALL affected DAILY/WEEKLY/MONTHLY buckets (RFC 0002 §"Dirty
+ * transitions" rule 1, applied per affected bucket) and to forward-
+ * patch `last_event_received_at` from the customer-DB source-of-truth
+ * value (round-9 review item 2). Earlier revisions stored the batch's
+ * max event_time only — which silently dropped dirty transitions on
+ * every other done bucket the batch overran — and earlier still wrote
+ * auth-DB `NOW()` for `last_event_received_at`, which under concurrent
+ * commits could get ahead of a later commit's `received_at` and mask a
+ * hook failure whose new event landed earlier than the bucket's max
+ * `event_time`. Carrying the canonical `received_at` per event keeps
+ * the hot path consistent with the reconcile forward-patch path, which
+ * compares against `MAX(baseline_event.received_at)`.
  */
 export interface BaselineIngestExtras {
-  acceptedEventTimes: Date[];
+  acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }>;
 }
 
 /**
@@ -119,13 +128,13 @@ export async function ingestBaselineBatch(
     return {
       accepted: 0,
       duplicatesSkipped: 0,
-      acceptedEventTimes: [],
+      acceptedEvents: [],
     };
   }
 
   return withTransaction(pool, async (client) => {
     let accepted = 0;
-    const acceptedEventTimes: Date[] = [];
+    const acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }> = [];
     for (const event of payload.events) {
       const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
         event.raw_event,
@@ -137,7 +146,13 @@ export async function ingestBaselineBatch(
           client,
         },
       );
-      const result = await client.query(
+      // RETURNING received_at returns the customer-DB source-of-truth
+      // received_at for newly-accepted events; rows skipped by
+      // ON CONFLICT yield no RETURNING row (round-9 review item 2). The
+      // hook downstream uses this value rather than auth-DB `NOW()` so a
+      // bucket forward-patched after a hook failure compares like-for-
+      // like against `MAX(baseline_event.received_at)` in reconcile.
+      const result = await client.query<{ received_at: Date }>(
         `INSERT INTO baseline_event (
            baseline_version, event_key, event_time, kind, category,
            primary_asset, raw_score, selector_tags, raw_event,
@@ -151,7 +166,8 @@ export async function ingestBaselineBatch(
            $13::jsonb, $14,
            $15
          )
-         ON CONFLICT (baseline_version, event_key) DO NOTHING`,
+         ON CONFLICT (baseline_version, event_key) DO NOTHING
+         RETURNING received_at`,
         [
           payload.baseline_version,
           event.event_key,
@@ -174,13 +190,16 @@ export async function ingestBaselineBatch(
       );
       if (result.rowCount === 1) {
         accepted += 1;
-        acceptedEventTimes.push(new Date(event.event_time));
+        acceptedEvents.push({
+          eventTime: new Date(event.event_time),
+          receivedAt: result.rows[0].received_at,
+        });
       }
     }
     return {
       accepted,
       duplicatesSkipped: payload.events.length - accepted,
-      acceptedEventTimes,
+      acceptedEvents,
     };
   });
 }

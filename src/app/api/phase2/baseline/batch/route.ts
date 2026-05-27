@@ -24,7 +24,7 @@ export const POST = createPhase2BatchHandler({
     // swallowed (decision 2).
     await applyBaselineIngestHook(authPool, {
       customerId: verified.customerId,
-      acceptedEventTimes: result.acceptedEventTimes,
+      acceptedEvents: result.acceptedEvents,
     });
     return {
       counts: {

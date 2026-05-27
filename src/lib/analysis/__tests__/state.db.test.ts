@@ -37,6 +37,21 @@ const LOCK_ID = 1099;
 const CUSTOMER_A = "00000000-0000-0000-0000-0000000000aa";
 const CUSTOMER_B = "00000000-0000-0000-0000-0000000000bb";
 
+/**
+ * Round-9 review item 2: `recordBaselineActivity` now consumes
+ * `(eventTime, receivedAt)` tuples sourced from customer-DB
+ * `baseline_event.received_at` so the auth-DB `last_event_received_at`
+ * is a like-for-like comparison against `MAX(baseline_event.received_at)`
+ * in reconcile. Tests that only exercise `event_time` semantics reuse
+ * the event_time as the received_at; tests that probe the received_at
+ * column itself pass explicit values.
+ */
+function asAcceptedEvents(
+  eventTimes: readonly Date[],
+): Array<{ eventTime: Date; receivedAt: Date }> {
+  return eventTimes.map((t) => ({ eventTime: t, receivedAt: t }));
+}
+
 async function seedCustomers(pool: Pool): Promise<void> {
   await pool.query(
     `INSERT INTO customers (id, external_key, name)
@@ -250,9 +265,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   it("recordBaselineActivity seeds a ready LIVE periodic_report_state row", async () => {
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(client, CUSTOMER_B, "Asia/Seoul", [
-        new Date("2026-05-27T08:00:00Z"),
-      ]);
+      await recordBaselineActivity(
+        client,
+        CUSTOMER_B,
+        "Asia/Seoul",
+        asAcceptedEvents([new Date("2026-05-27T08:00:00Z")]),
+      );
     } finally {
       client.release();
     }
@@ -664,7 +682,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(client, customer, "Asia/Seoul", [eventTime]);
+      await recordBaselineActivity(
+        client,
+        customer,
+        "Asia/Seoul",
+        asAcceptedEvents([eventTime]),
+      );
     } finally {
       client.release();
     }
@@ -736,10 +759,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     try {
       // Both events forwarded; hook must dirty BOTH done buckets, not
       // only the bucket containing the maximum event_time.
-      await recordBaselineActivity(client, customer, "Asia/Seoul", [
-        earlier,
-        later,
-      ]);
+      await recordBaselineActivity(
+        client,
+        customer,
+        "Asia/Seoul",
+        asAcceptedEvents([earlier, later]),
+      );
     } finally {
       client.release();
     }
@@ -907,7 +932,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     const old = new Date("2020-01-15T03:00:00Z");
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(client, customer, "Asia/Seoul", [old]);
+      await recordBaselineActivity(
+        client,
+        customer,
+        "Asia/Seoul",
+        asAcceptedEvents([old]),
+      );
     } finally {
       client.release();
     }
@@ -1025,7 +1055,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     const later = new Date("2024-06-15T03:00:00Z");
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(client, customer, "Asia/Seoul", [later]);
+      await recordBaselineActivity(
+        client,
+        customer,
+        "Asia/Seoul",
+        asAcceptedEvents([later]),
+      );
     } finally {
       client.release();
     }
@@ -1046,5 +1081,70 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       expect(row.status).toBe("archived");
       expect(row.last_event_at?.toISOString()).toBe(baseline.toISOString());
     }
+  });
+
+  it("recordBaselineActivity stores last_event_received_at from the per-event customer-DB received_at, not auth-DB NOW() (round-9 review item 2)", async () => {
+    // Round-9 review item 2: the auth-DB `last_event_received_at`
+    // must mirror the customer-DB `baseline_event.received_at` of the
+    // accepted event so the reconcile forward-patch (which compares
+    // against `MAX(baseline_event.received_at)`) is a like-for-like
+    // comparison. Using `NOW()` could put the auth-DB column ahead of
+    // an in-flight customer-DB commit and mask a later hook failure
+    // whose event_time is earlier than the bucket's current max.
+    const customer = "00000000-0000-0000-0000-0000000000f9";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-r9', 'R9')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    // An event from yesterday — outside the trailing-24h LIVE window,
+    // so the LIVE path is a no-op and the DAILY bucket is the only
+    // surface that exercises `last_event_received_at`. Seed a DAILY
+    // state row matching the bucket so the forward-patch branch fires.
+    const yesterday = new Date(Date.now() - 36 * 60 * 60 * 1000);
+    const eventTime = yesterday;
+    // Pin received_at to a value in the past so we can prove the
+    // stored column matches the passed value (not `NOW()`).
+    const customerReceivedAt = new Date(eventTime.getTime() + 5_000);
+    const bucketDate = await pool.query<{ d: string }>(
+      `SELECT (date_trunc('day', $1::timestamptz AT TIME ZONE 'Asia/Seoul'))
+              ::date::text AS d`,
+      [eventTime.toISOString()],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', 'pending')`,
+      [customer, bucketDate.rows[0].d],
+    );
+
+    const client = await pool.connect();
+    try {
+      await recordBaselineActivity(client, customer, "Asia/Seoul", [
+        { eventTime, receivedAt: customerReceivedAt },
+      ]);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query<{
+      last_event_at: Date | null;
+      last_event_received_at: Date | null;
+    }>(
+      `SELECT last_event_at, last_event_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = $2::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer, bucketDate.rows[0].d],
+    );
+    expect(rows[0]?.last_event_at?.toISOString()).toBe(eventTime.toISOString());
+    // The stored received_at MUST equal the customer-DB value passed
+    // to the hook — NOT a fresh `NOW()` from the auth-DB session.
+    expect(rows[0]?.last_event_received_at?.toISOString()).toBe(
+      customerReceivedAt.toISOString(),
+    );
   });
 });

@@ -134,7 +134,7 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
       expect(second.accepted).toBe(0);
       expect(second.duplicatesSkipped).toBe(2);
       // Duplicates-only batch produces no accepted arrivals.
-      expect(second.acceptedEventTimes).toEqual([]);
+      expect(second.acceptedEvents).toEqual([]);
 
       // Mixed batch: one new + one duplicate.
       const mixed = await ingestBaselineBatch(

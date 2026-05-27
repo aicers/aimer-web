@@ -47,20 +47,33 @@ function logHookFailure(scope: string, customerId: string, err: unknown): void {
 export interface BaselineIngestHookInput {
   customerId: string;
   /**
-   * Every `event_time` accepted in the batch. The hook dirties every
-   * existing DAILY/WEEKLY/MONTHLY bucket whose window contains at
-   * least one of these — collapsing the batch to a single max-time
-   * (as a previous revision did) silently dropped dirty transitions
-   * on every other done bucket the batch overran.
+   * Every accepted event paired with its canonical customer-DB
+   * `baseline_event.received_at` (RETURNING-ed at INSERT time). The
+   * hook dirties every existing DAILY/WEEKLY/MONTHLY bucket whose
+   * window contains at least one of these `event_time`s, and forward-
+   * patches `last_event_received_at` per bucket using the per-bucket
+   * max of these `received_at` values.
+   *
+   * The previous revision passed only `event_time`s and stamped
+   * auth-DB `NOW()` for `last_event_received_at` (round-9 review item
+   * 2). Under concurrent commits — ingest A's customer commit lands,
+   * then B's customer commit lands, then A's auth-DB hook fires — A
+   * could write a `last_event_received_at` later than B's customer-DB
+   * `received_at`. If B's auth-DB hook then failed and B's event_time
+   * was earlier than the bucket's current max, reconcile would see
+   * neither column advance and leave the bucket ready forever. Sourcing
+   * `received_at` from `baseline_event` keeps the hot path aligned with
+   * the reconcile forward-patch path (`MAX(baseline_event.received_at)`),
+   * so the comparison is always like-for-like.
    */
-  acceptedEventTimes: Date[];
+  acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }>;
 }
 
 export async function applyBaselineIngestHook(
   authPool: Pool,
   input: BaselineIngestHookInput,
 ): Promise<void> {
-  if (input.acceptedEventTimes.length === 0) return;
+  if (input.acceptedEvents.length === 0) return;
   try {
     const tz = await loadCustomerTimezone(authPool, input.customerId);
     if (!tz) return;
@@ -70,7 +83,7 @@ export async function applyBaselineIngestHook(
         client,
         input.customerId,
         tz,
-        input.acceptedEventTimes,
+        input.acceptedEvents,
       );
     } finally {
       client.release();
@@ -122,15 +135,30 @@ export async function applyStoryIngestHook(
 // Window-replace / backfill hooks
 // ---------------------------------------------------------------------------
 
-export interface WindowReplaceBaselineHookInput {
+export interface WindowReplaceEnvelopeHookInput {
   customerId: string;
   from: Date;
   to: Date;
 }
 
-export async function applyWindowReplaceBaselineHook(
+/**
+ * Dirty `periodic_report_state` rows whose bucket window overlaps the
+ * refresh-window / backfill envelope `[from, to)`. Fired for BOTH
+ * baseline AND story envelopes (round-9 review item 1): a story
+ * window-replace that mutates the inputs of an already-generated
+ * DAILY/WEEKLY/MONTHLY report must flip that periodic row to `dirty`.
+ * Reconcile's periodic dirty signals are baseline-only
+ * (`baseline_event` aggregates), so without firing this on story
+ * envelopes too a story-only refresh would leave the stale periodic
+ * report ready/done indefinitely.
+ *
+ * Renamed from `applyWindowReplaceBaselineHook` — the original name
+ * implied baseline-envelope-only semantics; the function is and was
+ * envelope-agnostic.
+ */
+export async function applyWindowReplaceEnvelopeHook(
   authPool: Pool,
-  input: WindowReplaceBaselineHookInput,
+  input: WindowReplaceEnvelopeHookInput,
 ): Promise<void> {
   try {
     const client = await authPool.connect();
@@ -145,7 +173,7 @@ export async function applyWindowReplaceBaselineHook(
       client.release();
     }
   } catch (err) {
-    logHookFailure("refresh_window_baseline", input.customerId, err);
+    logHookFailure("refresh_window_envelope", input.customerId, err);
   }
 }
 

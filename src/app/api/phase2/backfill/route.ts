@@ -1,5 +1,5 @@
 import {
-  applyWindowReplaceBaselineHook,
+  applyWindowReplaceEnvelopeHook,
   applyWindowReplaceStoryHook,
 } from "@/lib/analysis/ingest-hooks";
 import { getAuthPool } from "@/lib/db/client";
@@ -20,17 +20,23 @@ export const POST = createPhase2MutationHandler({
       payload,
       verified.envelopeClaims.aiceId,
     );
-    // RFC 0002 Phase 0 (#294) — best-effort analysis state hook.
+    // RFC 0002 Phase 0 (#294) — best-effort analysis state hooks.
     // Backfill applies the same dirty/archive rules as refresh-window
     // (issue #294 scope). Failure is logged and swallowed (decision 2).
+    //
+    // BOTH baseline and story envelopes dirty overlapping
+    // `periodic_report_state` rows (round-9 review item 1): a story
+    // backfill that mutates the inputs of an already-generated
+    // DAILY/WEEKLY/MONTHLY report must flip that periodic row to
+    // `dirty`. Reconcile's periodic dirty signals are baseline-only,
+    // so this is the only path that catches story-only envelopes.
     const authPool = getAuthPool();
-    if (extras.kind === "baseline") {
-      await applyWindowReplaceBaselineHook(authPool, {
-        customerId: verified.customerId,
-        from: extras.baseline.from,
-        to: extras.baseline.to,
-      });
-    } else {
+    await applyWindowReplaceEnvelopeHook(authPool, {
+      customerId: verified.customerId,
+      from: new Date(payload.window.from),
+      to: new Date(payload.window.to),
+    });
+    if (extras.kind === "story") {
       await applyWindowReplaceStoryHook(authPool, {
         customerId: verified.customerId,
         mutatedStoryIds: extras.story.mutatedStoryIds,

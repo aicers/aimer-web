@@ -255,11 +255,16 @@ export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
  * closed buckets marks ALL of them `dirty` for re-analysis (RFC 0002
  * §"Dirty transitions" rule 1, applied per affected bucket).
  *
- * `eventTimes` must be the full list of accepted `event_time` values
- * for the batch. Passing only the most-recent event would miss any
- * earlier event that landed in a different done bucket; the route
- * handler therefore captures every accepted event and forwards them
- * unchanged to this hook.
+ * `acceptedEvents` must be the full list of accepted events for the
+ * batch, each paired with its canonical customer-DB
+ * `baseline_event.received_at`. Passing only the most-recent event
+ * would miss any earlier event that landed in a different done
+ * bucket; the route handler therefore captures every accepted event
+ * and forwards them unchanged to this hook. The per-bucket
+ * `last_event_received_at` forward-patch uses
+ * `MAX(receivedAt)` over the events inside the bucket — NOT auth-DB
+ * `NOW()` — so concurrent commits cannot stamp a value ahead of a
+ * still-pending customer-DB `received_at` (round-9 review item 2).
  *
  * The DAILY/WEEKLY/MONTHLY rows themselves are NOT seeded here: the
  * reconcile scan derives the full bucket set from
@@ -281,10 +286,11 @@ export async function recordBaselineActivity(
   client: PoolClient,
   customerId: string,
   tz: string,
-  eventTimes: readonly Date[],
+  acceptedEvents: ReadonlyArray<{ eventTime: Date; receivedAt: Date }>,
 ): Promise<void> {
-  if (eventTimes.length === 0) return;
-  const isoTimes = eventTimes.map((t) => t.toISOString());
+  if (acceptedEvents.length === 0) return;
+  const isoEventTimes = acceptedEvents.map((e) => e.eventTime.toISOString());
+  const isoReceivedAts = acceptedEvents.map((e) => e.receivedAt.toISOString());
 
   // LIVE: rolling state, so it stamps the MAX event_time as
   // last_event_at and dirties the row if a done/processing job
@@ -301,35 +307,44 @@ export async function recordBaselineActivity(
   // guard turns the INSERT into a no-op.
   //
   // `last_event_received_at` is the reconcile safety-net signal
-  // (round-7 review item 2): it advances every time the bucket
-  // receives a new event regardless of whether `event_time`
-  // advances, so a hook failure followed by reconcile catches up
-  // even when the new event lands earlier than the current max.
-  // Using `NOW()` here is the customer-DB-side ingest-commit
-  // boundary: customer-DB `baseline_event.received_at` defaults to
-  // `NOW()` at INSERT, and the hook runs after that commit, so the
-  // auth-DB `NOW()` is >= the maximum customer-DB `received_at`.
-  // That ordering keeps the reconcile comparison conservative —
-  // hook success leaves no missed events; hook failure leaves the
-  // column behind the customer DB and reconcile observes the lag.
+  // (round-7 review item 2 / round-9 review item 2): it advances
+  // every time the bucket receives a new event regardless of whether
+  // `event_time` advances, so a hook failure followed by reconcile
+  // catches up even when the new event lands earlier than the
+  // current max. The value sourced here is the customer-DB
+  // `baseline_event.received_at` returned at INSERT — NOT auth-DB
+  // `NOW()`. The reconcile forward-patch path compares against
+  // `MAX(baseline_event.received_at)`; under concurrent commits
+  // (ingest A commits, ingest B commits, then A's hook fires), an
+  // auth-DB `NOW()` value could get ahead of B's customer-DB
+  // `received_at` and, if B's hook then failed and B's event_time
+  // was earlier than the bucket max, leave the bucket ready forever.
+  // Sourcing from the canonical customer-DB column keeps the hot
+  // path and reconcile comparable like-for-like.
   await client.query(
-    `WITH max_t AS (
-       SELECT MAX(t) AS t
-         FROM unnest($4::timestamptz[]) AS t
+    `WITH events(t, rcv) AS (
+       SELECT t, rcv
+         FROM unnest($4::timestamptz[], $5::timestamptz[]) AS u(t, rcv)
+     ),
+     in_window AS (
+       SELECT MAX(t) AS max_t, MAX(rcv) AS max_rcv
+         FROM events
         WHERE t >= NOW() - INTERVAL '24 hours'
      )
      INSERT INTO periodic_report_state
        (customer_id, period, bucket_date, tz, status,
         last_event_at, last_event_received_at)
-     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t, NOW()
-       FROM max_t
-      WHERE max_t.t IS NOT NULL
+     SELECT $1, 'LIVE', $2::date, $3, 'ready',
+            in_window.max_t, in_window.max_rcv
+       FROM in_window
+      WHERE in_window.max_t IS NOT NULL
      ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
        SET last_event_at = GREATEST(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at
            ),
            last_event_received_at = GREATEST(
-             periodic_report_state.last_event_received_at, NOW()
+             periodic_report_state.last_event_received_at,
+             EXCLUDED.last_event_received_at
            ),
            status = CASE
              WHEN periodic_report_state.status = 'ready'
@@ -346,47 +361,48 @@ export async function recordBaselineActivity(
            END,
            updated_at = NOW()
        WHERE periodic_report_state.status <> 'archived'`,
-    [customerId, LIVE_BUCKET_DATE, tz, isoTimes],
+    [customerId, LIVE_BUCKET_DATE, tz, isoEventTimes, isoReceivedAts],
   );
 
   // DAILY/WEEKLY/MONTHLY: forward-patch + dirty every existing row
   // whose bucket window contains at least one accepted event_time.
-  // The CTE collapses the input timestamps to (period, bucket_date,
-  // max-event-time-inside-the-bucket) tuples so a single UPDATE can
-  // touch all affected rows, and each row's last_event_at picks up
-  // the latest event THAT FELL INSIDE THE BUCKET — not the global
-  // batch max. Existing-only — seeding is reconcile's job. Archived
-  // rows are skipped so they stay terminal. `last_event_received_at`
-  // advances on every bucket touched so reconcile catches missed
-  // events whose `event_time` is earlier than the current max
-  // (round-7 review item 2).
+  // The CTE collapses the input tuples to (period, bucket_date,
+  // max-event-time-inside-the-bucket, max-received-at-inside-the-
+  // bucket) so a single UPDATE can touch all affected rows. Each
+  // row's `last_event_at` picks up the latest event THAT FELL INSIDE
+  // THE BUCKET — not the global batch max — and
+  // `last_event_received_at` picks up the latest customer-DB
+  // received_at among those same events (round-9 review item 2).
+  // Existing-only — seeding is reconcile's job. Archived rows are
+  // skipped so they stay terminal.
   await client.query(
-    `WITH events(t) AS (
-       SELECT t FROM unnest($3::timestamptz[]) AS t
+    `WITH events(t, rcv) AS (
+       SELECT t, rcv
+         FROM unnest($3::timestamptz[], $4::timestamptz[]) AS u(t, rcv)
      ),
-     buckets(period, bucket_date, max_t) AS (
+     buckets(period, bucket_date, max_t, max_rcv) AS (
        SELECT 'DAILY'::text,
               (date_trunc('day',   t AT TIME ZONE $2))::date,
-              MAX(t)
+              MAX(t), MAX(rcv)
          FROM events
         GROUP BY 1, 2
        UNION ALL
        SELECT 'WEEKLY'::text,
               (date_trunc('week',  t AT TIME ZONE $2))::date,
-              MAX(t)
+              MAX(t), MAX(rcv)
          FROM events
         GROUP BY 1, 2
        UNION ALL
        SELECT 'MONTHLY'::text,
               (date_trunc('month', t AT TIME ZONE $2))::date,
-              MAX(t)
+              MAX(t), MAX(rcv)
          FROM events
         GROUP BY 1, 2
      )
      UPDATE periodic_report_state s
         SET last_event_at = GREATEST(s.last_event_at, b.max_t),
             last_event_received_at = GREATEST(
-              s.last_event_received_at, NOW()
+              s.last_event_received_at, b.max_rcv
             ),
             status = CASE
               WHEN s.status = 'ready'
@@ -408,7 +424,7 @@ export async function recordBaselineActivity(
         AND s.period      = b.period
         AND s.bucket_date = b.bucket_date
         AND s.status      <> 'archived'`,
-    [customerId, tz, isoTimes],
+    [customerId, tz, isoEventTimes, isoReceivedAts],
   );
 }
 

@@ -14,7 +14,7 @@ vi.mock("server-only", () => ({}));
 const {
   applyBaselineIngestHook,
   applyStoryIngestHook,
-  applyWindowReplaceBaselineHook,
+  applyWindowReplaceEnvelopeHook,
   applyWindowReplaceStoryHook,
 } = await import("../ingest-hooks");
 
@@ -42,7 +42,12 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     await expect(
       applyBaselineIngestHook(failingPool(), {
         customerId: CUSTOMER_ID,
-        acceptedEventTimes: [new Date("2026-05-27T10:00:00Z")],
+        acceptedEvents: [
+          {
+            eventTime: new Date("2026-05-27T10:00:00Z"),
+            receivedAt: new Date("2026-05-27T10:00:01Z"),
+          },
+        ],
       }),
     ).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(
@@ -68,9 +73,9 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     );
   });
 
-  it("applyWindowReplaceBaselineHook logs and resolves when the connection fails", async () => {
+  it("applyWindowReplaceEnvelopeHook logs and resolves when the connection fails", async () => {
     await expect(
-      applyWindowReplaceBaselineHook(failingPool(), {
+      applyWindowReplaceEnvelopeHook(failingPool(), {
         customerId: CUSTOMER_ID,
         from: new Date("2026-05-27T00:00:00Z"),
         to: new Date("2026-05-27T01:00:00Z"),
@@ -78,7 +83,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     ).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining(
-        `refresh_window_baseline failed for customer ${CUSTOMER_ID}`,
+        `refresh_window_envelope failed for customer ${CUSTOMER_ID}`,
       ),
     );
   });
@@ -102,7 +107,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     const pool = failingPool();
     await applyBaselineIngestHook(pool, {
       customerId: CUSTOMER_ID,
-      acceptedEventTimes: [],
+      acceptedEvents: [],
     });
     await applyStoryIngestHook(pool, {
       customerId: CUSTOMER_ID,
