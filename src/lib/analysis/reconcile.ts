@@ -819,15 +819,35 @@ async function loadPerBucketStoryAggregates(
 }
 
 /**
- * Global maxima for the LIVE bucket plus the trailing-24h existence
- * check used by issue #294 decision 4 / round-8 review item 3.
+ * Maxima for the LIVE bucket, computed over baseline events whose
+ * `event_time` lies inside the rolling LIVE window (trailing 24h).
  *
- * `liveActive` is true only when `baseline_event` rows exist whose
- * `event_time >= NOW() - 24h`. LIVE state rows MUST NOT be seeded
- * when the bucket would only be backed by historical data (e.g. a
- * same-day backfill of years-old events). `maxEventAt` /
- * `maxReceivedAt` are still computed from the full table so existing
- * LIVE rows can be forward-patched if they already exist.
+ * Round-18 review item 1: the MAX(event_time) / MAX(received_at)
+ * aggregates are scoped to events with `event_time >= NOW() - 24h`.
+ * The previous revision took the global max across every
+ * `baseline_event` row regardless of source-time recency; combined
+ * with `deriveAllBuckets`'s LIVE gate (a LIVE row is kept whenever
+ * ANY source timestamp exists in the trailing 24h), a customer with
+ * one current event would have its LIVE row dirtied by a later
+ * same-day backfill of historical events whose `received_at`
+ * advanced the global max but whose `event_time` sat outside the
+ * rolling window. That contradicts the hot ingest path
+ * (`recordBaselineActivity`), which only stamps LIVE for events
+ * whose `event_time` lies in the trailing 24h. Filtering the loader
+ * to the same trailing-24h source-window predicate keeps reconcile's
+ * LIVE seed / forward-patch in lockstep with the hot path: a
+ * historical backfill commits, the global received_at advances, but
+ * the trailing-24h window has no new event_time, so the loader
+ * returns the unchanged maxima and reconcile does not flip LIVE to
+ * `dirty`.
+ *
+ * `liveActive` keeps the same trailing-24h existence predicate it
+ * already used — issue #294 decision 4 / round-8 review item 3.
+ *
+ * Returns `null` when no events qualify for the rolling LIVE window
+ * (the filtered MAX(event_time) is NULL); reconcile interprets that
+ * as "no LIVE seed / patch from baseline" and falls back to the
+ * story-side LIVE signal if the customer has only story activity.
  */
 async function loadLatestBaselineActivity(
   customerConn: CustomerConnection,
@@ -841,8 +861,12 @@ async function loadLatestBaselineActivity(
     max_received_at: Date | null;
     live_active: boolean;
   }>(
-    `SELECT MAX(event_time)  AS max_event_at,
-            MAX(received_at) AS max_received_at,
+    `SELECT MAX(event_time)  FILTER (
+              WHERE event_time >= NOW() - INTERVAL '24 hours'
+            ) AS max_event_at,
+            MAX(received_at) FILTER (
+              WHERE event_time >= NOW() - INTERVAL '24 hours'
+            ) AS max_received_at,
             EXISTS (
               SELECT 1 FROM baseline_event
                WHERE event_time >= NOW() - INTERVAL '24 hours'
@@ -861,7 +885,7 @@ async function loadLatestBaselineActivity(
 }
 
 /**
- * Round-17 review item 1: global MAX(latest-version `story.received_at`)
+ * Round-17 review item 1: MAX(latest-version `story.received_at`)
  * used as the LIVE bucket's story-side source signal. Round-11 made
  * story timestamps first-class for LIVE *seeding* — a story-only
  * customer now gets a LIVE row from `deriveAllBuckets` — but neither
@@ -870,8 +894,25 @@ async function loadLatestBaselineActivity(
  * later story-only refresh-window / backfill envelopes after a hook
  * failure. This loader closes that gap by mirroring
  * `loadLatestBaselineActivity` for the story side: it returns the
- * global max latest-version `received_at`, which seeds and forward-
- * patches the LIVE row's `last_story_received_at`.
+ * max latest-version `received_at`, which seeds and forward-patches
+ * the LIVE row's `last_story_received_at`.
+ *
+ * Round-18 review item 1: scoped to latest-version stories whose
+ * `[time_window_start, time_window_end]` overlaps the rolling LIVE
+ * window (`[NOW()-24h, NOW())`). The previous revision took the
+ * global max across every latest-version story regardless of
+ * source-time recency; combined with `deriveAllBuckets`'s LIVE gate
+ * (a LIVE row is kept whenever ANY source timestamp exists in the
+ * trailing 24h), a customer with one current story would have its
+ * LIVE row dirtied by a later same-day backfill of historical
+ * stories whose `received_at` advanced the global max but whose
+ * `time_window_*` sat outside the rolling LIVE window. Filtering the
+ * loader to the same trailing-24h source-window predicate the hot
+ * ingest path uses keeps reconcile's LIVE seed / forward-patch in
+ * lockstep with the hot path: a historical story backfill commits,
+ * the global received_at advances, but the trailing-24h window has
+ * no new story `time_window_*`, so the loader returns the unchanged
+ * max and reconcile does not flip LIVE to `dirty`.
  *
  * Latest-version semantics match `loadPerBucketStoryAggregates` and
  * `computeOverlappingBucketStoryAggregates` — only each `story_id`'s
@@ -893,9 +934,18 @@ async function loadLatestStoryActivity(
        SELECT story_id, MAX(received_at) AS max_rcv
          FROM story
         GROUP BY story_id
+     ),
+     latest_versions AS (
+       SELECT s.story_id, s.time_window_start, s.time_window_end,
+              s.received_at
+         FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
      )
-     SELECT MAX(max_rcv) AS max_received_at
-       FROM latest_story`,
+     SELECT MAX(received_at) AS max_received_at
+       FROM latest_versions
+      WHERE time_window_start <  NOW()
+        AND time_window_end   >= NOW() - INTERVAL '24 hours'`,
   );
   const row = rows[0];
   if (!row || row.max_received_at === null) return null;

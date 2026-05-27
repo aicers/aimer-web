@@ -17,6 +17,7 @@ import {
   dirtyPeriodicStatesOverlapping,
   dirtyStoryStatesInRange,
   maybeArchiveStoryState,
+  type PeriodicEnvelopeLiveActivity,
   type PeriodicEnvelopeStoryAggregate,
   recordBaselineActivity,
   recordStoryMemberArrival,
@@ -194,6 +195,22 @@ export async function applyWindowReplaceEnvelopeHook(
           input.customerId,
           tz,
         );
+      // Round-18 review item 1: source-time-aligned LIVE signals.
+      // The envelope is source-time, so the LIVE branch can no longer
+      // use commit-time `last_story_received_at` for envelope
+      // matching. The hook now queries the customer DB post-commit
+      // for: (a) does any baseline event with `event_time` in BOTH
+      // the rolling LIVE window AND the envelope exist, and (b) does
+      // any latest-version story whose `[time_window_start,
+      // time_window_end]` overlaps BOTH the rolling LIVE window AND
+      // the envelope exist. These booleans, plus trailing-24h
+      // post-commit aggregates for the LIVE forward-patch columns,
+      // are forwarded to `dirtyPeriodicStatesOverlapping`.
+      const liveActivity = await computeLiveEnvelopeActivity(
+        customerPool,
+        input.from,
+        input.to,
+      );
       await dirtyPeriodicStatesOverlapping(
         authClient,
         input.customerId,
@@ -201,6 +218,7 @@ export async function applyWindowReplaceEnvelopeHook(
         input.to,
         eventCountByBucket,
         storyAggregateByBucket,
+        liveActivity,
       );
     } finally {
       authClient.release();
@@ -208,6 +226,105 @@ export async function applyWindowReplaceEnvelopeHook(
   } catch (err) {
     logHookFailure("refresh_window_envelope", input.customerId, err);
   }
+}
+
+/**
+ * Round-18 review item 1: post-commit, source-time-aligned LIVE
+ * activity for the envelope. Returns:
+ *   - `baselineTouched` — true iff at least one `baseline_event`
+ *     row has `event_time` in BOTH the rolling LIVE window
+ *     (`[NOW()-24h, NOW())`) AND the envelope `[from, to)`.
+ *   - `storyTouched` — true iff at least one latest-version `story`
+ *     has `[time_window_start, time_window_end]` overlapping BOTH
+ *     the rolling LIVE window AND the envelope.
+ *   - `baselineMaxEventAt` / `baselineMaxReceivedAt` — trailing-24h
+ *     post-commit aggregates (mirrors `loadLatestBaselineActivity`)
+ *     so the LIVE row's source columns advance in lockstep with
+ *     reconcile.
+ *   - `storyMaxReceivedAt` — trailing-24h post-commit aggregate
+ *     mirroring `loadLatestStoryActivity`.
+ *
+ * The trailing-24h filter on each side mirrors the hot ingest path
+ * (`recordBaselineActivity`'s `event_time >= NOW() - 24h` predicate)
+ * and reconcile's `loadLatestBaselineActivity` / `loadLatestStoryActivity`
+ * loader trim, so a historical refresh-window / backfill that does
+ * not touch the rolling LIVE window cannot dirty LIVE through either
+ * the hot path or reconcile.
+ */
+async function computeLiveEnvelopeActivity(
+  customerPool: Pool,
+  from: Date,
+  to: Date,
+): Promise<PeriodicEnvelopeLiveActivity> {
+  const { rows } = await customerPool.query<{
+    baseline_touched: boolean;
+    story_touched: boolean;
+    baseline_max_event_at: Date | null;
+    baseline_max_received_at: Date | null;
+    story_max_received_at: Date | null;
+  }>(
+    `WITH latest_story AS (
+       SELECT story_id, MAX(received_at) AS max_rcv
+         FROM story
+        GROUP BY story_id
+     ),
+     latest_versions AS (
+       SELECT s.story_id, s.time_window_start, s.time_window_end,
+              s.received_at
+         FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+     ),
+     live_baseline AS (
+       SELECT MAX(event_time)  AS max_event_at,
+              MAX(received_at) AS max_received_at,
+              EXISTS (
+                SELECT 1 FROM baseline_event
+                 WHERE event_time >= NOW() - INTERVAL '24 hours'
+                   AND event_time >= $1::timestamptz
+                   AND event_time <  $2::timestamptz
+              ) AS touched
+         FROM baseline_event
+        WHERE event_time >= NOW() - INTERVAL '24 hours'
+     ),
+     live_story AS (
+       SELECT MAX(received_at) AS max_received_at,
+              EXISTS (
+                SELECT 1 FROM latest_versions
+                 WHERE time_window_start <  NOW()
+                   AND time_window_end   >= NOW() - INTERVAL '24 hours'
+                   AND time_window_start <  $2::timestamptz
+                   AND time_window_end   >  $1::timestamptz
+              ) AS touched
+         FROM latest_versions
+        WHERE time_window_start <  NOW()
+          AND time_window_end   >= NOW() - INTERVAL '24 hours'
+     )
+     SELECT
+       (SELECT touched          FROM live_baseline) AS baseline_touched,
+       (SELECT touched          FROM live_story)    AS story_touched,
+       (SELECT max_event_at     FROM live_baseline) AS baseline_max_event_at,
+       (SELECT max_received_at  FROM live_baseline) AS baseline_max_received_at,
+       (SELECT max_received_at  FROM live_story)    AS story_max_received_at`,
+    [from.toISOString(), to.toISOString()],
+  );
+  const row = rows[0];
+  if (!row) {
+    return {
+      baselineTouched: false,
+      storyTouched: false,
+      baselineMaxEventAt: null,
+      baselineMaxReceivedAt: null,
+      storyMaxReceivedAt: null,
+    };
+  }
+  return {
+    baselineTouched: row.baseline_touched ?? false,
+    storyTouched: row.story_touched ?? false,
+    baselineMaxEventAt: row.baseline_max_event_at,
+    baselineMaxReceivedAt: row.baseline_max_received_at,
+    storyMaxReceivedAt: row.story_max_received_at,
+  };
 }
 
 /**

@@ -568,6 +568,38 @@ export interface PeriodicEnvelopeStoryAggregate {
   count: number;
 }
 
+/**
+ * Round-18 review item 1: source-time-aligned signals for the LIVE
+ * bucket. The envelope `[from, to)` is a source-time range, but the
+ * round-17 LIVE branch compared it against `s.last_story_received_at`
+ * (a customer-DB commit timestamp) — that mismatch could miss a
+ * story change whose source window overlaps LIVE but whose commit
+ * time was outside the envelope, and could dirty for a historical
+ * envelope whose commit time happened to fall inside the envelope.
+ *
+ * The hook now passes post-commit booleans computed in source-time:
+ *   - `baselineTouched` — `EXISTS(...)` over `baseline_event` whose
+ *     `event_time` is BOTH in the rolling LIVE window (trailing 24h)
+ *     AND inside `[from, to)`. Mirrors the hot ingest path's per-event
+ *     `event_time >= NOW() - 24h` filter.
+ *   - `storyTouched` — `EXISTS(...)` over latest-version `story` rows
+ *     whose `[time_window_start, time_window_end]` overlaps BOTH the
+ *     rolling LIVE window AND the envelope `[from, to)`. Story
+ *     source-time is `time_window_*`, not `received_at`, so this is
+ *     the right clock for matching against the envelope.
+ *
+ * Forward-patch values (for `last_event_*` / `last_story_received_at`
+ * on the LIVE row) are also post-commit aggregates derived from the
+ * same trailing-24h source-window predicate.
+ */
+export interface PeriodicEnvelopeLiveActivity {
+  baselineTouched: boolean;
+  storyTouched: boolean;
+  baselineMaxEventAt: Date | null;
+  baselineMaxReceivedAt: Date | null;
+  storyMaxReceivedAt: Date | null;
+}
+
 export async function dirtyPeriodicStatesOverlapping(
   client: PoolClient,
   customerId: string,
@@ -575,6 +607,7 @@ export async function dirtyPeriodicStatesOverlapping(
   to: Date,
   eventCountByBucket?: ReadonlyMap<string, number>,
   storyAggregateByBucket?: ReadonlyMap<string, PeriodicEnvelopeStoryAggregate>,
+  liveActivity?: PeriodicEnvelopeLiveActivity,
 ): Promise<void> {
   const periodArr: string[] = [];
   const dateArr: string[] = [];
@@ -604,6 +637,14 @@ export async function dirtyPeriodicStatesOverlapping(
       storyCountArr.push(String(agg.count));
     }
   }
+  const liveBaselineTouched = liveActivity?.baselineTouched ?? false;
+  const liveStoryTouched = liveActivity?.storyTouched ?? false;
+  const liveBaselineMaxEventAt =
+    liveActivity?.baselineMaxEventAt?.toISOString() ?? null;
+  const liveBaselineMaxReceivedAt =
+    liveActivity?.baselineMaxReceivedAt?.toISOString() ?? null;
+  const liveStoryMaxReceivedAt =
+    liveActivity?.storyMaxReceivedAt?.toISOString() ?? null;
   await client.query(
     // Round-14 review item 1: also forward-patch `pending` buckets.
     // The worker's quiet-window gate
@@ -616,6 +657,17 @@ export async function dirtyPeriodicStatesOverlapping(
     // DB state before the worker enqueues its first job. The dirty
     // flip stays gated on `ready`/`dirty` with a processing/done job
     // — pending has no prior generation to invalidate.
+    // Round-18 review item 1: the LIVE branch no longer matches the
+    // envelope against `s.last_event_at` / `s.last_story_received_at`
+    // (the former gets confused if the envelope happens to bracket a
+    // stale `last_event_at` that is outside the rolling LIVE window;
+    // the latter is a commit-time column compared against a
+    // source-time envelope — wrong clock). Instead the hook computes
+    // post-commit source-time booleans against the rolling LIVE
+    // window AND the envelope and forwards them as `$11` / `$12`. The
+    // forward-patch columns for LIVE come from the same trailing-24h
+    // post-commit aggregates (`$13` / `$14` / `$15`), so a successful
+    // hook re-syncs the LIVE row's columns in lockstep with reconcile.
     `WITH cnt(period, bucket_date, event_count) AS (
        SELECT p, d::date, c::bigint
          FROM unnest($4::text[], $5::date[], $6::bigint[]) AS u(p, d, c)
@@ -640,6 +692,21 @@ export async function dirtyPeriodicStatesOverlapping(
               THEN 'dirty'
               ELSE s.status
             END,
+            -- LIVE: forward-patch source-time aggregates from the
+            -- hook-supplied post-commit values when present. Non-LIVE
+            -- rows retain their existing column values for these
+            -- particular fields (their dirty path uses the per-bucket
+            -- aggregates below).
+            last_event_at = CASE
+              WHEN s.period = 'LIVE' AND $13::timestamptz IS NOT NULL
+              THEN GREATEST(s.last_event_at, $13::timestamptz)
+              ELSE s.last_event_at
+            END,
+            last_event_received_at = CASE
+              WHEN s.period = 'LIVE' AND $14::timestamptz IS NOT NULL
+              THEN GREATEST(s.last_event_received_at, $14::timestamptz)
+              ELSE s.last_event_received_at
+            END,
             event_count = COALESCE(
               (SELECT c.event_count
                  FROM cnt c
@@ -647,13 +714,17 @@ export async function dirtyPeriodicStatesOverlapping(
                   AND c.bucket_date = s.bucket_date),
               s.event_count
             ),
-            last_story_received_at = GREATEST(
-              s.last_story_received_at,
-              (SELECT sa.max_rcv
-                 FROM story_agg sa
-                WHERE sa.period = s.period
-                  AND sa.bucket_date = s.bucket_date)
-            ),
+            last_story_received_at = CASE
+              WHEN s.period = 'LIVE'
+              THEN GREATEST(s.last_story_received_at, $15::timestamptz)
+              ELSE GREATEST(
+                s.last_story_received_at,
+                (SELECT sa.max_rcv
+                   FROM story_agg sa
+                  WHERE sa.period = s.period
+                    AND sa.bucket_date = s.bucket_date)
+              )
+            END,
             story_count = COALESCE(
               (SELECT sa.story_count
                  FROM story_agg sa
@@ -665,25 +736,21 @@ export async function dirtyPeriodicStatesOverlapping(
       WHERE s.customer_id = $1
         AND s.status IN ('pending', 'ready', 'dirty')
         AND (
-          -- LIVE: no fixed window, use last_event_at / last_story_received_at
-          -- proxies. Round-17 review item 1 adds the story proxy so a
-          -- story-only LIVE row (whose last_event_at is NULL because
-          -- the customer has no baseline events) can still be dirtied
-          -- by a story refresh-window / backfill envelope whose range
-          -- covers the row's stored last_story_received_at. Without
-          -- this OR-clause, story-only LIVE rows seeded by round-11's
-          -- deriveAllBuckets gate could never transition out of ready
-          -- and the Phase 0 verification gate would be blind to
-          -- story-only LIVE changes.
+          -- LIVE: source-time-aligned post-commit booleans supplied
+          -- by the hook (round-18 review item 1). baselineTouched
+          -- fires only when at least one post-commit baseline_event
+          -- has event_time in BOTH the rolling LIVE window AND the
+          -- envelope range; storyTouched fires only when at least
+          -- one post-commit latest-version story has
+          -- [time_window_start, time_window_end] overlapping BOTH
+          -- the rolling LIVE window AND the envelope. Either flag
+          -- triggers a LIVE dirty/forward-patch. The previous round-17
+          -- LIVE branch used s.last_event_at / s.last_story_received_at
+          -- against the envelope, which mixed source-time and
+          -- commit-time clocks and would spuriously dirty LIVE on
+          -- historical backfills.
           (s.period = 'LIVE'
-            AND (
-              (s.last_event_at IS NOT NULL
-                AND s.last_event_at >= $2
-                AND s.last_event_at <  $3)
-              OR (s.last_story_received_at IS NOT NULL
-                AND s.last_story_received_at >= $2
-                AND s.last_story_received_at <  $3)
-            ))
+            AND ($11::boolean OR $12::boolean))
           -- DAILY / WEEKLY / MONTHLY: true bucket-range overlap in s.tz.
           OR (s.period IN ('DAILY', 'WEEKLY', 'MONTHLY')
             AND ((s.bucket_date::timestamp) AT TIME ZONE s.tz) < $3::timestamptz
@@ -715,6 +782,11 @@ export async function dirtyPeriodicStatesOverlapping(
       storyDateArr,
       storyMaxArr,
       storyCountArr,
+      liveBaselineTouched,
+      liveStoryTouched,
+      liveBaselineMaxEventAt,
+      liveBaselineMaxReceivedAt,
+      liveStoryMaxReceivedAt,
     ],
   );
 }

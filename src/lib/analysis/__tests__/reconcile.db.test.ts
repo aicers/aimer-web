@@ -1302,6 +1302,141 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.periodicStatesPatched).toBe(0);
   });
 
+  it("does not dirty LIVE on a historical backfill outside the rolling window (round-18 review item 1)", async () => {
+    // Round-18: the reconcile loaders for LIVE source signals
+    // (`loadLatestBaselineActivity` and `loadLatestStoryActivity`)
+    // are scoped to the rolling LIVE window (`event_time >= NOW()-24h`
+    // for baseline; `time_window_*` overlapping `[NOW()-24h, NOW())`
+    // for story). Before the fix they took the global max across
+    // every row, so a same-day backfill of historical data — whose
+    // `event_time` / `time_window_*` is years old but whose
+    // `received_at` is fresh — would advance `last_event_received_at`
+    // / `last_story_received_at` on the LIVE row and trip the dirty
+    // trigger. After the fix, the loader's filtered maxima do not
+    // change on a historical backfill, so reconcile leaves the LIVE
+    // row in `ready`.
+    const customer = "00000000-0000-0000-0000-0000000000d2";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-live-r18', 'LiveR18', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    // Current rolling-window data: one story whose time window lies
+    // inside the trailing 24h. This seeds a LIVE row on the first
+    // reconcile pass with `last_story_received_at` = currentAt.
+    const currentAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    await seedStory(customerPool, "8201", "v1", currentAt);
+
+    let outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    // Persist a done dry-run job so the dirty predicate gate is
+    // satisfied (worker has already produced a generation for this
+    // LIVE row). Without this gate the LIVE row would stay `ready`
+    // anyway and the assertion would not distinguish round-18.
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    // Backfill a historical baseline event (years-old event_time) and
+    // a historical story (years-old `time_window_*`). Both rows have
+    // a fresh customer-DB `received_at` (the default NOW()) — the
+    // exact configuration that would have advanced the LIVE row's
+    // `last_event_received_at` / `last_story_received_at` under the
+    // pre-round-18 global-max loaders.
+    await seedBaselineEvent(customerPool, "8202", "2020-01-15T08:00:00Z");
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (8203::bigint, 'v1', 'auto_correlated',
+               '2020-01-15T08:00:00Z'::timestamptz,
+               '2020-01-15T08:05:00Z'::timestamptz,
+               '{}'::jsonb, 'aice-r18', NOW())`,
+    );
+
+    outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows } = await authPool.query<{
+      status: string;
+      last_event_at: Date | null;
+      last_event_received_at: Date | null;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT status, last_event_at, last_event_received_at,
+              last_story_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'LIVE'
+          AND bucket_date = DATE '1970-01-01'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("ready");
+    // The historical baseline event must NOT advance LIVE source
+    // columns: `event_time` is outside the rolling 24h, so the
+    // filtered loader returns NULL for baseline maxima and the
+    // existing NULLs / current values stay put.
+    expect(rows[0]?.last_event_at).toBeNull();
+    expect(rows[0]?.last_event_received_at).toBeNull();
+    // Story `last_story_received_at` stays at the value seeded from
+    // the current (rolling-window) story; the historical story (whose
+    // `time_window_*` is outside the rolling window) is filtered out
+    // by `loadLatestStoryActivity`, so the LIVE row's stored value
+    // is unchanged.
+    expect(rows[0]?.last_story_received_at?.toISOString()).toBe(
+      new Date(currentAt).toISOString(),
+    );
+
+    // Second pass is a no-op — confirms the loader's filtered maxima
+    // are stable across reconcile cycles even with historical rows
+    // sitting in the customer DB.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {
     // Round-8 review item 2: the customer-level timezone change
     // (admin SQL path, no UI in Phase 0) must archive any existing

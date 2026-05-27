@@ -1033,7 +1033,13 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
   });
 
-  it("dirtyPeriodicStatesOverlapping flips ready LIVE rows when the event window overlaps", async () => {
+  it("dirtyPeriodicStatesOverlapping flips ready LIVE rows when the hook reports baselineTouched (round-18 review item 1)", async () => {
+    // Round-18: the LIVE branch no longer reads `s.last_event_at` to
+    // match against the envelope (that mixed stale stored values with
+    // a fresh source-time envelope). Instead the hook supplies a
+    // source-time-aligned `baselineTouched` flag computed in the
+    // customer DB post-commit. Passing it directly here simulates the
+    // hook for the unit-level test.
     const client = await pool.connect();
     try {
       await dirtyPeriodicStatesOverlapping(
@@ -1041,6 +1047,15 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
         CUSTOMER_B,
         new Date("2026-05-27T07:00:00Z"),
         new Date("2026-05-27T09:00:00Z"),
+        undefined,
+        undefined,
+        {
+          baselineTouched: true,
+          storyTouched: false,
+          baselineMaxEventAt: new Date("2026-05-27T08:30:00Z"),
+          baselineMaxReceivedAt: new Date("2026-05-27T08:30:01Z"),
+          storyMaxReceivedAt: null,
+        },
       );
     } finally {
       client.release();
@@ -1053,15 +1068,17 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.status).toBe("dirty");
   });
 
-  it("dirtyPeriodicStatesOverlapping flips a story-only LIVE row via the last_story_received_at proxy (round-17 review item 1)", async () => {
-    // Round-17: a story-only LIVE row has `last_event_at = NULL`
-    // because the customer has no `baseline_event` rows. Before this
-    // fix the LIVE branch of the WHERE clause only checked
-    // `last_event_at`, so a story refresh-window / backfill envelope
-    // covering the row's stored `last_story_received_at` could not
-    // flip the row to `dirty` — leaving the Phase 0 dry-run
-    // verification blind to story-only LIVE changes. The branch now
-    // accepts EITHER proxy.
+  it("dirtyPeriodicStatesOverlapping flips a story-only LIVE row when the hook reports storyTouched (round-18 review item 1)", async () => {
+    // Round-17 introduced the story-side LIVE dirty path but used
+    // `s.last_story_received_at` (commit-time) against a source-time
+    // envelope. Round-18 replaces that with a source-time
+    // `storyTouched` flag computed by the hook (latest-version stories
+    // whose `[time_window_start, time_window_end]` overlaps BOTH the
+    // rolling LIVE window AND the envelope). Passing `storyTouched`
+    // directly here verifies the branch still flips a story-only
+    // LIVE row to `dirty`, while the round-18 historical-backfill
+    // regression test below verifies that a `false` flag keeps it
+    // ready.
     const customer = "00000000-0000-0000-0000-000000000117";
     await pool.query(
       `INSERT INTO customers (id, external_key, name)
@@ -1074,7 +1091,8 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
          (customer_id, period, bucket_date, tz, status,
           last_event_at, last_story_received_at, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
-               NULL, $2::timestamptz, NOW())`,
+               NULL, $2::timestamptz, NOW())
+       ON CONFLICT DO NOTHING`,
       [customer, "2026-05-27T08:00:00Z"],
     );
     await pool.query(
@@ -1087,7 +1105,8 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
                COALESCE($2, 'ENGLISH'),
                COALESCE($3, 'openai'),
                COALESCE($4, 'gpt-4o'),
-               'done', 1, TRUE, NOW(), NOW())`,
+               'done', 1, TRUE, NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
       [
         customer,
         process.env.ANALYSIS_DEFAULT_LANG ?? null,
@@ -1103,6 +1122,98 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
         customer,
         new Date("2026-05-27T07:00:00Z"),
         new Date("2026-05-27T09:00:00Z"),
+        undefined,
+        undefined,
+        {
+          baselineTouched: false,
+          storyTouched: true,
+          baselineMaxEventAt: null,
+          baselineMaxReceivedAt: null,
+          storyMaxReceivedAt: new Date("2026-05-27T08:45:00Z"),
+        },
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{
+      status: string;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT status, last_story_received_at FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'LIVE'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+    // Forward-patch the LIVE row's `last_story_received_at` to the
+    // hook-supplied post-commit value (here `2026-05-27T08:45:00Z`).
+    expect(rows[0]?.last_story_received_at?.toISOString()).toBe(
+      "2026-05-27T08:45:00.000Z",
+    );
+  });
+
+  it("dirtyPeriodicStatesOverlapping does not flip LIVE when the hook reports neither flag (round-18 review item 1)", async () => {
+    // Round-18 regression: a historical refresh-window / backfill
+    // envelope that does not touch any rolling-LIVE source data must
+    // leave the LIVE row in `ready`. The hook computes
+    // `baselineTouched` / `storyTouched` against the rolling LIVE
+    // window AND the envelope, so a historical envelope produces
+    // both flags `false`. Passing both flags `false` here verifies
+    // the LIVE branch does not fire.
+    const customer = "00000000-0000-0000-0000-000000000118";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-livestory-r18', 'LiveStoryR18State')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at,
+          last_story_received_at, last_ready_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
+               $2::timestamptz, $2::timestamptz, $2::timestamptz, NOW())
+       ON CONFLICT DO NOTHING`,
+      [customer, "2026-05-27T08:00:00Z"],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    const client = await pool.connect();
+    try {
+      // Historical envelope spanning years-old source dates: no
+      // overlap with the rolling LIVE window. Hook flags both false.
+      await dirtyPeriodicStatesOverlapping(
+        client,
+        customer,
+        new Date("2020-01-01T00:00:00Z"),
+        new Date("2020-01-02T00:00:00Z"),
+        undefined,
+        undefined,
+        {
+          baselineTouched: false,
+          storyTouched: false,
+          baselineMaxEventAt: null,
+          baselineMaxReceivedAt: null,
+          storyMaxReceivedAt: null,
+        },
       );
     } finally {
       client.release();
@@ -1112,7 +1223,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
         WHERE customer_id = $1 AND period = 'LIVE'`,
       [customer],
     );
-    expect(rows[0]?.status).toBe("dirty");
+    expect(rows[0]?.status).toBe("ready");
   });
 
   it("dirtyPeriodicStatesOverlapping flips DAILY/WEEKLY/MONTHLY by true bucket-range overlap (round-4 review item 2)", async () => {
