@@ -77,13 +77,24 @@ export default async function AnalysisResultPage({
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Priority tier">
-          <PriorityBadge tier={data.priorityTier} />
+          <div className="flex flex-wrap items-center gap-2">
+            <PriorityBadge tier={data.priorityTier} />
+            <TtpChipRow tags={data.ttpTags} />
+          </div>
         </Field>
         <Field label="Severity score (if real, how bad)">
-          {data.severityScore.toFixed(3)}
+          <div>{data.severityScore.toFixed(3)}</div>
+          <FactorChipRow
+            factors={data.severityFactors}
+            ariaLabel="severity-factors"
+          />
         </Field>
         <Field label="Likelihood score (is it real)">
-          {data.likelihoodScore.toFixed(3)}
+          <div>{data.likelihoodScore.toFixed(3)}</div>
+          <FactorChipRow
+            factors={data.likelihoodFactors}
+            ariaLabel="likelihood-factors"
+          />
         </Field>
         <Field label="Language">{data.lang}</Field>
         <Field label="Provider">{data.modelName}</Field>
@@ -147,6 +158,61 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
     >
       {tier}
     </span>
+  );
+}
+
+function FactorChipRow({
+  factors,
+  ariaLabel,
+}: {
+  factors: readonly string[];
+  ariaLabel: string;
+}) {
+  if (factors.length === 0) return null;
+  return (
+    <ul
+      aria-label={ariaLabel}
+      data-testid={ariaLabel}
+      className="mt-2 flex flex-wrap gap-1"
+    >
+      {factors.map((item) => (
+        <li
+          key={item}
+          className="inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-foreground"
+        >
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TtpChipRow({
+  tags,
+}: {
+  tags: ReadonlyArray<{ id: string; name: string | null }>;
+}) {
+  if (tags.length === 0) return null;
+  return (
+    <ul
+      aria-label="ttp-tags"
+      data-testid="ttp-tags"
+      className="flex flex-wrap gap-1"
+    >
+      {tags.map((tag) => (
+        <li
+          key={tag.id}
+          // `title` surfaces the MITRE technique name on hover. When the
+          // ID isn't in the currently vendored bundle (`name === null`),
+          // we omit the tooltip rather than rendering an empty one.
+          title={tag.name ?? undefined}
+          data-tag-id={tag.id}
+          className="inline-flex items-center rounded-full border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-900"
+        >
+          {tag.id}
+        </li>
+      ))}
+    </ul>
   );
 }
 

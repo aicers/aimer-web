@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 // the unit test exercise the real validator.
 vi.mock("server-only", () => ({}));
 
-const { validateTtpTags } = await import("../mitre-ttp");
+const { validateTtpTags, lookupTtpName, MITRE_VENDOR_VERSION } = await import(
+  "../mitre-ttp"
+);
 
 describe("validateTtpTags", () => {
   it("returns empty valid + dropped for an empty input", () => {
@@ -73,5 +75,43 @@ describe("validateTtpTags", () => {
       { id: "bogus", reason: "invalid_format" },
       { id: "T9999", reason: "not_in_vendored_mitre" },
     ]);
+  });
+});
+
+describe("lookupTtpName", () => {
+  it("resolves a vendored ID to a non-empty name string", () => {
+    // T1078 — "Valid Accounts" — is a stable Enterprise technique in
+    // every recent MITRE bundle; if a refresh ever renames it, the
+    // exact string here will need updating, but the ID itself will
+    // keep resolving to *some* string.
+    const name = lookupTtpName("T1078");
+    expect(typeof name).toBe("string");
+    expect((name ?? "").length).toBeGreaterThan(0);
+  });
+
+  it("returns null for a syntactically valid but unknown ID", () => {
+    expect(lookupTtpName("T9999")).toBeNull();
+    expect(lookupTtpName("T9999.999")).toBeNull();
+  });
+
+  it("is case-sensitive — lowercase IDs do not resolve", () => {
+    expect(lookupTtpName("t1078")).toBeNull();
+  });
+
+  it("returns null for the empty string and for malformed IDs", () => {
+    expect(lookupTtpName("")).toBeNull();
+    expect(lookupTtpName("bogus")).toBeNull();
+  });
+});
+
+describe("MITRE_VENDOR_VERSION", () => {
+  it("exposes a non-empty version pin string", () => {
+    expect(typeof MITRE_VENDOR_VERSION).toBe("string");
+    expect(MITRE_VENDOR_VERSION.length).toBeGreaterThan(0);
+    // The pin format regex (validated by
+    // schemas/__tests__/mitre-attack-version.unit.test.ts) accepts
+    // tags like `v19.1` or commit SHAs. Either way the value should
+    // contain no trailing newline.
+    expect(MITRE_VENDOR_VERSION).toBe(MITRE_VENDOR_VERSION.trim());
   });
 });

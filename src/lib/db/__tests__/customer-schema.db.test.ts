@@ -190,11 +190,15 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          severity_score, likelihood_score, priority_tier,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
-               0.5, 0.4, 'LOW',
+               0.5, 0.4,
+               '["s1"]'::jsonb, '["l1"]'::jsonb, '["T1078"]'::jsonb,
+               'LOW',
                'first', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
@@ -204,17 +208,24 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          severity_score, likelihood_score, priority_tier,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
-               0.9, 0.85, 'CRITICAL',
+               0.9, 0.85,
+               '["s2"]'::jsonb, '["l2"]'::jsonb, '["T1110"]'::jsonb,
+               'CRITICAL',
                'second', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())
        ON CONFLICT (aice_id, event_key, lang, model_name, model)
        DO UPDATE SET analysis_text = EXCLUDED.analysis_text,
                      severity_score = EXCLUDED.severity_score,
                      likelihood_score = EXCLUDED.likelihood_score,
+                     severity_factors = EXCLUDED.severity_factors,
+                     likelihood_factors = EXCLUDED.likelihood_factors,
+                     ttp_tags = EXCLUDED.ttp_tags,
                      priority_tier = EXCLUDED.priority_tier,
                      requested_at = NOW()`,
     );
@@ -224,8 +235,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       severity_score: number;
       likelihood_score: number;
       priority_tier: string;
+      severity_factors: string[];
+      likelihood_factors: string[];
+      ttp_tags: string[];
     }>(
-      `SELECT analysis_text, severity_score, likelihood_score, priority_tier
+      `SELECT analysis_text, severity_score, likelihood_score, priority_tier,
+              severity_factors, likelihood_factors, ttp_tags
          FROM event_analysis_result
        WHERE aice_id = 'aice-r1' AND event_key = 1
          AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
@@ -233,16 +248,23 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].analysis_text).toBe("second");
     expect(rows[0].priority_tier).toBe("CRITICAL");
+    expect(rows[0].severity_factors).toEqual(["s2"]);
+    expect(rows[0].likelihood_factors).toEqual(["l2"]);
+    expect(rows[0].ttp_tags).toEqual(["T1110"]);
 
     // A different model produces a new row, not an overwrite.
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          severity_score, likelihood_score, priority_tier,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
-               0.1, 0.1, 'LOW',
+               0.1, 0.1,
+               '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+               'LOW',
                'gpt5', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
@@ -251,6 +273,63 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
        WHERE aice_id = 'aice-r1' AND event_key = 1`,
     );
     expect(count[0].c).toBe(2);
+  });
+
+  it("event_analysis_result round-11 columns: NOT NULL DEFAULT '[]' jsonb arrays", async () => {
+    // The migration adds severity_factors, likelihood_factors, ttp_tags
+    // as JSONB columns with NOT NULL DEFAULT '[]'. Assert each column
+    // exists with the expected type / nullability / default so a future
+    // accidental column-shape change in the migration is caught.
+    const { rows } = await pool.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      column_default: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'event_analysis_result'
+         AND column_name IN ('severity_factors', 'likelihood_factors', 'ttp_tags')
+       ORDER BY column_name`,
+    );
+    expect(rows.map((r) => r.column_name)).toEqual([
+      "likelihood_factors",
+      "severity_factors",
+      "ttp_tags",
+    ]);
+    for (const row of rows) {
+      expect(row.data_type).toBe("jsonb");
+      expect(row.is_nullable).toBe("NO");
+      // Postgres pretty-prints the literal default as `'[]'::jsonb`.
+      expect(row.column_default).toContain("'[]'");
+    }
+
+    // INSERT without the new columns defaults each to '[]' (a JSONB
+    // array). The route's loader / SELECTs rely on `jsonb_typeof = 'array'`.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-defaults', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               0.5, 0.5, 'LOW',
+               'x', 'engine:1.0.0|ranges:empty',
+               gen_random_uuid())`,
+    );
+    const { rows: types } = await pool.query<{
+      sev: string;
+      lik: string;
+      ttp: string;
+    }>(
+      `SELECT jsonb_typeof(severity_factors) AS sev,
+              jsonb_typeof(likelihood_factors) AS lik,
+              jsonb_typeof(ttp_tags) AS ttp
+       FROM event_analysis_result
+       WHERE aice_id = 'aice-defaults' AND event_key = 1`,
+    );
+    expect(types[0]).toEqual({ sev: "array", lik: "array", ttp: "array" });
   });
 
   it("rejects out-of-enum priority_tier via the CHECK constraint", async () => {

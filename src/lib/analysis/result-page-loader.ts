@@ -22,6 +22,7 @@ import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreRedactedTokens } from "./restore";
 
@@ -42,6 +43,25 @@ export interface AnalysisResultPageData {
   severityScore: number;
   likelihoodScore: number;
   priorityTier: PriorityTier;
+  /**
+   * Short noun phrases articulating `severityScore` (RFC 0002 §"Score
+   * factor articulation"). At least one item; the sentinel
+   * `["insufficient evidence"]` indicates the LLM had thin input.
+   */
+  severityFactors: string[];
+  /** Same shape as {@link severityFactors}, for `likelihoodScore`. */
+  likelihoodFactors: string[];
+  /**
+   * Validated MITRE ATT&CK technique IDs paired with their resolved
+   * technique names. `name` is `null` when the stored ID is absent from
+   * the currently vendored MITRE bundle — possible for legacy / manually-
+   * edited / corrupted rows; under the current write path every persisted
+   * ID has already passed `validateTtpTags` against the same vendored set
+   * the loader reads, so a `null` name is a defensive case rather than a
+   * steady-state value. The UI falls back to the ID-only label when
+   * `name === null`.
+   */
+  ttpTags: Array<{ id: string; name: string | null }>;
   /** Token-restored analysis text — safe to render as-is. */
   analysisText: string;
   requestedBy: string;
@@ -99,6 +119,9 @@ export async function loadAnalysisResultPage(
     severity_score: number;
     likelihood_score: number;
     priority_tier: PriorityTier;
+    severity_factors: string[];
+    likelihood_factors: string[];
+    ttp_tags: string[];
     analysis_text: string;
     model_actual_version: string | null;
     prompt_version: string | null;
@@ -109,6 +132,9 @@ export async function loadAnalysisResultPage(
        severity_score,
        likelihood_score,
        priority_tier,
+       severity_factors,
+       likelihood_factors,
+       ttp_tags,
        analysis_text,
        model_actual_version,
        prompt_version,
@@ -175,6 +201,9 @@ export async function loadAnalysisResultPage(
       severityScore: row.severity_score,
       likelihoodScore: row.likelihood_score,
       priorityTier: row.priority_tier,
+      severityFactors: row.severity_factors,
+      likelihoodFactors: row.likelihood_factors,
+      ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
       analysisText: restoredText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,

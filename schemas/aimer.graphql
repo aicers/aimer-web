@@ -13,6 +13,20 @@ type AnalysisResult {
 	"""
 	likelihoodScore: Float!
 	"""
+	Short noun phrases articulating the severity score (1-5 items).
+	The sentinel `["insufficient evidence"]` indicates thin input.
+	"""
+	severityFactors: [String!]!
+	"""
+	Short noun phrases articulating the likelihood score (1-5 items).
+	The sentinel `["insufficient evidence"]` indicates thin input.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	MITRE ATT&CK technique IDs (e.g., `T1078`, `T1110.001`). May be empty.
+	"""
+	ttpTags: [String!]!
+	"""
 	Markdown-formatted analysis
 	"""
 	analysis: String!
@@ -50,18 +64,21 @@ type Mutation {
 	Analyzes a security event using an LLM and returns the threat analysis.
 	
 	Stateless variant under `auth-mtls`: the BFF (aicers/aimer-web#44) supplies
-	plaintext events and stores results on its own side, so aimer persists
-	nothing here — no cache lookup, no cache write, no in-flight dedup.
+	already-redacted events and stores results on its own side, so aimer
+	persists nothing here — no cache lookup, no cache write, no in-flight dedup.
 	
-	PII is redacted before being sent to the LLM and restored in the
-	returned analysis so third-party LLM exposure stays bounded.
+	PII redaction is the caller's responsibility. aimer-web is the single
+	source of truth for the redaction policy and owns the per-event
+	redaction map used to restore tokens in the UI; see
+	aicers/aimer-web#247. Events arrive already in their final redacted
+	form and are forwarded to the LLM unchanged.
 	
 	# Errors
 	
 	Returns an error if:
 	- Input validation fails (empty `event` or `model`)
 	- The requested LLM server `name` is not registered
-	- PII redaction or LLM analysis fails
+	- LLM analysis fails
 	"""
 	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
 	"""

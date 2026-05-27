@@ -96,8 +96,11 @@ describe("aimer GraphQL contract", () => {
     const fields = result.getFields();
     expect(Object.keys(fields).sort()).toEqual([
       "analysis",
+      "likelihoodFactors",
       "likelihoodScore",
+      "severityFactors",
       "severityScore",
+      "ttpTags",
     ]);
 
     // severityScore: Float!  (non-null Float)
@@ -111,6 +114,11 @@ describe("aimer GraphQL contract", () => {
     // analysis: String!  (non-null String)
     expect(isNonNullType(fields.analysis.type)).toBe(true);
     expect(String(fields.analysis.type)).toBe("String!");
+
+    // Round-11 fields: non-null lists of non-null strings.
+    expect(String(fields.severityFactors.type)).toBe("[String!]!");
+    expect(String(fields.likelihoodFactors.type)).toBe("[String!]!");
+    expect(String(fields.ttpTags.type)).toBe("[String!]!");
   });
 
   it("Language enum exposes only KOREAN and ENGLISH", () => {

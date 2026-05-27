@@ -32,6 +32,11 @@ vi.mock("@/lib/redaction", () => ({
   decryptRedactionMap: (...args: unknown[]) => mockDecryptRedactionMap(...args),
 }));
 
+const mockLookupTtpName = vi.fn();
+vi.mock("../mitre-ttp", () => ({
+  lookupTtpName: (...args: unknown[]) => mockLookupTtpName(...args),
+}));
+
 interface QueryStub {
   match: (sql: string) => boolean;
   rows?: Record<string, unknown>[];
@@ -87,6 +92,9 @@ function pushResultRow(extras: Record<string, unknown> = {}) {
         severity_score: 0.42,
         likelihood_score: 0.81,
         priority_tier: "HIGH",
+        severity_factors: ["broad blast radius"],
+        likelihood_factors: ["lateral movement potential"],
+        ttp_tags: ["T1078", "T9999"],
         analysis_text: "attacker <<REDACTED_IP_001>> reached us",
         model_actual_version: null,
         prompt_version: null,
@@ -128,6 +136,10 @@ beforeEach(() => {
   mockDecryptRedactionMap.mockReset().mockResolvedValue({
     "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
   });
+  mockLookupTtpName.mockReset().mockImplementation((id: string) => {
+    if (id === "T1078") return "Valid Accounts";
+    return null;
+  });
 });
 
 describe("loadAnalysisResultPage", () => {
@@ -144,6 +156,16 @@ describe("loadAnalysisResultPage", () => {
     expect(outcome.data.severityScore).toBe(0.42);
     expect(outcome.data.likelihoodScore).toBe(0.81);
     expect(outcome.data.priorityTier).toBe("HIGH");
+    expect(outcome.data.severityFactors).toEqual(["broad blast radius"]);
+    expect(outcome.data.likelihoodFactors).toEqual([
+      "lateral movement potential",
+    ]);
+    // TTP IDs resolve via lookupTtpName — known IDs carry their name,
+    // unknown IDs (legacy / vendor-rev drift) fall back to name=null.
+    expect(outcome.data.ttpTags).toEqual([
+      { id: "T1078", name: "Valid Accounts" },
+      { id: "T9999", name: null },
+    ]);
   });
 
   it("authorizes the read-only result page with the analyses:read permission key", async () => {

@@ -19,6 +19,9 @@ export interface AnalyzeEventVariables {
 export interface AnalysisResult {
   severityScore: number;
   likelihoodScore: number;
+  severityFactors: Array<string>;
+  likelihoodFactors: Array<string>;
+  ttpTags: Array<string>;
   analysis: string;
 }
 
@@ -42,6 +45,9 @@ export const ANALYZE_EVENT_SOURCE = `mutation AnalyzeEvent(
   ) {
     severityScore
     likelihoodScore
+    severityFactors
+    likelihoodFactors
+    ttpTags
     analysis
   }
 }

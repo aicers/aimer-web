@@ -14,6 +14,9 @@ export interface EventAnalysisResultRow {
   severity_score: number;
   likelihood_score: number;
   priority_tier: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  severity_factors: string[];
+  likelihood_factors: string[];
+  ttp_tags: string[];
   analysis_text: string;
   redaction_policy_version: string;
   requested_by: string;

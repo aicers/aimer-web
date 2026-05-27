@@ -116,6 +116,8 @@ export type AuditAction =
   | "ai_analysis.result_stored"
   | "ai_analysis.aimer_call_failed"
   | "ai_analysis.hallucination_detected"
+  | "ai_analysis.ttp_tag_dropped"
+  | "ai_analysis.factor_dropped"
   // AI analysis bridge (POST /api/analysis/analyze-bridge + /continue)
   | "ai_analysis.bridge_initiated"
   | "ai_analysis.short_circuit_executed"

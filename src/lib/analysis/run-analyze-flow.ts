@@ -20,6 +20,12 @@ import {
 } from "@/lib/redaction";
 import type { AnalyzeErrorCode } from "./analyze-types";
 import { parseEventTime } from "./event-time";
+import {
+  type FactorAxis,
+  type FilterFactorsResult,
+  filterFactors,
+} from "./factor-filter";
+import { MITRE_VENDOR_VERSION, validateTtpTags } from "./mitre-ttp";
 import { computePriorityTier } from "./priority-tier";
 
 // ---------------------------------------------------------------------------
@@ -311,6 +317,120 @@ function buildViewUrl(
   );
 }
 
+interface AuditEmissionBase {
+  actorId: string;
+  authContext: "general";
+  targetType: string;
+  ipAddress: string | undefined;
+  sid: string;
+  customerId: string;
+  aiceId: string;
+}
+
+function groupBy<K extends string, V>(
+  items: readonly V[],
+  key: (v: V) => K,
+): Map<K, V[]> {
+  const map = new Map<K, V[]>();
+  for (const item of items) {
+    const k = key(item);
+    const bucket = map.get(k);
+    if (bucket) bucket.push(item);
+    else map.set(k, [item]);
+  }
+  return map;
+}
+
+function emitFactorAuditRows(args: {
+  auditBase: AuditEmissionBase;
+  eventKey: string;
+  axis: FactorAxis;
+  rawInput: readonly string[];
+  filter: FilterFactorsResult;
+}): void {
+  const { auditBase, eventKey, axis, rawInput, filter } = args;
+  const targetId = `${auditBase.aiceId}/${eventKey}`;
+  // RFC 0001:756 locks the payload to include the event-level target
+  // identifiers (`customer_id`, `aice_id`, `event_key`, `story_id: null`)
+  // alongside the axis/reason/items fields so consumers do not need to
+  // parse `targetId` to recover the event.
+  const targetFields = {
+    customer_id: auditBase.customerId,
+    aice_id: auditBase.aiceId,
+    event_key: eventKey,
+    story_id: null,
+  } as const;
+  // Per-`(row, axis, reason)` rows describing which shape rule each
+  // dropped item violated. Cap-truncated items deliberately do not
+  // appear here — RFC 0001:756's `reason` enum has no cap value.
+  const byReason = groupBy(filter.dropped, (d) => d.reason);
+  for (const [reason, items] of byReason) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.factor_dropped",
+      targetId,
+      details: {
+        ...targetFields,
+        axis,
+        dropped_items: items.map((d) => d.item),
+        reason,
+        replaced_with_sentinel: false,
+      },
+    });
+  }
+  // Sentinel recovery — a separate row whose `dropped_items` carries the
+  // full pre-filter input so the audit reader can attribute the
+  // recovery without re-joining against the per-reason rows above.
+  if (filter.usedSentinel) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.factor_dropped",
+      targetId,
+      details: {
+        ...targetFields,
+        axis,
+        dropped_items: [...rawInput],
+        reason: "all_items_filtered",
+        replaced_with_sentinel: true,
+      },
+    });
+  }
+}
+
+function emitTtpDropAuditRows(args: {
+  auditBase: AuditEmissionBase;
+  eventKey: string;
+  dropped: readonly { id: string; reason: string }[];
+}): void {
+  const { auditBase, eventKey, dropped } = args;
+  const targetId = `${auditBase.aiceId}/${eventKey}`;
+  // RFC 0001:755 locks the payload to include `customer_id`, `aice_id`,
+  // `event_key`, and `story_id: null` so consumers can read the
+  // event-level scope directly from the JSON without parsing `targetId`.
+  const targetFields = {
+    customer_id: auditBase.customerId,
+    aice_id: auditBase.aiceId,
+    event_key: eventKey,
+    story_id: null,
+  } as const;
+  // One audit row per `reason` group. RFC 0001:755's payload `reason` is
+  // single-valued, so mixed-reason drops split into separate rows.
+  const byReason = groupBy(dropped, (d) => d.reason);
+  for (const [reason, items] of byReason) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.ttp_tag_dropped",
+      targetId,
+      details: {
+        ...targetFields,
+        dropped_ids: items.map((d) => d.id),
+        reason,
+        mitre_vendor_version: MITRE_VENDOR_VERSION,
+      },
+    });
+  }
+}
+
 function computeAnalysisPolicyVersion(
   ranges: import("@/lib/redaction").RangeSet,
 ): string {
@@ -529,6 +649,9 @@ export async function runAnalyzeFlow(
   let aimerResponse: {
     severityScore: number;
     likelihoodScore: number;
+    severityFactors: string[];
+    likelihoodFactors: string[];
+    ttpTags: string[];
     analysis: string;
   };
   try {
@@ -610,17 +733,63 @@ export async function runAnalyzeFlow(
     aimerResponse.severityScore,
     aimerResponse.likelihoodScore,
   );
+
+  // ---- Score factor + TTP tag shape filters ----------------------------
+  // RFC 0002 §"Score factor articulation" + §"MITRE ATT&CK TTP tagging":
+  // run LLM-returned arrays through their respective filters before
+  // storage, and emit per-`(row, reason)` audit rows (RFC 0001 §"Audit
+  // logging — new actions", amended in this PR — see issue #317 for the
+  // cardinality rationale).
+  const severityFilter = filterFactors(
+    aimerResponse.severityFactors,
+    "severity",
+  );
+  const likelihoodFilter = filterFactors(
+    aimerResponse.likelihoodFactors,
+    "likelihood",
+  );
+  const ttpResult = validateTtpTags(aimerResponse.ttpTags);
+
+  emitFactorAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    axis: "severity",
+    rawInput: aimerResponse.severityFactors,
+    filter: severityFilter,
+  });
+  emitFactorAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    axis: "likelihood",
+    rawInput: aimerResponse.likelihoodFactors,
+    filter: likelihoodFilter,
+  });
+  emitTtpDropAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    dropped: ttpResult.dropped,
+  });
+
   try {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          severity_score, likelihood_score, priority_tier,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier,
           analysis_text, redaction_policy_version, requested_by)
-       VALUES ($1, $2::numeric, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid)
+       VALUES ($1, $2::numeric, $3, $4, $5,
+               $6, $7,
+               $8::jsonb, $9::jsonb, $10::jsonb,
+               $11,
+               $12, $13, $14::uuid)
        ON CONFLICT (aice_id, event_key, lang, model_name, model)
        DO UPDATE SET
          severity_score = EXCLUDED.severity_score,
          likelihood_score = EXCLUDED.likelihood_score,
+         severity_factors = EXCLUDED.severity_factors,
+         likelihood_factors = EXCLUDED.likelihood_factors,
+         ttp_tags = EXCLUDED.ttp_tags,
          priority_tier = EXCLUDED.priority_tier,
          analysis_text = EXCLUDED.analysis_text,
          redaction_policy_version = EXCLUDED.redaction_policy_version,
@@ -634,6 +803,9 @@ export async function runAnalyzeFlow(
         params.model,
         aimerResponse.severityScore,
         aimerResponse.likelihoodScore,
+        JSON.stringify(severityFilter.kept),
+        JSON.stringify(likelihoodFilter.kept),
+        JSON.stringify(ttpResult.valid),
         priorityTier,
         scan.scanned,
         analysisPolicyVersion,

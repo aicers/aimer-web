@@ -20,6 +20,17 @@ const TECHNIQUES_PATH = join(
   process.cwd(),
   "schemas/mitre-attack-techniques.json",
 );
+const VERSION_PATH = join(process.cwd(), "schemas/mitre-attack.version");
+
+/**
+ * The vendored MITRE ATT&CK release pin as written in
+ * `schemas/mitre-attack.version`. Read once at module init so audit
+ * payloads carry a consistent value for the lifetime of the process.
+ */
+export const MITRE_VENDOR_VERSION: string = readFileSync(
+  VERSION_PATH,
+  "utf-8",
+).trim();
 
 // Sub-techniques use a three-digit suffix (e.g. `T1110.001`); top-level
 // techniques are four digits (e.g. `T1110`). Anything else is rejected
@@ -32,20 +43,27 @@ interface TechniqueRow {
   name: string;
 }
 
-function loadIds(): Set<string> {
+function loadTechniques(): {
+  ids: Set<string>;
+  names: Map<string, string>;
+} {
   const raw = readFileSync(TECHNIQUES_PATH, "utf-8");
   const rows = JSON.parse(raw) as TechniqueRow[];
   const ids = new Set<string>();
+  const names = new Map<string, string>();
   for (const row of rows) {
-    if (typeof row.id === "string") ids.add(row.id);
+    if (typeof row.id === "string") {
+      ids.add(row.id);
+      if (typeof row.name === "string") names.set(row.id, row.name);
+    }
   }
-  return ids;
+  return { ids, names };
 }
 
-// Module-level singleton; the set is never exposed externally, so
+// Module-level singleton; the set / map are never exposed externally, so
 // `Object.freeze` would be misleading (it does not block Set mutation)
 // and module encapsulation is the actual guarantee.
-const VENDORED_IDS = loadIds();
+const { ids: VENDORED_IDS, names: VENDORED_NAMES } = loadTechniques();
 
 export type DroppedReason = "not_in_vendored_mitre" | "invalid_format";
 
@@ -77,4 +95,15 @@ export function validateTtpTags(raw: readonly string[]): ValidateTtpTagsResult {
     valid.push(id);
   }
   return { valid, dropped };
+}
+
+/**
+ * Resolve a MITRE ATT&CK technique ID to its human-readable name from
+ * the same vendored knowledge base `validateTtpTags` consults. Returns
+ * `null` when the ID is not present (legacy rows pre-dating a vendor
+ * refresh, operator-side manual edits, on-disk corruption). Case-
+ * sensitive — IDs are uppercase `T####(.###)?`.
+ */
+export function lookupTtpName(id: string): string | null {
+  return VENDORED_NAMES.get(id) ?? null;
 }

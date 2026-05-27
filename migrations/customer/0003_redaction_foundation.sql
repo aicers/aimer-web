@@ -99,6 +99,9 @@ CREATE TABLE event_analysis_result (
     prompt_version           TEXT,
     severity_score           DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "if real, how bad" (impact, blast radius)
     likelihood_score         DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "how likely this is a real threat"
+    severity_factors         JSONB          NOT NULL DEFAULT '[]',   -- short noun phrases articulating severity_score; see RFC 0002 §"Score factor articulation"
+    likelihood_factors       JSONB          NOT NULL DEFAULT '[]',   -- same shape, articulating likelihood_score
+    ttp_tags                 JSONB          NOT NULL DEFAULT '[]',   -- validated MITRE ATT&CK technique IDs; see RFC 0002 §"MITRE ATT&CK TTP tagging"
     priority_tier            TEXT NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT           NOT NULL,
