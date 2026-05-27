@@ -216,7 +216,7 @@ CREATE TABLE event_analysis_result (
 
 `lang` is stored exactly as it appears on the wire to aimer (the `Language` GraphQL enum from aimer#384: `KOREAN` | `ENGLISH`). UI mapping to `next-intl` locales (`ko` / `en`) happens in the presentation layer; the storage uses aimer's vocabulary so there is no translation layer between the row and the call.
 
-`requested_by` is kept as informational metadata only. The audit log (`ai_analysis.request_issued`) remains the canonical, append-only source for "who triggered which analysis when"; the column on the row is for UI convenience (display "Requested by X" without joining the audit log per page load) and is treated as best-effort. If the referenced account is later deleted, the row keeps the orphan UUID; the UI renders it as "deleted user" rather than silently substituting or erroring.
+`requested_by` is kept as informational metadata only. The audit log (`ai_analysis.request_issued`) remains the canonical, append-only source for "who triggered which analysis when"; the column on the row is for UI convenience (display "Requested by X" without joining the audit log per page load) and is treated as best-effort. The UI renders the stored value verbatim — there is no per-render lookup against the global accounts table and no `"deleted user"` substitution; the column crosses the customer-DB / global-DB boundary, so resolving it back to an account label is deferred to a follow-up issue once the requester-id semantics are settled. If the referenced account is later deleted, the row keeps the orphan UUID and the UI shows it as-is.
 
 No `FOREIGN KEY` to `event_redaction_map` despite logical dependency: per RFC 0002 §5, analysis rows must outlive their source row across retention sweeps.
 
