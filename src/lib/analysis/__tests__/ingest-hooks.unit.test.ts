@@ -42,7 +42,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     await expect(
       applyBaselineIngestHook(failingPool(), {
         customerId: CUSTOMER_ID,
-        lastEventArrivalAt: new Date("2026-05-27T10:00:00Z"),
+        acceptedEventTimes: [new Date("2026-05-27T10:00:00Z")],
       }),
     ).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(
@@ -102,7 +102,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
     const pool = failingPool();
     await applyBaselineIngestHook(pool, {
       customerId: CUSTOMER_ID,
-      lastEventArrivalAt: null,
+      acceptedEventTimes: [],
     });
     await applyStoryIngestHook(pool, {
       customerId: CUSTOMER_ID,

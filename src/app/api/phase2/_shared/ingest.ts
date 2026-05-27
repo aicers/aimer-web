@@ -19,10 +19,16 @@ export interface IngestCounts {
  * Data captured during a successful baseline batch so the route handler
  * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
  * DB commit returns. See `src/lib/analysis/ingest-hooks.ts`.
+ *
+ * `acceptedEventTimes` lists every accepted `event_time` so the hook
+ * can dirty ALL affected DAILY/WEEKLY/MONTHLY buckets (RFC 0002 §
+ * "Dirty transitions" rule 1, applied per affected bucket). Earlier
+ * versions of this hook passed only the batch's max event_time, which
+ * silently dropped dirty transitions on every other done bucket the
+ * batch overran.
  */
 export interface BaselineIngestExtras {
-  /** Most-recent `event_time` accepted in the batch (null when none). */
-  lastEventArrivalAt: Date | null;
+  acceptedEventTimes: Date[];
 }
 
 /**
@@ -108,13 +114,13 @@ export async function ingestBaselineBatch(
     return {
       accepted: 0,
       duplicatesSkipped: 0,
-      lastEventArrivalAt: null,
+      acceptedEventTimes: [],
     };
   }
 
   return withTransaction(pool, async (client) => {
     let accepted = 0;
-    let lastEventArrivalAt: Date | null = null;
+    const acceptedEventTimes: Date[] = [];
     for (const event of payload.events) {
       const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
         event.raw_event,
@@ -163,16 +169,13 @@ export async function ingestBaselineBatch(
       );
       if (result.rowCount === 1) {
         accepted += 1;
-        const arrivedAt = new Date(event.event_time);
-        if (!lastEventArrivalAt || arrivedAt > lastEventArrivalAt) {
-          lastEventArrivalAt = arrivedAt;
-        }
+        acceptedEventTimes.push(new Date(event.event_time));
       }
     }
     return {
       accepted,
       duplicatesSkipped: payload.events.length - accepted,
-      lastEventArrivalAt,
+      acceptedEventTimes,
     };
   });
 }

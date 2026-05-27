@@ -244,12 +244,9 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   it("recordBaselineActivity seeds a ready LIVE periodic_report_state row", async () => {
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(
-        client,
-        CUSTOMER_B,
-        "Asia/Seoul",
+      await recordBaselineActivity(client, CUSTOMER_B, "Asia/Seoul", [
         new Date("2026-05-27T08:00:00Z"),
-      );
+      ]);
     } finally {
       client.release();
     }
@@ -455,8 +452,12 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const row = await getStoryState(pool, customer, "70001");
     expect(row?.status).toBe("pending");
-    expect(row?.first_member_at).not.toBeNull();
-    expect(row?.last_member_at).not.toBeNull();
+    // Decision 1: timestamps cleared to NULL so the next worker tick
+    // / reconcile forward-patch re-derives readiness from the new
+    // canonical version's `story.received_at`, instead of carrying
+    // forward a hook-time NOW() that reconcile can never roll back.
+    expect(row?.first_member_at).toBeNull();
+    expect(row?.last_member_at).toBeNull();
     const jobs = await countStoryJobs(pool, customer, "70001");
     expect(jobs.count).toBe(0);
   });
@@ -597,7 +598,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const client = await pool.connect();
     try {
-      await recordBaselineActivity(client, customer, "Asia/Seoul", eventTime);
+      await recordBaselineActivity(client, customer, "Asia/Seoul", [eventTime]);
     } finally {
       client.release();
     }
@@ -615,6 +616,94 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.status).toBe("dirty");
     expect(rows[0]?.last_event_at?.toISOString()).toBe(
       "2024-03-10T03:00:00.000Z",
+    );
+  });
+
+  it("recordBaselineActivity dirties EVERY done bucket the batch overran (round-4 review item 3)", async () => {
+    // Round 4: a single baseline batch can contain accepted events in
+    // multiple already-done DAILY buckets. The old hook collapsed the
+    // batch to a single max event_time and only dirtied one bucket
+    // per period. The fix is to forward the full list of accepted
+    // event_times so the hook can flip every overlapped bucket to
+    // `dirty`.
+    const customer = "00000000-0000-0000-0000-0000000000f3";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-j', 'J')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    // Two ready DAILY buckets, each with a done dry-run job.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, last_ready_at)
+       VALUES
+         ($1, 'DAILY', DATE '2024-03-10', 'Asia/Seoul', 'ready', NOW()),
+         ($1, 'DAILY', DATE '2024-03-12', 'Asia/Seoul', 'ready', NOW())`,
+      [customer],
+    );
+    for (const bucketDate of ["2024-03-10", "2024-03-12"]) {
+      await pool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model,
+            status, generation, dry_run,
+            processing_started_at, last_generated_at)
+         VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul',
+                 COALESCE($3, 'ENGLISH'),
+                 COALESCE($4, 'openai'),
+                 COALESCE($5, 'gpt-4o'),
+                 'done', 1, TRUE, NOW(), NOW())`,
+        [
+          customer,
+          bucketDate,
+          process.env.ANALYSIS_DEFAULT_LANG ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+        ],
+      );
+    }
+
+    const earlier = new Date("2024-03-10T03:00:00Z"); // 2024-03-10 KST
+    const later = new Date("2024-03-12T03:00:00Z"); // 2024-03-12 KST
+    const client = await pool.connect();
+    try {
+      // Both events forwarded; hook must dirty BOTH done buckets, not
+      // only the bucket containing the maximum event_time.
+      await recordBaselineActivity(client, customer, "Asia/Seoul", [
+        earlier,
+        later,
+      ]);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query<{
+      bucket_date: string;
+      status: string;
+      last_event_at: Date | null;
+    }>(
+      `SELECT bucket_date::text AS bucket_date, status, last_event_at
+         FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+        ORDER BY bucket_date`,
+      [customer],
+    );
+    const byDate = new Map(
+      rows.map((r) => [
+        r.bucket_date,
+        { status: r.status, last: r.last_event_at },
+      ]),
+    );
+    expect(byDate.get("2024-03-10")?.status).toBe("dirty");
+    expect(byDate.get("2024-03-12")?.status).toBe("dirty");
+    // Each bucket's last_event_at picks up only events that fell
+    // INSIDE that bucket, not the global batch max.
+    expect(byDate.get("2024-03-10")?.last?.toISOString()).toBe(
+      "2024-03-10T03:00:00.000Z",
+    );
+    expect(byDate.get("2024-03-12")?.last?.toISOString()).toBe(
+      "2024-03-12T03:00:00.000Z",
     );
   });
 
@@ -636,5 +725,102 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       [CUSTOMER_B],
     );
     expect(rows[0]?.status).toBe("dirty");
+  });
+
+  it("dirtyPeriodicStatesOverlapping flips DAILY/WEEKLY/MONTHLY by true bucket-range overlap (round-4 review item 2)", async () => {
+    // Round 4: a MONTHLY row at bucket_date=2026-05-01 represents the
+    // window [2026-05-01, 2026-06-01) in s.tz. A refresh envelope of
+    // [2026-05-15, 2026-05-16) overlaps that window, so the row must
+    // flip to `dirty` — even though `bucket_date` itself (2026-05-01)
+    // is outside the envelope and `last_event_at` may not lie in the
+    // envelope either. The earlier OR-bucket_date-in-range check
+    // missed this case.
+    const customer = "00000000-0000-0000-0000-0000000000f2";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-i', 'I')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    // Three ready rows whose buckets contain 2026-05-15 12:00 Asia/Seoul:
+    //   DAILY   2026-05-15 / WEEKLY 2026-05-11 / MONTHLY 2026-05-01
+    // Plus one ready DAILY 2026-04-30 outside the envelope which must
+    // remain ready.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, last_ready_at)
+       VALUES
+         ($1, 'DAILY',   DATE '2026-05-15', 'Asia/Seoul', 'ready', NOW()),
+         ($1, 'WEEKLY',  DATE '2026-05-11', 'Asia/Seoul', 'ready', NOW()),
+         ($1, 'MONTHLY', DATE '2026-05-01', 'Asia/Seoul', 'ready', NOW()),
+         ($1, 'DAILY',   DATE '2026-04-30', 'Asia/Seoul', 'ready', NOW())`,
+      [customer],
+    );
+    // Seed a done job for each so the dirty trigger fires (the helper
+    // only dirties rows that have at least one processing/done job).
+    for (const [period, bucketDate] of [
+      ["DAILY", "2026-05-15"],
+      ["WEEKLY", "2026-05-11"],
+      ["MONTHLY", "2026-05-01"],
+      ["DAILY", "2026-04-30"],
+    ] as const) {
+      await pool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model,
+            status, generation, dry_run,
+            processing_started_at, last_generated_at)
+         VALUES ($1, $2, $3::date, 'Asia/Seoul',
+                 COALESCE($4, 'ENGLISH'),
+                 COALESCE($5, 'openai'),
+                 COALESCE($6, 'gpt-4o'),
+                 'done', 1, TRUE, NOW(), NOW())`,
+        [
+          customer,
+          period,
+          bucketDate,
+          process.env.ANALYSIS_DEFAULT_LANG ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+        ],
+      );
+    }
+
+    const client = await pool.connect();
+    try {
+      // Refresh envelope spans 2026-05-15 03:00Z..2026-05-16 03:00Z
+      // (= roughly 2026-05-15 12:00..2026-05-16 12:00 in Asia/Seoul).
+      // - DAILY   2026-05-15 window: 2026-05-15 00:00 KST..2026-05-16 00:00 KST → overlaps.
+      // - WEEKLY  2026-05-11 window: 2026-05-11 00:00 KST..2026-05-18 00:00 KST → overlaps.
+      // - MONTHLY 2026-05-01 window: 2026-05-01 00:00 KST..2026-06-01 00:00 KST → overlaps.
+      // - DAILY   2026-04-30 window: 2026-04-30 00:00 KST..2026-05-01 00:00 KST → does NOT overlap.
+      await dirtyPeriodicStatesOverlapping(
+        client,
+        customer,
+        new Date("2026-05-15T03:00:00Z"),
+        new Date("2026-05-16T03:00:00Z"),
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{
+      period: string;
+      bucket_date: string;
+      status: string;
+    }>(
+      `SELECT period, bucket_date::text AS bucket_date, status
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period, bucket_date`,
+      [customer],
+    );
+    const byKey = new Map(
+      rows.map((r) => [`${r.period}|${r.bucket_date}`, r.status]),
+    );
+    expect(byKey.get("DAILY|2026-05-15")).toBe("dirty");
+    expect(byKey.get("WEEKLY|2026-05-11")).toBe("dirty");
+    expect(byKey.get("MONTHLY|2026-05-01")).toBe("dirty");
+    // Out-of-envelope DAILY must remain ready.
+    expect(byKey.get("DAILY|2026-04-30")).toBe("ready");
   });
 });

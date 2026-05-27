@@ -151,9 +151,21 @@ export async function maybeArchiveStoryState(
 /**
  * Window-replace or backfill re-inserts at least one `story_version`
  * for a previously archived `story_id` (decision 1: unarchive in
- * place). The state row resets to `pending` with fresh timestamps so
- * the next worker tick re-derives readiness from the new narrative,
- * and stale jobs from the prior archived run are deleted.
+ * place). The state row resets to `pending` and ALL source timestamps
+ * are cleared to NULL so the next worker tick (and/or the reconcile
+ * forward-patch path) re-derives readiness from the canonical
+ * customer-DB story timestamps for the surviving versions. Stale jobs
+ * from the prior archived run are deleted.
+ *
+ * Issue #294 decision 1 spells this out:
+ *   UPDATE the same state row SET status='pending',
+ *     first_member_at=NULL, last_member_at=NULL, last_ready_at=NULL;
+ *   DELETE any *_analysis_job rows for that story_id from the
+ *   archived run.
+ *
+ * Writing NOW() into the timestamps would leave a hook-time value
+ * that reconcile's forward-only patch can never roll backwards,
+ * which would delay readiness on a reinserted historical story.
  *
  * No-op when the row is missing or already non-archived — the
  * dirty/archive helpers cover those branches. Reconcile and the
@@ -170,8 +182,8 @@ export async function unarchiveStoryStateIfArchived(
   const { rowCount } = await client.query(
     `UPDATE story_analysis_state
         SET status         = 'pending',
-            first_member_at = NOW(),
-            last_member_at  = NOW(),
+            first_member_at = NULL,
+            last_member_at  = NULL,
             last_ready_at   = NULL,
             updated_at      = NOW()
       WHERE customer_id = $1
@@ -224,10 +236,17 @@ export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
 
 /**
  * Record that a Phase 2 baseline batch landed for a customer. Updates
- * the LIVE bucket and any existing DAILY/WEEKLY/MONTHLY bucket whose
- * window contains `eventArrivedAt` (so a baseline batch that lands
- * inside an already-`done` closed bucket marks that bucket `dirty`
- * for re-analysis — RFC 0002 §"Dirty transitions" rule 1).
+ * the LIVE bucket and every existing DAILY/WEEKLY/MONTHLY bucket
+ * whose window contains ANY of the accepted `event_time`s — so a
+ * single batch with events landing inside multiple already-`done`
+ * closed buckets marks ALL of them `dirty` for re-analysis (RFC 0002
+ * §"Dirty transitions" rule 1, applied per affected bucket).
+ *
+ * `eventTimes` must be the full list of accepted `event_time` values
+ * for the batch. Passing only the most-recent event would miss any
+ * earlier event that landed in a different done bucket; the route
+ * handler therefore captures every accepted event and forwards them
+ * unchanged to this hook.
  *
  * The DAILY/WEEKLY/MONTHLY rows themselves are NOT seeded here: the
  * reconcile scan derives the full bucket set from
@@ -241,12 +260,21 @@ export async function recordBaselineActivity(
   client: PoolClient,
   customerId: string,
   tz: string,
-  eventArrivedAt: Date,
+  eventTimes: readonly Date[],
 ): Promise<void> {
+  if (eventTimes.length === 0) return;
+  const isoTimes = eventTimes.map((t) => t.toISOString());
+
+  // LIVE: rolling state, so it stamps the MAX event_time as
+  // last_event_at and dirties the row if a done/processing job
+  // already exists.
   await client.query(
-    `INSERT INTO periodic_report_state
+    `WITH max_t AS (
+       SELECT MAX(t) AS t FROM unnest($4::timestamptz[]) AS t
+     )
+     INSERT INTO periodic_report_state
        (customer_id, period, bucket_date, tz, status, last_event_at)
-     VALUES ($1, 'LIVE', $2::date, $3, 'ready', $4)
+     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t FROM max_t
      ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
        SET last_event_at = GREATEST(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at
@@ -265,19 +293,41 @@ export async function recordBaselineActivity(
              ELSE periodic_report_state.status
            END,
            updated_at = NOW()`,
-    [customerId, LIVE_BUCKET_DATE, tz, eventArrivedAt.toISOString()],
+    [customerId, LIVE_BUCKET_DATE, tz, isoTimes],
   );
 
-  // Forward-patch + dirty existing DAILY/WEEKLY/MONTHLY rows whose
-  // bucket contains the event time. Only the row whose
-  // `bucket_date = date_trunc(period, event_time AT TIME ZONE tz)` is
-  // touched, so the UPDATE is at most one row per period (three rows
-  // total). Existing-only — seeding is reconcile's job.
+  // DAILY/WEEKLY/MONTHLY: forward-patch + dirty every existing row
+  // whose bucket window contains at least one accepted event_time.
+  // The CTE collapses the input timestamps to (period, bucket_date,
+  // max-event-time-inside-the-bucket) tuples so a single UPDATE can
+  // touch all affected rows, and each row's last_event_at picks up
+  // the latest event THAT FELL INSIDE THE BUCKET — not the global
+  // batch max. Existing-only — seeding is reconcile's job.
   await client.query(
-    `UPDATE periodic_report_state s
-        SET last_event_at = GREATEST(
-              COALESCE(s.last_event_at, $3::timestamptz), $3::timestamptz
-            ),
+    `WITH events(t) AS (
+       SELECT t FROM unnest($3::timestamptz[]) AS t
+     ),
+     buckets(period, bucket_date, max_t) AS (
+       SELECT 'DAILY'::text,
+              (date_trunc('day',   t AT TIME ZONE $2))::date,
+              MAX(t)
+         FROM events
+        GROUP BY 1, 2
+       UNION ALL
+       SELECT 'WEEKLY'::text,
+              (date_trunc('week',  t AT TIME ZONE $2))::date,
+              MAX(t)
+         FROM events
+        GROUP BY 1, 2
+       UNION ALL
+       SELECT 'MONTHLY'::text,
+              (date_trunc('month', t AT TIME ZONE $2))::date,
+              MAX(t)
+         FROM events
+        GROUP BY 1, 2
+     )
+     UPDATE periodic_report_state s
+        SET last_event_at = GREATEST(s.last_event_at, b.max_t),
             status = CASE
               WHEN s.status IN ('ready', 'archived')
                 AND EXISTS (
@@ -292,25 +342,31 @@ export async function recordBaselineActivity(
               ELSE s.status
             END,
             updated_at = NOW()
+       FROM buckets b
       WHERE s.customer_id = $1
         AND s.tz          = $2
-        AND s.period IN ('DAILY', 'WEEKLY', 'MONTHLY')
-        AND s.bucket_date = CASE s.period
-              WHEN 'DAILY'   THEN (date_trunc('day',   $3::timestamptz AT TIME ZONE $2))::date
-              WHEN 'WEEKLY'  THEN (date_trunc('week',  $3::timestamptz AT TIME ZONE $2))::date
-              WHEN 'MONTHLY' THEN (date_trunc('month', $3::timestamptz AT TIME ZONE $2))::date
-            END`,
-    [customerId, tz, eventArrivedAt.toISOString()],
+        AND s.period      = b.period
+        AND s.bucket_date = b.bucket_date`,
+    [customerId, tz, isoTimes],
   );
 }
 
 /**
- * Dirty all periodic_report_state rows whose [bucket window] overlaps
- * the supplied [from, to) envelope. Phase 0's overlap is intentionally
- * coarse — it marks every row for the customer whose `last_event_at`
- * falls within the window OR whose `bucket_date` is within the window.
- * Phase 1/Phase 2 (#296/#297) will refine this once they consume the
- * dirty signal.
+ * Dirty all periodic_report_state rows whose bucket window overlaps
+ * the supplied [from, to) envelope.
+ *
+ * Per RFC 0002 §"Dirty transitions" rule 2 (envelope overlap), a row
+ * is dirtied when `[bucket_start, bucket_end)` intersects `[from, to)`
+ * — i.e. `bucket_start < to AND bucket_end > from`. The bucket window
+ * is computed in the row's `tz` so a 2026-05-15 refresh correctly
+ * overlaps a MONTHLY 2026-05-01 (which spans 2026-05-01..2026-06-01),
+ * not just rows whose `bucket_date` happens to fall inside the
+ * envelope.
+ *
+ * LIVE has no fixed bucket window — it's the rolling current state
+ * — so it falls back to the `last_event_at` proxy: if the row's
+ * most recent observed event lies inside the envelope, the LIVE row
+ * is affected.
  */
 export async function dirtyPeriodicStatesOverlapping(
   client: PoolClient,
@@ -324,10 +380,19 @@ export async function dirtyPeriodicStatesOverlapping(
       WHERE s.customer_id = $1
         AND s.status IN ('ready', 'dirty')
         AND (
-          (s.last_event_at IS NOT NULL
+          -- LIVE: no fixed window, use last_event_at proxy.
+          (s.period = 'LIVE'
+            AND s.last_event_at IS NOT NULL
             AND s.last_event_at >= $2
             AND s.last_event_at <  $3)
-          OR (s.bucket_date >= $2::date AND s.bucket_date < $3::date)
+          -- DAILY / WEEKLY / MONTHLY: true bucket-range overlap in s.tz.
+          OR (s.period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+            AND ((s.bucket_date::timestamp) AT TIME ZONE s.tz) < $3::timestamptz
+            AND ((CASE s.period
+                    WHEN 'DAILY'   THEN s.bucket_date::timestamp + INTERVAL '1 day'
+                    WHEN 'WEEKLY'  THEN s.bucket_date::timestamp + INTERVAL '1 week'
+                    WHEN 'MONTHLY' THEN s.bucket_date::timestamp + INTERVAL '1 month'
+                  END) AT TIME ZONE s.tz) > $2::timestamptz)
         )
         AND EXISTS (
           SELECT 1 FROM periodic_report_job j

@@ -133,8 +133,8 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
       const second = await ingestBaselineBatch(pool, payload, "aice-1");
       expect(second.accepted).toBe(0);
       expect(second.duplicatesSkipped).toBe(2);
-      // Duplicates-only batch produces no arrival.
-      expect(second.lastEventArrivalAt).toBeNull();
+      // Duplicates-only batch produces no accepted arrivals.
+      expect(second.acceptedEventTimes).toEqual([]);
 
       // Mixed batch: one new + one duplicate.
       const mixed = await ingestBaselineBatch(

@@ -46,15 +46,21 @@ function logHookFailure(scope: string, customerId: string, err: unknown): void {
 
 export interface BaselineIngestHookInput {
   customerId: string;
-  /** Last `event_time` accepted in the batch, or null when none. */
-  lastEventArrivalAt: Date | null;
+  /**
+   * Every `event_time` accepted in the batch. The hook dirties every
+   * existing DAILY/WEEKLY/MONTHLY bucket whose window contains at
+   * least one of these — collapsing the batch to a single max-time
+   * (as a previous revision did) silently dropped dirty transitions
+   * on every other done bucket the batch overran.
+   */
+  acceptedEventTimes: Date[];
 }
 
 export async function applyBaselineIngestHook(
   authPool: Pool,
   input: BaselineIngestHookInput,
 ): Promise<void> {
-  if (!input.lastEventArrivalAt) return;
+  if (input.acceptedEventTimes.length === 0) return;
   try {
     const tz = await loadCustomerTimezone(authPool, input.customerId);
     if (!tz) return;
@@ -64,7 +70,7 @@ export async function applyBaselineIngestHook(
         client,
         input.customerId,
         tz,
-        input.lastEventArrivalAt,
+        input.acceptedEventTimes,
       );
     } finally {
       client.release();
