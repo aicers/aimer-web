@@ -73,6 +73,14 @@ interface StoryStateRow {
 }
 
 async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
+  // Row-claiming pickup. Both pending and ready/dirty batches use
+  // `FOR UPDATE SKIP LOCKED` so multiple worker replicas cannot pick
+  // the same state row in the same tick. The surrounding BEGIN/COMMIT
+  // (see `runAnalysisJobTickOnce`) holds the row lock for the whole
+  // tick; the second replica skips locked rows entirely. Matches the
+  // RFC 0002 §"Worker structure" requirement and the redaction-job-
+  // worker pattern (`src/lib/instrumentation/redaction-job-worker.ts`).
+
   // 1. Flip ready-eligible pending rows.
   const { rows: pending } = await client.query<StoryStateRow>(
     `SELECT customer_id::text  AS customer_id,
@@ -83,7 +91,8 @@ async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
        FROM story_analysis_state
       WHERE status = 'pending'
       ORDER BY customer_id, story_id
-      LIMIT $1`,
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED`,
     [BATCH_SIZE],
   );
   for (const row of pending) {
@@ -104,6 +113,11 @@ async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
 
   // 2. For every ready/dirty state row, ensure a queued job exists for
   //    the default variant; immediately mark it done with dry_run=TRUE.
+  //    `FOR UPDATE SKIP LOCKED` here is the critical multi-replica
+  //    guard: without it, two replicas could each read the same dirty
+  //    row and each issue `UPDATE story_analysis_job SET generation =
+  //    generation + 1`, double-incrementing the generation for a
+  //    single source change.
   const { rows: actionable } = await client.query<StoryStateRow>(
     `SELECT customer_id::text AS customer_id,
             story_id::text    AS story_id,
@@ -113,7 +127,8 @@ async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
        FROM story_analysis_state
       WHERE status IN ('ready', 'dirty')
       ORDER BY customer_id, story_id
-      LIMIT $1`,
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED`,
     [BATCH_SIZE],
   );
   for (const row of actionable) {
@@ -204,13 +219,17 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
     [LIVE_BUCKET_DATE],
   );
 
+  // FOR UPDATE SKIP LOCKED here mirrors the story tick — two replicas
+  // racing on the same dirty periodic state row would otherwise both
+  // increment `periodic_report_job.generation`.
   const { rows: actionable } = await client.query<PeriodicStateRow>(
     `SELECT customer_id::text AS customer_id,
             period, bucket_date::text AS bucket_date, tz, status
        FROM periodic_report_state
       WHERE status IN ('ready', 'dirty')
       ORDER BY customer_id, period, bucket_date, tz
-      LIMIT $1`,
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED`,
     [BATCH_SIZE],
   );
   for (const row of actionable) {
