@@ -235,6 +235,7 @@ jobs:
           DATABASE_MIGRATION_URL: postgres://postgres:postgres@localhost:5432/auth_db
           AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
           CUSTOMER_DATABASE_OWNER_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          CUSTOMER_DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
           CSRF_SECRET: e2e-test-csrf-secret
           BAO_ADDR: http://localhost:8200
           BAO_TOKEN: e2e-root-token
