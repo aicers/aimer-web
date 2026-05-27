@@ -218,18 +218,64 @@ export async function unarchiveStoryStateIfArchived(
  * Window-replace or backfill envelope overlaps stories already past
  * ready — those rows transition to `dirty` per RFC 0002 §"Dirty
  * transitions" rule 2.
+ *
+ * Each input pair carries the canonical post-commit `MAX(story.received_at)`
+ * across all surviving versions for the `story_id` (NULL when the
+ * caller has no value to forward — e.g. a backwards-compatible call
+ * site). When non-null, `last_member_at` is forward-patched via
+ * `GREATEST(...)` in the same UPDATE that flips the status to `dirty`,
+ * so a subsequent reconcile pass observes the canonical value already
+ * stored and does not re-trigger a second dirty cycle on the same
+ * mutation (round-11 review item 2). Idempotent: a second call with
+ * the same value is a no-op because `GREATEST(stored, stored) = stored`
+ * and the row is already `dirty`.
+ *
+ * Mutated story_ids with no surviving version are tolerated here:
+ * `status IN ('ready', 'dirty')` filters them out (archive runs
+ * separately via `maybeArchiveStoryState`).
  */
+export interface DirtyStoryStateInput {
+  storyId: string;
+  /**
+   * Canonical post-commit `MAX(story.received_at)` for the story.
+   * NULL when no surviving version (caller will archive) or when the
+   * caller has no canonical value to forward. NULL skips the forward-
+   * patch but still flips the status.
+   */
+  lastMemberAt: Date | null;
+}
+
 export async function dirtyStoryStatesInRange(
   client: PoolClient,
   customerId: string,
-  storyIds: readonly string[],
+  inputs: readonly DirtyStoryStateInput[],
 ): Promise<void> {
-  if (storyIds.length === 0) return;
+  if (inputs.length === 0) return;
+  const storyIds = inputs.map((i) => i.storyId);
+  // Two parallel arrays for the unnest in the UPDATE join below:
+  // story_id → canonical last_member_at. `null::timestamptz` entries
+  // leave the existing column unchanged via the COALESCE in GREATEST.
+  const lastMemberAts = inputs.map((i) =>
+    i.lastMemberAt ? i.lastMemberAt.toISOString() : null,
+  );
   await client.query(
-    `UPDATE story_analysis_state s
-        SET status = 'dirty', updated_at = NOW()
+    `WITH forward(story_id, last_member_at) AS (
+       SELECT id::bigint, ts::timestamptz
+         FROM unnest($2::bigint[], $3::timestamptz[]) AS u(id, ts)
+     )
+     UPDATE story_analysis_state s
+        SET status         = 'dirty',
+            last_member_at = CASE
+              WHEN f.last_member_at IS NULL THEN s.last_member_at
+              ELSE GREATEST(
+                COALESCE(s.last_member_at, f.last_member_at),
+                f.last_member_at
+              )
+            END,
+            updated_at = NOW()
+       FROM forward f
       WHERE s.customer_id = $1
-        AND s.story_id    = ANY($2::bigint[])
+        AND s.story_id    = f.story_id
         AND s.status IN ('ready', 'dirty')
         AND EXISTS (
           SELECT 1 FROM story_analysis_job j
@@ -237,7 +283,7 @@ export async function dirtyStoryStatesInRange(
              AND j.story_id    = s.story_id
              AND j.status IN ('processing', 'done')
         )`,
-    [customerId, storyIds],
+    [customerId, storyIds, lastMemberAts],
   );
 }
 
@@ -444,16 +490,54 @@ export async function recordBaselineActivity(
  * — so it falls back to the `last_event_at` proxy: if the row's
  * most recent observed event lies inside the envelope, the LIVE row
  * is affected.
+ *
+ * `eventCountByBucket`, when supplied, maps `"<PERIOD>|<bucket_date>"`
+ * (DAILY/WEEKLY/MONTHLY only — LIVE is excluded because reconcile's
+ * deletion-detection rule skips LIVE) to the post-commit `COUNT(*)` of
+ * `baseline_event` rows inside the bucket. Forwarded by
+ * `applyWindowReplaceEnvelopeHook` so the dirty UPDATE re-syncs
+ * `event_count` in the same statement — eliminating the second
+ * spurious dirty cycle reconcile would otherwise produce on a delete-
+ * only envelope (round-11 review item 2). Without this, the stored
+ * `event_count` stays at the pre-delete value; after the worker
+ * processes the dirty row, reconcile sees `currentCount < stored` and
+ * re-dirties the same bucket. Idempotent: replaying with the same map
+ * is a no-op (status already `dirty`, count unchanged).
  */
 export async function dirtyPeriodicStatesOverlapping(
   client: PoolClient,
   customerId: string,
   from: Date,
   to: Date,
+  eventCountByBucket?: ReadonlyMap<string, number>,
 ): Promise<void> {
+  const periodArr: string[] = [];
+  const dateArr: string[] = [];
+  const countArr: string[] = [];
+  if (eventCountByBucket) {
+    for (const [key, cnt] of eventCountByBucket) {
+      const sep = key.indexOf("|");
+      if (sep < 0) continue;
+      periodArr.push(key.slice(0, sep));
+      dateArr.push(key.slice(sep + 1));
+      countArr.push(String(cnt));
+    }
+  }
   await client.query(
-    `UPDATE periodic_report_state s
-        SET status = 'dirty', updated_at = NOW()
+    `WITH cnt(period, bucket_date, event_count) AS (
+       SELECT p, d::date, c::bigint
+         FROM unnest($4::text[], $5::date[], $6::bigint[]) AS u(p, d, c)
+     )
+     UPDATE periodic_report_state s
+        SET status = 'dirty',
+            event_count = COALESCE(
+              (SELECT c.event_count
+                 FROM cnt c
+                WHERE c.period = s.period
+                  AND c.bucket_date = s.bucket_date),
+              s.event_count
+            ),
+            updated_at = NOW()
       WHERE s.customer_id = $1
         AND s.status IN ('ready', 'dirty')
         AND (
@@ -479,7 +563,14 @@ export async function dirtyPeriodicStatesOverlapping(
              AND j.tz           = s.tz
              AND j.status IN ('processing', 'done')
         )`,
-    [customerId, from.toISOString(), to.toISOString()],
+    [
+      customerId,
+      from.toISOString(),
+      to.toISOString(),
+      periodArr,
+      dateArr,
+      countArr,
+    ],
   );
 }
 

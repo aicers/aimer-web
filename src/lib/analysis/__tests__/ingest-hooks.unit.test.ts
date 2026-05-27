@@ -75,7 +75,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
 
   it("applyWindowReplaceEnvelopeHook logs and resolves when the connection fails", async () => {
     await expect(
-      applyWindowReplaceEnvelopeHook(failingPool(), {
+      applyWindowReplaceEnvelopeHook(failingPool(), failingPool(), {
         customerId: CUSTOMER_ID,
         from: new Date("2026-05-27T00:00:00Z"),
         to: new Date("2026-05-27T01:00:00Z"),
@@ -93,7 +93,9 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
       applyWindowReplaceStoryHook(failingPool(), {
         customerId: CUSTOMER_ID,
         mutatedStoryIds: ["1001"],
-        storyVersionSurvivors: [{ storyId: "1001", surviving: 0 }],
+        storyVersionSurvivors: [
+          { storyId: "1001", surviving: 0, lastReceivedAt: null },
+        ],
       }),
     ).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalledWith(

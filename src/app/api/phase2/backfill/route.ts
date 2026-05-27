@@ -31,7 +31,7 @@ export const POST = createPhase2MutationHandler({
     // `dirty`. Reconcile's periodic dirty signals are baseline-only,
     // so this is the only path that catches story-only envelopes.
     const authPool = getAuthPool();
-    await applyWindowReplaceEnvelopeHook(authPool, {
+    await applyWindowReplaceEnvelopeHook(authPool, customerPool, {
       customerId: verified.customerId,
       from: new Date(payload.window.from),
       to: new Date(payload.window.to),

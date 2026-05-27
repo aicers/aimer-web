@@ -803,6 +803,54 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(periods).toEqual(["DAILY", "MONTHLY", "WEEKLY"]);
   });
 
+  it("seeds a LIVE row when only story timestamps fall in the trailing 24h (round-11 review item 1)", async () => {
+    // Issue #294 decision 2 sources LIVE bucket existence from ANY
+    // source data in the trailing 24h — baseline OR story. The
+    // previous LIVE EXISTS check on `deriveAllBuckets` was
+    // baseline-only and would leave a story-only customer without a
+    // LIVE row even though the spec includes story timestamps in the
+    // source set. This test exercises the fixed gate by seeding a
+    // recent `story.time_window_start`/`time_window_end` and asserting
+    // a LIVE row is created.
+    const customer = "00000000-0000-0000-0000-0000000000d0";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-livestory', 'LiveStory', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    await seedStory(customerPool, "8001", "v1", recent);
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows } = await authPool.query<{ period: string }>(
+      `SELECT DISTINCT period
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period`,
+      [customer],
+    );
+    expect(rows.map((r) => r.period).sort()).toContain("LIVE");
+
+    // Second pass must remain a no-op (decision-2 idempotence gate).
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {
     // Round-8 review item 2: the customer-level timezone change
     // (admin SQL path, no UI in Phase 0) must archive any existing

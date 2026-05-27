@@ -504,6 +504,18 @@ async function deriveAllBuckets(
   // timestamps because a same-day backfill of historical events must
   // produce its historical buckets even though no LIVE row should
   // appear (round-2 review item 2 + round-8 review item 3).
+  //
+  // The LIVE gate is "ANY source data" per issue #294 decision 2 —
+  // not baseline-only. The same `src` CTE that drives DAILY / WEEKLY /
+  // MONTHLY derivation already unions `baseline_event.event_time`,
+  // latest-version `story.time_window_start`, and latest-version
+  // `story.time_window_end`; the LIVE EXISTS check is rewritten to
+  // pick from that union so a customer whose only recent source data
+  // is a story batch / window-replace in the last 24h still seeds a
+  // LIVE row (round-11 review item 1). Before this change the EXISTS
+  // checked `baseline_event` directly, leaving story-only customers
+  // without a LIVE seed even though the spec includes story timestamps
+  // in the source set.
   const { rows } = await customerConn.query<BucketRow>(
     `WITH latest_story AS (
        SELECT story_id, MAX(received_at) AS max_rcv
@@ -536,8 +548,8 @@ async function deriveAllBuckets(
      SELECT 'LIVE'::text AS period,
             $2::date::text AS bucket_date
        WHERE EXISTS (
-         SELECT 1 FROM baseline_event
-          WHERE event_time >= NOW() - INTERVAL '24 hours'
+         SELECT 1 FROM src
+          WHERE ts >= NOW() - INTERVAL '24 hours'
        )`,
     [tz, LIVE_BUCKET_DATE],
   );

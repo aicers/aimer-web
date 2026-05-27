@@ -209,15 +209,26 @@ export interface WindowReplaceCounts {
  * - `mutatedStoryIds` — every `story_id` whose `story_member` set
  *   changed (inserted, replaced, or deleted) in this window replace.
  *   The hook transitions matching `story_analysis_state` rows past
- *   ready/done into `dirty`.
+ *   ready/done into `dirty` AND forward-patches `last_member_at` to
+ *   the canonical post-commit `MAX(story.received_at)` provided in
+ *   `storyVersionSurvivors` (round-11 review item 2). Without the
+ *   forward-patch, a subsequent reconcile pass would observe the new
+ *   `received_at`, advance `last_member_at`, and flip the already-
+ *   processed row to `dirty` a second time.
  * - `storyVersionSurvivors` — post-commit count of `story` rows that
- *   remain for each affected `story_id`. A count of 0 archives the
- *   state row (issue #294 decision 1: archive only when no version
- *   remains).
+ *   remain for each affected `story_id`, paired with the canonical
+ *   `MAX(received_at)` across the surviving versions (NULL when
+ *   `surviving === 0`). The hook uses `surviving === 0` to archive
+ *   (issue #294 decision 1) and the non-null `lastReceivedAt` to
+ *   forward-patch `last_member_at` on the dirty flip.
  */
 export interface StoryWindowReplaceExtras {
   mutatedStoryIds: string[];
-  storyVersionSurvivors: Array<{ storyId: string; surviving: number }>;
+  storyVersionSurvivors: Array<{
+    storyId: string;
+    surviving: number;
+    lastReceivedAt: Date | null;
+  }>;
 }
 
 /**
@@ -396,15 +407,26 @@ export async function executeWindowReplace(
     }
     // Survivor count per `story_id` across all `story_version`s,
     // taken after both the DELETE and the INSERTs land. A count of 0
-    // is the archive condition (issue #294 decision 1).
-    const survivors: Array<{ storyId: string; surviving: number }> = [];
+    // is the archive condition (issue #294 decision 1). Also captures
+    // canonical `MAX(received_at)` per surviving `story_id` so the
+    // post-commit analysis hook can forward-patch `last_member_at`
+    // along with the dirty flip and prevent a second spurious dirty
+    // cycle from reconcile (round-11 review item 2).
+    const survivors: Array<{
+      storyId: string;
+      surviving: number;
+      lastReceivedAt: Date | null;
+    }> = [];
     if (mutatedStoryIds.size > 0) {
       const ids = [...mutatedStoryIds];
       const { rows: survivorRows } = await client.query<{
         story_id: string;
         surviving: string;
+        last_received_at: Date | null;
       }>(
-        `SELECT story_id::text AS story_id, COUNT(*)::text AS surviving
+        `SELECT story_id::text     AS story_id,
+                COUNT(*)::text     AS surviving,
+                MAX(received_at)   AS last_received_at
            FROM story
           WHERE story_id = ANY($1::bigint[])
           GROUP BY story_id`,
@@ -416,6 +438,7 @@ export async function executeWindowReplace(
         survivors.push({
           storyId: id,
           surviving: row ? Number(row.surviving) : 0,
+          lastReceivedAt: row ? row.last_received_at : null,
         });
       }
     }

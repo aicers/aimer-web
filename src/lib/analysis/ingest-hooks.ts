@@ -152,29 +152,130 @@ export interface WindowReplaceEnvelopeHookInput {
  * envelopes too a story-only refresh would leave the stale periodic
  * report ready/done indefinitely.
  *
+ * Requires `customerPool` so the hook can compute the post-commit
+ * `COUNT(*)` of `baseline_event` rows inside each overlapping
+ * DAILY/WEEKLY/MONTHLY bucket and forward those counts to
+ * `dirtyPeriodicStatesOverlapping` (round-11 review item 2). Without
+ * this, a delete-only envelope would leave the stored `event_count`
+ * at the pre-delete value; reconcile would then observe
+ * `currentCount < stored` after the worker handled the first dirty
+ * cycle and re-dirty the same bucket. Computing the counts here
+ * keeps the dirty flip + count resync in one auth-DB UPDATE, so the
+ * mutation that already drove the first dirty cycle cannot drive a
+ * second one.
+ *
  * Renamed from `applyWindowReplaceBaselineHook` — the original name
  * implied baseline-envelope-only semantics; the function is and was
  * envelope-agnostic.
  */
 export async function applyWindowReplaceEnvelopeHook(
   authPool: Pool,
+  customerPool: Pool,
   input: WindowReplaceEnvelopeHookInput,
 ): Promise<void> {
   try {
-    const client = await authPool.connect();
+    const tz = await loadCustomerTimezone(authPool, input.customerId);
+    if (!tz) return;
+    const authClient = await authPool.connect();
     try {
-      await dirtyPeriodicStatesOverlapping(
-        client,
+      const eventCountByBucket = await computeOverlappingBucketCounts(
+        authClient,
+        customerPool,
         input.customerId,
+        tz,
         input.from,
         input.to,
       );
+      await dirtyPeriodicStatesOverlapping(
+        authClient,
+        input.customerId,
+        input.from,
+        input.to,
+        eventCountByBucket,
+      );
     } finally {
-      client.release();
+      authClient.release();
     }
   } catch (err) {
     logHookFailure("refresh_window_envelope", input.customerId, err);
   }
+}
+
+/**
+ * Post-commit `COUNT(*)` of `baseline_event` rows for every
+ * DAILY/WEEKLY/MONTHLY bucket in the customer's tz that overlaps the
+ * envelope `[from, to)`. Returned as a map keyed by
+ * `"<PERIOD>|<bucket_date>"` for direct use by
+ * `dirtyPeriodicStatesOverlapping`'s `unnest` join.
+ *
+ * Bucket enumeration comes from the auth-DB `periodic_report_state`
+ * rather than the customer-DB `baseline_event` group-by, because a
+ * delete-only envelope can leave the bucket with zero events — those
+ * buckets would not appear in a customer-DB `GROUP BY event_time`,
+ * yet they are exactly the ones whose stored count needs to be reset
+ * to zero. LIVE is excluded: reconcile's deletion-detection rule
+ * already excludes LIVE because the trailing-24h window is a moving
+ * target, not a fixed bucket.
+ */
+async function computeOverlappingBucketCounts(
+  authClient: import("pg").PoolClient,
+  customerPool: Pool,
+  customerId: string,
+  tz: string,
+  from: Date,
+  to: Date,
+): Promise<Map<string, number>> {
+  const { rows: keys } = await authClient.query<{
+    period: string;
+    bucket_date: string;
+  }>(
+    `SELECT period, bucket_date::text AS bucket_date
+       FROM periodic_report_state
+      WHERE customer_id = $1
+        AND tz          = $2
+        AND status IN ('ready', 'dirty')
+        AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+        AND ((bucket_date::timestamp) AT TIME ZONE tz) < $4::timestamptz
+        AND ((CASE period
+                WHEN 'DAILY'   THEN bucket_date::timestamp + INTERVAL '1 day'
+                WHEN 'WEEKLY'  THEN bucket_date::timestamp + INTERVAL '1 week'
+                WHEN 'MONTHLY' THEN bucket_date::timestamp + INTERVAL '1 month'
+              END) AT TIME ZONE tz) > $3::timestamptz`,
+    [customerId, tz, from.toISOString(), to.toISOString()],
+  );
+  if (keys.length === 0) return new Map();
+  const periods = keys.map((k) => k.period);
+  const dates = keys.map((k) => k.bucket_date);
+  const { rows: counts } = await customerPool.query<{
+    period: string;
+    bucket_date: string;
+    cnt: string;
+  }>(
+    `WITH targets(period, bucket_date, bucket_start, bucket_end) AS (
+       SELECT p, d::date,
+              (d::date::timestamp) AT TIME ZONE $1,
+              (CASE p
+                 WHEN 'DAILY'   THEN d::date::timestamp + INTERVAL '1 day'
+                 WHEN 'WEEKLY'  THEN d::date::timestamp + INTERVAL '1 week'
+                 WHEN 'MONTHLY' THEN d::date::timestamp + INTERVAL '1 month'
+               END) AT TIME ZONE $1
+         FROM unnest($2::text[], $3::date[]) AS u(p, d)
+     )
+     SELECT t.period,
+            t.bucket_date::text AS bucket_date,
+            COUNT(b.*)::text   AS cnt
+       FROM targets t
+       LEFT JOIN baseline_event b
+         ON b.event_time >= t.bucket_start
+        AND b.event_time <  t.bucket_end
+      GROUP BY t.period, t.bucket_date`,
+    [tz, periods, dates],
+  );
+  const out = new Map<string, number>();
+  for (const r of counts) {
+    out.set(`${r.period}|${r.bucket_date}`, Number(r.cnt));
+  }
+  return out;
 }
 
 export interface WindowReplaceStoryHookInput {
@@ -182,12 +283,21 @@ export interface WindowReplaceStoryHookInput {
   /** Stories whose member set was mutated by the window replace. */
   mutatedStoryIds: string[];
   /**
-   * Survivor counts per `story_id` — `(story_id, surviving)` where
-   * `surviving` is the count of `story` rows still present in the
-   * customer DB for that `story_id` after the window-replace commits.
-   * A count of 0 archives the state row (issue #294 decision 1).
+   * Survivor counts per `story_id` paired with the canonical post-
+   * commit `MAX(story.received_at)` across all surviving versions.
+   * `surviving === 0` archives the state row (issue #294 decision 1);
+   * a non-null `lastReceivedAt` is forwarded to `dirtyStoryStatesInRange`
+   * so the dirty flip also forward-patches `last_member_at` in the same
+   * UPDATE (round-11 review item 2). Without this synchronization, a
+   * subsequent reconcile pass observes the newer customer-DB
+   * `received_at`, advances `last_member_at`, and re-triggers the
+   * dirty transition for a mutation the worker has already handled.
    */
-  storyVersionSurvivors: Array<{ storyId: string; surviving: number }>;
+  storyVersionSurvivors: Array<{
+    storyId: string;
+    surviving: number;
+    lastReceivedAt: Date | null;
+  }>;
 }
 
 export async function applyWindowReplaceStoryHook(
@@ -202,12 +312,23 @@ export async function applyWindowReplaceStoryHook(
       // row, per decision 1). Ordering matters: `dirtyStoryStatesInRange`
       // skips archived rows, and unarchive resets to pending — running
       // dirty first leaves any already-non-archived ready/dirty rows in
-      // dirty before we evaluate per-survivor archive/unarchive.
+      // dirty before we evaluate per-survivor archive/unarchive. The
+      // dirty UPDATE also forward-patches `last_member_at` from the
+      // canonical post-commit `MAX(story.received_at)` so reconcile
+      // does not re-trigger a second dirty cycle (round-11 review
+      // item 2).
       if (input.mutatedStoryIds.length > 0) {
+        const lastByStoryId = new Map<string, Date | null>();
+        for (const survivor of input.storyVersionSurvivors) {
+          lastByStoryId.set(survivor.storyId, survivor.lastReceivedAt);
+        }
         await dirtyStoryStatesInRange(
           client,
           input.customerId,
-          input.mutatedStoryIds,
+          input.mutatedStoryIds.map((storyId) => ({
+            storyId,
+            lastMemberAt: lastByStoryId.get(storyId) ?? null,
+          })),
         );
       }
       for (const { storyId, surviving } of input.storyVersionSurvivors) {

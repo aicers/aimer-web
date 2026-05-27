@@ -207,7 +207,10 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
         "2002",
         new Date("2026-05-27T11:00:00Z"),
       );
-      await dirtyStoryStatesInRange(client, CUSTOMER_A, ["1001", "2002"]);
+      await dirtyStoryStatesInRange(client, CUSTOMER_A, [
+        { storyId: "1001", lastMemberAt: null },
+        { storyId: "2002", lastMemberAt: null },
+      ]);
     } finally {
       client.release();
     }
@@ -215,6 +218,113 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(fresh?.status).toBe("pending");
     const ready = await getStoryState(pool, CUSTOMER_A, "1001");
     expect(ready?.status).toBe("dirty");
+  });
+
+  it("dirtyStoryStatesInRange forward-patches last_member_at along with the dirty flip (round-11 review item 2)", async () => {
+    // Round-11 review item 2: without the forward-patch, reconcile
+    // would later observe the newer customer-DB `story.received_at`,
+    // advance `last_member_at`, and flip the already-processed row
+    // back to `dirty` a second time. Synchronizing the column in the
+    // same UPDATE that flips the status makes the reconcile pass a
+    // no-op for the canonical mutation.
+    const storyId = "1001";
+    const newLastMemberAt = new Date("2026-05-27T13:45:00Z");
+    const client = await pool.connect();
+    try {
+      await dirtyStoryStatesInRange(client, CUSTOMER_A, [
+        { storyId, lastMemberAt: newLastMemberAt },
+      ]);
+    } finally {
+      client.release();
+    }
+    const row = await getStoryState(pool, CUSTOMER_A, storyId);
+    expect(row?.status).toBe("dirty");
+    expect(row?.last_member_at?.toISOString()).toBe(
+      newLastMemberAt.toISOString(),
+    );
+
+    // Re-calling with a stale (earlier) timestamp must not roll the
+    // column backwards — GREATEST guards the forward-only semantic.
+    const stale = new Date("2024-01-01T00:00:00Z");
+    const client2 = await pool.connect();
+    try {
+      await dirtyStoryStatesInRange(client2, CUSTOMER_A, [
+        { storyId, lastMemberAt: stale },
+      ]);
+    } finally {
+      client2.release();
+    }
+    const after = await getStoryState(pool, CUSTOMER_A, storyId);
+    expect(after?.last_member_at?.toISOString()).toBe(
+      newLastMemberAt.toISOString(),
+    );
+  });
+
+  it("dirtyPeriodicStatesOverlapping resyncs event_count along with the dirty flip (round-11 review item 2)", async () => {
+    // Round-11 review item 2 — periodic delete-only envelope case:
+    // without re-syncing `event_count` in the same UPDATE that flips
+    // status to `dirty`, reconcile would later observe a strict
+    // decrease (`current < stored`) and flip the bucket dirty a
+    // second time after the worker has already processed the first
+    // dirty cycle. Passing the post-commit count via the new
+    // `eventCountByBucket` parameter closes the gap.
+    const customer = "00000000-0000-0000-0000-0000000000c0";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-eventcount', 'EventCount')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          event_count, last_ready_at)
+       VALUES ($1, 'DAILY', DATE '2026-05-20', 'Asia/Seoul', 'ready',
+               10, NOW())
+       ON CONFLICT DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', DATE '2026-05-20', 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
+      [customer],
+    );
+
+    const counts = new Map<string, number>([["DAILY|2026-05-20", 3]]);
+    const client = await pool.connect();
+    try {
+      // Envelope window contains 2026-05-20 KST.
+      await dirtyPeriodicStatesOverlapping(
+        client,
+        customer,
+        new Date("2026-05-19T15:00:00Z"),
+        new Date("2026-05-20T15:00:00Z"),
+        counts,
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{
+      status: string;
+      event_count: string;
+    }>(
+      `SELECT status, event_count::text AS event_count
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = DATE '2026-05-20'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+    expect(Number(rows[0]?.event_count)).toBe(3);
   });
 
   it("maybeArchiveStoryState archives only when no story version survives", async () => {
@@ -511,7 +621,13 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     await applyWindowReplaceStoryHook(pool, {
       customerId: customer,
       mutatedStoryIds: ["70002"],
-      storyVersionSurvivors: [{ storyId: "70002", surviving: 1 }],
+      storyVersionSurvivors: [
+        {
+          storyId: "70002",
+          surviving: 1,
+          lastReceivedAt: new Date("2026-05-27T10:00:00Z"),
+        },
+      ],
     });
 
     const row = await getStoryState(pool, customer, "70002");
