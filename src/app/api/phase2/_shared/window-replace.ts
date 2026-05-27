@@ -1,6 +1,8 @@
 import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "@/lib/db/client";
+import type { RangeSet } from "@/lib/redaction";
+import { redactAndMaybeUpsertMap } from "./redaction";
 import { baselineEventSchema, storySchema } from "./schemas";
 
 // ---------------------------------------------------------------------------
@@ -281,7 +283,9 @@ export type WindowReplaceExtras =
 export async function executeWindowReplace(
   pool: Pool,
   payload: WindowReplacePayload,
+  customerId: string,
   sourceAiceId: string,
+  ranges: RangeSet,
 ): Promise<{ counts: WindowReplaceCounts; extras: WindowReplaceExtras }> {
   return withTransaction(pool, async (client) => {
     await client.query(
@@ -334,17 +338,29 @@ export async function executeWindowReplace(
       const liveBaselineDeleted = deleteResult.rows[0]?.live_overlap === true;
       let accepted = 0;
       for (const event of payload.events) {
+        const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
+          event.raw_event,
+          {
+            customerId,
+            aiceId: sourceAiceId,
+            eventKey: event.event_key,
+            ranges,
+            client,
+          },
+        );
         const result = await client.query(
           `INSERT INTO baseline_event (
              baseline_version, event_key, event_time, kind, category,
              primary_asset, raw_score, selector_tags, raw_event,
              score_window_context, window_signals, asset_context,
-             scoring_weights_snapshot, source_aice_id
+             scoring_weights_snapshot, source_aice_id,
+             redaction_policy_version
            ) VALUES (
              $1, $2::numeric, $3, $4, $5,
              $6, $7, $8, $9::jsonb,
              $10::jsonb, $11::jsonb, $12::jsonb,
-             $13::jsonb, $14
+             $13::jsonb, $14,
+             $15
            )`,
           [
             payload.baseline_version,
@@ -355,7 +371,7 @@ export async function executeWindowReplace(
             event.primary_asset ?? null,
             event.raw_score,
             event.selector_tags,
-            JSON.stringify(event.raw_event),
+            JSON.stringify(redacted),
             JSON.stringify(event.score_window_context),
             JSON.stringify(event.window_signals),
             event.asset_context == null
@@ -363,6 +379,7 @@ export async function executeWindowReplace(
               : JSON.stringify(event.asset_context),
             JSON.stringify(event.scoring_weights_snapshot),
             sourceAiceId,
+            policyVersion,
           ],
         );
         accepted += result.rowCount ?? 0;
@@ -455,16 +472,28 @@ export async function executeWindowReplace(
       accepted += storyResult.rowCount ?? 0;
 
       for (const member of story.members) {
+        const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
+          member.event,
+          {
+            customerId,
+            aiceId: sourceAiceId,
+            eventKey: member.event_key,
+            ranges,
+            client,
+          },
+        );
         await client.query(
           `INSERT INTO story_member (
-             story_id, story_version, member_event_key, role, event
-           ) VALUES ($1::bigint, $2, $3::numeric, $4, $5::jsonb)`,
+             story_id, story_version, member_event_key, role, event,
+             redaction_policy_version
+           ) VALUES ($1::bigint, $2, $3::numeric, $4, $5::jsonb, $6)`,
           [
             story.story_id,
             story.story_version,
             member.event_key,
             member.role,
-            JSON.stringify(member.event),
+            JSON.stringify(redacted),
+            policyVersion,
           ],
         );
       }

@@ -249,6 +249,72 @@ describe("createPhase2MutationHandler", () => {
     expect(call.details.code).toBe("payload_customer_not_authorized");
   });
 
+  it("emits redaction.injectivity_violation alongside ingest_failed when mutate throws RedactionInjectivityError", async () => {
+    const { RedactionInjectivityError } = await import("@/lib/redaction");
+    const authPool = fakeAuthPool();
+    mockVerifyPhase2Multipart.mockResolvedValue({
+      contextClaims: baseContextClaims,
+      envelopeClaims: baseEnvelopeClaims,
+      eventsData: baseEventsData,
+      customerId: "11111111-2222-3333-4444-555555555555",
+      externalKey: "ext-1",
+    });
+
+    const injErr = new RedactionInjectivityError({
+      message: "engine: value '1.2.3.4' double-mapped",
+      value: "1.2.3.4",
+      existingToken: "<<REDACTED_IP_001>>",
+      conflictingToken: "<<REDACTED_IP_002>>",
+      existingKind: "ip",
+      conflictingKind: "ip",
+    });
+    injErr.eventKey = "7";
+    const mutate = vi.fn().mockRejectedValue(injErr);
+
+    const handler = createPhase2MutationHandler(
+      {
+        expectedSchemaVersion: "phase2.test.v1",
+        payloadSchema: testSchema,
+        auditTargetType: "phase2_refresh_window",
+        successAction: "phase2.refresh_window",
+        mutate,
+      },
+      {
+        getAuthPool: () => authPool,
+        getCustomerRuntimePool: () => fakeAuthPool(),
+      },
+    );
+
+    const res = await handler(makeRequest());
+    expect(res.status).toBe(500);
+
+    const actions = mockAuditLog.mock.calls.map(
+      (c) => (c[0] as { action: string }).action,
+    );
+    expect(actions).toContain("redaction.injectivity_violation");
+    expect(actions).toContain("phase2.ingest_failed");
+
+    const injCall = mockAuditLog.mock.calls.find(
+      (c) =>
+        (c[0] as { action: string }).action ===
+        "redaction.injectivity_violation",
+    );
+    const injDetails = (
+      injCall?.[0] as { details: { conflict: unknown; eventKey?: string } }
+    ).details;
+    expect(injDetails.eventKey).toBe("7");
+    expect(injDetails.conflict).toMatchObject({
+      value: "1.2.3.4",
+      existingToken: "<<REDACTED_IP_001>>",
+      conflictingToken: "<<REDACTED_IP_002>>",
+      existingKind: "ip",
+      conflictingKind: "ip",
+    });
+    expect((injCall?.[0] as { targetType: string }).targetType).toBe(
+      "phase2_refresh_window",
+    );
+  });
+
   it("returns 500 database_error and emits phase2.ingest_failed when mutate throws — consumed jti remains", async () => {
     const authPool = fakeAuthPool();
     mockVerifyPhase2Multipart.mockResolvedValue({

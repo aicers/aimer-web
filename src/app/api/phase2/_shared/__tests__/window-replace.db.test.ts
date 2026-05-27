@@ -25,7 +25,9 @@ const {
   ingestBaselineBatch: _ingestBaselineBatch,
   ingestStoryBatch: _ingestStoryBatch,
 } = await import("../ingest");
-const { executeWindowReplace } = await import("../window-replace");
+const { executeWindowReplace: _executeWindowReplace } = await import(
+  "../window-replace"
+);
 
 const TEST_CUSTOMER_ID = "11111111-2222-3333-4444-555555555555";
 const TEST_RANGES = buildRangeSet([]);
@@ -43,6 +45,18 @@ const ingestStoryBatch: (
   aiceId: string,
 ) => ReturnType<typeof _ingestStoryBatch> = (pool, payload, aiceId) =>
   _ingestStoryBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+
+const executeWindowReplace: (
+  pool: Pool,
+  payload: Parameters<typeof _executeWindowReplace>[1],
+  aiceId: string,
+  ranges?: typeof TEST_RANGES,
+) => ReturnType<typeof _executeWindowReplace> = (
+  pool,
+  payload,
+  aiceId,
+  ranges = TEST_RANGES,
+) => _executeWindowReplace(pool, payload, TEST_CUSTOMER_ID, aiceId, ranges);
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID_CUSTOMER = 1002;
@@ -391,3 +405,208 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
     expect(["301", "302"]).toContain(rows[0].i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Redaction storage parity (#322)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!hasPostgres)(
+  "executeWindowReplace — redaction storage parity",
+  () => {
+    let dbName: string;
+    let pool: Pool;
+    const RANGES_WITH_DEFAULTS = buildRangeSet([]);
+
+    beforeAll(async () => {
+      const db = await createTestDatabase("phase2_window_redaction");
+      dbName = db.dbName;
+      pool = db.pool;
+      await runMigrations(pool, CUSTOMER_MIGRATIONS_DIR, LOCK_ID_CUSTOMER);
+    });
+    afterAll(async () => {
+      await dropTestDatabase(dbName, pool);
+      await closeAdminPool();
+    });
+
+    it("baseline window-replace redacts raw_event PII and stamps redaction_policy_version", async () => {
+      const event = {
+        ...baselineEvent("1001", "2026-07-01T00:10:00Z"),
+        raw_event: { src: "10.0.0.42", note: "hello" },
+      };
+
+      const result = await executeWindowReplace(
+        pool,
+        {
+          external_key: "ext",
+          window: {
+            kind: "baseline_event",
+            from: "2026-07-01T00:00:00Z",
+            to: "2026-07-01T01:00:00Z",
+          },
+          baseline_version: "vRed",
+          events: [event],
+        },
+        "aice-red",
+        RANGES_WITH_DEFAULTS,
+      );
+      expect(result.counts.accepted).toBe(1);
+
+      const { rows } = await pool.query<{
+        raw_event: Record<string, unknown>;
+        redaction_policy_version: string;
+      }>(
+        `SELECT raw_event, redaction_policy_version FROM baseline_event
+          WHERE baseline_version = 'vRed' AND event_key = 1001`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].redaction_policy_version).not.toBe("");
+      // Engine produces tokens of the form <<REDACTED_IP_NNN>>.
+      expect(String(rows[0].raw_event.src)).toMatch(/^<<REDACTED_IP_\d+>>$/);
+      expect(rows[0].raw_event.note).toBe("hello");
+
+      // Map row exists (RFC 0001 invariant: every ingested event has
+      // one) and contains the IP entity.
+      const { rows: mapRows } = await pool.query<{ ciphertext: Buffer }>(
+        `SELECT ciphertext FROM event_redaction_map
+          WHERE aice_id = 'aice-red' AND event_key = 1001`,
+      );
+      expect(mapRows).toHaveLength(1);
+      const map = JSON.parse(mapRows[0].ciphertext.toString("utf8")) as Record<
+        string,
+        { kind: string; value: string }
+      >;
+      const ipEntities = Object.values(map).filter((e) => e.kind === "ip");
+      expect(ipEntities.map((e) => e.value)).toContain("10.0.0.42");
+    });
+
+    it("story window-replace redacts story_member.event and stamps redaction_policy_version", async () => {
+      const result = await executeWindowReplace(
+        pool,
+        {
+          external_key: "ext",
+          window: {
+            kind: "story",
+            from: "2026-07-02T00:00:00Z",
+            to: "2026-07-02T01:00:00Z",
+          },
+          stories: [
+            {
+              ...story(
+                "2001",
+                "v1",
+                "2026-07-02T00:10:00Z",
+                "2026-07-02T00:20:00Z",
+              ),
+              members: [
+                {
+                  event_key: "2050",
+                  role: "primary" as const,
+                  event: { src: "10.0.0.99", host: "x" },
+                },
+              ],
+            },
+          ],
+        },
+        "aice-red",
+        RANGES_WITH_DEFAULTS,
+      );
+      expect(result.counts.accepted).toBe(1);
+
+      const { rows } = await pool.query<{
+        event: Record<string, unknown>;
+        redaction_policy_version: string;
+      }>(
+        `SELECT event, redaction_policy_version FROM story_member
+          WHERE story_id = 2001 AND member_event_key = 2050`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].redaction_policy_version).not.toBe("");
+      expect(String(rows[0].event.src)).toMatch(/^<<REDACTED_IP_\d+>>$/);
+      expect(rows[0].event.host).toBe("x");
+
+      const { rows: mapRows } = await pool.query<{ ciphertext: Buffer }>(
+        `SELECT ciphertext FROM event_redaction_map
+          WHERE aice_id = 'aice-red' AND event_key = 2050`,
+      );
+      expect(mapRows).toHaveLength(1);
+    });
+
+    it("re-running window-replace on an existing (aice_id, event_key) reuses the map row (no duplicate, same tokens)", async () => {
+      const baseEvent = {
+        ...baselineEvent("3001", "2026-07-03T00:10:00Z"),
+        raw_event: { src: "10.0.0.7" },
+      };
+      const body = {
+        external_key: "ext",
+        window: {
+          kind: "baseline_event" as const,
+          from: "2026-07-03T00:00:00Z",
+          to: "2026-07-03T01:00:00Z",
+        },
+        baseline_version: "vReuse",
+        events: [baseEvent],
+      };
+
+      await executeWindowReplace(
+        pool,
+        body,
+        "aice-reuse",
+        RANGES_WITH_DEFAULTS,
+      );
+
+      const firstMap = await pool.query<{
+        ciphertext: Buffer;
+        updated_at: Date;
+      }>(
+        `SELECT ciphertext, updated_at FROM event_redaction_map
+          WHERE aice_id = 'aice-reuse' AND event_key = 3001`,
+      );
+      expect(firstMap.rows).toHaveLength(1);
+      const firstTokens = Object.keys(
+        JSON.parse(firstMap.rows[0].ciphertext.toString("utf8")) as Record<
+          string,
+          unknown
+        >,
+      );
+
+      // Same payload, same window — DELETE removes the row, INSERT
+      // rewrites it. The map row for (aice_id, event_key) must be
+      // reused (not duplicated) and the tokens must stay stable.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await executeWindowReplace(
+        pool,
+        body,
+        "aice-reuse",
+        RANGES_WITH_DEFAULTS,
+      );
+
+      const { rows: countRows } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM event_redaction_map
+          WHERE aice_id = 'aice-reuse' AND event_key = 3001`,
+      );
+      expect(countRows[0].c).toBe(1);
+
+      const secondMap = await pool.query<{ ciphertext: Buffer }>(
+        `SELECT ciphertext FROM event_redaction_map
+          WHERE aice_id = 'aice-reuse' AND event_key = 3001`,
+      );
+      const secondTokens = Object.keys(
+        JSON.parse(secondMap.rows[0].ciphertext.toString("utf8")) as Record<
+          string,
+          unknown
+        >,
+      );
+      expect(secondTokens.sort()).toEqual(firstTokens.sort());
+
+      // Referent row carries the same token its map maps to.
+      const { rows: refRows } = await pool.query<{
+        raw_event: Record<string, unknown>;
+      }>(
+        `SELECT raw_event FROM baseline_event
+          WHERE baseline_version = 'vReuse' AND event_key = 3001`,
+      );
+      const tokenInPayload = String(refRows[0].raw_event.src);
+      expect(firstTokens).toContain(tokenInPayload);
+    });
+  },
+);
