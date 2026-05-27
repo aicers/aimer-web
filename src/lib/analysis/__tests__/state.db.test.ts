@@ -227,8 +227,18 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // back to `dirty` a second time. Synchronizing the column in the
     // same UPDATE that flips the status makes the reconcile pass a
     // no-op for the canonical mutation.
+    //
+    // The prior "late member after ready+done" test set
+    // `last_member_at = NOW()` via `recordStoryMemberArrival(new Date())`,
+    // so we anchor the forward-patch target one hour past wall-clock
+    // NOW() to make the GREATEST() comparison deterministic regardless
+    // of the test's wall-clock start time. A fixed literal like
+    // 2026-05-27T13:45:00Z would fail any time the suite runs after
+    // 13:45 UTC because the row's stored `last_member_at` would
+    // already exceed the literal and GREATEST would keep the stored
+    // value.
     const storyId = "1001";
-    const newLastMemberAt = new Date("2026-05-27T13:45:00Z");
+    const newLastMemberAt = new Date(Date.now() + 60 * 60 * 1000);
     const client = await pool.connect();
     try {
       await dirtyStoryStatesInRange(client, CUSTOMER_A, [
