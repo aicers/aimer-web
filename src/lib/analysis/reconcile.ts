@@ -673,7 +673,14 @@ async function loadPerBucketMaxEventTimes(
  * overlap uses `time_window_start < bucket_end AND time_window_end >
  * bucket_start` — i.e. true range intersection in the customer's tz.
  * A story whose `time_window` spans multiple buckets contributes to
- * every overlapping bucket via `generate_series`.
+ * every overlapping bucket via `generate_series`. The generate_series
+ * upper bound is inclusive, so a story whose `time_window_end` falls
+ * exactly on a bucket boundary (e.g. ends at `2025-06-11 00:00` in
+ * the customer's tz) would otherwise emit the trailing boundary
+ * bucket; each CTE re-applies the half-open predicate to drop those
+ * candidates, keeping reconcile in lockstep with the hook path
+ * (`computeOverlappingBucketStoryAggregates`) and avoiding spurious
+ * dirty flips on the boundary bucket (round-13 review item 1).
  *
  * LIVE is excluded for the same reason `loadPerBucketMaxEventTimes`
  * excludes LIVE: the LIVE window is a moving trailing-24h target and
@@ -708,6 +715,9 @@ async function loadPerBucketStoryAggregates(
                   lv.time_window_end   AT TIME ZONE $1),
                 INTERVAL '1 day'
               ) AS gs
+        WHERE lv.time_window_start
+                < (gs + INTERVAL '1 day') AT TIME ZONE $1
+          AND lv.time_window_end   > gs AT TIME ZONE $1
      ),
      weekly AS (
        SELECT lv.story_id, lv.received_at,
@@ -720,6 +730,9 @@ async function loadPerBucketStoryAggregates(
                   lv.time_window_end   AT TIME ZONE $1),
                 INTERVAL '1 week'
               ) AS gs
+        WHERE lv.time_window_start
+                < (gs + INTERVAL '1 week') AT TIME ZONE $1
+          AND lv.time_window_end   > gs AT TIME ZONE $1
      ),
      monthly AS (
        SELECT lv.story_id, lv.received_at,
@@ -732,6 +745,9 @@ async function loadPerBucketStoryAggregates(
                   lv.time_window_end   AT TIME ZONE $1),
                 INTERVAL '1 month'
               ) AS gs
+        WHERE lv.time_window_start
+                < (gs + INTERVAL '1 month') AT TIME ZONE $1
+          AND lv.time_window_end   > gs AT TIME ZONE $1
      )
      SELECT 'DAILY'::text AS period, bucket_date::text AS bucket_date,
             MAX(received_at) AS max_story_received_at,

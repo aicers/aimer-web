@@ -928,6 +928,111 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(secondAfterDel.periodicStatesPatched).toBe(0);
   });
 
+  it("does not spuriously dirty a boundary DAILY bucket whose start equals a story's time_window_end (round-13 review item 1)", async () => {
+    // `generate_series(date_trunc(start), date_trunc(end), '1 day')` is
+    // inclusive on both ends. For a story whose time_window_end lands
+    // exactly on a daily-bucket boundary in the customer's tz, the
+    // naive enumeration would emit the trailing boundary bucket too.
+    // The half-open overlap rule says the story does NOT overlap that
+    // bucket (`time_window_end > bucket_start` is false). Without the
+    // re-applied WHERE filter, reconcile would compute fake aggregates
+    // for the boundary bucket and dirty an already-generated report
+    // for a story that does not belong to it. This regression test
+    // pins a story whose KST-local window ends at exactly the start of
+    // a DAILY bucket and asserts: (a) the previous-day bucket is in
+    // sync and stays ready, (b) the boundary bucket stays ready with
+    // its original zero-story aggregates intact, and (c) a second
+    // reconcile pass is a no-op.
+    const customer = "00000000-0000-0000-0000-0000000000cf";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-boundary', 'Boundary', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    // KST = UTC+9. The 2025-06-11 KST DAILY bucket starts at
+    // 2025-06-10T15:00:00Z. The story's time_window_end is pinned to
+    // that exact instant, so it overlaps the 2025-06-10 KST bucket
+    // (which spans 2025-06-09T15:00Z..2025-06-10T15:00Z) but NOT the
+    // 2025-06-11 KST bucket.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (7101, 'v1', 'auto_correlated',
+               '2025-06-10T14:00:00Z'::timestamptz,
+               '2025-06-10T15:00:00Z'::timestamptz,
+               '{}'::jsonb, 'aice-1',
+               '2025-06-10T15:00:00Z'::timestamptz)`,
+    );
+
+    // Pre-existing ready DAILY rows for both buckets with aggregates
+    // already in sync with the current customer-DB state:
+    //   - 2025-06-10 KST: story_count=1, last_story_received_at=15:00Z
+    //   - 2025-06-11 KST: story_count=0, last_story_received_at=NULL
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
+               NULL, NULL, 0,
+               '2025-06-10T15:00:00Z'::timestamptz, 1, NOW()),
+              ($1, 'DAILY', '2025-06-11'::date, 'Asia/Seoul', 'ready',
+               NULL, NULL, 0,
+               NULL, 0, NOW())`,
+      [customer],
+    );
+    for (const bucketDate of ["2025-06-10", "2025-06-11"]) {
+      await authPool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model,
+            status, generation, dry_run,
+            processing_started_at, last_generated_at)
+         VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul',
+                 'ENGLISH', 'openai', 'gpt-4o',
+                 'done', 1, TRUE, NOW(), NOW())`,
+        [customer, bucketDate],
+      );
+    }
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBe(0);
+
+    const { rows } = await authPool.query<{
+      bucket_date: Date;
+      status: string;
+      story_count: string;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT bucket_date, status,
+              story_count::text AS story_count,
+              last_story_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND tz          = 'Asia/Seoul'
+        ORDER BY bucket_date`,
+      [customer],
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0].status).toBe("ready");
+    expect(Number(rows[0].story_count)).toBe(1);
+    expect(rows[1].status).toBe("ready");
+    expect(Number(rows[1].story_count)).toBe(0);
+    expect(rows[1].last_story_received_at).toBeNull();
+  });
+
   it("does not seed a LIVE row when no source data falls in the trailing 24h (round-8 review item 3)", async () => {
     // Issue #294 decision 4 + round-8 review item 3: LIVE is the
     // rolling current state and must only be seeded when source
