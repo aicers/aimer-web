@@ -885,4 +885,44 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
       false,
     );
   });
+
+  it("includes a customer whose only recent activity is a customer_redaction_ranges deletion (round-10 review item 2)", async () => {
+    // A redaction-range DELETE removes the auth-DB row and emits a
+    // `customer_redaction_ranges.deleted` audit row. The auth-DB
+    // clause cannot see the deletion (the row is gone); the audit-DB
+    // clause is the only remaining signal. Issue #294 decision 2
+    // includes redaction-range changes in the active set, and round-10
+    // review item 2 flagged that deletions were missing from the
+    // audit-action allowlist.
+    const delCustomer = "00000000-0000-0000-0000-0000000000dd";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-del', 'DelOnly', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO NOTHING`,
+      [delCustomer],
+    );
+
+    // Minimal mock audit pool. Reconcile only invokes `query` against
+    // the audit pool with a single SELECT — anything else is unused.
+    let captured = "";
+    const mockAuditPool = {
+      query: async (sql: string) => {
+        captured = sql;
+        return { rows: [{ customer_id: delCustomer }] };
+      },
+    } as unknown as Pool;
+
+    const tickOutcome = await runReconcileTick({
+      authPool,
+      auditPool: mockAuditPool,
+      connectCustomer: makeDeps(authPool, customerPool).connectCustomer,
+    });
+
+    // The audit-DB clause must filter on the `customer_redaction_ranges.*`
+    // action family so a delete-only customer is picked up.
+    expect(captured).toMatch(/customer_redaction_ranges\.%/);
+    expect(
+      tickOutcome.customers.some((c) => c.customerId === delCustomer),
+    ).toBe(true);
+  });
 });

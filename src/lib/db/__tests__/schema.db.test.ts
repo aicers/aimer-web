@@ -403,6 +403,221 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
   });
 
+  // -- RFC 0002 Phase 0 (#294) analysis tables --
+
+  describe("RFC 0002 Phase 0 (#294) analysis tables", () => {
+    it("customers.timezone column has the expected default and NOT NULL shape", async () => {
+      const { rows } = await pool.query<{
+        column_default: string | null;
+        is_nullable: string;
+        data_type: string;
+      }>(
+        `SELECT column_default, is_nullable, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'customers'
+            AND column_name = 'timezone'`,
+      );
+      expect(rows[0]?.data_type).toBe("text");
+      expect(rows[0]?.is_nullable).toBe("NO");
+      expect(rows[0]?.column_default).toContain("'Asia/Seoul'");
+    });
+
+    it("creates all four analysis state/job tables", async () => {
+      const { rows } = await pool.query(`
+        SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name IN (
+             'story_analysis_state',
+             'story_analysis_job',
+             'periodic_report_state',
+             'periodic_report_job'
+           )
+         ORDER BY table_name`);
+      expect(rows.map((r) => r.table_name)).toEqual([
+        "periodic_report_job",
+        "periodic_report_state",
+        "story_analysis_job",
+        "story_analysis_state",
+      ]);
+    });
+
+    it("story_analysis_state has the locked status enum (with archived)", async () => {
+      // status must be a CHECK enum including 'archived' per decision 1.
+      const { rows } = await pool.query<{ pg_get_constraintdef: string }>(
+        `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+          WHERE t.relname = 'story_analysis_state'
+            AND c.contype = 'c'`,
+      );
+      const checks = rows.map((r) => r.pg_get_constraintdef).join(" | ");
+      for (const status of ["pending", "ready", "dirty", "archived"]) {
+        expect(checks).toContain(status);
+      }
+    });
+
+    it("periodic_report_state has the locked period + status enums plus event_count default 0", async () => {
+      const { rows: cons } = await pool.query<{ pg_get_constraintdef: string }>(
+        `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+          WHERE t.relname = 'periodic_report_state'
+            AND c.contype = 'c'`,
+      );
+      const checks = cons.map((r) => r.pg_get_constraintdef).join(" | ");
+      for (const period of ["LIVE", "DAILY", "WEEKLY", "MONTHLY"]) {
+        expect(checks).toContain(period);
+      }
+      for (const status of ["pending", "ready", "dirty", "archived"]) {
+        expect(checks).toContain(status);
+      }
+
+      // event_count must default to 0 (added by 0030 for the
+      // delete-only envelope detection path).
+      const { rows: ev } = await pool.query<{
+        column_default: string | null;
+        is_nullable: string;
+        data_type: string;
+      }>(
+        `SELECT column_default, is_nullable, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'periodic_report_state'
+            AND column_name = 'event_count'`,
+      );
+      expect(ev[0]?.data_type).toBe("bigint");
+      expect(ev[0]?.is_nullable).toBe("NO");
+      expect(ev[0]?.column_default).toContain("0");
+    });
+
+    it("story_analysis_job + periodic_report_job have dry_run BOOLEAN NOT NULL DEFAULT FALSE (decision 3)", async () => {
+      // Phase 1 (#296) / Phase 2 (#297) deletes leftover dry_run=TRUE
+      // rows in their own migrations before enabling real LLM calls.
+      // Default must be FALSE so a Phase 1 INSERT that omits the
+      // column does not accidentally inherit the Phase 0 marker.
+      for (const table of ["story_analysis_job", "periodic_report_job"]) {
+        const { rows } = await pool.query<{
+          column_default: string | null;
+          is_nullable: string;
+          data_type: string;
+        }>(
+          `SELECT column_default, is_nullable, data_type
+             FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = $1
+              AND column_name = 'dry_run'`,
+          [table],
+        );
+        expect(rows[0]?.data_type).toBe("boolean");
+        expect(rows[0]?.is_nullable).toBe("NO");
+        expect(rows[0]?.column_default).toBe("false");
+      }
+    });
+
+    it("analysis tables CASCADE from customers and the job tables CASCADE from their state tables", async () => {
+      // FK shape verification — a customer DELETE must cascade through
+      // state and through state → job. Otherwise a deleted customer
+      // would leave orphaned analysis rows.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('rfc0002-cascade', 'CC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+
+      await pool.query(
+        `INSERT INTO story_analysis_state (customer_id, story_id, status)
+         VALUES ($1, 5001, 'pending')`,
+        [cid],
+      );
+      await pool.query(
+        `INSERT INTO story_analysis_job
+           (customer_id, story_id, lang, model_name, model, status)
+         VALUES ($1, 5001, 'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
+        [cid],
+      );
+      await pool.query(
+        `INSERT INTO periodic_report_state
+           (customer_id, period, bucket_date, tz, status)
+         VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'pending')`,
+        [cid],
+      );
+      await pool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model, status)
+         VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+                 'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
+        [cid],
+      );
+
+      // Sanity: job FK to state — deleting the state row removes the
+      // job row even when the customer remains.
+      await pool.query(
+        `DELETE FROM story_analysis_state
+          WHERE customer_id = $1 AND story_id = 5001`,
+        [cid],
+      );
+      const { rows: jOrphan } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM story_analysis_job
+          WHERE customer_id = $1 AND story_id = 5001`,
+        [cid],
+      );
+      expect(jOrphan[0].c).toBe(0);
+
+      // Re-seed and then delete the customer; everything cascades.
+      await pool.query(
+        `INSERT INTO story_analysis_state (customer_id, story_id, status)
+         VALUES ($1, 5002, 'pending')`,
+        [cid],
+      );
+      await pool.query(
+        `INSERT INTO story_analysis_job
+           (customer_id, story_id, lang, model_name, model, status)
+         VALUES ($1, 5002, 'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
+        [cid],
+      );
+
+      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+
+      const { rows: leftover } = await pool.query<{ c: number }>(
+        `SELECT
+           (SELECT COUNT(*)::int FROM story_analysis_state WHERE customer_id = $1)
+         + (SELECT COUNT(*)::int FROM story_analysis_job   WHERE customer_id = $1)
+         + (SELECT COUNT(*)::int FROM periodic_report_state WHERE customer_id = $1)
+         + (SELECT COUNT(*)::int FROM periodic_report_job   WHERE customer_id = $1)
+         AS c`,
+        [cid],
+      );
+      expect(leftover[0].c).toBe(0);
+    });
+
+    it("customer-timezone-change trigger archives mismatched periodic_report_state rows", async () => {
+      // The migration-0030 trigger is part of the schema gate too —
+      // verify it fires on a tz update.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name, timezone) VALUES ('rfc0002-trg', 'TZ', 'Asia/Seoul') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      await pool.query(
+        `INSERT INTO periodic_report_state
+           (customer_id, period, bucket_date, tz, status)
+         VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready')`,
+        [cid],
+      );
+
+      await pool.query("UPDATE customers SET timezone = 'UTC' WHERE id = $1", [
+        cid,
+      ]);
+
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT status FROM periodic_report_state
+          WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+        [cid],
+      );
+      expect(rows[0]?.status).toBe("archived");
+
+      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+    });
+  });
+
   // -- Runtime role permissions --
 
   describe("runtime role (aimer_auth) permissions", () => {
@@ -450,8 +665,9 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("can access all granted application tables", async () => {
-      // Verify SELECT on every table granted in 0012_runtime_role.sql.
-      // Full CRUD tables (13 total):
+      // Verify SELECT on every table granted in 0012_runtime_role.sql
+      // plus the RFC 0002 Phase 0 (#294) analysis state/job tables
+      // granted in 0028 / 0029.
       const crudTables = [
         "system_settings",
         "customers",
@@ -467,11 +683,57 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         "analyst_invitations",
         "staged_event_payloads",
         "staged_event_customers",
+        // RFC 0002 Phase 0 (#294) — issue gate: runtime role must be
+        // able to SELECT/INSERT/UPDATE/DELETE the new analysis tables.
+        "story_analysis_state",
+        "story_analysis_job",
+        "periodic_report_state",
+        "periodic_report_job",
       ];
       for (const table of crudTables) {
         const { rows } = await rolePool.query(`SELECT COUNT(*) FROM ${table}`);
         expect(Number(rows[0].count)).toBeGreaterThanOrEqual(0);
       }
+    });
+
+    it("can INSERT into the analysis state/job tables (#294 grants)", async () => {
+      // Round-10 review item 3: explicit INSERT exercise per table so
+      // a missing GRANT regression on any of the four new analysis
+      // tables fails the schema gate rather than only showing up in
+      // worker integration tests.
+      const { rows: cRows } = await rolePool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('rfc0002-grant', 'GC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+
+      await rolePool.query(
+        `INSERT INTO story_analysis_state
+           (customer_id, story_id, status)
+         VALUES ($1, 1, 'pending')`,
+        [cid],
+      );
+      await rolePool.query(
+        `INSERT INTO story_analysis_job
+           (customer_id, story_id, lang, model_name, model, status)
+         VALUES ($1, 1, 'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
+        [cid],
+      );
+      await rolePool.query(
+        `INSERT INTO periodic_report_state
+           (customer_id, period, bucket_date, tz, status)
+         VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'pending')`,
+        [cid],
+      );
+      await rolePool.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model, status)
+         VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+                 'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
+        [cid],
+      );
+
+      await rolePool.query("DELETE FROM customers WHERE id = $1", [cid]);
     });
 
     it("can only SELECT on roles and role_permissions", async () => {

@@ -400,15 +400,62 @@ async function dispatchPeriodicDryRunJob(
 }
 
 // ---------------------------------------------------------------------------
-// Boot-time recovery
+// Boot-time recovery + queued-drain
 // ---------------------------------------------------------------------------
+
+/**
+ * Drain `queued` + `dry_run=TRUE` job rows to `done`. Phase 0 inserts
+ * job rows directly as `status='done', dry_run=TRUE`, so under normal
+ * operation no queued dry-run rows ever exist. Two paths can still
+ * produce them:
+ *
+ *   (a) Boot-time recovery flips orphaned `processing` rows back to
+ *       `queued` (matches the redaction-worker pattern so the Phase 1
+ *       worker has a working recovery path from day one). The normal
+ *       state-row pickup is keyed on `NOT EXISTS (default-variant
+ *       job)`, so a recovered queued row blocks its state row from
+ *       ever being re-selected — the queued row would stay queued
+ *       forever (round-10 review item 1).
+ *   (b) Any out-of-band write (test fixture, manual DB edit, leftover
+ *       row from a prior deployment).
+ *
+ * The drain is dry-run-only — Phase 1 (#296) will have its own real
+ * queued-job dispatcher and must not see Phase 0's drain step touch
+ * its rows.
+ */
+async function drainQueuedDryRunJobs(client: PoolClient): Promise<void> {
+  await client.query(
+    `UPDATE story_analysis_job
+        SET status = 'done',
+            processing_started_at = COALESCE(processing_started_at, NOW()),
+            last_generated_at = NOW(),
+            last_error = NULL,
+            updated_at = NOW()
+      WHERE status = 'queued'
+        AND dry_run = TRUE`,
+  );
+  await client.query(
+    `UPDATE periodic_report_job
+        SET status = 'done',
+            processing_started_at = COALESCE(processing_started_at, NOW()),
+            last_generated_at = NOW(),
+            last_error = NULL,
+            updated_at = NOW()
+      WHERE status = 'queued'
+        AND dry_run = TRUE`,
+  );
+}
 
 /**
  * Flip any `processing` job rows back to `queued`. The Phase 0 worker
  * does not actually run in `processing` (it transitions queued → done
  * inline), but recovery is harmless and matches the redaction-worker
  * pattern so the Phase 1 worker has a working recovery path from day
- * one.
+ * one. The tick's `drainQueuedDryRunJobs` pass then completes any
+ * `dry_run=TRUE` rows recovery just re-queued, so a stuck-processing
+ * Phase 0 row drains to `done` in the very next tick rather than
+ * stalling forever behind the state-row pickup's `NOT EXISTS` filter
+ * (round-10 review item 1).
  */
 async function runRecovery(authPool: Pool): Promise<void> {
   await authPool.query(
@@ -432,6 +479,7 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await drainQueuedDryRunJobs(client);
     await tickStoryStates(client);
     await tickPeriodicStates(client);
     await client.query("COMMIT");
@@ -508,6 +556,7 @@ export function uninstallAnalysisJobWorker(): void {
 }
 
 export const __testables = {
+  drainQueuedDryRunJobs,
   runRecovery,
   tickStoryStates,
   tickPeriodicStates,

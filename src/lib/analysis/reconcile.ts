@@ -128,10 +128,15 @@ interface ActiveCustomerRow {
  * Build the active-customer set for reconciliation per decision 2.
  *
  * The auth-DB clause covers (a) non-archived state rows updated in
- * the trailing 24h and (c) recent `customer_redaction_ranges` rows.
- * The audit-DB clause covers (b) recent `phase2.*` audit activity for
- * customers that may have no state row yet (the case the safety net
- * exists to recover — a hook failure with no auth-DB row written).
+ * the trailing 24h and (c) recent `customer_redaction_ranges` rows
+ * that still exist. The audit-DB clause covers (b) recent `phase2.*`
+ * audit activity for customers that may have no state row yet (the
+ * case the safety net exists to recover — a hook failure with no
+ * auth-DB row written) AND (d) `customer_redaction_ranges.*` audit
+ * rows for customers whose only recent activity is a redaction-range
+ * DELETION (round-10 review item 2): a delete removes the auth-DB row
+ * outright, so the auth-DB clause (c) cannot see it — the audit row is
+ * the only remaining signal.
  *
  * The union is filtered back through `customers.database_status =
  * 'active'` so an audit-only hit for a since-deactivated customer
@@ -177,16 +182,29 @@ async function loadAuditActiveCustomerIds(
 ): Promise<string[]> {
   if (!auditPool) return [];
   try {
+    // Issue #294 decision 2 says a customer is active for reconcile if
+    // *any* `customer_redaction_ranges` change touched them. The auth-DB
+    // clause already catches additions (the row's `created_at` is in
+    // the last 24h) but a deletion REMOVES the row entirely — the only
+    // remaining signal is the `customer_redaction_ranges.deleted` audit
+    // row (round-10 review item 2). Including the full
+    // `customer_redaction_ranges.*` family — added/deleted plus the
+    // retroactive-job lifecycle actions — keeps the set complete and
+    // mirrors the issue's "a customer_redaction_ranges change touched
+    // the customer" phrasing without enumerating each variant separately.
     const { rows } = await auditPool.query<{ customer_id: string }>(
       `SELECT DISTINCT customer_id::text AS customer_id
          FROM audit_logs
         WHERE customer_id IS NOT NULL
           AND timestamp >= NOW() - INTERVAL '24 hours'
-          AND action IN (
-            'phase2.ingest',
-            'phase2.ingest_failed',
-            'phase2.refresh_window',
-            'phase2.backfill'
+          AND (
+            action IN (
+              'phase2.ingest',
+              'phase2.ingest_failed',
+              'phase2.refresh_window',
+              'phase2.backfill'
+            )
+            OR action LIKE 'customer_redaction_ranges.%'
           )`,
     );
     return rows.map((r) => r.customer_id);
