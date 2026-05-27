@@ -275,6 +275,127 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.dry_run).toBe(true);
   });
 
+  it("worker tick does not let non-ready pending rows starve later ready-eligible pending rows (round-2 starvation regression)", async () => {
+    // Seed BATCH_SIZE pending rows whose first/last_member_at are
+    // NOW() so they are NOT ready-eligible, ordered to land at the
+    // front of the (customer_id, story_id) pickup order. Then seed a
+    // single pending row that IS ready-eligible. With the old SQL
+    // (no readiness filter), the first BATCH_SIZE rows would fill the
+    // LIMIT and the late row would never be inspected. With the SQL
+    // readiness filter, only ready-eligible rows occupy slots so the
+    // late row is promoted in the same tick.
+    const customer = "00000000-0000-0000-0000-0000000000cc";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-c', 'C')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    // 150 non-ready front rows.
+    for (let i = 0; i < 150; i++) {
+      await pool.query(
+        `INSERT INTO story_analysis_state
+           (customer_id, story_id, status, first_member_at, last_member_at)
+         VALUES ($1, $2::bigint, 'pending', NOW(), NOW())
+         ON CONFLICT (customer_id, story_id) DO NOTHING`,
+        [customer, String(50_000 + i)],
+      );
+    }
+    // One ready-eligible late row (story_id sorts after the front).
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at)
+       VALUES ($1, $2::bigint, 'pending',
+               NOW() - INTERVAL '20 minutes',
+               NOW() - INTERVAL '20 minutes')
+       ON CONFLICT (customer_id, story_id) DO NOTHING`,
+      [customer, "99999"],
+    );
+
+    await runAnalysisJobTickOnce(pool);
+
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT status FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = 99999`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("ready");
+
+    // None of the non-ready front rows should have been promoted.
+    const { rows: frontReady } = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM story_analysis_state
+        WHERE customer_id = $1 AND status = 'ready'
+          AND story_id BETWEEN 50000 AND 50149`,
+      [customer],
+    );
+    expect(Number(frontReady[0].count)).toBe(0);
+  });
+
+  it("worker tick does not let already-jobbed ready rows starve newer ready rows (round-2 starvation regression)", async () => {
+    // Seed BATCH_SIZE+1 ready rows. Pre-create dry-run jobs for the
+    // first BATCH_SIZE so they are already done. With the old SQL
+    // (selected every ready row), the first BATCH_SIZE filled the
+    // LIMIT slot and the late row never got a first job. With the
+    // `NOT EXISTS` filter, only ready rows missing a job qualify.
+    const customer = "00000000-0000-0000-0000-0000000000dd";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-d', 'D')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    for (let i = 0; i < 150; i++) {
+      const storyId = String(60_000 + i);
+      await pool.query(
+        `INSERT INTO story_analysis_state
+           (customer_id, story_id, status, first_member_at, last_member_at,
+            last_ready_at)
+         VALUES ($1, $2::bigint, 'ready', NOW(), NOW(), NOW())
+         ON CONFLICT (customer_id, story_id) DO NOTHING`,
+        [customer, storyId],
+      );
+      await pool.query(
+        `INSERT INTO story_analysis_job
+           (customer_id, story_id, lang, model_name, model,
+            status, generation, dry_run,
+            processing_started_at, last_generated_at)
+         VALUES ($1, $2::bigint,
+                 COALESCE($3, 'ENGLISH'),
+                 COALESCE($4, 'openai'),
+                 COALESCE($5, 'gpt-4o'),
+                 'done', 1, TRUE, NOW(), NOW())
+         ON CONFLICT DO NOTHING`,
+        [
+          customer,
+          storyId,
+          process.env.ANALYSIS_DEFAULT_LANG ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+          process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+        ],
+      );
+    }
+    // One late ready row with NO job.
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at,
+          last_ready_at)
+       VALUES ($1, $2::bigint, 'ready', NOW(), NOW(), NOW())
+       ON CONFLICT (customer_id, story_id) DO NOTHING`,
+      [customer, "98888"],
+    );
+
+    await runAnalysisJobTickOnce(pool);
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM story_analysis_job
+        WHERE customer_id = $1 AND story_id = 98888`,
+      [customer],
+    );
+    expect(Number(rows[0].count)).toBe(1);
+  });
+
   it("dirtyPeriodicStatesOverlapping flips ready LIVE rows when the event window overlaps", async () => {
     const client = await pool.connect();
     try {

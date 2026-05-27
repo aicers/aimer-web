@@ -27,7 +27,11 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
-import { isStoryReady, LIVE_BUCKET_DATE } from "../analysis/state";
+import {
+  DEFAULT_STORY_IDLE_MINUTES,
+  DEFAULT_STORY_MAX_WAIT_HOURS,
+  LIVE_BUCKET_DATE,
+} from "../analysis/state";
 import { getAuthPool } from "../db/client";
 
 // ---------------------------------------------------------------------------
@@ -72,7 +76,7 @@ interface StoryStateRow {
   last_member_at: Date | null;
 }
 
-async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
+async function tickStoryStates(client: PoolClient): Promise<void> {
   // Row-claiming pickup. Both pending and ready/dirty batches use
   // `FOR UPDATE SKIP LOCKED` so multiple worker replicas cannot pick
   // the same state row in the same tick. The surrounding BEGIN/COMMIT
@@ -81,7 +85,11 @@ async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
   // RFC 0002 §"Worker structure" requirement and the redaction-job-
   // worker pattern (`src/lib/instrumentation/redaction-job-worker.ts`).
 
-  // 1. Flip ready-eligible pending rows.
+  // 1. Flip ready-eligible pending rows. The readiness rule is pushed
+  //    down into SQL so non-ready pending rows do not occupy a slot in
+  //    the LIMIT batch — otherwise the first N pending rows that are
+  //    not yet ready would block every tick from inspecting any pending
+  //    row beyond position N (round-2 starvation review).
   const { rows: pending } = await client.query<StoryStateRow>(
     `SELECT customer_id::text  AS customer_id,
             story_id::text     AS story_id,
@@ -90,46 +98,65 @@ async function tickStoryStates(client: PoolClient, now: Date): Promise<void> {
             last_member_at
        FROM story_analysis_state
       WHERE status = 'pending'
+        AND (
+          (last_member_at  IS NOT NULL
+            AND last_member_at  <= NOW() - ($2 || ' minutes')::interval)
+          OR (first_member_at IS NOT NULL
+            AND first_member_at <= NOW() - ($3 || ' hours')::interval)
+        )
       ORDER BY customer_id, story_id
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE],
+    [BATCH_SIZE, DEFAULT_STORY_IDLE_MINUTES, DEFAULT_STORY_MAX_WAIT_HOURS],
   );
   for (const row of pending) {
-    if (
-      isStoryReady(now, row.first_member_at ?? null, row.last_member_at ?? null)
-    ) {
-      await client.query(
-        `UPDATE story_analysis_state
-            SET status = 'ready',
-                last_ready_at = NOW(),
-                updated_at = NOW()
-          WHERE customer_id = $1 AND story_id = $2::bigint
-            AND status = 'pending'`,
-        [row.customer_id, row.story_id],
-      );
-    }
+    await client.query(
+      `UPDATE story_analysis_state
+          SET status = 'ready',
+              last_ready_at = NOW(),
+              updated_at = NOW()
+        WHERE customer_id = $1 AND story_id = $2::bigint
+          AND status = 'pending'`,
+      [row.customer_id, row.story_id],
+    );
   }
 
-  // 2. For every ready/dirty state row, ensure a queued job exists for
+  // 2. For every actionable state row, ensure a queued job exists for
   //    the default variant; immediately mark it done with dry_run=TRUE.
-  //    `FOR UPDATE SKIP LOCKED` here is the critical multi-replica
-  //    guard: without it, two replicas could each read the same dirty
-  //    row and each issue `UPDATE story_analysis_job SET generation =
-  //    generation + 1`, double-incrementing the generation for a
-  //    single source change.
+  //    Two filters in addition to `FOR UPDATE SKIP LOCKED`:
+  //
+  //    (a) Filter ready rows to those still missing the default-variant
+  //        job. Without this, a ready row that already has its dry-run
+  //        job is reselected forever and blocks slots behind it from
+  //        ever receiving their first job (round-2 starvation review).
+  //    (b) Always include dirty rows — the dispatcher bumps generation
+  //        and flips them back to ready, so they drop out next tick.
+  //
+  //    `FOR UPDATE SKIP LOCKED` is the multi-replica guard: without it,
+  //    two replicas could each read the same dirty row and each issue
+  //    `UPDATE story_analysis_job SET generation = generation + 1`,
+  //    double-incrementing the generation for one source change.
   const { rows: actionable } = await client.query<StoryStateRow>(
-    `SELECT customer_id::text AS customer_id,
-            story_id::text    AS story_id,
-            status,
-            first_member_at,
-            last_member_at
-       FROM story_analysis_state
-      WHERE status IN ('ready', 'dirty')
-      ORDER BY customer_id, story_id
+    `SELECT s.customer_id::text AS customer_id,
+            s.story_id::text    AS story_id,
+            s.status,
+            s.first_member_at,
+            s.last_member_at
+       FROM story_analysis_state s
+      WHERE s.status = 'dirty'
+         OR (s.status = 'ready'
+             AND NOT EXISTS (
+               SELECT 1 FROM story_analysis_job j
+                WHERE j.customer_id = s.customer_id
+                  AND j.story_id    = s.story_id
+                  AND j.lang        = $2
+                  AND j.model_name  = $3
+                  AND j.model       = $4
+             ))
+      ORDER BY s.customer_id, s.story_id
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE],
+    [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
   );
   for (const row of actionable) {
     await dispatchStoryDryRunJob(client, row);
@@ -222,15 +249,34 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
   // FOR UPDATE SKIP LOCKED here mirrors the story tick — two replicas
   // racing on the same dirty periodic state row would otherwise both
   // increment `periodic_report_job.generation`.
+  //
+  // Filter ready rows to those missing the default-variant job for the
+  // same reason as the story side: a ready row that already has its
+  // dry-run job would otherwise be reselected forever and block slots
+  // behind it from ever receiving a first job.
   const { rows: actionable } = await client.query<PeriodicStateRow>(
-    `SELECT customer_id::text AS customer_id,
-            period, bucket_date::text AS bucket_date, tz, status
-       FROM periodic_report_state
-      WHERE status IN ('ready', 'dirty')
-      ORDER BY customer_id, period, bucket_date, tz
+    `SELECT s.customer_id::text AS customer_id,
+            s.period,
+            s.bucket_date::text AS bucket_date,
+            s.tz,
+            s.status
+       FROM periodic_report_state s
+      WHERE s.status = 'dirty'
+         OR (s.status = 'ready'
+             AND NOT EXISTS (
+               SELECT 1 FROM periodic_report_job j
+                WHERE j.customer_id  = s.customer_id
+                  AND j.period       = s.period
+                  AND j.bucket_date  = s.bucket_date
+                  AND j.tz           = s.tz
+                  AND j.lang         = $2
+                  AND j.model_name   = $3
+                  AND j.model        = $4
+             ))
+      ORDER BY s.customer_id, s.period, s.bucket_date, s.tz
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE],
+    [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
   );
   for (const row of actionable) {
     await dispatchPeriodicDryRunJob(client, row);
@@ -330,11 +376,10 @@ async function runRecovery(authPool: Pool): Promise<void> {
 
 export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   const pool = authPool ?? getAuthPool();
-  const now = new Date();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await tickStoryStates(client, now);
+    await tickStoryStates(client);
     await tickPeriodicStates(client);
     await client.query("COMMIT");
   } catch (err) {
