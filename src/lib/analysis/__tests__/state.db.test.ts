@@ -327,6 +327,125 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(Number(rows[0]?.event_count)).toBe(3);
   });
 
+  it("dirtyStoryStatesInRange forward-patches pending rows without flipping status (round-14 review item 1)", async () => {
+    // Round-14 review item 1: a refresh-window / backfill that mutates
+    // a story still in `pending` must update `last_member_at` so the
+    // worker's idle-window readiness rule does not promote the row on
+    // the stale timestamp before the 15-minute reconcile pass runs.
+    // Status stays `pending` (no prior generation to invalidate) and
+    // `updated_at` advances so observers can see the change.
+    const storyId = "3003";
+    const initial = new Date("2026-05-27T11:00:00Z");
+    const client = await pool.connect();
+    try {
+      await recordStoryMemberArrival(client, CUSTOMER_A, storyId, initial);
+    } finally {
+      client.release();
+    }
+    const { rows: beforeRows } = await pool.query<{ updated_at: Date }>(
+      `SELECT updated_at FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = $2::bigint`,
+      [CUSTOMER_A, storyId],
+    );
+    const beforeUpdatedAt = beforeRows[0]?.updated_at;
+    // Make sure the next NOW() is strictly greater than the prior row's
+    // updated_at on Postgres clock-tick granularity.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const newLastMemberAt = new Date("2026-05-27T13:45:00Z");
+    const client2 = await pool.connect();
+    try {
+      await dirtyStoryStatesInRange(client2, CUSTOMER_A, [
+        { storyId, lastMemberAt: newLastMemberAt },
+      ]);
+    } finally {
+      client2.release();
+    }
+    const { rows } = await pool.query<{
+      status: string;
+      last_member_at: Date | null;
+      updated_at: Date;
+    }>(
+      `SELECT status, last_member_at, updated_at
+         FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = $2::bigint`,
+      [CUSTOMER_A, storyId],
+    );
+    expect(rows[0]?.status).toBe("pending");
+    expect(rows[0]?.last_member_at?.toISOString()).toBe(
+      newLastMemberAt.toISOString(),
+    );
+    expect(rows[0]?.updated_at.getTime()).toBeGreaterThan(
+      beforeUpdatedAt?.getTime() ?? 0,
+    );
+  });
+
+  it("dirtyPeriodicStatesOverlapping forward-patches pending buckets without flipping status (round-14 review item 1)", async () => {
+    // Round-14 review item 1: a pending DAILY/WEEKLY/MONTHLY bucket
+    // overlapped by a successful refresh-window / backfill must have
+    // its source aggregates resynced AND `updated_at = NOW()` stamped
+    // so the worker's quiet-window gate does not promote the bucket
+    // inside what should be a fresh quiet window. Status stays
+    // `pending` (no prior generation to invalidate).
+    const customer = "00000000-0000-0000-0000-0000000000c1";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-pendingbucket', 'PendingBucket')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    // Insert a pending DAILY bucket with stale event_count and an
+    // `updated_at` back-dated past the quiet window threshold.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          event_count, updated_at)
+       VALUES ($1, 'DAILY', DATE '2026-05-21', 'Asia/Seoul', 'pending',
+               7, NOW() - INTERVAL '2 hours')
+       ON CONFLICT DO NOTHING`,
+      [customer],
+    );
+    const { rows: beforeRows } = await pool.query<{ updated_at: Date }>(
+      `SELECT updated_at FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = DATE '2026-05-21' AND tz = 'Asia/Seoul'`,
+      [customer],
+    );
+    const beforeUpdatedAt = beforeRows[0]?.updated_at;
+
+    const counts = new Map<string, number>([["DAILY|2026-05-21", 4]]);
+    const client = await pool.connect();
+    try {
+      await dirtyPeriodicStatesOverlapping(
+        client,
+        customer,
+        new Date("2026-05-20T15:00:00Z"),
+        new Date("2026-05-21T15:00:00Z"),
+        counts,
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{
+      status: string;
+      event_count: string;
+      updated_at: Date;
+    }>(
+      `SELECT status, event_count::text AS event_count, updated_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = DATE '2026-05-21'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("pending");
+    expect(Number(rows[0]?.event_count)).toBe(4);
+    expect(rows[0]?.updated_at.getTime()).toBeGreaterThan(
+      beforeUpdatedAt?.getTime() ?? 0,
+    );
+  });
+
   it("maybeArchiveStoryState archives only when no story version survives", async () => {
     const client = await pool.connect();
     try {

@@ -217,22 +217,28 @@ export async function unarchiveStoryStateIfArchived(
 /**
  * Window-replace or backfill envelope overlaps stories already past
  * ready — those rows transition to `dirty` per RFC 0002 §"Dirty
- * transitions" rule 2.
+ * transitions" rule 2. `pending` rows are also forward-patched in the
+ * same statement (round-14 review item 1) but their status is
+ * unchanged: a pending row has no prior generation to invalidate, yet
+ * its `last_member_at` must reflect the canonical post-commit
+ * `MAX(story.received_at)` so the worker's idle-window readiness rule
+ * does not promote it on a stale timestamp before reconcile catches up.
  *
  * Each input pair carries the canonical post-commit `MAX(story.received_at)`
  * across all surviving versions for the `story_id` (NULL when the
  * caller has no value to forward — e.g. a backwards-compatible call
  * site). When non-null, `last_member_at` is forward-patched via
- * `GREATEST(...)` in the same UPDATE that flips the status to `dirty`,
- * so a subsequent reconcile pass observes the canonical value already
- * stored and does not re-trigger a second dirty cycle on the same
- * mutation (round-11 review item 2). Idempotent: a second call with
- * the same value is a no-op because `GREATEST(stored, stored) = stored`
- * and the row is already `dirty`.
+ * `GREATEST(...)` in the same UPDATE that conditionally flips ready/
+ * dirty rows to `dirty`, so a subsequent reconcile pass observes the
+ * canonical value already stored and does not re-trigger a second
+ * dirty cycle on the same mutation (round-11 review item 2).
+ * Idempotent: a second call with the same value is a no-op because
+ * `GREATEST(stored, stored) = stored` and ready/dirty rows are already
+ * dirty.
  *
  * Mutated story_ids with no surviving version are tolerated here:
- * `status IN ('ready', 'dirty')` filters them out (archive runs
- * separately via `maybeArchiveStoryState`).
+ * archived rows are not matched and archive runs separately via
+ * `maybeArchiveStoryState`.
  */
 export interface DirtyStoryStateInput {
   storyId: string;
@@ -258,13 +264,34 @@ export async function dirtyStoryStatesInRange(
   const lastMemberAts = inputs.map((i) =>
     i.lastMemberAt ? i.lastMemberAt.toISOString() : null,
   );
+  // Round-14 review item 1: also forward-patch `pending` rows. A
+  // refresh-window / backfill that mutates a story still in `pending`
+  // gives the canonical post-commit `MAX(story.received_at)` here; if
+  // we leave the row alone, the worker's readiness rule
+  // (`tickStoryStates`) can promote it to `ready` against the stale
+  // `last_member_at` before the 15-minute reconcile pass forward-
+  // patches it. Updating `last_member_at` + `updated_at` keeps the
+  // idle-window clock aligned with the canonical source. The status
+  // flip stays gated on `ready`/`dirty` with a processing/done job —
+  // `pending` must not become `dirty` (it has no prior generation to
+  // invalidate).
   await client.query(
     `WITH forward(story_id, last_member_at) AS (
        SELECT id::bigint, ts::timestamptz
          FROM unnest($2::bigint[], $3::timestamptz[]) AS u(id, ts)
      )
      UPDATE story_analysis_state s
-        SET status         = 'dirty',
+        SET status = CASE
+              WHEN s.status IN ('ready', 'dirty')
+                AND EXISTS (
+                  SELECT 1 FROM story_analysis_job j
+                   WHERE j.customer_id = s.customer_id
+                     AND j.story_id    = s.story_id
+                     AND j.status IN ('processing', 'done')
+                )
+              THEN 'dirty'
+              ELSE s.status
+            END,
             last_member_at = CASE
               WHEN f.last_member_at IS NULL THEN s.last_member_at
               ELSE GREATEST(
@@ -276,12 +303,17 @@ export async function dirtyStoryStatesInRange(
        FROM forward f
       WHERE s.customer_id = $1
         AND s.story_id    = f.story_id
-        AND s.status IN ('ready', 'dirty')
-        AND EXISTS (
-          SELECT 1 FROM story_analysis_job j
-           WHERE j.customer_id = s.customer_id
-             AND j.story_id    = s.story_id
-             AND j.status IN ('processing', 'done')
+        AND (
+          s.status = 'pending'
+          OR (
+            s.status IN ('ready', 'dirty')
+            AND EXISTS (
+              SELECT 1 FROM story_analysis_job j
+               WHERE j.customer_id = s.customer_id
+                 AND j.story_id    = s.story_id
+                 AND j.status IN ('processing', 'done')
+            )
+          )
         )`,
     [customerId, storyIds, lastMemberAts],
   );
@@ -476,7 +508,15 @@ export async function recordBaselineActivity(
 
 /**
  * Dirty all periodic_report_state rows whose bucket window overlaps
- * the supplied [from, to) envelope.
+ * the supplied [from, to) envelope. Also forward-patches `pending`
+ * rows in the same statement (round-14 review item 1): pending rows
+ * have no prior generation to invalidate, but the worker's quiet-
+ * window gate (`tickPeriodicStates`) uses `updated_at` as the ingest-
+ * activity proxy, so a successful refresh-window / backfill must
+ * write `updated_at = NOW()` (and resync source columns) on the
+ * pending bucket. Without this, the worker could promote and dry-run
+ * a pending bucket inside its quiet window even though source data
+ * just changed.
  *
  * Per RFC 0002 §"Dirty transitions" rule 2 (envelope overlap), a row
  * is dirtied when `[bucket_start, bucket_end)` intersects `[from, to)`
@@ -559,6 +599,17 @@ export async function dirtyPeriodicStatesOverlapping(
     }
   }
   await client.query(
+    // Round-14 review item 1: also forward-patch `pending` buckets.
+    // The worker's quiet-window gate
+    // (`tickPeriodicStates`) uses `updated_at` as the ingest-activity
+    // proxy; without writing `updated_at = NOW()` on pending buckets,
+    // a refresh-window / backfill that overlaps a still-pending bucket
+    // would let the worker promote it during what should be a fresh
+    // quiet window. Source columns are forward-patched on pending too
+    // so the bucket's stored aggregates match the canonical customer-
+    // DB state before the worker enqueues its first job. The dirty
+    // flip stays gated on `ready`/`dirty` with a processing/done job
+    // — pending has no prior generation to invalidate.
     `WITH cnt(period, bucket_date, event_count) AS (
        SELECT p, d::date, c::bigint
          FROM unnest($4::text[], $5::date[], $6::bigint[]) AS u(p, d, c)
@@ -570,7 +621,19 @@ export async function dirtyPeriodicStatesOverlapping(
               ) AS u(p, d, r, c)
      )
      UPDATE periodic_report_state s
-        SET status = 'dirty',
+        SET status = CASE
+              WHEN s.status IN ('ready', 'dirty')
+                AND EXISTS (
+                  SELECT 1 FROM periodic_report_job j
+                   WHERE j.customer_id  = s.customer_id
+                     AND j.period       = s.period
+                     AND j.bucket_date  = s.bucket_date
+                     AND j.tz           = s.tz
+                     AND j.status IN ('processing', 'done')
+                )
+              THEN 'dirty'
+              ELSE s.status
+            END,
             event_count = COALESCE(
               (SELECT c.event_count
                  FROM cnt c
@@ -594,7 +657,7 @@ export async function dirtyPeriodicStatesOverlapping(
             ),
             updated_at = NOW()
       WHERE s.customer_id = $1
-        AND s.status IN ('ready', 'dirty')
+        AND s.status IN ('pending', 'ready', 'dirty')
         AND (
           -- LIVE: no fixed window, use last_event_at proxy.
           (s.period = 'LIVE'
@@ -610,13 +673,16 @@ export async function dirtyPeriodicStatesOverlapping(
                     WHEN 'MONTHLY' THEN s.bucket_date::timestamp + INTERVAL '1 month'
                   END) AT TIME ZONE s.tz) > $2::timestamptz)
         )
-        AND EXISTS (
-          SELECT 1 FROM periodic_report_job j
-           WHERE j.customer_id  = s.customer_id
-             AND j.period       = s.period
-             AND j.bucket_date  = s.bucket_date
-             AND j.tz           = s.tz
-             AND j.status IN ('processing', 'done')
+        AND (
+          s.status = 'pending'
+          OR EXISTS (
+            SELECT 1 FROM periodic_report_job j
+             WHERE j.customer_id  = s.customer_id
+               AND j.period       = s.period
+               AND j.bucket_date  = s.bucket_date
+               AND j.tz           = s.tz
+               AND j.status IN ('processing', 'done')
+          )
         )`,
     [
       customerId,
