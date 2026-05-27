@@ -647,6 +647,44 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
 
       await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
     });
+
+    it("has pending-friendly partial indexes on the analysis state tables (round-15 review item 1)", async () => {
+      // Migration 0032 adds `WHERE status = 'pending'` partial indexes
+      // for the worker's per-tick readiness scans. Without these the
+      // pending scans had no usable index and would devolve into full
+      // table scans as state volume grew.
+      const { rows } = await pool.query<{
+        indexname: string;
+        indexdef: string;
+      }>(
+        `SELECT indexname, indexdef FROM pg_indexes
+          WHERE schemaname = 'public'
+            AND indexname IN (
+              'story_analysis_state_pending_idx',
+              'periodic_report_state_pending_idx'
+            )
+          ORDER BY indexname`,
+      );
+      expect(rows.map((r) => r.indexname)).toEqual([
+        "periodic_report_state_pending_idx",
+        "story_analysis_state_pending_idx",
+      ]);
+      // Both indexes must be partial on status='pending' so the worker
+      // scans only pending rows even when ready/dirty/archived dominate.
+      for (const row of rows) {
+        expect(row.indexdef).toContain("WHERE (status = 'pending'");
+      }
+      const periodic = rows.find(
+        (r) => r.indexname === "periodic_report_state_pending_idx",
+      );
+      expect(periodic?.indexdef).toContain(
+        "(customer_id, period, bucket_date, tz)",
+      );
+      const story = rows.find(
+        (r) => r.indexname === "story_analysis_state_pending_idx",
+      );
+      expect(story?.indexdef).toContain("(customer_id, story_id)");
+    });
   });
 
   // -- Runtime role permissions --
