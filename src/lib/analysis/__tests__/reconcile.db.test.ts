@@ -26,6 +26,7 @@ vi.mock("server-only", () => ({}));
 
 const { reconcileCustomer, runReconcileTick } = await import("../reconcile");
 const { LIVE_BUCKET_DATE } = await import("../state");
+const { applyWindowReplaceEnvelopeHook } = await import("../ingest-hooks");
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -1435,6 +1436,217 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     expect(second.periodicStatesSeeded).toBe(0);
     expect(second.periodicStatesPatched).toBe(0);
+  });
+
+  it("delete-only baseline refresh-window inside LIVE flips LIVE to dirty via priorLiveBaselineOverlap (round-19 review item 1)", async () => {
+    // Round-19 r1: a refresh-window / backfill that clears the only
+    // baseline_event in the rolling LIVE window leaves nothing for the
+    // post-commit `baselineTouched` EXISTS predicate to find, but the
+    // LIVE periodic_report_state input has changed and the stale
+    // `ready` / `done` row must flip to `dirty`. The pre-mutation
+    // `priorLiveBaselineOverlap` flag captured inside the window-
+    // replace transaction closes that gap. Reconcile cannot recover
+    // this class on its own: LIVE has no per-bucket count signal for
+    // deletion detection and `deriveAllBuckets` stops paging LIVE once
+    // the trailing 24h holds no source row.
+    const customer = "00000000-0000-0000-0000-0000000000e1";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r19-bdel', 'R19BDel', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    // Pre-existing ready LIVE row with a done dry-run job — the dirty
+    // gate requires both `ready` status and a processing/done job.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
+               NOW() - INTERVAL '45 minutes', NOW() - INTERVAL '45 minutes',
+               3, NULL, 0, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    // Post-commit customer DB has zero baseline rows (delete-only
+    // refresh cleared the LIVE window). The hook with
+    // priorLiveBaselineOverlap=true should still flip LIVE to dirty.
+    const envelopeFrom = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const envelopeTo = new Date(Date.now() - 30 * 60 * 1000);
+    await applyWindowReplaceEnvelopeHook(authPool, customerPool, {
+      customerId: customer,
+      from: envelopeFrom,
+      to: envelopeTo,
+      priorLiveBaselineOverlap: true,
+      priorLiveStoryOverlap: false,
+    });
+
+    const { rows } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'LIVE'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+  });
+
+  it("delete-only story refresh-window inside LIVE flips LIVE to dirty via priorLiveStoryOverlap (round-19 review item 1)", async () => {
+    // Round-19 r1: symmetric story-side case — a refresh-window that
+    // clears the only LIVE-overlapping story leaves no post-commit
+    // story row for the hook's `storyTouched` EXISTS to find. The
+    // pre-mutation `priorLiveStoryOverlap` flag captured during the
+    // window-replace transaction closes the gap.
+    const customer = "00000000-0000-0000-0000-0000000000e2";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r19-sdel', 'R19SDel', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
+               NULL, NULL, 0,
+               NOW() - INTERVAL '45 minutes', 1, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    const envelopeFrom = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const envelopeTo = new Date(Date.now() - 30 * 60 * 1000);
+    await applyWindowReplaceEnvelopeHook(authPool, customerPool, {
+      customerId: customer,
+      from: envelopeFrom,
+      to: envelopeTo,
+      priorLiveBaselineOverlap: false,
+      priorLiveStoryOverlap: true,
+    });
+
+    const { rows } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'LIVE'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+  });
+
+  it("latest-version selection is deterministic when two story_versions share received_at (round-19 review item 2)", async () => {
+    // Round-19 r2: story.received_at defaults to NOW(), which is
+    // transaction-stable. Two story_versions for the same story_id
+    // accepted in one window-replace payload share the same
+    // received_at. The previous JOIN-on-MAX shape returned every tied
+    // version, so a superseded version's time_window_* could feed
+    // periodic-bucket aggregates and seed/dirty buckets that the
+    // canonical version does not overlap. The fix uses DISTINCT ON
+    // with ORDER BY (received_at DESC, story_version DESC), keyed on
+    // the PK column, so exactly one canonical version per story_id
+    // contributes.
+    //
+    // Seed two versions sharing one received_at whose time_window_*
+    // land in DIFFERENT DAILY buckets. Only the canonical (version
+    // sorted last lexicographically) bucket should be seeded.
+    const customer = "00000000-0000-0000-0000-0000000000e3";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r19-tie', 'R19Tie', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+
+    // Both versions share received_at; the v1 row's window lands in
+    // the 2024-08-09 KST DAILY bucket (UTC 2024-08-08T15:00 .. 09T15:00),
+    // and the v2 row's window lands in the 2024-08-11 KST DAILY
+    // bucket. The canonical version (v2, lexicographically larger) is
+    // the one whose bucket reconcile should seed.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES
+         (9301, 'v1', 'auto_correlated',
+          '2024-08-09T00:00:00Z'::timestamptz,
+          '2024-08-09T01:00:00Z'::timestamptz,
+          '{}'::jsonb, 'aice-1', '2024-08-09T05:00:00Z'::timestamptz),
+         (9301, 'v2', 'auto_correlated',
+          '2024-08-11T00:00:00Z'::timestamptz,
+          '2024-08-11T01:00:00Z'::timestamptz,
+          '{}'::jsonb, 'aice-1', '2024-08-09T05:00:00Z'::timestamptz)`,
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows } = await authPool.query<{ bucket_date: string }>(
+      `SELECT bucket_date::text AS bucket_date
+         FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+        ORDER BY bucket_date`,
+      [customer],
+    );
+    // Exactly one DAILY bucket — the canonical v2 window's. The v1
+    // window's bucket (2024-08-09 KST) must NOT be seeded.
+    expect(rows.length).toBe(1);
+    expect(rows[0].bucket_date).toBe("2024-08-11");
   });
 
   it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {

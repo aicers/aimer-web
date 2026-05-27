@@ -141,6 +141,33 @@ export interface WindowReplaceEnvelopeHookInput {
   customerId: string;
   from: Date;
   to: Date;
+  /**
+   * Round-19 review item 1: pre-mutation source-time-aligned LIVE
+   * overlap flags captured inside `executeWindowReplace`'s
+   * transaction. `priorLiveBaselineOverlap` is true when the DELETE
+   * removed at least one `baseline_event` whose `event_time` lay in
+   * BOTH the envelope AND the rolling LIVE window at delete time;
+   * `priorLiveStoryOverlap` is true when the DELETE removed at least
+   * one `story` whose `[time_window_start, time_window_end]`
+   * overlapped BOTH the envelope AND the rolling LIVE window.
+   *
+   * These flags are required because a delete-only refresh-window /
+   * backfill leaves no post-commit row for `computeLiveEnvelopeActivity`'s
+   * source-time `baselineTouched` / `storyTouched` EXISTS predicates
+   * to find, but the LIVE periodic state's input HAS changed and the
+   * stale `ready` / `done` row must be flipped to `dirty`. Reconcile
+   * cannot recover this class either: LIVE has no per-bucket count
+   * for deletion-detection (the rolling 24h is a moving window, not
+   * a fixed bucket) and `deriveAllBuckets` stops paging LIVE once
+   * the trailing 24h holds no source row.
+   *
+   * Optional for backwards compatibility with call sites that fire
+   * the envelope hook without a window-replace mutation (e.g. only
+   * the periodic dirty path); those callers leave both flags
+   * defaulting to false.
+   */
+  priorLiveBaselineOverlap?: boolean;
+  priorLiveStoryOverlap?: boolean;
 }
 
 /**
@@ -211,6 +238,26 @@ export async function applyWindowReplaceEnvelopeHook(
         input.from,
         input.to,
       );
+      // Round-19 review item 1: OR the post-commit `touched` flags
+      // with the pre-mutation `priorLive*Overlap` flags captured
+      // during the window-replace transaction. The post-commit
+      // EXISTS predicates miss delete-only envelopes that cleared
+      // the only LIVE-contributing source rows; the pre-mutation
+      // flags catch exactly that class. Forward-patch columns stay
+      // sourced from the post-commit aggregates (they're already
+      // GREATEST-merged in `dirtyPeriodicStatesOverlapping`, so a
+      // NULL aggregate from an emptied window leaves stored values
+      // unchanged — no roll-back).
+      const liveActivityWithPrior: PeriodicEnvelopeLiveActivity = {
+        baselineTouched:
+          liveActivity.baselineTouched ||
+          (input.priorLiveBaselineOverlap ?? false),
+        storyTouched:
+          liveActivity.storyTouched || (input.priorLiveStoryOverlap ?? false),
+        baselineMaxEventAt: liveActivity.baselineMaxEventAt,
+        baselineMaxReceivedAt: liveActivity.baselineMaxReceivedAt,
+        storyMaxReceivedAt: liveActivity.storyMaxReceivedAt,
+      };
       await dirtyPeriodicStatesOverlapping(
         authClient,
         input.customerId,
@@ -218,7 +265,7 @@ export async function applyWindowReplaceEnvelopeHook(
         input.to,
         eventCountByBucket,
         storyAggregateByBucket,
-        liveActivity,
+        liveActivityWithPrior,
       );
     } finally {
       authClient.release();
@@ -263,17 +310,24 @@ async function computeLiveEnvelopeActivity(
     baseline_max_received_at: Date | null;
     story_max_received_at: Date | null;
   }>(
-    `WITH latest_story AS (
-       SELECT story_id, MAX(received_at) AS max_rcv
+    // Round-19 review item 2: deterministic "latest version per
+    // story_id" under received_at ties. story.received_at defaults to
+    // NOW(), which is transaction-stable -- two story_versions for the
+    // same story_id accepted in one window-replace payload share the
+    // same received_at value, and the previous JOIN-on-MAX shape
+    // returned every tied version, letting a superseded version's
+    // time_window_* feed periodic-bucket aggregates. DISTINCT ON
+    // (story_id) plus ORDER BY (received_at DESC, story_version DESC)
+    // picks exactly one canonical version per story_id -- the most
+    // recent received_at, with a deterministic story_version
+    // tiebreaker keyed on the table's PRIMARY KEY column so the choice
+    // is stable across queries.
+    `WITH latest_versions AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, time_window_start, time_window_end,
+              received_at
          FROM story
-        GROUP BY story_id
-     ),
-     latest_versions AS (
-       SELECT s.story_id, s.time_window_start, s.time_window_end,
-              s.received_at
-         FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+        ORDER BY story_id, received_at DESC, story_version DESC
      ),
      live_baseline AS (
        SELECT MAX(event_time)  AS max_event_at,
@@ -456,17 +510,14 @@ async function computeOverlappingBucketStoryAggregates(
                END) AT TIME ZONE $1
          FROM unnest($2::text[], $3::date[]) AS u(p, d)
      ),
-     latest_story AS (
-       SELECT story_id, MAX(received_at) AS max_rcv
-         FROM story
-         GROUP BY story_id
-     ),
+     -- Round-19 review item 2: deterministic "latest version per
+     -- story_id" — see computeLiveEnvelopeActivity above; same shape.
      latest_versions AS (
-       SELECT s.story_id, s.time_window_start, s.time_window_end,
-              s.received_at
-         FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, time_window_start, time_window_end,
+              received_at
+         FROM story
+        ORDER BY story_id, received_at DESC, story_version DESC
      )
      SELECT t.period,
             t.bucket_date::text AS bucket_date,

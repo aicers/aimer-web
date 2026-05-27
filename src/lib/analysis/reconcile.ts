@@ -560,21 +560,28 @@ async function deriveAllBuckets(
   // without a LIVE seed even though the spec includes story timestamps
   // in the source set.
   const { rows } = await customerConn.query<BucketRow>(
-    `WITH latest_story AS (
-       SELECT story_id, MAX(received_at) AS max_rcv
+    // Round-19 review item 2: deterministic "latest version per
+    // story_id" -- received_at defaults to NOW() and is transaction-
+    // stable, so two story_versions for the same story_id accepted in
+    // one payload share the same value. The previous JOIN-on-MAX
+    // pattern returned every tied row, letting a superseded version's
+    // time_window_* seed bucket aggregates. DISTINCT ON plus the
+    // (received_at DESC, story_version DESC) ordering picks exactly
+    // one canonical version per story_id and is stable across queries
+    // because story_version is part of the PRIMARY KEY.
+    `WITH latest_versions AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, time_window_start, time_window_end,
+              received_at
          FROM story
-        GROUP BY story_id
+        ORDER BY story_id, received_at DESC, story_version DESC
      ),
      src AS (
        SELECT event_time AS ts FROM baseline_event
        UNION ALL
-       SELECT s.time_window_start FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+       SELECT time_window_start FROM latest_versions
        UNION ALL
-       SELECT s.time_window_end FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+       SELECT time_window_end FROM latest_versions
      )
      SELECT DISTINCT 'DAILY'::text AS period,
             (date_trunc('day', ts AT TIME ZONE $1))::date::text AS bucket_date
@@ -735,17 +742,14 @@ async function loadPerBucketStoryAggregates(
   tz: string,
 ): Promise<Map<string, BucketStoryAggregate>> {
   const { rows } = await customerConn.query<BucketStoryAggregateRow>(
-    `WITH latest_story AS (
-       SELECT story_id, MAX(received_at) AS max_rcv
+    // Round-19 review item 2: deterministic "latest version per
+    // story_id" -- see deriveAllBuckets for the rationale; same shape.
+    `WITH latest_versions AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, time_window_start, time_window_end,
+              received_at
          FROM story
-         GROUP BY story_id
-     ),
-     latest_versions AS (
-       SELECT s.story_id, s.time_window_start, s.time_window_end,
-              s.received_at
-         FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+        ORDER BY story_id, received_at DESC, story_version DESC
      ),
      daily AS (
        SELECT lv.story_id, lv.received_at,
@@ -930,17 +934,14 @@ async function loadLatestStoryActivity(
   const { rows } = await customerConn.query<{
     max_received_at: Date | null;
   }>(
-    `WITH latest_story AS (
-       SELECT story_id, MAX(received_at) AS max_rcv
+    // Round-19 review item 2: deterministic "latest version per
+    // story_id" -- see deriveAllBuckets for the rationale; same shape.
+    `WITH latest_versions AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, time_window_start, time_window_end,
+              received_at
          FROM story
-        GROUP BY story_id
-     ),
-     latest_versions AS (
-       SELECT s.story_id, s.time_window_start, s.time_window_end,
-              s.received_at
-         FROM story s
-         JOIN latest_story ls
-           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+        ORDER BY story_id, received_at DESC, story_version DESC
      )
      SELECT MAX(received_at) AS max_received_at
        FROM latest_versions

@@ -31,10 +31,21 @@ export const POST = createPhase2MutationHandler({
     // `dirty`. Reconcile's periodic dirty signals are baseline-only,
     // so this is the only path that catches story-only envelopes.
     const authPool = getAuthPool();
+    // Round-19 review item 1: forward pre-mutation source-time-aligned
+    // LIVE overlap flags captured inside the customer-DB transaction.
+    // The post-commit EXISTS-based LIVE touched checks miss delete-only
+    // envelopes that clear the LIVE input; these flags catch exactly
+    // that class.
+    const priorLiveBaselineOverlap =
+      extras.kind === "baseline" ? extras.baseline.liveBaselineDeleted : false;
+    const priorLiveStoryOverlap =
+      extras.kind === "story" ? extras.story.liveStoryDeleted : false;
     await applyWindowReplaceEnvelopeHook(authPool, customerPool, {
       customerId: verified.customerId,
       from: new Date(payload.window.from),
       to: new Date(payload.window.to),
+      priorLiveBaselineOverlap,
+      priorLiveStoryOverlap,
     });
     if (extras.kind === "story") {
       await applyWindowReplaceStoryHook(authPool, {
