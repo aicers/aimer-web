@@ -22,8 +22,17 @@
 //   - Forward-patch `first_member_at` / `last_member_at` from
 //     `story.received_at` (proxy for member arrival — `story_member`
 //     itself has no timestamp; see decision 1).
-//   - Forward-patch `last_event_at` on periodic rows from
-//     `baseline_event.event_time`.
+//   - Forward-patch `last_event_at` on periodic rows (LIVE + every
+//     existing DAILY/WEEKLY/MONTHLY bucket) from
+//     `baseline_event.event_time`, computed per-bucket so an event
+//     that lands inside a closed bucket forwards the right row.
+//   - Mirror the ingest-hook dirty trigger: when a forward-patch
+//     advances `last_member_at` / `last_event_at` on a `ready` row
+//     that already has a `processing`/`done` job, flip the row to
+//     `dirty`. Without this, a successful customer-DB commit
+//     followed by a failed best-effort hook would leave a stale
+//     `ready` analysis indefinitely — the worker only picks up
+//     `dirty` rows or `ready` rows missing their default-variant job.
 //   - Never roll a value backwards. Never touch `archived` rows.
 //
 // Active-customer scope (decision 2): a customer is reconciled if any
@@ -322,6 +331,16 @@ async function reconcileStoryStates(
         agg.last_received_at.getTime() > cur.last_member_at.getTime();
       if (!needsFirstPatch && !needsLastPatch) continue;
 
+      // Mirror the ingest-hook dirty trigger: when the forward-patch
+      // moves `last_member_at` later AND the row is `ready` with a
+      // processing/done job, flip it to `dirty`. The worker's pickup
+      // filter selects only `dirty` or `ready` rows missing their
+      // default-variant job, so without this branch a successful
+      // customer-DB commit followed by a failed `applyStoryIngestHook`
+      // would leave the stale analysis ready indefinitely (round-6
+      // review item 1). Idempotent: a second pass finds
+      // `last_member_at` already == new value, the CASE WHEN is false,
+      // and no transition happens.
       await authClient.query(
         `UPDATE story_analysis_state
             SET first_member_at = LEAST(
@@ -330,6 +349,19 @@ async function reconcileStoryStates(
                 last_member_at = GREATEST(
                   COALESCE(last_member_at,  $4::timestamptz), $4::timestamptz
                 ),
+                status = CASE
+                  WHEN status = 'ready'
+                    AND (last_member_at IS NULL
+                         OR $4::timestamptz > last_member_at)
+                    AND EXISTS (
+                      SELECT 1 FROM story_analysis_job j
+                       WHERE j.customer_id = $1
+                         AND j.story_id    = $2::bigint
+                         AND j.status IN ('processing', 'done')
+                    )
+                  THEN 'dirty'
+                  ELSE status
+                END,
                 updated_at = NOW()
           WHERE customer_id = $1
             AND story_id    = $2::bigint
@@ -427,6 +459,53 @@ async function loadLatestBaselineEventTime(
   return rows[0]?.max_ts ?? null;
 }
 
+interface BucketMaxEventRow {
+  period: PeriodicPeriod;
+  bucket_date: string;
+  max_event_at: Date;
+}
+
+/**
+ * Per-bucket max `baseline_event.event_time`, keyed by
+ * `(period, bucket_date)` in the customer's `tz`. Used to
+ * forward-patch `last_event_at` on existing DAILY / WEEKLY / MONTHLY
+ * rows so a baseline batch whose event lands inside an already-done
+ * closed bucket can advance that bucket's `last_event_at` (and flip
+ * it `dirty`) when the auth-DB hook failed after the customer-DB
+ * commit (round-6 review item 2).
+ */
+async function loadPerBucketMaxEventTimes(
+  customerConn: CustomerConnection,
+  tz: string,
+): Promise<Map<string, Date>> {
+  const { rows } = await customerConn.query<BucketMaxEventRow>(
+    `SELECT 'DAILY'::text AS period,
+            (date_trunc('day', event_time AT TIME ZONE $1))::date::text
+              AS bucket_date,
+            MAX(event_time) AS max_event_at
+       FROM baseline_event
+       GROUP BY 1, 2
+     UNION ALL
+     SELECT 'WEEKLY'::text,
+            (date_trunc('week', event_time AT TIME ZONE $1))::date::text,
+            MAX(event_time)
+       FROM baseline_event
+       GROUP BY 1, 2
+     UNION ALL
+     SELECT 'MONTHLY'::text,
+            (date_trunc('month', event_time AT TIME ZONE $1))::date::text,
+            MAX(event_time)
+       FROM baseline_event
+       GROUP BY 1, 2`,
+    [tz],
+  );
+  const out = new Map<string, Date>();
+  for (const r of rows) {
+    out.set(`${r.period}|${r.bucket_date}|${tz}`, r.max_event_at);
+  }
+  return out;
+}
+
 interface PeriodicExistingRow {
   period: PeriodicPeriod;
   bucket_date: string;
@@ -480,6 +559,14 @@ async function reconcilePeriodicStates(
   // pass: LIVE seed and forward-patch must agree, or the second pass
   // would forward-patch a row we just inserted.
   const latestBaseline = await loadLatestBaselineEventTime(customerConn);
+  // Per-bucket max event_time for DAILY/WEEKLY/MONTHLY forward-patch.
+  // Computed once per customer so a single round trip serves every
+  // existing-row update below — same idempotence guarantee as the
+  // LIVE path.
+  const bucketMaxEvent = await loadPerBucketMaxEventTimes(
+    customerConn,
+    customerTz,
+  );
 
   let seeded = 0;
   let patched = 0;
@@ -515,49 +602,92 @@ async function reconcilePeriodicStates(
             ],
           );
         } else {
+          // Seed DAILY/WEEKLY/MONTHLY with `last_event_at` already
+          // populated from the per-bucket max event time. The
+          // forward-patch branch below would otherwise patch the
+          // freshly-seeded NULL on the next pass and break the
+          // decision-2 idempotence acceptance criterion.
+          const seedLastEventAt = bucketMaxEvent.get(key);
           await authClient.query(
             `INSERT INTO periodic_report_state
-               (customer_id, period, bucket_date, tz, status)
-             VALUES ($1, $2, $3::date, $4, 'pending')
+               (customer_id, period, bucket_date, tz, status, last_event_at)
+             VALUES ($1, $2, $3::date, $4, 'pending', $5)
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
-            [customerId, b.period, b.bucket_date, customerTz],
+            [
+              customerId,
+              b.period,
+              b.bucket_date,
+              customerTz,
+              seedLastEventAt ? seedLastEventAt.toISOString() : null,
+            ],
           );
         }
         seeded += 1;
         continue;
       }
 
-      // Forward-patch `last_event_at` on an existing LIVE row only.
-      // DAILY/WEEKLY/MONTHLY last_event_at semantics are Phase 2/3
-      // worker concerns and are not reconciled here.
-      if (b.period !== "LIVE") continue;
-      const liveRow = existing.get(key);
-      if (!liveRow) continue;
-      if (liveRow.status === "archived") continue;
-      if (latestBaseline === null) continue;
+      // Forward-patch `last_event_at` on existing rows. Both LIVE and
+      // DAILY/WEEKLY/MONTHLY are reconciled here so an existing closed
+      // bucket whose hook failed (round-6 review item 2) still
+      // observes its missed `event_time` and — if a processing/done
+      // job already exists — transitions `ready → dirty` to trigger
+      // re-analysis.
+      const row = existing.get(key);
+      if (!row) continue;
+      if (row.status === "archived") continue;
+
+      const patchSource =
+        b.period === "LIVE"
+          ? latestBaseline
+          : (bucketMaxEvent.get(key) ?? null);
+      if (patchSource === null) continue;
       if (
-        liveRow.last_event_at !== null &&
-        latestBaseline.getTime() <= liveRow.last_event_at.getTime()
+        row.last_event_at !== null &&
+        patchSource.getTime() <= row.last_event_at.getTime()
       ) {
         continue;
       }
+
+      // The CASE WHEN mirrors `recordBaselineActivity`'s dirty trigger
+      // exactly: only `ready` rows with at least one processing/done
+      // job flip to `dirty`. `pending` and `dirty` rows are
+      // forward-patched without status change. Idempotent: a second
+      // pass finds `last_event_at >= patchSource` and the WHERE clause
+      // makes the UPDATE a no-op.
       const res = await authClient.query(
-        `UPDATE periodic_report_state
+        `UPDATE periodic_report_state s
             SET last_event_at = GREATEST(
-                  COALESCE(last_event_at, $4::timestamptz), $4::timestamptz
+                  COALESCE(s.last_event_at, $5::timestamptz), $5::timestamptz
                 ),
+                status = CASE
+                  WHEN s.status = 'ready'
+                    AND (s.last_event_at IS NULL
+                         OR $5::timestamptz > s.last_event_at)
+                    AND EXISTS (
+                      SELECT 1 FROM periodic_report_job j
+                       WHERE j.customer_id = s.customer_id
+                         AND j.period      = s.period
+                         AND j.bucket_date = s.bucket_date
+                         AND j.tz          = s.tz
+                         AND j.status IN ('processing', 'done')
+                    )
+                  THEN 'dirty'
+                  ELSE s.status
+                END,
                 updated_at = NOW()
-          WHERE customer_id = $1
-            AND period      = 'LIVE'
-            AND bucket_date = $2::date
-            AND tz          = $3
-            AND status      <> 'archived'
-            AND (last_event_at IS NULL OR last_event_at < $4::timestamptz)`,
+          WHERE s.customer_id = $1
+            AND s.period      = $2
+            AND s.bucket_date = $3::date
+            AND s.tz          = $4
+            AND s.status      <> 'archived'
+            AND (s.last_event_at IS NULL
+                 OR s.last_event_at < $5::timestamptz)`,
         [
           customerId,
-          LIVE_BUCKET_DATE,
+          b.period,
+          b.bucket_date,
           customerTz,
-          latestBaseline.toISOString(),
+          patchSource.toISOString(),
         ],
       );
       if ((res.rowCount ?? 0) > 0) patched += 1;

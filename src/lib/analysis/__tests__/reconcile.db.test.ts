@@ -335,6 +335,153 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(set.has(`LIVE|${LIVE_BUCKET_DATE}`)).toBe(true);
   });
 
+  it("flips ready story_analysis_state to dirty when a hook failure leaves last_member_at stale (round-6 review item 1)", async () => {
+    // Round-6 review item 1: customer DB commits a late story_member
+    // / story_version for a `ready` row with a `done` job, but
+    // `applyStoryIngestHook` fails. Reconcile must advance
+    // `last_member_at` AND flip the row to `dirty` — otherwise the
+    // worker (which only picks up `dirty` rows or `ready` rows
+    // missing the default-variant job) leaves the stale analysis
+    // ready indefinitely.
+    const dirtyCustomer = "00000000-0000-0000-0000-0000000000c4";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-dirty-story', 'Dirty Story', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [dirtyCustomer],
+    );
+    await seedStory(customerPool, "9101", "v1", "2026-05-26T10:00:00Z");
+    // Seed an existing `ready` state row plus a `done` job — the
+    // post-hook steady state before the missing event arrives.
+    await authPool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status,
+          first_member_at, last_member_at, last_ready_at)
+       VALUES ($1, 9101, 'ready',
+               '2026-05-26T10:00:00Z'::timestamptz,
+               '2026-05-26T10:00:00Z'::timestamptz,
+               NOW())`,
+      [dirtyCustomer],
+    );
+    await authPool.query(
+      `INSERT INTO story_analysis_job
+         (customer_id, story_id, lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 9101, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [dirtyCustomer],
+    );
+
+    // Customer-DB commits a later version (simulating the racing
+    // member arrival); auth-DB hook failed.
+    await seedStory(customerPool, "9101", "v2", "2026-05-26T12:00:00Z");
+
+    const outcome = await reconcileCustomer(
+      dirtyCustomer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.storyStatesPatched).toBe(1);
+
+    const { rows } = await authPool.query(
+      `SELECT status, last_member_at
+         FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = 9101`,
+      [dirtyCustomer],
+    );
+    expect(rows[0].status).toBe("dirty");
+    expect(rows[0].last_member_at.toISOString()).toBe(
+      "2026-05-26T12:00:00.000Z",
+    );
+
+    // Second pass is a no-op: last_member_at is already at v2.
+    const second = await reconcileCustomer(
+      dirtyCustomer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.storyStatesPatched).toBe(0);
+  });
+
+  it("flips ready DAILY periodic_report_state to dirty when a baseline-hook failure leaves last_event_at stale (round-6 review item 2)", async () => {
+    // Round-6 review item 2: customer DB commits a baseline event
+    // whose `event_time` lands inside a closed DAILY bucket already
+    // in `ready` with a `done` job, but `applyBaselineIngestHook`
+    // fails. Reconcile must advance `last_event_at` on the existing
+    // bucket AND flip it to `dirty`.
+    const periodicCustomer = "00000000-0000-0000-0000-0000000000c5";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-dirty-periodic', 'Dirty Periodic', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [periodicCustomer],
+    );
+    // Pre-existing closed DAILY bucket in `ready` with a done job.
+    // Bucket 2026-05-20 KST = 2026-05-19 15:00 .. 2026-05-20 15:00 UTC.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz,
+          status, last_event_at, last_ready_at)
+       VALUES ($1, 'DAILY', '2026-05-20'::date, 'Asia/Seoul',
+               'ready',
+               '2026-05-19T20:00:00Z'::timestamptz, NOW())`,
+      [periodicCustomer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2026-05-20'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [periodicCustomer],
+    );
+    // Later event_time inside the same DAILY bucket: 2026-05-20 05:00
+    // KST = 2026-05-19 20:00 UTC is the existing last_event_at;
+    // 2026-05-20 13:00 KST = 2026-05-20 04:00 UTC is later but still
+    // inside the same DAILY bucket.
+    await seedBaselineEvent(customerPool, "501", "2026-05-20T04:00:00Z");
+
+    const outcome = await reconcileCustomer(
+      periodicCustomer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    // The closed DAILY bucket exists, so the patch counts toward
+    // periodicStatesPatched (not seeded). Other periods are seeded as
+    // fresh rows (LIVE / WEEKLY / MONTHLY) — those are seeds, not
+    // patches.
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await authPool.query(
+      `SELECT status, last_event_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2026-05-20'::date
+          AND tz          = 'Asia/Seoul'`,
+      [periodicCustomer],
+    );
+    expect(rows[0].status).toBe("dirty");
+    expect(rows[0].last_event_at.toISOString()).toBe(
+      "2026-05-20T04:00:00.000Z",
+    );
+
+    // Second pass is a no-op for the closed bucket.
+    const second = await reconcileCustomer(
+      periodicCustomer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("runReconcileTick excludes customers with no recent activity", async () => {
     // Add an inactive-by-scope customer: 'active' database_status but
     // no state rows, no audit hits, no redaction-range rows.
