@@ -198,6 +198,8 @@ CREATE TABLE event_analysis_result (
     prompt_version           TEXT,                 -- NULL until aimer reports the prompt template version
     severity_score           DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "if real, how bad" (impact, blast radius)
     likelihood_score         DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "how likely this is a real threat"
+    priority_tier            TEXT NOT NULL
+        CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT NOT NULL,        -- redacted (tokens reference event's map)
     redaction_policy_version TEXT NOT NULL,        -- policy under which analysis_text was redacted
     requested_by             UUID NOT NULL,        -- accounts.id (auth_db cross-reference; not FK)
@@ -210,11 +212,11 @@ CREATE TABLE event_analysis_result (
 
 `customer_id` / `external_key` is implicit in the customer DB choice (same convention as `event_redaction_map`).
 
-`model_actual_version` (the LLM provider's specific snapshot — e.g. `gpt-4o-2025-05-13`) and `prompt_version` (aimer's prompt template version) are intentionally nullable. They are populated once aimer's response payload carries them (tracked as a separate aimer-side follow-up, not blocking this design); until then NULL records the "not reported by aimer at this time" state explicitly rather than fabricating a value. Scores arrive on the wire as `severityScore` and `likelihoodScore` per RFC 0002 §"Priority tiering"; both are `NOT NULL` on storage.
+`model_actual_version` (the LLM provider's specific snapshot — e.g. `gpt-4o-2025-05-13`) and `prompt_version` (aimer's prompt template version) are intentionally nullable. They are populated once aimer's response payload carries them (tracked as a separate aimer-side follow-up, not blocking this design); until then NULL records the "not reported by aimer at this time" state explicitly rather than fabricating a value. Scores arrive on the wire as `severityScore` and `likelihoodScore` per RFC 0002 §"Priority tiering"; both are `NOT NULL` on storage. `priority_tier` is a deterministic 4×4 matrix derivation per RFC 0002 §"Priority tiering", computed in aimer-web from the two scores at write time — it is not an LLM-returned value.
 
 `lang` is stored exactly as it appears on the wire to aimer (the `Language` GraphQL enum from aimer#384: `KOREAN` | `ENGLISH`). UI mapping to `next-intl` locales (`ko` / `en`) happens in the presentation layer; the storage uses aimer's vocabulary so there is no translation layer between the row and the call.
 
-`requested_by` is kept as informational metadata only. The audit log (`ai_analysis.request_issued`) remains the canonical, append-only source for "who triggered which analysis when"; the column on the row is for UI convenience (display "Requested by X" without joining the audit log per page load) and is treated as best-effort. If the referenced account is later deleted, the row keeps the orphan UUID; the UI renders it as "deleted user" rather than silently substituting or erroring.
+`requested_by` is kept as informational metadata only. The audit log (`ai_analysis.request_issued`) remains the canonical, append-only source for "who triggered which analysis when"; the column on the row is for UI convenience (display "Requested by X" without joining the audit log per page load) and is treated as best-effort. The UI renders the stored value verbatim — there is no per-render lookup against the global accounts table and no `"deleted user"` substitution; the column crosses the customer-DB / global-DB boundary, so resolving it back to an account label is deferred to a follow-up issue once the requester-id semantics are settled. If the referenced account is later deleted, the row keeps the orphan UUID and the UI shows it as-is.
 
 No `FOREIGN KEY` to `event_redaction_map` despite logical dependency: per RFC 0002 §5, analysis rows must outlive their source row across retention sweeps.
 

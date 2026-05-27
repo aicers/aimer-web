@@ -12,7 +12,8 @@ mutation AnalyzeEvent(
     model: $model
     lang: $lang
   ) {
-    threatScore
+    severityScore
+    likelihoodScore
     analysis
   }
 }

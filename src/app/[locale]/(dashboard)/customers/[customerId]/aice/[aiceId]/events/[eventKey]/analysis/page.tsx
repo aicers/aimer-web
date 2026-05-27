@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { loadAnalysisResultPage } from "@/lib/analysis/result-page-loader";
 
 interface PageProps {
@@ -75,7 +76,15 @@ export default async function AnalysisResultPage({
       ) : null}
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Threat score">{data.threatScore.toFixed(3)}</Field>
+        <Field label="Priority tier">
+          <PriorityBadge tier={data.priorityTier} />
+        </Field>
+        <Field label="Severity score (if real, how bad)">
+          {data.severityScore.toFixed(3)}
+        </Field>
+        <Field label="Likelihood score (is it real)">
+          {data.likelihoodScore.toFixed(3)}
+        </Field>
         <Field label="Language">{data.lang}</Field>
         <Field label="Provider">{data.modelName}</Field>
         <Field label="Model">{data.model}</Field>
@@ -119,6 +128,25 @@ function Field({
       </div>
       <div className="mt-1 text-sm text-foreground">{children}</div>
     </div>
+  );
+}
+
+const TIER_CLASSES: Record<PriorityTier, string> = {
+  CRITICAL: "border-rose-500 bg-rose-100 text-rose-900",
+  HIGH: "border-orange-400 bg-orange-100 text-orange-900",
+  MEDIUM: "border-amber-300 bg-amber-50 text-amber-900",
+  LOW: "border-slate-300 bg-slate-50 text-slate-700",
+};
+
+function PriorityBadge({ tier }: { tier: PriorityTier }) {
+  return (
+    <span
+      data-testid="priority-tier-badge"
+      data-tier={tier}
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${TIER_CLASSES[tier]}`}
+    >
+      {tier}
+    </span>
   );
 }
 

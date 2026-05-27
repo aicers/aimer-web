@@ -190,10 +190,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          threat_score, analysis_text, redaction_policy_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
-               0.5, 'first', 'engine:1.0.0|ranges:empty',
+               0.5, 0.4, 'LOW',
+               'first', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
 
@@ -202,36 +204,46 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          threat_score, analysis_text, redaction_policy_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
-               0.9, 'second', 'engine:1.0.0|ranges:empty',
+               0.9, 0.85, 'CRITICAL',
+               'second', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())
        ON CONFLICT (aice_id, event_key, lang, model_name, model)
        DO UPDATE SET analysis_text = EXCLUDED.analysis_text,
-                     threat_score = EXCLUDED.threat_score,
+                     severity_score = EXCLUDED.severity_score,
+                     likelihood_score = EXCLUDED.likelihood_score,
+                     priority_tier = EXCLUDED.priority_tier,
                      requested_at = NOW()`,
     );
 
     const { rows } = await pool.query<{
       analysis_text: string;
-      threat_score: number;
+      severity_score: number;
+      likelihood_score: number;
+      priority_tier: string;
     }>(
-      `SELECT analysis_text, threat_score FROM event_analysis_result
+      `SELECT analysis_text, severity_score, likelihood_score, priority_tier
+         FROM event_analysis_result
        WHERE aice_id = 'aice-r1' AND event_key = 1
          AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].analysis_text).toBe("second");
+    expect(rows[0].priority_tier).toBe("CRITICAL");
 
     // A different model produces a new row, not an overwrite.
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          threat_score, analysis_text, redaction_policy_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
-               0.1, 'gpt5', 'engine:1.0.0|ranges:empty',
+               0.1, 0.1, 'LOW',
+               'gpt5', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
     const { rows: count } = await pool.query<{ c: number }>(
@@ -239,6 +251,22 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
        WHERE aice_id = 'aice-r1' AND event_key = 1`,
     );
     expect(count[0].c).toBe(2);
+  });
+
+  it("rejects out-of-enum priority_tier via the CHECK constraint", async () => {
+    await expect(
+      pool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, redaction_policy_version,
+            requested_by)
+         VALUES ('aice-r-check', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 0.5, 0.5, 'EXTREME',
+                 'x', 'engine:1.0.0|ranges:empty',
+                 gen_random_uuid())`,
+      ),
+    ).rejects.toThrow();
   });
 
   it("creates the sweeper-supporting indexes added by 0004", async () => {
@@ -851,10 +879,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await rolePool.query(
         `INSERT INTO event_analysis_result
            (aice_id, event_key, lang, model_name, model,
-            threat_score, analysis_text, redaction_policy_version,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, redaction_policy_version,
             requested_by)
          VALUES ('aice-ar', 1, 'ENGLISH', 'openai', 'gpt-4o',
-                 0.5, 'narr', 'engine:1.0.0|ranges:empty',
+                 0.5, 0.5, 'LOW',
+                 'narr', 'engine:1.0.0|ranges:empty',
                  gen_random_uuid())`,
       );
 

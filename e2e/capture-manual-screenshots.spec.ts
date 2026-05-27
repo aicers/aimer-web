@@ -992,4 +992,274 @@ base.describe.serial("Manual screenshots", () => {
       },
     );
   }
+
+  // =========================================================================
+  // Analysis result page (issue #308) — split priority badge + severity /
+  // likelihood scores. The page route is per-customer, so the capture
+  // provisions a customer DB for the seeded `testData.customer.id`, runs
+  // customer migrations on it, and inserts a `detection_events` +
+  // `event_analysis_result` pair so the loader returns a populated row.
+  // No `event_redaction_map` row is created — the loader falls back to
+  // the raw `analysis_text`, which keeps the capture independent of
+  // OpenBao Transit availability.
+  // =========================================================================
+
+  const ANALYSIS_EVENT_KEY = "1";
+  const ANALYSIS_MODEL_NAME = "openai";
+  const ANALYSIS_MODEL = "gpt-4o";
+  // Severity 0.82, likelihood 0.71 ⇒ CRITICAL via the RFC 0002 4×4
+  // matrix (severity ≥ 0.8, 0.6 ≤ likelihood < 0.8). Picked so the
+  // screenshot shows the most visually distinct tier badge — the
+  // rose-coloured CRITICAL pill — and a non-trivial pair of axis
+  // numerics (0.820 / 0.710) rather than rounded edge cases that
+  // could mislead readers about how the matrix actually maps.
+  const ANALYSIS_SEVERITY = 0.82;
+  const ANALYSIS_LIKELIHOOD = 0.71;
+  const ANALYSIS_TIER = "CRITICAL";
+
+  function customerOwnerUrl(customerId: string): string {
+    const tpl =
+      process.env.CUSTOMER_DATABASE_OWNER_URL ??
+      "postgres://aimer_customer_owner:changeme@localhost:5432/template1";
+    const dbName = `customer_${customerId.replace(/-/g, "")}`;
+    return tpl.replace(/\/[^/?]+(\?|$)/, `/${dbName}$1`);
+  }
+
+  async function provisionAnalysisCustomerDb(
+    customerId: string,
+  ): Promise<void> {
+    const dbName = `customer_${customerId.replace(/-/g, "")}`;
+    const adminUrl =
+      process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL ?? "";
+    if (!adminUrl) {
+      throw new Error(
+        "DATABASE_ADMIN_URL or DATABASE_URL must be set to provision the " +
+          "analysis-result capture customer DB",
+      );
+    }
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString: adminUrl });
+    try {
+      const exists = await adminPool.query<{ datname: string }>(
+        "SELECT datname FROM pg_database WHERE datname = $1",
+        [dbName],
+      );
+      if (exists.rows.length === 0) {
+        await adminPool.query(
+          `CREATE DATABASE ${dbName} OWNER aimer_customer_owner`,
+        );
+      }
+    } finally {
+      await adminPool.end();
+    }
+
+    const ownerUrl = customerOwnerUrl(customerId);
+    const ownerPool = new Pool({ connectionString: ownerUrl });
+    try {
+      // Mirror provisionCustomerDb's role-grant step so the runtime
+      // `aimer_customer` connection (used by the page's loader) can
+      // reach the schema. Idempotent — re-running the capture is safe.
+      await ownerPool.query("GRANT USAGE ON SCHEMA public TO aimer_customer");
+      await ownerPool.query(
+        `GRANT CONNECT ON DATABASE ${dbName} TO aimer_customer`,
+      );
+    } finally {
+      await ownerPool.end();
+    }
+
+    // Run the customer migration set on a fresh pool. All customer
+    // migrations are plain SQL files (no DML/TS migrations exist for
+    // this DB), so a small inlined runner is sufficient — Playwright
+    // bundles this spec as CJS and cannot dynamically import the
+    // TypeScript `src/lib/db/migrate.ts` source at runtime.
+    const migrationOwnerPool = new Pool({ connectionString: ownerUrl });
+    try {
+      await runCustomerMigrations(
+        migrationOwnerPool,
+        resolve(process.cwd(), "migrations", "customer"),
+      );
+    } finally {
+      await migrationOwnerPool.end();
+    }
+  }
+
+  async function runCustomerMigrations(
+    pool: import("pg").Pool,
+    dir: string,
+  ): Promise<void> {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { createHash } = await import("node:crypto");
+
+    const client = await pool.connect();
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS _migrations (
+          version    TEXT PRIMARY KEY,
+          name       TEXT NOT NULL,
+          checksum   TEXT NOT NULL,
+          applied_at TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+
+      const applied = new Map<string, string>();
+      const rows = await client.query<{ version: string; checksum: string }>(
+        "SELECT version, checksum FROM _migrations",
+      );
+      for (const row of rows.rows) applied.set(row.version, row.checksum);
+
+      const entries = (await readdir(dir))
+        .filter((f) => /^\d{4}[a-z]?_.*\.sql$/.test(f))
+        .sort();
+
+      for (const file of entries) {
+        const match = file.match(/^(\d{4}[a-z]?)_(.+)\.sql$/);
+        if (!match) continue;
+        const [, version, name] = match;
+        const content = await readFile(resolve(dir, file), "utf-8");
+        const checksum = createHash("sha256").update(content).digest("hex");
+        if (applied.has(version)) continue;
+
+        const noTx = content.includes("-- no-transaction");
+        if (noTx) {
+          await client.query(content);
+        } else {
+          await client.query("BEGIN");
+          try {
+            await client.query(content);
+            await client.query(
+              "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
+              [version, name, checksum],
+            );
+            await client.query("COMMIT");
+            continue;
+          } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+          }
+        }
+        await client.query(
+          "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
+          [version, name, checksum],
+        );
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async function seedAnalysisRow(customerId: string): Promise<void> {
+    const ownerUrl = customerOwnerUrl(customerId);
+    const { Pool } = await import("pg");
+    const pool = new Pool({ connectionString: ownerUrl });
+    try {
+      await pool.query(
+        `INSERT INTO detection_events
+           (aice_id, event_key, redacted_event, redaction_policy_version,
+            schema_version, payload_hash, source, ingested_by)
+         VALUES ($1, $2::numeric, '{}'::jsonb, 'engine:0.0.0|ranges:none',
+                 '0.0.0', '0', 'manual', $3)
+         ON CONFLICT (aice_id, event_key) DO NOTHING`,
+        [
+          testData.aiceEnvironment.aiceId,
+          ANALYSIS_EVENT_KEY,
+          testData.manager.accountId,
+        ],
+      );
+      await pool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, redaction_policy_version, requested_by)
+         VALUES ($1, $2::numeric, 'ENGLISH', $3, $4,
+                 'gpt-4o-2024-08-06', 'aimer-prompt-v3',
+                 $5, $6, $7,
+                 $8, 'engine:0.0.0|ranges:none', $9)
+         ON CONFLICT (aice_id, event_key, lang, model_name, model)
+         DO UPDATE SET
+           severity_score   = EXCLUDED.severity_score,
+           likelihood_score = EXCLUDED.likelihood_score,
+           priority_tier    = EXCLUDED.priority_tier,
+           analysis_text    = EXCLUDED.analysis_text`,
+        [
+          testData.aiceEnvironment.aiceId,
+          ANALYSIS_EVENT_KEY,
+          ANALYSIS_MODEL_NAME,
+          ANALYSIS_MODEL,
+          ANALYSIS_SEVERITY,
+          ANALYSIS_LIKELIHOOD,
+          ANALYSIS_TIER,
+          // A concise sample so the screenshot is dominated by the
+          // header (badge + scores + metadata) rather than the body
+          // text. Two short paragraphs keep the body section non-empty
+          // so the visual hierarchy of the page is faithfully captured.
+          "The source host attempted credential stuffing against the " +
+            "/login endpoint with 412 failed attempts in 60 seconds, " +
+            "matching the brute-force baseline for this aice.\n\n" +
+            "Recommended action: review session anomalies on the source " +
+            "account and enable per-IP rate limiting at the edge.",
+          testData.manager.accountId,
+        ],
+      );
+    } finally {
+      await pool.end();
+    }
+  }
+
+  async function dropAnalysisCustomerDb(customerId: string): Promise<void> {
+    const dbName = `customer_${customerId.replace(/-/g, "")}`;
+    const adminUrl =
+      process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL ?? "";
+    if (!adminUrl) return;
+    const { Pool } = await import("pg");
+    const adminPool = new Pool({ connectionString: adminUrl });
+    try {
+      await adminPool.query(
+        `SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+         WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [dbName],
+      );
+      await adminPool.query(`DROP DATABASE IF EXISTS ${dbName}`);
+    } finally {
+      await adminPool.end();
+    }
+  }
+
+  for (const locale of LOCALES) {
+    base(`analysis-result.${locale}.png`, async () => {
+      // Provision + seed are idempotent and re-running cleans up after
+      // itself in afterAll. Running them per-locale (rather than once
+      // in beforeAll) keeps the capture self-contained and lets a
+      // single-shot rerun of either locale work standalone.
+      await provisionAnalysisCustomerDb(testData.customer.id);
+      await seedAnalysisRow(testData.customer.id);
+
+      const url =
+        `/${locale}/customers/${testData.customer.id}` +
+        `/aice/${testData.aiceEnvironment.aiceId}` +
+        `/events/${ANALYSIS_EVENT_KEY}/analysis` +
+        `?lang=ENGLISH&model_name=${ANALYSIS_MODEL_NAME}` +
+        `&model=${ANALYSIS_MODEL}`;
+      await mgrPage.goto(url);
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="priority-tier-badge"]'),
+      ).toBeVisible();
+
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `analysis-result.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  base("analysis-result cleanup", async () => {
+    // Captures above leave the per-customer DB behind so subsequent
+    // reruns are cheap; explicit cleanup here means a fresh capture
+    // pass (e.g. CI) always starts from a clean slate. This runs last
+    // because the suite is `describe.serial` and tests are ordered by
+    // declaration.
+    await dropAnalysisCustomerDb(testData.customer.id);
+  });
 });

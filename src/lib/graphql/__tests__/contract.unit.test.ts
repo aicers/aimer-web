@@ -82,8 +82,8 @@ describe("aimer GraphQL contract", () => {
 
   it("AnalysisResult preserves field names, scalar types, and non-null markers", () => {
     // The committed `__generated__/analyze-event.ts` types are derived
-    // from the SDL, so a regression here (e.g. `threatScore: Float!`
-    // → `threatScore: String`, or making `analysis` nullable) flows
+    // from the SDL, so a regression here (e.g. `severityScore: Float!`
+    // → `severityScore: String`, or making `analysis` nullable) flows
     // straight into the TypedDocumentNode's response type. This
     // assertion fails alongside `pnpm graphql:check` so the contract
     // breakage shows up explicitly rather than as a downstream TS
@@ -94,11 +94,19 @@ describe("aimer GraphQL contract", () => {
     expect(result).toBeDefined();
     if (!result) return;
     const fields = result.getFields();
-    expect(Object.keys(fields).sort()).toEqual(["analysis", "threatScore"]);
+    expect(Object.keys(fields).sort()).toEqual([
+      "analysis",
+      "likelihoodScore",
+      "severityScore",
+    ]);
 
-    // threatScore: Float!  (non-null Float)
-    expect(isNonNullType(fields.threatScore.type)).toBe(true);
-    expect(String(fields.threatScore.type)).toBe("Float!");
+    // severityScore: Float!  (non-null Float)
+    expect(isNonNullType(fields.severityScore.type)).toBe(true);
+    expect(String(fields.severityScore.type)).toBe("Float!");
+
+    // likelihoodScore: Float!  (non-null Float)
+    expect(isNonNullType(fields.likelihoodScore.type)).toBe(true);
+    expect(String(fields.likelihoodScore.type)).toBe("Float!");
 
     // analysis: String!  (non-null String)
     expect(isNonNullType(fields.analysis.type)).toBe(true);

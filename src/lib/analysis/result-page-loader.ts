@@ -22,6 +22,7 @@ import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import type { PriorityTier } from "./priority-tier";
 import { restoreRedactedTokens } from "./restore";
 
 export type ResultPageOutcome =
@@ -38,7 +39,9 @@ export interface AnalysisResultPageData {
   model: string;
   modelActualVersion: string | null;
   promptVersion: string | null;
-  threatScore: number;
+  severityScore: number;
+  likelihoodScore: number;
+  priorityTier: PriorityTier;
   /** Token-restored analysis text — safe to render as-is. */
   analysisText: string;
   requestedBy: string;
@@ -93,7 +96,9 @@ export async function loadAnalysisResultPage(
   // ---- Fetch result + map + source-event presence -----------------------
   const customerPool = getCustomerRuntimePool(input.customerId);
   const resultRow = await customerPool.query<{
-    threat_score: number;
+    severity_score: number;
+    likelihood_score: number;
+    priority_tier: PriorityTier;
     analysis_text: string;
     model_actual_version: string | null;
     prompt_version: string | null;
@@ -101,7 +106,9 @@ export async function loadAnalysisResultPage(
     requested_at: Date;
   }>(
     `SELECT
-       threat_score,
+       severity_score,
+       likelihood_score,
+       priority_tier,
        analysis_text,
        model_actual_version,
        prompt_version,
@@ -165,7 +172,9 @@ export async function loadAnalysisResultPage(
       model: input.model,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
-      threatScore: row.threat_score,
+      severityScore: row.severity_score,
+      likelihoodScore: row.likelihood_score,
+      priorityTier: row.priority_tier,
       analysisText: restoredText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,

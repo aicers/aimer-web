@@ -17,7 +17,8 @@ export interface AnalyzeEventVariables {
 }
 
 export interface AnalysisResult {
-  threatScore: number;
+  severityScore: number;
+  likelihoodScore: number;
   analysis: string;
 }
 
@@ -39,7 +40,8 @@ export const ANALYZE_EVENT_SOURCE = `mutation AnalyzeEvent(
     model: $model
     lang: $lang
   ) {
-    threatScore
+    severityScore
+    likelihoodScore
     analysis
   }
 }

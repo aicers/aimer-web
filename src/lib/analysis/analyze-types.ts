@@ -11,7 +11,9 @@ export interface EventAnalysisResultRow {
   model: string;
   model_actual_version: string | null;
   prompt_version: string | null;
-  threat_score: number;
+  severity_score: number;
+  likelihood_score: number;
+  priority_tier: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   analysis_text: string;
   redaction_policy_version: string;
   requested_by: string;
