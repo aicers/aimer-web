@@ -529,7 +529,13 @@ export async function recordBaselineActivity(
  * LIVE has no fixed bucket window — it's the rolling current state
  * — so it falls back to the `last_event_at` proxy: if the row's
  * most recent observed event lies inside the envelope, the LIVE row
- * is affected.
+ * is affected. Round-17 review item 1 adds a parallel
+ * `last_story_received_at` proxy so a story-only LIVE row (no
+ * baseline events, `last_event_at` is NULL) can be dirtied by a
+ * story-side envelope. The story proxy fires when the stored
+ * `last_story_received_at` lies inside `[from, to)`; reconcile then
+ * forward-patches the column from `loadLatestStoryActivity` after
+ * the worker handles the dirty cycle.
  *
  * `eventCountByBucket`, when supplied, maps `"<PERIOD>|<bucket_date>"`
  * (DAILY/WEEKLY/MONTHLY only — LIVE is excluded because reconcile's
@@ -659,11 +665,25 @@ export async function dirtyPeriodicStatesOverlapping(
       WHERE s.customer_id = $1
         AND s.status IN ('pending', 'ready', 'dirty')
         AND (
-          -- LIVE: no fixed window, use last_event_at proxy.
+          -- LIVE: no fixed window, use last_event_at / last_story_received_at
+          -- proxies. Round-17 review item 1 adds the story proxy so a
+          -- story-only LIVE row (whose last_event_at is NULL because
+          -- the customer has no baseline events) can still be dirtied
+          -- by a story refresh-window / backfill envelope whose range
+          -- covers the row's stored last_story_received_at. Without
+          -- this OR-clause, story-only LIVE rows seeded by round-11's
+          -- deriveAllBuckets gate could never transition out of ready
+          -- and the Phase 0 verification gate would be blind to
+          -- story-only LIVE changes.
           (s.period = 'LIVE'
-            AND s.last_event_at IS NOT NULL
-            AND s.last_event_at >= $2
-            AND s.last_event_at <  $3)
+            AND (
+              (s.last_event_at IS NOT NULL
+                AND s.last_event_at >= $2
+                AND s.last_event_at <  $3)
+              OR (s.last_story_received_at IS NOT NULL
+                AND s.last_story_received_at >= $2
+                AND s.last_story_received_at <  $3)
+            ))
           -- DAILY / WEEKLY / MONTHLY: true bucket-range overlap in s.tz.
           OR (s.period IN ('DAILY', 'WEEKLY', 'MONTHLY')
             AND ((s.bucket_date::timestamp) AT TIME ZONE s.tz) < $3::timestamptz

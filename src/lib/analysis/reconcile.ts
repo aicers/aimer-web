@@ -860,6 +860,48 @@ async function loadLatestBaselineActivity(
   };
 }
 
+/**
+ * Round-17 review item 1: global MAX(latest-version `story.received_at`)
+ * used as the LIVE bucket's story-side source signal. Round-11 made
+ * story timestamps first-class for LIVE *seeding* — a story-only
+ * customer now gets a LIVE row from `deriveAllBuckets` — but neither
+ * the LIVE seed nor the LIVE forward-patch / dirty-trigger path
+ * tracked any story column, so the LIVE row could never be dirtied by
+ * later story-only refresh-window / backfill envelopes after a hook
+ * failure. This loader closes that gap by mirroring
+ * `loadLatestBaselineActivity` for the story side: it returns the
+ * global max latest-version `received_at`, which seeds and forward-
+ * patches the LIVE row's `last_story_received_at`.
+ *
+ * Latest-version semantics match `loadPerBucketStoryAggregates` and
+ * `computeOverlappingBucketStoryAggregates` — only each `story_id`'s
+ * `MAX(received_at)` version participates, so superseded versions
+ * cannot skew the max.
+ *
+ * No `liveActive` gate is needed here: `deriveAllBuckets` already
+ * gates LIVE seeding on the trailing-24h existence of any source
+ * timestamp (baseline OR story), so this function is only consulted
+ * for LIVE rows that should exist.
+ */
+async function loadLatestStoryActivity(
+  customerConn: CustomerConnection,
+): Promise<{ maxReceivedAt: Date } | null> {
+  const { rows } = await customerConn.query<{
+    max_received_at: Date | null;
+  }>(
+    `WITH latest_story AS (
+       SELECT story_id, MAX(received_at) AS max_rcv
+         FROM story
+        GROUP BY story_id
+     )
+     SELECT MAX(max_rcv) AS max_received_at
+       FROM latest_story`,
+  );
+  const row = rows[0];
+  if (!row || row.max_received_at === null) return null;
+  return { maxReceivedAt: row.max_received_at };
+}
+
 interface PeriodicExistingRow {
   period: PeriodicPeriod;
   bucket_date: string;
@@ -922,6 +964,11 @@ async function reconcilePeriodicStates(
   // would forward-patch a row we just inserted. Tracks both max
   // `event_time` and max `received_at` (round-7 review item 2).
   const latestBaseline = await loadLatestBaselineActivity(customerConn);
+  // Round-17 review item 1: same idempotence guarantee as
+  // `latestBaseline`, for the LIVE bucket's story-side source signal.
+  // Used both on LIVE seed (`last_story_received_at` column value) and
+  // on LIVE forward-patch (advance trigger for dirty + value update).
+  const latestStoryActivity = await loadLatestStoryActivity(customerConn);
   // Per-bucket max event_time + max received_at for DAILY/WEEKLY/
   // MONTHLY forward-patch. Computed once per customer so a single
   // round trip serves every existing-row update below — same
@@ -959,13 +1006,21 @@ async function reconcilePeriodicStates(
       const key = `${b.period}|${b.bucket_date}|${customerTz}`;
       if (!existing.has(key)) {
         if (b.period === "LIVE") {
+          // Round-17 review item 1: populate `last_story_received_at`
+          // from the global latest-version story max so the envelope
+          // hook's LIVE proxy and reconcile's forward-patch dirty
+          // trigger can both observe story-side activity on a LIVE row
+          // that has no baseline data (story-only customer). Without
+          // this seed value, the hook predicate
+          // `s.last_story_received_at IS NOT NULL ...` would never
+          // fire and the LIVE row would stay `ready` forever.
           await authClient.query(
             `INSERT INTO periodic_report_state
                (customer_id, period, bucket_date, tz,
                 status, last_event_at, last_event_received_at,
-                last_ready_at)
+                last_story_received_at, last_ready_at)
              VALUES ($1, 'LIVE', $2::date, $3,
-                     'ready', $4, $5, NOW())
+                     'ready', $4, $5, $6, NOW())
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
@@ -974,6 +1029,9 @@ async function reconcilePeriodicStates(
               latestBaseline ? latestBaseline.maxEventAt.toISOString() : null,
               latestBaseline
                 ? latestBaseline.maxReceivedAt.toISOString()
+                : null,
+              latestStoryActivity
+                ? latestStoryActivity.maxReceivedAt.toISOString()
                 : null,
             ],
           );
@@ -1036,8 +1094,23 @@ async function reconcilePeriodicStates(
         b.period === "LIVE"
           ? latestBaseline
           : (bucketMaxEvent.get(key) ?? null);
+      // Round-17 review item 1: LIVE rows now have a story-side
+      // source signal too. For LIVE, `storyPatchSource` is the global
+      // latest-version story max (no per-bucket overlap predicate —
+      // LIVE has no fixed window). For DAILY/WEEKLY/MONTHLY,
+      // `storyPatchSource` continues to use the per-bucket aggregate
+      // computed by `loadPerBucketStoryAggregates`. `storyCount` is
+      // not tracked on LIVE — see the `currentStoryCount` nulling
+      // below — so the sentinel `storyCount` here is unused.
       const storyPatchSource =
-        b.period === "LIVE" ? null : (bucketStoryAgg.get(key) ?? null);
+        b.period === "LIVE"
+          ? latestStoryActivity
+            ? {
+                maxStoryReceivedAt: latestStoryActivity.maxReceivedAt,
+                storyCount: 0,
+              }
+            : null
+          : (bucketStoryAgg.get(key) ?? null);
       if (patchSource === null && storyPatchSource === null) continue;
       const advancesEventAt =
         patchSource !== null &&

@@ -1053,6 +1053,68 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.status).toBe("dirty");
   });
 
+  it("dirtyPeriodicStatesOverlapping flips a story-only LIVE row via the last_story_received_at proxy (round-17 review item 1)", async () => {
+    // Round-17: a story-only LIVE row has `last_event_at = NULL`
+    // because the customer has no `baseline_event` rows. Before this
+    // fix the LIVE branch of the WHERE clause only checked
+    // `last_event_at`, so a story refresh-window / backfill envelope
+    // covering the row's stored `last_story_received_at` could not
+    // flip the row to `dirty` — leaving the Phase 0 dry-run
+    // verification blind to story-only LIVE changes. The branch now
+    // accepts EITHER proxy.
+    const customer = "00000000-0000-0000-0000-000000000117";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-livestory-r17', 'LiveStoryR17State')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_story_received_at, last_ready_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
+               NULL, $2::timestamptz, NOW())`,
+      [customer, "2026-05-27T08:00:00Z"],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    const client = await pool.connect();
+    try {
+      await dirtyPeriodicStatesOverlapping(
+        client,
+        customer,
+        new Date("2026-05-27T07:00:00Z"),
+        new Date("2026-05-27T09:00:00Z"),
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'LIVE'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+  });
+
   it("dirtyPeriodicStatesOverlapping flips DAILY/WEEKLY/MONTHLY by true bucket-range overlap (round-4 review item 2)", async () => {
     // Round 4: a MONTHLY row at bucket_date=2026-05-01 represents the
     // window [2026-05-01, 2026-06-01) in s.tz. A refresh envelope of

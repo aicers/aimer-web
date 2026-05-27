@@ -1151,14 +1151,146 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     expect(outcome.status).toBe("completed");
 
-    const { rows } = await authPool.query<{ period: string }>(
-      `SELECT DISTINCT period
+    const { rows } = await authPool.query<{
+      period: string;
+      last_event_at: Date | null;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT period, last_event_at, last_story_received_at
          FROM periodic_report_state
         WHERE customer_id = $1
         ORDER BY period`,
       [customer],
     );
     expect(rows.map((r) => r.period).sort()).toContain("LIVE");
+
+    // Round-17 review item 1: the LIVE seed must populate
+    // `last_story_received_at` from the global latest-version story
+    // max so the envelope hook's LIVE story proxy can fire later.
+    // `last_event_at` stays NULL because the customer has no
+    // `baseline_event` rows.
+    const liveRow = rows.find((r) => r.period === "LIVE");
+    expect(liveRow?.last_event_at).toBeNull();
+    const liveStoryAt = liveRow?.last_story_received_at ?? null;
+    expect(liveStoryAt).not.toBeNull();
+    if (liveStoryAt !== null) {
+      expect(new Date(liveStoryAt).toISOString()).toBe(
+        new Date(recent).toISOString(),
+      );
+    }
+
+    // Second pass must remain a no-op (decision-2 idempotence gate).
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
+  it("forward-patches and dirties a story-only LIVE row on a new latest-version story (round-17 review item 1)", async () => {
+    // Round-17 gap: round-11 made story-only LIVE rows seedable, but
+    // recovery paths still dropped story signals for LIVE
+    // (`storyPatchSource = null` for LIVE in reconcile, no story
+    // proxy in the envelope-hook WHERE). A story-only LIVE row would
+    // stay `ready` forever even when a later story refresh-window /
+    // backfill mutated the trailing 24h.
+    //
+    // This test exercises the reconcile-side recovery: seed a LIVE
+    // row from one story, dry-run-job it `done` so the dirty
+    // predicate gate (processing/done job exists) is satisfied,
+    // mutate the customer-DB story to advance its latest-version
+    // `received_at` (the envelope hook is intentionally skipped here
+    // — that's the "hook failed" path), then reconcile and assert
+    // the LIVE row flipped to `dirty` and `last_story_received_at`
+    // forward-patched.
+    const customer = "00000000-0000-0000-0000-0000000000d1";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-livestory-r17', 'LiveStoryR17', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [customer],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      [customer],
+    );
+
+    const initialAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    await seedStory(customerPool, "8101", "v1", initialAt);
+
+    // First reconcile seeds the LIVE row with `last_story_received_at`
+    // = initialAt and status='ready'.
+    let outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    // Persist a done dry-run job so the dirty predicate's
+    // `EXISTS (processing|done job)` gate is satisfied.
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    // Mutate the customer-DB story so its latest-version received_at
+    // advances. This is the "envelope hook failed" path: no auth-DB
+    // write happens here — reconcile must catch it.
+    const advancedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    await seedStory(customerPool, "8101", "v2", advancedAt);
+
+    outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: after } = await authPool.query<{
+      status: string;
+      last_story_received_at: Date | null;
+    }>(
+      `SELECT status, last_story_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'LIVE'
+          AND bucket_date = DATE '1970-01-01'
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(after[0].status).toBe("dirty");
+    const advancedStoryAt = after[0].last_story_received_at;
+    expect(advancedStoryAt).not.toBeNull();
+    if (advancedStoryAt !== null) {
+      expect(new Date(advancedStoryAt).toISOString()).toBe(
+        new Date(advancedAt).toISOString(),
+      );
+    }
 
     // Second pass must remain a no-op (decision-2 idempotence gate).
     const second = await reconcileCustomer(
