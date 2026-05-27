@@ -28,6 +28,9 @@ import "server-only";
 
 import type { Pool, PoolClient } from "pg";
 import {
+  DEFAULT_REPORT_SETTLE_HOURS_DAILY,
+  DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
+  DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
   DEFAULT_STORY_IDLE_MINUTES,
   DEFAULT_STORY_MAX_WAIT_HOURS,
   LIVE_BUCKET_DATE,
@@ -232,11 +235,9 @@ interface PeriodicStateRow {
 
 async function tickPeriodicStates(client: PoolClient): Promise<void> {
   // Pending LIVE rows are ready on creation (RFC 0002 §"Periodic
-  // report readiness"). Pending DAILY/WEEKLY/MONTHLY rows have a more
-  // complex readiness rule that this Phase 0 worker does not implement
-  // — those are Phase 2 / Phase 3 concerns. We still flip pending →
-  // ready for any LIVE rows that slipped through (the ingest hook
-  // creates them as `ready` directly).
+  // report readiness"). The ingest hook normally inserts them as
+  // `ready` directly; this catches any that slipped through (e.g. a
+  // reconcile seed).
   await client.query(
     `UPDATE periodic_report_state
         SET status = 'ready', last_ready_at = NOW(), updated_at = NOW()
@@ -244,6 +245,45 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
         AND period  = 'LIVE'
         AND bucket_date = $1::date`,
     [LIVE_BUCKET_DATE],
+  );
+
+  // Pending DAILY/WEEKLY/MONTHLY rows become ready once their bucket
+  // is fully closed and the settle window has elapsed (RFC 0002
+  // §"Periodic report readiness"). Without this, historical buckets
+  // seeded by the reconcile scan after a hook failure (round-3 review
+  // item 2) would remain `pending` forever and never produce a Phase 0
+  // dry-run job, breaking the verification gate's "no stuck-pending
+  // state rows" requirement.
+  //
+  // The readiness rule is pushed into SQL so we don't have to fetch
+  // every pending row into JS just to filter most of them out. Bucket
+  // end is `bucket_date + 1 period` interpreted at the customer tz
+  // (the bucket was derived in that tz). NOW() is UTC; converting the
+  // wall-clock end via `AT TIME ZONE tz` yields the same UTC instant
+  // we want to compare against.
+  await client.query(
+    `UPDATE periodic_report_state
+        SET status        = 'ready',
+            last_ready_at = NOW(),
+            updated_at    = NOW()
+      WHERE status = 'pending'
+        AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+        AND (
+          (period = 'DAILY'
+           AND ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
+               + ($1 || ' hours')::interval <= NOW())
+          OR (period = 'WEEKLY'
+              AND ((bucket_date + INTERVAL '7 days')::timestamp AT TIME ZONE tz)
+                  + ($2 || ' hours')::interval <= NOW())
+          OR (period = 'MONTHLY'
+              AND ((bucket_date + INTERVAL '1 month')::timestamp AT TIME ZONE tz)
+                  + ($3 || ' hours')::interval <= NOW())
+        )`,
+    [
+      DEFAULT_REPORT_SETTLE_HOURS_DAILY,
+      DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
+      DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
+    ],
   );
 
   // FOR UPDATE SKIP LOCKED here mirrors the story tick — two replicas

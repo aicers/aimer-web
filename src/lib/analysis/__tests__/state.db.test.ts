@@ -23,7 +23,10 @@ const {
   maybeArchiveStoryState,
   recordBaselineActivity,
   recordStoryMemberArrival,
+  unarchiveStoryStateIfArchived,
 } = await import("../state");
+
+const { applyWindowReplaceStoryHook } = await import("../ingest-hooks");
 
 const { runAnalysisJobTickOnce } = await import(
   "@/lib/instrumentation/analysis-job-worker"
@@ -394,6 +397,225 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       [customer],
     );
     expect(Number(rows[0].count)).toBe(1);
+  });
+
+  it("unarchiveStoryStateIfArchived resets archived rows to pending and deletes stale jobs (round-3 review item 1)", async () => {
+    // The window-replace path archives a story (surviving=0), then a
+    // later refresh-window/backfill re-inserts at least one version
+    // (surviving>0). Without the unarchive helper, the row stayed
+    // `archived` forever because `dirtyStoryStatesInRange` skips
+    // archived rows and `maybeArchiveStoryState` is a no-op for
+    // surviving>0.
+    const customer = "00000000-0000-0000-0000-0000000000ee";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-e', 'E')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    // Seed an archived row with an existing dry-run job from the
+    // prior run.
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at, last_ready_at)
+       VALUES ($1, $2::bigint, 'archived',
+               TIMESTAMPTZ '2026-05-20T10:00:00Z',
+               TIMESTAMPTZ '2026-05-20T11:00:00Z',
+               TIMESTAMPTZ '2026-05-20T12:00:00Z')`,
+      [customer, "70001"],
+    );
+    await pool.query(
+      `INSERT INTO story_analysis_job
+         (customer_id, story_id, lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, $2::bigint,
+               COALESCE($3, 'ENGLISH'),
+               COALESCE($4, 'openai'),
+               COALESCE($5, 'gpt-4o'),
+               'done', 1, TRUE,
+               TIMESTAMPTZ '2026-05-20T12:00:00Z',
+               TIMESTAMPTZ '2026-05-20T12:00:00Z')`,
+      [
+        customer,
+        "70001",
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    const client = await pool.connect();
+    try {
+      await unarchiveStoryStateIfArchived(client, customer, "70001");
+    } finally {
+      client.release();
+    }
+
+    const row = await getStoryState(pool, customer, "70001");
+    expect(row?.status).toBe("pending");
+    expect(row?.first_member_at).not.toBeNull();
+    expect(row?.last_member_at).not.toBeNull();
+    const jobs = await countStoryJobs(pool, customer, "70001");
+    expect(jobs.count).toBe(0);
+  });
+
+  it("applyWindowReplaceStoryHook unarchives a previously archived story on re-insertion (round-3 review item 1)", async () => {
+    // End-to-end version of the unarchive case through the hook the
+    // route handler actually calls — refresh-window/backfill receives
+    // `storyVersionSurvivors = [{ storyId, surviving > 0 }]` for a
+    // story that had been archived in a prior window-replace.
+    const customer = "00000000-0000-0000-0000-0000000000ef";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-f', 'F')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at, last_ready_at)
+       VALUES ($1, $2::bigint, 'archived',
+               TIMESTAMPTZ '2026-05-20T10:00:00Z',
+               TIMESTAMPTZ '2026-05-20T11:00:00Z',
+               TIMESTAMPTZ '2026-05-20T12:00:00Z')`,
+      [customer, "70002"],
+    );
+
+    await applyWindowReplaceStoryHook(pool, {
+      customerId: customer,
+      mutatedStoryIds: ["70002"],
+      storyVersionSurvivors: [{ storyId: "70002", surviving: 1 }],
+    });
+
+    const row = await getStoryState(pool, customer, "70002");
+    expect(row?.status).toBe("pending");
+  });
+
+  it("worker promotes pending DAILY/WEEKLY/MONTHLY rows whose settle window has elapsed (round-3 review item 2a)", async () => {
+    // Reconcile seeds historical buckets as `pending`. Without the
+    // worker's DAILY/WEEKLY/MONTHLY promotion SQL, those rows would
+    // remain pending forever and never receive a Phase 0 dry-run job
+    // — breaking the verification gate's "no stuck-pending state
+    // rows" requirement.
+    const customer = "00000000-0000-0000-0000-0000000000f0";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-g', 'G')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    // Three historical buckets well past their settle windows, plus
+    // one far-future DAILY bucket that must NOT yet be ready.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES
+         ($1, 'DAILY',   DATE '2024-01-15', 'Asia/Seoul', 'pending'),
+         ($1, 'WEEKLY',  DATE '2024-01-15', 'Asia/Seoul', 'pending'),
+         ($1, 'MONTHLY', DATE '2024-01-01', 'Asia/Seoul', 'pending'),
+         ($1, 'DAILY',   DATE '2099-12-31', 'Asia/Seoul', 'pending')`,
+      [customer],
+    );
+
+    await runAnalysisJobTickOnce(pool);
+
+    const { rows } = await pool.query<{
+      period: string;
+      bucket_date: string;
+      status: string;
+    }>(
+      `SELECT period, bucket_date::text AS bucket_date, status
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period, bucket_date`,
+      [customer],
+    );
+    const settled = new Map(
+      rows.map((r) => [`${r.period}|${r.bucket_date}`, r.status]),
+    );
+    // Old buckets must be ready + jobbed (one dry-run job each).
+    expect(settled.get("DAILY|2024-01-15")).toBe("ready");
+    expect(settled.get("WEEKLY|2024-01-15")).toBe("ready");
+    expect(settled.get("MONTHLY|2024-01-01")).toBe("ready");
+    // Far-future DAILY bucket is still well before its settle window,
+    // so it must remain pending.
+    expect(settled.get("DAILY|2099-12-31")).toBe("pending");
+
+    const { rows: jobRows } = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count
+         FROM periodic_report_job
+        WHERE customer_id = $1
+          AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
+      [customer],
+    );
+    // One dry-run job per settled historical bucket (3 total).
+    expect(Number(jobRows[0].count)).toBe(3);
+  });
+
+  it("recordBaselineActivity dirties an existing closed DAILY bucket with a done job (round-3 review item 2b)", async () => {
+    // A baseline batch with old event_time landing inside an
+    // already-done DAILY bucket must flip that bucket to `dirty` so
+    // the verification gate can observe the dirty transition. Before
+    // the round-3 fix, the hook only touched the LIVE row.
+    const customer = "00000000-0000-0000-0000-0000000000f1";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-h', 'H')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    const eventTime = new Date("2024-03-10T03:00:00Z");
+    // 2024-03-10 03:00Z = 2024-03-10 12:00 KST → DAILY 2024-03-10.
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, last_ready_at)
+       VALUES ($1, 'DAILY', DATE '2024-03-10', 'Asia/Seoul', 'ready', NOW())`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', DATE '2024-03-10', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, TRUE, NOW(), NOW())`,
+      [
+        customer,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
+
+    const client = await pool.connect();
+    try {
+      await recordBaselineActivity(client, customer, "Asia/Seoul", eventTime);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query<{
+      status: string;
+      last_event_at: Date | null;
+    }>(
+      `SELECT status, last_event_at FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period = 'DAILY'
+          AND bucket_date = DATE '2024-03-10'`,
+      [customer],
+    );
+    expect(rows[0]?.status).toBe("dirty");
+    expect(rows[0]?.last_event_at?.toISOString()).toBe(
+      "2024-03-10T03:00:00.000Z",
+    );
   });
 
   it("dirtyPeriodicStatesOverlapping flips ready LIVE rows when the event window overlaps", async () => {

@@ -149,6 +149,47 @@ export async function maybeArchiveStoryState(
 }
 
 /**
+ * Window-replace or backfill re-inserts at least one `story_version`
+ * for a previously archived `story_id` (decision 1: unarchive in
+ * place). The state row resets to `pending` with fresh timestamps so
+ * the next worker tick re-derives readiness from the new narrative,
+ * and stale jobs from the prior archived run are deleted.
+ *
+ * No-op when the row is missing or already non-archived — the
+ * dirty/archive helpers cover those branches. Reconcile and the
+ * regular member-arrival hook also unarchive on their own paths;
+ * this helper closes the window-replace/backfill path that neither
+ * `dirtyStoryStatesInRange` (skips archived) nor `maybeArchiveStoryState`
+ * (only handles surviving=0) reaches.
+ */
+export async function unarchiveStoryStateIfArchived(
+  client: PoolClient,
+  customerId: string,
+  storyId: string,
+): Promise<void> {
+  const { rowCount } = await client.query(
+    `UPDATE story_analysis_state
+        SET status         = 'pending',
+            first_member_at = NOW(),
+            last_member_at  = NOW(),
+            last_ready_at   = NULL,
+            updated_at      = NOW()
+      WHERE customer_id = $1
+        AND story_id    = $2::bigint
+        AND status      = 'archived'`,
+    [customerId, storyId],
+  );
+  if ((rowCount ?? 0) === 0) return;
+  // Stale jobs belong to the prior archived run (decision 1).
+  await client.query(
+    `DELETE FROM story_analysis_job
+      WHERE customer_id = $1
+        AND story_id    = $2::bigint`,
+    [customerId, storyId],
+  );
+}
+
+/**
  * Window-replace or backfill envelope overlaps stories already past
  * ready — those rows transition to `dirty` per RFC 0002 §"Dirty
  * transitions" rule 2.
@@ -182,12 +223,19 @@ export async function dirtyStoryStatesInRange(
 export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
 
 /**
- * Record that a Phase 2 baseline batch landed for a customer. The
- * ingest hook only seeds/forward-patches the LIVE bucket per the
- * configured `tz` — DAILY/WEEKLY/MONTHLY bucket seeding is handled by
- * the reconcile scan (decision 2) in `analysis-reconcile-worker.ts`,
- * which derives the full bucket set from `customers.timezone` plus
- * observed source timestamps on its own cadence.
+ * Record that a Phase 2 baseline batch landed for a customer. Updates
+ * the LIVE bucket and any existing DAILY/WEEKLY/MONTHLY bucket whose
+ * window contains `eventArrivedAt` (so a baseline batch that lands
+ * inside an already-`done` closed bucket marks that bucket `dirty`
+ * for re-analysis — RFC 0002 §"Dirty transitions" rule 1).
+ *
+ * The DAILY/WEEKLY/MONTHLY rows themselves are NOT seeded here: the
+ * reconcile scan derives the full bucket set from
+ * `customers.timezone` plus observed source timestamps on its own
+ * cadence (decision 2). The ingest hook only forward-patches +
+ * dirties rows that already exist; if reconcile has not yet seeded
+ * the historical bucket, reconcile will pick it up on its next pass
+ * with the correct `last_event_at` already derivable from the source.
  */
 export async function recordBaselineActivity(
   client: PoolClient,
@@ -218,6 +266,41 @@ export async function recordBaselineActivity(
            END,
            updated_at = NOW()`,
     [customerId, LIVE_BUCKET_DATE, tz, eventArrivedAt.toISOString()],
+  );
+
+  // Forward-patch + dirty existing DAILY/WEEKLY/MONTHLY rows whose
+  // bucket contains the event time. Only the row whose
+  // `bucket_date = date_trunc(period, event_time AT TIME ZONE tz)` is
+  // touched, so the UPDATE is at most one row per period (three rows
+  // total). Existing-only — seeding is reconcile's job.
+  await client.query(
+    `UPDATE periodic_report_state s
+        SET last_event_at = GREATEST(
+              COALESCE(s.last_event_at, $3::timestamptz), $3::timestamptz
+            ),
+            status = CASE
+              WHEN s.status IN ('ready', 'archived')
+                AND EXISTS (
+                  SELECT 1 FROM periodic_report_job j
+                   WHERE j.customer_id = s.customer_id
+                     AND j.period      = s.period
+                     AND j.bucket_date = s.bucket_date
+                     AND j.tz          = s.tz
+                     AND j.status IN ('processing', 'done')
+                )
+              THEN 'dirty'
+              ELSE s.status
+            END,
+            updated_at = NOW()
+      WHERE s.customer_id = $1
+        AND s.tz          = $2
+        AND s.period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+        AND s.bucket_date = CASE s.period
+              WHEN 'DAILY'   THEN (date_trunc('day',   $3::timestamptz AT TIME ZONE $2))::date
+              WHEN 'WEEKLY'  THEN (date_trunc('week',  $3::timestamptz AT TIME ZONE $2))::date
+              WHEN 'MONTHLY' THEN (date_trunc('month', $3::timestamptz AT TIME ZONE $2))::date
+            END`,
+    [customerId, tz, eventArrivedAt.toISOString()],
   );
 }
 

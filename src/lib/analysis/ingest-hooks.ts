@@ -19,6 +19,7 @@ import {
   maybeArchiveStoryState,
   recordBaselineActivity,
   recordStoryMemberArrival,
+  unarchiveStoryStateIfArchived,
 } from "./state";
 
 async function loadCustomerTimezone(
@@ -162,9 +163,12 @@ export async function applyWindowReplaceStoryHook(
   try {
     const client = await authPool.connect();
     try {
-      // Dirty mutated stories first; then archive any that have no
-      // surviving version. Ordering matters because the dirty UPDATE
-      // is a no-op on archived rows.
+      // Dirty mutated stories first; then per-survivor, either archive
+      // (surviving=0) or unarchive (surviving>0 against an archived
+      // row, per decision 1). Ordering matters: `dirtyStoryStatesInRange`
+      // skips archived rows, and unarchive resets to pending — running
+      // dirty first leaves any already-non-archived ready/dirty rows in
+      // dirty before we evaluate per-survivor archive/unarchive.
       if (input.mutatedStoryIds.length > 0) {
         await dirtyStoryStatesInRange(
           client,
@@ -173,12 +177,24 @@ export async function applyWindowReplaceStoryHook(
         );
       }
       for (const { storyId, surviving } of input.storyVersionSurvivors) {
-        await maybeArchiveStoryState(
-          client,
-          input.customerId,
-          storyId,
-          surviving,
-        );
+        if (surviving === 0) {
+          await maybeArchiveStoryState(
+            client,
+            input.customerId,
+            storyId,
+            surviving,
+          );
+        } else {
+          // Reinsertion of a previously-archived story: unarchive in
+          // place (decision 1) — pending status + fresh timestamps +
+          // stale jobs purged. No-op when the row is already non-
+          // archived or absent.
+          await unarchiveStoryStateIfArchived(
+            client,
+            input.customerId,
+            storyId,
+          );
+        }
       }
     } finally {
       client.release();
