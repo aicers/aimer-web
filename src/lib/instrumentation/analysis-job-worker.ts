@@ -28,6 +28,7 @@ import "server-only";
 
 import type { Pool, PoolClient } from "pg";
 import {
+  DEFAULT_REPORT_IDLE_QUIET_MINUTES,
   DEFAULT_REPORT_SETTLE_HOURS_DAILY,
   DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
   DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
@@ -248,12 +249,22 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
   );
 
   // Pending DAILY/WEEKLY/MONTHLY rows become ready once their bucket
-  // is fully closed and the settle window has elapsed (RFC 0002
+  // is fully closed AND the settle window has elapsed AND there has
+  // been no ingest activity for `ANALYSIS_IDLE_QUIET_MINUTES` (RFC 0002
   // §"Periodic report readiness"). Without this, historical buckets
   // seeded by the reconcile scan after a hook failure (round-3 review
   // item 2) would remain `pending` forever and never produce a Phase 0
   // dry-run job, breaking the verification gate's "no stuck-pending
   // state rows" requirement.
+  //
+  // The quiet-window gate (round-7 review item 1) uses `updated_at` as
+  // the ingest-activity proxy: the ingest hooks (`recordBaselineActivity`)
+  // and the reconcile forward-patch path both write `updated_at = NOW()`,
+  // so a still-active backfill keeps the row from being promoted before
+  // the batch settles. Without this gate, a historical bucket seeded or
+  // forward-patched by a just-finished reconcile/backfill could be
+  // promoted and dry-run-jobbed immediately even though ingest activity
+  // just occurred.
   //
   // The readiness rule is pushed into SQL so we don't have to fetch
   // every pending row into JS just to filter most of them out. Bucket
@@ -268,6 +279,7 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
             updated_at    = NOW()
       WHERE status = 'pending'
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+        AND updated_at <= NOW() - ($4 || ' minutes')::interval
         AND (
           (period = 'DAILY'
            AND ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
@@ -283,6 +295,7 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
       DEFAULT_REPORT_SETTLE_HOURS_DAILY,
       DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
       DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
+      DEFAULT_REPORT_IDLE_QUIET_MINUTES,
     ],
   );
 

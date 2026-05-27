@@ -446,64 +446,93 @@ async function deriveAllBuckets(
   return rows;
 }
 
-/**
- * Latest `baseline_event.event_time` for the customer — used to
- * forward-patch `last_event_at` on the LIVE periodic state row.
- */
-async function loadLatestBaselineEventTime(
-  customerConn: CustomerConnection,
-): Promise<Date | null> {
-  const { rows } = await customerConn.query<{ max_ts: Date | null }>(
-    `SELECT MAX(event_time) AS max_ts FROM baseline_event`,
-  );
-  return rows[0]?.max_ts ?? null;
-}
-
 interface BucketMaxEventRow {
   period: PeriodicPeriod;
   bucket_date: string;
   max_event_at: Date;
+  max_received_at: Date;
+}
+
+interface BucketAggregate {
+  maxEventAt: Date;
+  maxReceivedAt: Date;
 }
 
 /**
- * Per-bucket max `baseline_event.event_time`, keyed by
- * `(period, bucket_date)` in the customer's `tz`. Used to
- * forward-patch `last_event_at` on existing DAILY / WEEKLY / MONTHLY
- * rows so a baseline batch whose event lands inside an already-done
- * closed bucket can advance that bucket's `last_event_at` (and flip
- * it `dirty`) when the auth-DB hook failed after the customer-DB
- * commit (round-6 review item 2).
+ * Per-bucket aggregates over `baseline_event`, keyed by
+ * `(period, bucket_date)` in the customer's `tz`:
+ *   - `maxEventAt` — max `event_time` in the bucket. Forward-patches
+ *     the state row's `last_event_at`.
+ *   - `maxReceivedAt` — max `received_at` in the bucket. Used as the
+ *     monotone "did the bucket receive a new event?" signal so a hook
+ *     failure where the new event lands earlier than the current max
+ *     `event_time` still triggers a dirty transition (round-7 review
+ *     item 2). Comparing only `event_time` misses that case because
+ *     `MAX(event_time)` does not change when a late-arriving event
+ *     has an earlier `event_time` than the existing max.
  */
 async function loadPerBucketMaxEventTimes(
   customerConn: CustomerConnection,
   tz: string,
-): Promise<Map<string, Date>> {
+): Promise<Map<string, BucketAggregate>> {
   const { rows } = await customerConn.query<BucketMaxEventRow>(
     `SELECT 'DAILY'::text AS period,
             (date_trunc('day', event_time AT TIME ZONE $1))::date::text
               AS bucket_date,
-            MAX(event_time) AS max_event_at
+            MAX(event_time)  AS max_event_at,
+            MAX(received_at) AS max_received_at
        FROM baseline_event
        GROUP BY 1, 2
      UNION ALL
      SELECT 'WEEKLY'::text,
             (date_trunc('week', event_time AT TIME ZONE $1))::date::text,
-            MAX(event_time)
+            MAX(event_time),
+            MAX(received_at)
        FROM baseline_event
        GROUP BY 1, 2
      UNION ALL
      SELECT 'MONTHLY'::text,
             (date_trunc('month', event_time AT TIME ZONE $1))::date::text,
-            MAX(event_time)
+            MAX(event_time),
+            MAX(received_at)
        FROM baseline_event
        GROUP BY 1, 2`,
     [tz],
   );
-  const out = new Map<string, Date>();
+  const out = new Map<string, BucketAggregate>();
   for (const r of rows) {
-    out.set(`${r.period}|${r.bucket_date}|${tz}`, r.max_event_at);
+    out.set(`${r.period}|${r.bucket_date}|${tz}`, {
+      maxEventAt: r.max_event_at,
+      maxReceivedAt: r.max_received_at,
+    });
   }
   return out;
+}
+
+/**
+ * Global maxima for the LIVE bucket. LIVE has no fixed window so
+ * its forward-patch uses the customer-wide max `event_time` and
+ * `received_at`.
+ */
+async function loadLatestBaselineActivity(
+  customerConn: CustomerConnection,
+): Promise<{ maxEventAt: Date; maxReceivedAt: Date } | null> {
+  const { rows } = await customerConn.query<{
+    max_event_at: Date | null;
+    max_received_at: Date | null;
+  }>(
+    `SELECT MAX(event_time)  AS max_event_at,
+            MAX(received_at) AS max_received_at
+       FROM baseline_event`,
+  );
+  const row = rows[0];
+  if (!row || row.max_event_at === null || row.max_received_at === null) {
+    return null;
+  }
+  return {
+    maxEventAt: row.max_event_at,
+    maxReceivedAt: row.max_received_at,
+  };
 }
 
 interface PeriodicExistingRow {
@@ -512,6 +541,7 @@ interface PeriodicExistingRow {
   tz: string;
   status: "pending" | "ready" | "dirty" | "archived";
   last_event_at: Date | null;
+  last_event_received_at: Date | null;
 }
 
 async function loadExistingPeriodicStatesForBuckets(
@@ -524,7 +554,8 @@ async function loadExistingPeriodicStatesForBuckets(
   const periods = buckets.map((b) => b.period);
   const dates = buckets.map((b) => b.bucket_date);
   const { rows } = await authClient.query<PeriodicExistingRow>(
-    `SELECT period, bucket_date::text AS bucket_date, tz, status, last_event_at
+    `SELECT period, bucket_date::text AS bucket_date, tz, status,
+            last_event_at, last_event_received_at
        FROM periodic_report_state
       WHERE customer_id = $1
         AND tz          = $2
@@ -557,12 +588,13 @@ async function reconcilePeriodicStates(
 
   // Pin a single `latestBaseline` value across the entire customer
   // pass: LIVE seed and forward-patch must agree, or the second pass
-  // would forward-patch a row we just inserted.
-  const latestBaseline = await loadLatestBaselineEventTime(customerConn);
-  // Per-bucket max event_time for DAILY/WEEKLY/MONTHLY forward-patch.
-  // Computed once per customer so a single round trip serves every
-  // existing-row update below — same idempotence guarantee as the
-  // LIVE path.
+  // would forward-patch a row we just inserted. Tracks both max
+  // `event_time` and max `received_at` (round-7 review item 2).
+  const latestBaseline = await loadLatestBaselineActivity(customerConn);
+  // Per-bucket max event_time + max received_at for DAILY/WEEKLY/
+  // MONTHLY forward-patch. Computed once per customer so a single
+  // round trip serves every existing-row update below — same
+  // idempotence guarantee as the LIVE path.
   const bucketMaxEvent = await loadPerBucketMaxEventTimes(
     customerConn,
     customerTz,
@@ -590,35 +622,42 @@ async function reconcilePeriodicStates(
           await authClient.query(
             `INSERT INTO periodic_report_state
                (customer_id, period, bucket_date, tz,
-                status, last_event_at, last_ready_at)
+                status, last_event_at, last_event_received_at,
+                last_ready_at)
              VALUES ($1, 'LIVE', $2::date, $3,
-                     'ready', $4, NOW())
+                     'ready', $4, $5, NOW())
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
               LIVE_BUCKET_DATE,
               customerTz,
-              latestBaseline ? latestBaseline.toISOString() : null,
+              latestBaseline ? latestBaseline.maxEventAt.toISOString() : null,
+              latestBaseline
+                ? latestBaseline.maxReceivedAt.toISOString()
+                : null,
             ],
           );
         } else {
-          // Seed DAILY/WEEKLY/MONTHLY with `last_event_at` already
-          // populated from the per-bucket max event time. The
-          // forward-patch branch below would otherwise patch the
-          // freshly-seeded NULL on the next pass and break the
-          // decision-2 idempotence acceptance criterion.
-          const seedLastEventAt = bucketMaxEvent.get(key);
+          // Seed DAILY/WEEKLY/MONTHLY with `last_event_at` and
+          // `last_event_received_at` already populated from the
+          // per-bucket aggregates. The forward-patch branch below
+          // would otherwise patch the freshly-seeded NULLs on the
+          // next pass and break the decision-2 idempotence
+          // acceptance criterion.
+          const agg = bucketMaxEvent.get(key);
           await authClient.query(
             `INSERT INTO periodic_report_state
-               (customer_id, period, bucket_date, tz, status, last_event_at)
-             VALUES ($1, $2, $3::date, $4, 'pending', $5)
+               (customer_id, period, bucket_date, tz, status,
+                last_event_at, last_event_received_at)
+             VALUES ($1, $2, $3::date, $4, 'pending', $5, $6)
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
               b.period,
               b.bucket_date,
               customerTz,
-              seedLastEventAt ? seedLastEventAt.toISOString() : null,
+              agg ? agg.maxEventAt.toISOString() : null,
+              agg ? agg.maxReceivedAt.toISOString() : null,
             ],
           );
         }
@@ -626,12 +665,18 @@ async function reconcilePeriodicStates(
         continue;
       }
 
-      // Forward-patch `last_event_at` on existing rows. Both LIVE and
-      // DAILY/WEEKLY/MONTHLY are reconciled here so an existing closed
-      // bucket whose hook failed (round-6 review item 2) still
-      // observes its missed `event_time` and — if a processing/done
-      // job already exists — transitions `ready → dirty` to trigger
-      // re-analysis.
+      // Forward-patch `last_event_at` + `last_event_received_at` on
+      // existing rows. Both LIVE and DAILY/WEEKLY/MONTHLY are
+      // reconciled here so an existing closed bucket whose hook
+      // failed still observes its missed event (round-6 review item
+      // 2 + round-7 review item 2).
+      //
+      // The dirty-trigger signal is `received_at` rather than
+      // `event_time`: a late-arriving event whose `event_time` is
+      // earlier than the current `last_event_at` does not advance
+      // the event-time max but DOES advance the received-time max.
+      // Using `received_at` catches that case; using only
+      // `event_time` (as the previous round-6 patch did) misses it.
       const row = existing.get(key);
       if (!row) continue;
       if (row.status === "archived") continue;
@@ -641,28 +686,41 @@ async function reconcilePeriodicStates(
           ? latestBaseline
           : (bucketMaxEvent.get(key) ?? null);
       if (patchSource === null) continue;
-      if (
-        row.last_event_at !== null &&
-        patchSource.getTime() <= row.last_event_at.getTime()
-      ) {
-        continue;
-      }
+      const advancesEventAt =
+        row.last_event_at === null ||
+        patchSource.maxEventAt.getTime() > row.last_event_at.getTime();
+      const advancesReceivedAt =
+        row.last_event_received_at === null ||
+        patchSource.maxReceivedAt.getTime() >
+          row.last_event_received_at.getTime();
+      if (!advancesEventAt && !advancesReceivedAt) continue;
 
       // The CASE WHEN mirrors `recordBaselineActivity`'s dirty trigger
       // exactly: only `ready` rows with at least one processing/done
       // job flip to `dirty`. `pending` and `dirty` rows are
-      // forward-patched without status change. Idempotent: a second
-      // pass finds `last_event_at >= patchSource` and the WHERE clause
-      // makes the UPDATE a no-op.
+      // forward-patched without status change. Dirty trigger fires
+      // when either `event_time` or `received_at` advances —
+      // `received_at` catches the round-7 case (new event with
+      // earlier event_time inside an already-done bucket).
+      // Idempotent: a second pass finds both columns already >=
+      // patchSource and the WHERE clause makes the UPDATE a no-op.
       const res = await authClient.query(
         `UPDATE periodic_report_state s
             SET last_event_at = GREATEST(
                   COALESCE(s.last_event_at, $5::timestamptz), $5::timestamptz
                 ),
+                last_event_received_at = GREATEST(
+                  COALESCE(s.last_event_received_at, $6::timestamptz),
+                  $6::timestamptz
+                ),
                 status = CASE
                   WHEN s.status = 'ready'
-                    AND (s.last_event_at IS NULL
-                         OR $5::timestamptz > s.last_event_at)
+                    AND (
+                      s.last_event_at IS NULL
+                      OR $5::timestamptz > s.last_event_at
+                      OR s.last_event_received_at IS NULL
+                      OR $6::timestamptz > s.last_event_received_at
+                    )
                     AND EXISTS (
                       SELECT 1 FROM periodic_report_job j
                        WHERE j.customer_id = s.customer_id
@@ -680,14 +738,19 @@ async function reconcilePeriodicStates(
             AND s.bucket_date = $3::date
             AND s.tz          = $4
             AND s.status      <> 'archived'
-            AND (s.last_event_at IS NULL
-                 OR s.last_event_at < $5::timestamptz)`,
+            AND (
+              s.last_event_at IS NULL
+              OR s.last_event_at < $5::timestamptz
+              OR s.last_event_received_at IS NULL
+              OR s.last_event_received_at < $6::timestamptz
+            )`,
         [
           customerId,
           b.period,
           b.bucket_date,
           customerTz,
-          patchSource.toISOString(),
+          patchSource.maxEventAt.toISOString(),
+          patchSource.maxReceivedAt.toISOString(),
         ],
       );
       if ((res.rowCount ?? 0) > 0) patched += 1;

@@ -482,6 +482,108 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.periodicStatesPatched).toBe(0);
   });
 
+  it("flips ready DAILY periodic_report_state to dirty when a baseline-hook failure adds a non-max event_time (round-7 review item 2)", async () => {
+    // Round-7 review item 2: customer DB commits a baseline event
+    // whose `event_time` is EARLIER than the bucket's current
+    // `last_event_at`, inside a closed DAILY bucket already in
+    // `ready` with a `done` job, and `applyBaselineIngestHook`
+    // fails. The round-6 patch compared only `event_time` and
+    // skipped this row; reconcile now also tracks
+    // `last_event_received_at` so the late-arriving event whose
+    // event_time does not advance the bucket max still triggers a
+    // dirty transition.
+    const customer = "00000000-0000-0000-0000-0000000000c7";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-r7', 'Recon R7', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    // Use a unique bucket date to avoid leakage from prior tests
+    // that share the customer DB pool. Bucket 2025-03-15 KST =
+    // 2025-03-14 15:00 UTC..2025-03-15 15:00 UTC.
+    // Seed the bucket's existing max event_time and back-date its
+    // received_at so the new event can advance received_at without
+    // advancing event_time.
+    await customerPool.query(
+      `INSERT INTO baseline_event
+         (baseline_version, event_key, event_time, kind, raw_score,
+          raw_event, score_window_context, window_signals,
+          scoring_weights_snapshot, source_aice_id, received_at)
+       VALUES ('v1', 7770::numeric, '2025-03-14T16:00:00Z'::timestamptz,
+               'k', 0.5, '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+               '{}'::jsonb, 'aice-1', '2025-03-14T16:00:01Z'::timestamptz)`,
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz,
+          status, last_event_at, last_event_received_at, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-03-15'::date, 'Asia/Seoul',
+               'ready',
+               '2025-03-14T16:00:00Z'::timestamptz,
+               '2025-03-14T16:00:01Z'::timestamptz,
+               NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2025-03-15'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+    // New event inside the same DAILY bucket whose event_time
+    // (2025-03-14T15:30Z) is STRICTLY EARLIER than the stored max
+    // — event_time-only logic would skip it. received_at defaults
+    // to NOW() at insert, which is later than the stored
+    // last_event_received_at of 2025-03-14T16:00:01Z.
+    await seedBaselineEvent(customerPool, "7771", "2025-03-14T15:30:00Z");
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await authPool.query(
+      `SELECT status, last_event_at, last_event_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-03-15'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(rows[0].status).toBe("dirty");
+    // last_event_at does not roll backward — the bucket-wide max
+    // event_time is still the seeded 2025-03-14T16:00:00Z value
+    // since the new event is earlier.
+    expect(rows[0].last_event_at.toISOString()).toBe(
+      "2025-03-14T16:00:00.000Z",
+    );
+    // last_event_received_at advanced past the stored value via
+    // the late-arriving event's NOW() default.
+    expect(new Date(rows[0].last_event_received_at).getTime()).toBeGreaterThan(
+      new Date("2025-03-14T16:00:01Z").getTime(),
+    );
+
+    // Second pass: the customer DB hasn't changed, so received_at
+    // max is now at the patched stored value — no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesSeeded).toBe(0);
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("runReconcileTick excludes customers with no recent activity", async () => {
     // Add an inactive-by-scope customer: 'active' database_status but
     // no state rows, no audit hits, no redaction-range rows.

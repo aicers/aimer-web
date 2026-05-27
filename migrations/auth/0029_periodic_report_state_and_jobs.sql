@@ -15,20 +15,31 @@
 -- `dry_run` is set on Phase 0 job inserts; Phase 2 (#297) deletes
 -- leftover dry-run rows in a migration before writing real ones.
 
+-- `last_event_at` tracks the maximum source `event_time` observed
+-- for events in this bucket. `last_event_received_at` tracks the
+-- maximum customer-DB `baseline_event.received_at` value observed
+-- for events in this bucket: it is the reconcile safety net's
+-- monotone signal for "the bucket received a new event" even when
+-- the new event's `event_time` is earlier than the current
+-- `last_event_at` (round-7 review item 2). Without this column,
+-- reconcile would skip a hook failure where a late-arriving event
+-- lands inside a closed bucket but does not advance the bucket's
+-- max `event_time`.
 CREATE TABLE periodic_report_state (
-    customer_id      UUID         NOT NULL
-                     REFERENCES customers(id) ON DELETE CASCADE,
-    period           TEXT         NOT NULL
-                     CHECK (period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')),
-    bucket_date      DATE         NOT NULL,
-    tz               TEXT         NOT NULL,
-    status           TEXT         NOT NULL
-                     CHECK (status IN ('pending', 'ready', 'dirty', 'archived')),
-    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    last_event_at    TIMESTAMPTZ,
-    cursor_watermark TIMESTAMPTZ,
-    last_ready_at    TIMESTAMPTZ,
-    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    customer_id            UUID         NOT NULL
+                           REFERENCES customers(id) ON DELETE CASCADE,
+    period                 TEXT         NOT NULL
+                           CHECK (period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')),
+    bucket_date            DATE         NOT NULL,
+    tz                     TEXT         NOT NULL,
+    status                 TEXT         NOT NULL
+                           CHECK (status IN ('pending', 'ready', 'dirty', 'archived')),
+    created_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_event_at          TIMESTAMPTZ,
+    last_event_received_at TIMESTAMPTZ,
+    cursor_watermark       TIMESTAMPTZ,
+    last_ready_at          TIMESTAMPTZ,
+    updated_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (customer_id, period, bucket_date, tz)
 );
 

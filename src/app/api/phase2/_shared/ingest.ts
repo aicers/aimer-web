@@ -35,7 +35,12 @@ export interface BaselineIngestExtras {
  * Data captured during a successful story batch so the route handler
  * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
  * DB commit returns. One entry per `story_member` that was actually
- * inserted (duplicates are skipped).
+ * inserted (duplicates are skipped). `arrivedAt` is the canonical
+ * customer-DB `story.received_at` of the version the member belongs
+ * to (round-7 review item 3) — not JS wall-clock time. Reconcile's
+ * forward-only patch path can never roll `last_member_at` backwards,
+ * so the hook MUST write the same source-of-truth value reconcile
+ * derives.
  */
 export interface StoryIngestExtras {
   storyArrivals: Array<{ storyId: string; arrivedAt: Date }>;
@@ -219,7 +224,7 @@ export async function ingestStoryBatch(
     for (const story of payload.stories) {
       // `story.summary_payload` is an aggregate (not redacted in v1 per
       // RFC 0001) — written through verbatim.
-      const storyResult = await client.query(
+      const storyResult = await client.query<{ received_at: Date }>(
         `INSERT INTO story (
            story_id, story_version, kind, correlation_rule_id, primary_asset,
            time_window_start, time_window_end, score,
@@ -229,7 +234,8 @@ export async function ingestStoryBatch(
            $6, $7, $8,
            $9::jsonb, $10
          )
-         ON CONFLICT (story_id, story_version) DO NOTHING`,
+         ON CONFLICT (story_id, story_version) DO NOTHING
+         RETURNING received_at`,
         [
           story.story_id,
           story.story_version,
@@ -243,7 +249,26 @@ export async function ingestStoryBatch(
           sourceAiceId,
         ],
       );
-      if (storyResult.rowCount === 1) storiesAccepted += 1;
+      let storyReceivedAt: Date;
+      if (storyResult.rowCount === 1) {
+        storiesAccepted += 1;
+        storyReceivedAt = storyResult.rows[0].received_at;
+      } else {
+        // ON CONFLICT path: fetch the canonical `received_at` of the
+        // existing row so member-arrival timestamps come from the
+        // customer-DB source-of-truth value rather than JS wall-clock
+        // time (round-7 review item 3). Reconcile's forward-only
+        // patch path can only roll `last_member_at` forward; using
+        // `new Date()` here would let a hook-time value get ahead of
+        // the canonical `story.received_at`, and reconcile could
+        // never roll it back.
+        const { rows } = await client.query<{ received_at: Date }>(
+          `SELECT received_at FROM story
+            WHERE story_id = $1::bigint AND story_version = $2`,
+          [story.story_id, story.story_version],
+        );
+        storyReceivedAt = rows[0].received_at;
+      }
 
       for (const member of story.members) {
         totalMembers += 1;
@@ -274,13 +299,16 @@ export async function ingestStoryBatch(
         );
         if (memberResult.rowCount === 1) {
           membersAccepted += 1;
-          // Phase 0 analysis hook uses a JS-side timestamp as the
-          // member-arrival proxy. The customer DB stamps `received_at`
-          // with NOW() on row insert; this value is close enough for
-          // readiness derivation and avoids a per-row RETURNING.
+          // Use the canonical customer-DB `story.received_at` value as
+          // the member-arrival timestamp (round-7 review item 3).
+          // Decision 1 derives `story_analysis_state.last_member_at`
+          // from `story.received_at`; reconcile's forward-only patch
+          // path can only roll it forward. JS wall-clock `new Date()`
+          // here would let a hook-time value get ahead of the
+          // canonical source — reconcile could never roll it back.
           storyArrivals.push({
             storyId: story.story_id,
-            arrivedAt: new Date(),
+            arrivedAt: storyReceivedAt,
           });
         }
       }

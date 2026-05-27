@@ -290,16 +290,33 @@ export async function recordBaselineActivity(
   // last_event_at and dirties the row if a done/processing job
   // already exists. The ON CONFLICT WHERE clause excludes archived
   // rows so a terminal-archived LIVE row stays archived.
+  //
+  // `last_event_received_at` is the reconcile safety-net signal
+  // (round-7 review item 2): it advances every time the bucket
+  // receives a new event regardless of whether `event_time`
+  // advances, so a hook failure followed by reconcile catches up
+  // even when the new event lands earlier than the current max.
+  // Using `NOW()` here is the customer-DB-side ingest-commit
+  // boundary: customer-DB `baseline_event.received_at` defaults to
+  // `NOW()` at INSERT, and the hook runs after that commit, so the
+  // auth-DB `NOW()` is >= the maximum customer-DB `received_at`.
+  // That ordering keeps the reconcile comparison conservative —
+  // hook success leaves no missed events; hook failure leaves the
+  // column behind the customer DB and reconcile observes the lag.
   await client.query(
     `WITH max_t AS (
        SELECT MAX(t) AS t FROM unnest($4::timestamptz[]) AS t
      )
      INSERT INTO periodic_report_state
-       (customer_id, period, bucket_date, tz, status, last_event_at)
-     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t FROM max_t
+       (customer_id, period, bucket_date, tz, status,
+        last_event_at, last_event_received_at)
+     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t, NOW() FROM max_t
      ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
        SET last_event_at = GREATEST(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at
+           ),
+           last_event_received_at = GREATEST(
+             periodic_report_state.last_event_received_at, NOW()
            ),
            status = CASE
              WHEN periodic_report_state.status = 'ready'
@@ -326,7 +343,10 @@ export async function recordBaselineActivity(
   // touch all affected rows, and each row's last_event_at picks up
   // the latest event THAT FELL INSIDE THE BUCKET — not the global
   // batch max. Existing-only — seeding is reconcile's job. Archived
-  // rows are skipped so they stay terminal.
+  // rows are skipped so they stay terminal. `last_event_received_at`
+  // advances on every bucket touched so reconcile catches missed
+  // events whose `event_time` is earlier than the current max
+  // (round-7 review item 2).
   await client.query(
     `WITH events(t) AS (
        SELECT t FROM unnest($3::timestamptz[]) AS t
@@ -352,6 +372,9 @@ export async function recordBaselineActivity(
      )
      UPDATE periodic_report_state s
         SET last_event_at = GREATEST(s.last_event_at, b.max_t),
+            last_event_received_at = GREATEST(
+              s.last_event_received_at, NOW()
+            ),
             status = CASE
               WHEN s.status = 'ready'
                 AND EXISTS (

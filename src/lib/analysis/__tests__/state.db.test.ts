@@ -515,15 +515,21 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
 
     // Three historical buckets well past their settle windows, plus
-    // one far-future DAILY bucket that must NOT yet be ready.
+    // one far-future DAILY bucket that must NOT yet be ready. Back-date
+    // `updated_at` past the idle-quiet window so the quiet-window gate
+    // (round-7 review item 1) does not hold these rows in `pending`.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (customer_id, period, bucket_date, tz, status, updated_at)
        VALUES
-         ($1, 'DAILY',   DATE '2024-01-15', 'Asia/Seoul', 'pending'),
-         ($1, 'WEEKLY',  DATE '2024-01-15', 'Asia/Seoul', 'pending'),
-         ($1, 'MONTHLY', DATE '2024-01-01', 'Asia/Seoul', 'pending'),
-         ($1, 'DAILY',   DATE '2099-12-31', 'Asia/Seoul', 'pending')`,
+         ($1, 'DAILY',   DATE '2024-01-15', 'Asia/Seoul', 'pending',
+          NOW() - INTERVAL '2 hours'),
+         ($1, 'WEEKLY',  DATE '2024-01-15', 'Asia/Seoul', 'pending',
+          NOW() - INTERVAL '2 hours'),
+         ($1, 'MONTHLY', DATE '2024-01-01', 'Asia/Seoul', 'pending',
+          NOW() - INTERVAL '2 hours'),
+         ($1, 'DAILY',   DATE '2099-12-31', 'Asia/Seoul', 'pending',
+          NOW() - INTERVAL '2 hours')`,
       [customer],
     );
 
@@ -560,6 +566,60 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     // One dry-run job per settled historical bucket (3 total).
     expect(Number(jobRows[0].count)).toBe(3);
+  });
+
+  it("worker holds a pending bucket with recent ingest activity in pending until the quiet window elapses (round-7 review item 1)", async () => {
+    // RFC 0002 §"Periodic report readiness" requires the quiet-window
+    // signal in addition to bucket-end + settle. A historical bucket
+    // seeded or forward-patched by a just-finished reconcile/backfill
+    // must NOT be promoted and dry-run-jobbed while the row's
+    // `updated_at` is still inside the quiet window.
+    const customer = "00000000-0000-0000-0000-0000000000f5";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-q', 'Q')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    // A historical DAILY bucket past its settle window but with
+    // updated_at = NOW() (simulating a backfill that just touched it).
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, updated_at)
+       VALUES ($1, 'DAILY', DATE '2024-01-15', 'Asia/Seoul', 'pending',
+               NOW())`,
+      [customer],
+    );
+
+    await runAnalysisJobTickOnce(pool);
+
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = DATE '2024-01-15'`,
+      [customer],
+    );
+    // Quiet-window gate holds it in pending.
+    expect(rows[0]?.status).toBe("pending");
+
+    // Back-date past the quiet window and the same tick should now
+    // promote it.
+    await pool.query(
+      `UPDATE periodic_report_state
+          SET updated_at = NOW() - INTERVAL '2 hours'
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = DATE '2024-01-15'`,
+      [customer],
+    );
+    await runAnalysisJobTickOnce(pool);
+    const { rows: after } = await pool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = DATE '2024-01-15'`,
+      [customer],
+    );
+    expect(after[0]?.status).toBe("ready");
   });
 
   it("recordBaselineActivity dirties an existing closed DAILY bucket with a done job (round-3 review item 2b)", async () => {
