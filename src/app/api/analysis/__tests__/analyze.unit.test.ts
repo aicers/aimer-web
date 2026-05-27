@@ -261,6 +261,9 @@ beforeEach(() => {
     analyzeEvent: {
       severityScore: 0.42,
       likelihoodScore: 0.42,
+      severityFactors: ["broad blast radius"],
+      likelihoodFactors: ["lateral movement potential"],
+      ttpTags: [],
       analysis: "analysis text",
     },
   });
@@ -1125,5 +1128,257 @@ describe("POST /api/analysis/analyze — internal_error catch-all", () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.error.code).toBe("internal_error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-11: severity_factors / likelihood_factors / ttp_tags
+// ---------------------------------------------------------------------------
+
+function captureInsertParams(): unknown[] | null {
+  // Pull the INSERT INTO event_analysis_result call out of the connect-
+  // backed transaction or, when none, the direct pool call. The Pool
+  // mock intentionally drops `query` args, but `customerPool.query.mock`
+  // does capture them.
+  const all = customerPool.query.mock.calls as Array<[string, unknown[]?]>;
+  const entry = all.find(([sql]) =>
+    /INSERT INTO event_analysis_result/.test(sql),
+  );
+  return entry?.[1] ?? null;
+}
+
+function auditCallsByAction(action: string): Array<Record<string, unknown>> {
+  return mockAuditLog.mock.calls
+    .map((c) => (c as unknown as Array<Record<string, unknown>>)[0])
+    .filter((arg) => arg?.action === action);
+}
+
+describe("POST /api/analysis/analyze — factor + TTP filter integration", () => {
+  it("happy-path factors persist verbatim, no factor_dropped audit row", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.4,
+        likelihoodScore: 0.5,
+        severityFactors: ["broad blast radius", "lateral movement"],
+        likelihoodFactors: ["clean POST", "unusual UA"],
+        ttpTags: [],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const params = captureInsertParams();
+    expect(params).not.toBeNull();
+    // Position-dependent on the route's bound parameters; severity_factors
+    // is the 8th bound parameter and likelihood_factors the 9th.
+    if (params) {
+      const sev = JSON.parse(params[7] as string);
+      const lik = JSON.parse(params[8] as string);
+      expect(sev).toEqual(["broad blast radius", "lateral movement"]);
+      expect(lik).toEqual(["clean POST", "unusual UA"]);
+    }
+    expect(auditCallsByAction("ai_analysis.factor_dropped")).toHaveLength(0);
+    expect(auditCallsByAction("ai_analysis.ttp_tag_dropped")).toHaveLength(0);
+  });
+
+  it("oversized + empty drops in one axis emit two rows, one per reason", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    const oversized = "x".repeat(81);
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.5,
+        likelihoodScore: 0.5,
+        severityFactors: [oversized, "", "good one"],
+        likelihoodFactors: ["fine"],
+        ttpTags: [],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
+      (c) => (c.details as Record<string, unknown>).axis === "severity",
+    );
+    expect(sevDrops).toHaveLength(2);
+    const reasons = new Set(
+      sevDrops.map((c) => (c.details as Record<string, unknown>).reason),
+    );
+    expect(reasons).toEqual(new Set(["oversized", "empty"]));
+    for (const row of sevDrops) {
+      expect(
+        (row.details as Record<string, unknown>).replaced_with_sentinel,
+      ).toBe(false);
+    }
+  });
+
+  it("sentence-start drops emit a single audit row with reason 'sentence_start'", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.5,
+        likelihoodScore: 0.5,
+        severityFactors: ["The attacker pivoted", "This event uses PS", "real"],
+        likelihoodFactors: ["fine"],
+        ttpTags: [],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
+      (c) => (c.details as Record<string, unknown>).axis === "severity",
+    );
+    expect(sevDrops).toHaveLength(1);
+    expect((sevDrops[0].details as Record<string, unknown>).reason).toBe(
+      "sentence_start",
+    );
+    expect(
+      (sevDrops[0].details as Record<string, unknown>).dropped_items,
+    ).toEqual(["The attacker pivoted", "This event uses PS"]);
+  });
+
+  it("cap-only firing emits NO audit row but stores first 5 items", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    const seven = ["a1", "a2", "a3", "a4", "a5", "a6", "a7"];
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.5,
+        likelihoodScore: 0.5,
+        severityFactors: seven,
+        likelihoodFactors: ["x"],
+        ttpTags: [],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const params = captureInsertParams();
+    if (params) {
+      expect(JSON.parse(params[7] as string)).toEqual(seven.slice(0, 5));
+    }
+    const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
+      (c) => (c.details as Record<string, unknown>).axis === "severity",
+    );
+    // RFC 0001:756's reason enum has no cap value — cap-only firing is
+    // intentionally non-audited (RFC 0002:725 soft trim).
+    expect(sevDrops).toHaveLength(0);
+  });
+
+  it("sentinel recovery emits per-reason rows + an 'all_items_filtered' row", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    const rawSeverity = ["The first", "", "x".repeat(81)];
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.5,
+        likelihoodScore: 0.5,
+        severityFactors: rawSeverity,
+        likelihoodFactors: ["fine"],
+        ttpTags: [],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    // UPSERT writes the sentinel — every input item was filtered out.
+    const params = captureInsertParams();
+    if (params) {
+      expect(JSON.parse(params[7] as string)).toEqual([
+        "insufficient evidence",
+      ]);
+    }
+
+    const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
+      (c) => (c.details as Record<string, unknown>).axis === "severity",
+    );
+    // Three per-reason rows (sentence_start, empty, oversized) plus one
+    // recovery row with reason: 'all_items_filtered'.
+    expect(sevDrops).toHaveLength(4);
+    const reasons = sevDrops.map(
+      (c) => (c.details as Record<string, unknown>).reason,
+    );
+    expect(new Set(reasons)).toEqual(
+      new Set(["sentence_start", "empty", "oversized", "all_items_filtered"]),
+    );
+    const recovery = sevDrops.find(
+      (c) =>
+        (c.details as Record<string, unknown>).reason === "all_items_filtered",
+    );
+    expect(recovery).toBeDefined();
+    if (recovery) {
+      const d = recovery.details as Record<string, unknown>;
+      expect(d.replaced_with_sentinel).toBe(true);
+      expect(d.dropped_items).toEqual(rawSeverity);
+    }
+  });
+
+  it("ttp drops with mixed reasons emit one row per reason with mitre_vendor_version", async () => {
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.5,
+        likelihoodScore: 0.5,
+        severityFactors: ["one"],
+        likelihoodFactors: ["two"],
+        // T1078 / T1110 are real (kept). `bogus` → invalid_format;
+        // `T9999` → not_in_vendored_mitre.
+        ttpTags: ["T1078", "bogus", "T9999", "T1110"],
+        analysis: "ok",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const params = captureInsertParams();
+    if (params) {
+      expect(JSON.parse(params[9] as string)).toEqual(["T1078", "T1110"]);
+    }
+
+    const ttpRows = auditCallsByAction("ai_analysis.ttp_tag_dropped");
+    expect(ttpRows).toHaveLength(2);
+    const byReason = new Map(
+      ttpRows.map((r) => {
+        const d = r.details as Record<string, unknown>;
+        return [d.reason, d];
+      }),
+    );
+    expect(byReason.get("invalid_format")?.dropped_ids).toEqual(["bogus"]);
+    expect(byReason.get("not_in_vendored_mitre")?.dropped_ids).toEqual([
+      "T9999",
+    ]);
+    for (const row of ttpRows) {
+      const d = row.details as Record<string, unknown>;
+      expect(typeof d.mitre_vendor_version).toBe("string");
+      expect((d.mitre_vendor_version as string).length).toBeGreaterThan(0);
+    }
   });
 });

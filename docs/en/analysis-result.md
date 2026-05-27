@@ -38,6 +38,32 @@ one of the four tiers used for triage and aggregation.
 | 0.4 ≤ S < 0.6 | LOW    | LOW           | MEDIUM        | MEDIUM   |
 | S < 0.4      | LOW    | LOW           | LOW           | LOW      |
 
+## Score factors
+
+Below each score, the page renders up to five short noun phrases (chips)
+the LLM produced to articulate that score. Each axis (severity,
+likelihood) has its own row of chips.
+
+- Phrases are LLM-generated, capped at five per axis, with a maximum
+  length of ~80 characters each.
+- When the LLM did not return any usable phrase for an axis — for
+  example, because the input event was too thin to support an
+  articulation — the chip row shows a single placeholder reading
+  `insufficient evidence`. This sentinel value means "the score is
+  recorded but no articulation is available", not that the LLM ran
+  with no input.
+
+## MITRE ATT&CK techniques
+
+Next to the priority badge, the page renders a row of MITRE ATT&CK
+technique chips (e.g. `T1078`, `T1110.001`) that the LLM associated with
+the event. Each chip shows the technique ID; hovering reveals the
+official technique name as a tooltip (e.g. `T1078` → "Valid Accounts").
+A chip whose ID is not in the currently vendored MITRE knowledge base
+renders without a tooltip — the underlying analysis row was written
+against an older MITRE bundle and the technique ID alone is shown as a
+fallback. The chip row is omitted when the LLM returned no techniques.
+
 ## Metadata fields
 
 Below the score fields the page shows the analysis metadata in a

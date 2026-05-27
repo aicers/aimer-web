@@ -1169,16 +1169,25 @@ base.describe.serial("Manual screenshots", () => {
         `INSERT INTO event_analysis_result
            (aice_id, event_key, lang, model_name, model,
             model_actual_version, prompt_version,
-            severity_score, likelihood_score, priority_tier,
+            severity_score, likelihood_score,
+            severity_factors, likelihood_factors, ttp_tags,
+            priority_tier,
             analysis_text, redaction_policy_version, requested_by)
          VALUES ($1, $2::numeric, 'ENGLISH', $3, $4,
                  'gpt-4o-2024-08-06', 'aimer-prompt-v3',
-                 $5, $6, $7,
+                 $5, $6,
+                 '["broad blast radius","credential stuffing pattern"]'::jsonb,
+                 '["matches known brute-force baseline","unusual UA fingerprint"]'::jsonb,
+                 '["T1110.001","T1078"]'::jsonb,
+                 $7,
                  $8, 'engine:0.0.0|ranges:none', $9)
          ON CONFLICT (aice_id, event_key, lang, model_name, model)
          DO UPDATE SET
            severity_score   = EXCLUDED.severity_score,
            likelihood_score = EXCLUDED.likelihood_score,
+           severity_factors = EXCLUDED.severity_factors,
+           likelihood_factors = EXCLUDED.likelihood_factors,
+           ttp_tags         = EXCLUDED.ttp_tags,
            priority_tier    = EXCLUDED.priority_tier,
            analysis_text    = EXCLUDED.analysis_text`,
         [

@@ -14,6 +14,9 @@ mutation AnalyzeEvent(
   ) {
     severityScore
     likelihoodScore
+    severityFactors
+    likelihoodFactors
+    ttpTags
     analysis
   }
 }
