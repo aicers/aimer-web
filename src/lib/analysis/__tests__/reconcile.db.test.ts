@@ -198,15 +198,34 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.storyStatesPatched).toBe(0);
   });
 
-  it("does not touch archived story_analysis_state rows", async () => {
+  it("unarchives a story_analysis_state row when the customer DB still has a surviving aggregate (round-16 review item 1)", async () => {
+    // Decision 1 reinsert path. The successful ingest path runs
+    // `unarchiveStoryStateIfArchived` in `state.ts`, but that hook is
+    // best-effort: on failure the auth-side row stays `archived` while
+    // the customer DB already holds new versions for the same
+    // `story_id`. Reconcile must close that window — reset to
+    // `pending`, populate canonical timestamps from the aggregate,
+    // clear `last_ready_at`, and drop stale jobs from the prior
+    // archived generation.
     await authPool.query(
       `UPDATE story_analysis_state
-          SET status = 'archived', updated_at = NOW()
+          SET status = 'archived', last_ready_at = NOW(), updated_at = NOW()
         WHERE customer_id = $1 AND story_id = 9001`,
       [CUSTOMER_ID],
     );
-    // Add yet another story_version with a later received_at — would
-    // normally trigger a forward-patch, but the row is archived.
+    // Stale job from the prior archived generation.
+    await authPool.query(
+      `INSERT INTO story_analysis_job
+         (customer_id, story_id, lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 9001, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [CUSTOMER_ID],
+    );
+    // Reinsert: a refresh-window / backfill commits a new version
+    // after archive. With the auth-side hook failed, only reconcile
+    // can recover the state row.
     await seedStory(customerPool, "9001", "v4", "2026-05-26T13:00:00Z");
 
     const outcome = await reconcileCustomer(
@@ -214,18 +233,46 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
       "Asia/Seoul",
       makeDeps(authPool, customerPool),
     );
-    expect(outcome.storyStatesPatched).toBe(0);
+    expect(outcome.storyStatesPatched).toBeGreaterThanOrEqual(1);
 
     const { rows } = await authPool.query(
-      `SELECT status, last_member_at
+      `SELECT status,
+              first_member_at,
+              last_member_at,
+              last_ready_at
          FROM story_analysis_state
         WHERE customer_id = $1 AND story_id = 9001`,
       [CUSTOMER_ID],
     );
-    expect(rows[0].status).toBe("archived");
-    expect(rows[0].last_member_at.toISOString()).toBe(
-      "2026-05-26T12:00:00.000Z",
+    expect(rows[0].status).toBe("pending");
+    // Canonical timestamps from the aggregate spanning v1 (10:00) to
+    // v4 (13:00).
+    expect(rows[0].first_member_at.toISOString()).toBe(
+      "2026-05-26T10:00:00.000Z",
     );
+    expect(rows[0].last_member_at.toISOString()).toBe(
+      "2026-05-26T13:00:00.000Z",
+    );
+    expect(rows[0].last_ready_at).toBeNull();
+
+    // Stale jobs from the prior archived generation are deleted so
+    // the worker can schedule a fresh narrative on the next tick.
+    const { rows: jobs } = await authPool.query(
+      `SELECT 1 FROM story_analysis_job
+        WHERE customer_id = $1 AND story_id = 9001`,
+      [CUSTOMER_ID],
+    );
+    expect(jobs.length).toBe(0);
+
+    // Second pass is a no-op: status is now 'pending', the LEAST/
+    // GREATEST guards see no change.
+    const second = await reconcileCustomer(
+      CUSTOMER_ID,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.storyStatesSeeded).toBe(0);
+    expect(second.storyStatesPatched).toBe(0);
   });
 
   it("seeds periodic_report_state rows for LIVE + DAILY + WEEKLY + MONTHLY when source data exists in the last 24h", async () => {

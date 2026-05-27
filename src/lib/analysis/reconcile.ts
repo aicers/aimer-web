@@ -33,7 +33,14 @@
 //     followed by a failed best-effort hook would leave a stale
 //     `ready` analysis indefinitely — the worker only picks up
 //     `dirty` rows or `ready` rows missing their default-variant job.
-//   - Never roll a value backwards. Never touch `archived` rows.
+//   - Never roll a value backwards.
+//   - Story-side archived rows are unarchived in place (reset to
+//     `pending`, populate canonical timestamps, delete stale jobs)
+//     when the customer DB still has a surviving aggregate — decision 1
+//     reinsert path, recovered when the best-effort window-replace /
+//     backfill hook (`unarchiveStoryStateIfArchived`) fails. Periodic
+//     archived rows (tz-change archive) are NOT unarchived: a new tz
+//     seeds a fresh `(period, bucket_date, tz)` row.
 //
 // Active-customer scope (decision 2): a customer is reconciled if any
 // of the following holds in the last 24h —
@@ -405,9 +412,45 @@ async function reconcileStoryStates(
         continue;
       }
 
-      // Skip archived rows on forward-patch (decision 2). The next
-      // member-arrival hook will unarchive in place.
-      if (cur.status === "archived") continue;
+      // Archived row but customer DB has a surviving aggregate for
+      // the same `story_id`: a refresh-window/backfill committed new
+      // versions for an archived story and `unarchiveStoryStateIfArchived`
+      // (`state.ts`) failed as part of the best-effort hook. Decision 1
+      // requires unarchive in place — reset to `pending`, populate
+      // canonical timestamps from the aggregate, clear `last_ready_at`,
+      // and delete stale jobs from the prior archived generation so the
+      // worker schedules a fresh narrative (round-16 review item 1).
+      //
+      // Idempotent: a second pass loads `cur.status='pending'` with the
+      // populated timestamps, this branch does not fire, and the
+      // LEAST/GREATEST forward-patch below sees no change.
+      if (cur.status === "archived") {
+        await authClient.query(
+          `UPDATE story_analysis_state
+              SET status          = 'pending',
+                  first_member_at = $3::timestamptz,
+                  last_member_at  = $4::timestamptz,
+                  last_ready_at   = NULL,
+                  updated_at      = NOW()
+            WHERE customer_id = $1
+              AND story_id    = $2::bigint
+              AND status      = 'archived'`,
+          [
+            customerId,
+            agg.story_id,
+            agg.first_received_at.toISOString(),
+            agg.last_received_at.toISOString(),
+          ],
+        );
+        await authClient.query(
+          `DELETE FROM story_analysis_job
+            WHERE customer_id = $1
+              AND story_id    = $2::bigint`,
+          [customerId, agg.story_id],
+        );
+        patched += 1;
+        continue;
+      }
 
       // Forward-patch only: LEAST/GREATEST guards keep the second pass
       // a no-op. `first_member_at` only moves earlier; `last_member_at`
