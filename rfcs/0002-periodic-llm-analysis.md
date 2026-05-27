@@ -323,7 +323,7 @@ State is split into two layers because **source data readiness** (is the underly
 CREATE TABLE story_analysis_state (
   customer_id           UUID NOT NULL,
   story_id              BIGINT NOT NULL,
-  status                TEXT NOT NULL,                  -- pending|ready|dirty
+  status                TEXT NOT NULL,                  -- pending|ready|dirty|archived
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   first_member_at       TIMESTAMPTZ,                    -- set on first member ingest; never updated thereafter
   last_member_at        TIMESTAMPTZ,                    -- updated on every subsequent ingest
@@ -404,6 +404,7 @@ Notes:
 - `tz` is in both state and job PKs (matches result PK). A timezone change does not mutate existing rows; old-tz state rows move to `status='archived'` and new-tz rows are created lazily (see §"Customer-level timezone").
 - `next_due_at` lives on the job table because it is per-variant: each variant ticks independently for LIVE.
 - The state status enum excludes work-in-flight values (`processing`/`done`/`failed`). Those are job-level concerns. State only answers "is the data ready to be analyzed at all?"
+- `story_analysis_state.status` includes `archived` so the lifecycle covers the case where every `story_version` of a `story_id` has been deleted from the customer DB (e.g., by `refresh-window` or `backfill`). Unarchive-in-place is allowed: if the same `story_id` re-appears via a later window-replace, the state row UPDATEs back to `pending` with cleared timestamps and any stale `*_analysis_job` rows from the archived run are deleted. See issue #294 decision 1.
 - A worker tick walks: enqueue new jobs for `ready` state rows that lack a job for a "should-exist" variant; re-enqueue jobs for `dirty` state rows by incrementing job `generation` and resetting status to `queued`; pick up `queued` jobs in FOR UPDATE SKIP LOCKED batches.
 
 ---
@@ -477,31 +478,57 @@ aimer-web already has a Postgres-backed job pattern (`redaction_jobs` / `redacti
 API (aimer-web):
 
 ```
-POST /api/analysis/story/{story_id}/regenerate
-POST /api/analysis/report/{period}/{bucket_date}/regenerate
+POST /api/customers/{customer_id}/analysis/story/{story_id}/regenerate
+        ?lang=...&model_name=...&model=...             (all optional;
+                                                        ?tz=... is rejected
+                                                        with 400 invalid_param)
+POST /api/customers/{customer_id}/analysis/report/{period}/{bucket_date}/regenerate
         ?tz=...&lang=...&model_name=...&model=...      (all optional)
 ```
 
+Story analysis output is timezone-independent (see §aimer changes), so
+the story endpoint does **not** accept `?tz=…` — a request that
+includes it is rejected with `400 invalid_param`. Only the report
+endpoint accepts `?tz=…`. The `lang` / `model_name` / `model` query
+params behave identically on both endpoints.
+
+`customer_id` is part of the path because aimer-web has no server-side
+"active customer" session selector — `selectedCustomerId` lives in
+client-only React context (`src/hooks/use-customer-context.tsx`) and is
+not propagated server-side. The customer-id-in-path convention matches
+the existing `/api/admin/customers/[customerId]/...` admin layer and is
+extended here to the non-admin analyst layer. `story_id`, `period`, and
+`bucket_date` are scoped *under* that customer's database. (This URL
+shape supersedes an earlier sketch that omitted `customer_id` from the
+path; see issue #294 decision 5.) `bucket_date` must be a real ISO
+calendar date (`YYYY-MM-DD`) on the report endpoint; impossible values
+like `2026-02-31` are rejected with `400 invalid_report_path`. For
+`period=LIVE` the only accepted `bucket_date` is the synthetic epoch
+`1970-01-01` (issue #294 decision 4: LIVE rows are pinned to that
+date in `periodic_report_state` and `periodic_report_result`); any
+other value is rejected with `400 invalid_report_path` so the API
+contract matches the variant keys the worker and reconcile will
+actually produce.
+
 Default contract (path-only call):
 
-- `tz` defaults to the customer's **current** `customers.timezone`.
+- Report endpoint: `tz` defaults to the customer's **current** `customers.timezone`. Story endpoint: there is no `tz` axis to default — the result variant PK has no `tz` column on the story side.
 - `lang`, `model_name`, `model` default to the customer's configured defaults (env-overridable fallbacks: `ANALYSIS_DEFAULT_LANG`, `ANALYSIS_DEFAULT_MODEL_NAME`, `ANALYSIS_DEFAULT_MODEL`).
-- The result variant identified by the full PK (`customer_id, period, bucket_date, tz, lang, model_name, model`) is the one regenerated.
+- The result variant identified by the full variant PK is the one regenerated. The variant PK is `customer_id, period, bucket_date, tz, lang, model_name, model` for periodic reports and `customer_id, story_id, lang, model_name, model` (no `tz`) for stories.
 
 Variant selection (query params):
 
-- Any subset of `tz`, `lang`, `model_name`, `model` may be passed to target a non-default variant (e.g., regenerate the English copy without touching the Korean one).
+- Report endpoint: any subset of `tz`, `lang`, `model_name`, `model` may be passed to target a non-default variant.
+- Story endpoint: any subset of `lang`, `model_name`, `model` may be passed (e.g., regenerate the English copy without touching the Korean one). `tz` is rejected as above.
 - If a query value names a variant that has never been generated, a fresh `*_analysis_job` row is inserted for that variant with `generation = 1, status = 'queued'`. The corresponding `*_analysis_state` row is not modified.
 
 Behavior:
 
 - Resolves the target variant row in `story_analysis_job` or `periodic_report_job`. If a row exists, sets `force_requested_at = NOW()`, `force_requested_by = current user`, `status = 'queued'`, `generation++`. If no row exists for the requested variant (first-time generation in that language/model), inserts a fresh `generation=1` row in `queued`.
 - Does **not** touch the corresponding `state` row's status. Force is a variant-level operation; sibling variants are untouched.
-- Returns `202 Accepted` with `{state_pk, variant: {tz, lang, model_name, model}, generation}`.
+- Returns `202 Accepted` with `{state_pk, variant: {…}, generation}`. The `variant` object includes `tz` on the report endpoint and omits it on the story endpoint.
 - Worker on next tick picks up the `queued` job; result row written with the new `generation`; prior result row for the same `(state_pk, variant)` gets `superseded_at = NOW()`.
 - The aimer call carries no `force` flag — the new aimer mutations are stateless and have no cache to bypass. Force regenerate is entirely an aimer-web-side concern: aimer-web bypasses its own result cache by writing a fresh `generation` row.
-
-Story regenerate has no `tz` parameter (story analysis output is timezone-independent; see §aimer changes); `lang`/`model_name`/`model` work the same way.
 
 UI (aimer-web):
 
@@ -923,4 +950,6 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
 - 2026-05-25 (review round 9): stale cache/keyspace references cleaned up — top-of-file metadata, architecture diagram, and Phase 1/Phase 2 bullets in §"Phased delivery" no longer suggest aimer holds a cache or keyspace for the new mutations. All remaining "cache" mentions are explicit negations ("no aimer-side cache", "no keyspace, no cache key") or refer to aimer-web's cache, not aimer's.
 - 2026-05-26 (review round 10): `threat_score` split into two orthogonal axes `severity_score` and `likelihood_score` across all analysis result tables (`story_analysis_result`, `periodic_report_result` here; `event_analysis_result` in RFC 0001). `priority_tier` is now a deterministic 4×4 matrix lookup over the pair rather than a single-threshold formula. The previous `known_ioc_hit` / `member_count ≥ N` upgrade clauses fold into floors on `likelihood_score`, since each is evidence of being real, not of being severe. Floors apply only at matrix-lookup time; the stored `likelihood_score` always holds the LLM's raw estimate to preserve calibration data and let the floor policy evolve without rewriting history. `baseline_drift_score` similarly splits into severity and likelihood. Periodic report `priority_tier` is derived as `max(each included leaf's priority_tier, matrix(baseline_drift_severity, baseline_drift_likelihood))` rather than from the aggregate scores — this preserves leaf monotonicity (the report is never below the worst leaf in it) under the lookup-only floor policy, since the raw `likelihood_score` on leaves does not reflect floors. `aggregate_severity_score` / `aggregate_likelihood_score` remain stored as informational max-per-axis values for display and analytics. Summary endpoint shape becomes `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}` with `score_kind ∈ {leaf, aggregate}`. LLM contract: `analyzeStory` and the RFC 0001 event-analysis mutation return both scores as separate `Float!` fields (camelCase `severityScore` / `likelihoodScore` on the GraphQL wire); `PERIODIC_SECURITY_REPORT_PROMPT` returns no scores (aggregation in aimer-web). A separate "LLM self-confidence" field was considered and rejected — `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics. Done before any production data accumulated; coordinated with RFC 0001 in the same PR.
+- 2026-05-27 (Phase 0 amendment, #294): Force-regenerate URL shape amended from `POST /api/analysis/...` to `POST /api/customers/{customer_id}/analysis/...`. aimer-web has no server-side active-customer selector — `selectedCustomerId` lives in client-only React context and is never propagated server-side — so `customer_id` must travel on the wire. The customer-id-in-path convention is already established at the admin layer (`/api/admin/customers/[customerId]/...`); this amendment extends it to the non-admin analyst layer. `story_id`, `period`, and `bucket_date` are scoped under that customer's database.
+- 2026-05-27 (Phase 0 amendment, #294): `story_analysis_state.status` enum extended to include `archived` (was `pending|ready|dirty`). The story side now mirrors the periodic side per decision 1 of #294: when every `story_version` of a `story_id` has been deleted from the customer DB by `refresh-window` or `backfill`, the state row transitions to `archived`. Unarchive-in-place is allowed: if the same `story_id` re-appears via a later window-replace, the state row UPDATEs back to `pending` with cleared timestamps and stale `*_analysis_job` rows from the archived run are deleted.
 - 2026-05-27 (review round 11): Added MITRE ATT&CK TTP tagging and per-axis score factor breakdown to leaf-level analysis outputs. `ttp_tags` is an array of validated MITRE technique IDs (e.g. `"T1078"`, `"T1110.001"`); `severity_factors` and `likelihood_factors` are arrays of short noun phrases (`maxItems: 5`, `maxLength: 80` per item) articulating what drives each axis. All three are required on the LLM structured output and exposed as `[String!]!` on the GraphQL wire (`severityFactors` / `likelihoodFactors` / `ttpTags`): `ttpTags` may be empty (no clear MITRE mapping); factor arrays always contain at least one item, with `["insufficient evidence"]` reserved as the explicit thin-input sentinel and a post-filter empty-array recovery rule that substitutes the same sentinel when shape filters would otherwise produce an empty array (see §"Score factor articulation"). Stored as JSONB columns on `event_analysis_result` and `story_analysis_result`. `periodic_report_result.aggregate_ttp_tags` is the deduplicated sorted union of included-leaf tags; no aggregate factors column (periodic reports do not score themselves). MITRE data is vendored in aimer-web at `schemas/mitre-attack-techniques.json` + `schemas/mitre-attack.version`, refreshed manually like the aimer SDL — MITRE provides no live classification API, only static STIX bundles. Hallucinated TTP IDs are dropped server-side against the vendored list. Score factor articulation has shape-only validation (length, count, sentence-start filter) plus an `"insufficient evidence"` sentinel for genuinely thin inputs; content quality is governed by prompt engineering and Phase 4 per-factor feedback. Rationale for adding now: LLM structured-output JSON schema is being designed in #399 and an aimer-side `analyzeEvent` follow-up to #404; storage migrations land in Phase 0 (#294) and #308. Adding later would require LLM re-run on every existing analysis to backfill — the same backfill cost as round 10. Other improvements identified during the round-10 retrospective (workflow integration, follow-up Q&A, external TI enrichment, trend / fleet dashboards, vector similarity, PDF export, operator annotations) are pure additions and deferred to future RFCs / follow-up issues without structural impact.

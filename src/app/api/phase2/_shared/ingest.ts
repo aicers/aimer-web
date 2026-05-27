@@ -15,6 +15,46 @@ export interface IngestCounts {
   duplicatesSkipped: number;
 }
 
+/**
+ * Data captured during a successful baseline batch so the route handler
+ * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
+ * DB commit returns. See `src/lib/analysis/ingest-hooks.ts`.
+ *
+ * `acceptedEvents` lists every accepted event paired with the canonical
+ * customer-DB `baseline_event.received_at` value RETURNING-ed at INSERT
+ * time. The hook uses these `(eventTime, receivedAt)` tuples both to
+ * dirty ALL affected DAILY/WEEKLY/MONTHLY buckets (RFC 0002 §"Dirty
+ * transitions" rule 1, applied per affected bucket) and to forward-
+ * patch `last_event_received_at` from the customer-DB source-of-truth
+ * value (round-9 review item 2). Earlier revisions stored the batch's
+ * max event_time only — which silently dropped dirty transitions on
+ * every other done bucket the batch overran — and earlier still wrote
+ * auth-DB `NOW()` for `last_event_received_at`, which under concurrent
+ * commits could get ahead of a later commit's `received_at` and mask a
+ * hook failure whose new event landed earlier than the bucket's max
+ * `event_time`. Carrying the canonical `received_at` per event keeps
+ * the hot path consistent with the reconcile forward-patch path, which
+ * compares against `MAX(baseline_event.received_at)`.
+ */
+export interface BaselineIngestExtras {
+  acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }>;
+}
+
+/**
+ * Data captured during a successful story batch so the route handler
+ * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
+ * DB commit returns. One entry per `story_member` that was actually
+ * inserted (duplicates are skipped). `arrivedAt` is the canonical
+ * customer-DB `story.received_at` of the version the member belongs
+ * to (round-7 review item 3) — not JS wall-clock time. Reconcile's
+ * forward-only patch path can never roll `last_member_at` backwards,
+ * so the hook MUST write the same source-of-truth value reconcile
+ * derives.
+ */
+export interface StoryIngestExtras {
+  storyArrivals: Array<{ storyId: string; arrivedAt: Date }>;
+}
+
 interface RedactionContext {
   customerId: string;
   aiceId: string;
@@ -83,13 +123,18 @@ export async function ingestBaselineBatch(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
-): Promise<IngestCounts> {
+): Promise<IngestCounts & BaselineIngestExtras> {
   if (payload.events.length === 0) {
-    return { accepted: 0, duplicatesSkipped: 0 };
+    return {
+      accepted: 0,
+      duplicatesSkipped: 0,
+      acceptedEvents: [],
+    };
   }
 
   return withTransaction(pool, async (client) => {
     let accepted = 0;
+    const acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }> = [];
     for (const event of payload.events) {
       const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
         event.raw_event,
@@ -101,7 +146,13 @@ export async function ingestBaselineBatch(
           client,
         },
       );
-      const result = await client.query(
+      // RETURNING received_at returns the customer-DB source-of-truth
+      // received_at for newly-accepted events; rows skipped by
+      // ON CONFLICT yield no RETURNING row (round-9 review item 2). The
+      // hook downstream uses this value rather than auth-DB `NOW()` so a
+      // bucket forward-patched after a hook failure compares like-for-
+      // like against `MAX(baseline_event.received_at)` in reconcile.
+      const result = await client.query<{ received_at: Date }>(
         `INSERT INTO baseline_event (
            baseline_version, event_key, event_time, kind, category,
            primary_asset, raw_score, selector_tags, raw_event,
@@ -115,7 +166,8 @@ export async function ingestBaselineBatch(
            $13::jsonb, $14,
            $15
          )
-         ON CONFLICT (baseline_version, event_key) DO NOTHING`,
+         ON CONFLICT (baseline_version, event_key) DO NOTHING
+         RETURNING received_at`,
         [
           payload.baseline_version,
           event.event_key,
@@ -136,11 +188,18 @@ export async function ingestBaselineBatch(
           policyVersion,
         ],
       );
-      if (result.rowCount === 1) accepted += 1;
+      if (result.rowCount === 1) {
+        accepted += 1;
+        acceptedEvents.push({
+          eventTime: new Date(event.event_time),
+          receivedAt: result.rows[0].received_at,
+        });
+      }
     }
     return {
       accepted,
       duplicatesSkipped: payload.events.length - accepted,
+      acceptedEvents,
     };
   });
 }
@@ -149,7 +208,7 @@ export async function ingestBaselineBatch(
 // story + story_member
 // ---------------------------------------------------------------------------
 
-export interface StoryIngestCounts extends IngestCounts {
+export interface StoryIngestCounts extends IngestCounts, StoryIngestExtras {
   storiesAccepted: number;
   storiesDuplicates: number;
   membersAccepted: number;
@@ -171,6 +230,7 @@ export async function ingestStoryBatch(
       storiesDuplicates: 0,
       membersAccepted: 0,
       membersDuplicates: 0,
+      storyArrivals: [],
     };
   }
 
@@ -178,11 +238,12 @@ export async function ingestStoryBatch(
     let storiesAccepted = 0;
     let membersAccepted = 0;
     let totalMembers = 0;
+    const storyArrivals: Array<{ storyId: string; arrivedAt: Date }> = [];
 
     for (const story of payload.stories) {
       // `story.summary_payload` is an aggregate (not redacted in v1 per
       // RFC 0001) — written through verbatim.
-      const storyResult = await client.query(
+      const storyResult = await client.query<{ received_at: Date }>(
         `INSERT INTO story (
            story_id, story_version, kind, correlation_rule_id, primary_asset,
            time_window_start, time_window_end, score,
@@ -192,7 +253,8 @@ export async function ingestStoryBatch(
            $6, $7, $8,
            $9::jsonb, $10
          )
-         ON CONFLICT (story_id, story_version) DO NOTHING`,
+         ON CONFLICT (story_id, story_version) DO NOTHING
+         RETURNING received_at`,
         [
           story.story_id,
           story.story_version,
@@ -206,7 +268,26 @@ export async function ingestStoryBatch(
           sourceAiceId,
         ],
       );
-      if (storyResult.rowCount === 1) storiesAccepted += 1;
+      let storyReceivedAt: Date;
+      if (storyResult.rowCount === 1) {
+        storiesAccepted += 1;
+        storyReceivedAt = storyResult.rows[0].received_at;
+      } else {
+        // ON CONFLICT path: fetch the canonical `received_at` of the
+        // existing row so member-arrival timestamps come from the
+        // customer-DB source-of-truth value rather than JS wall-clock
+        // time (round-7 review item 3). Reconcile's forward-only
+        // patch path can only roll `last_member_at` forward; using
+        // `new Date()` here would let a hook-time value get ahead of
+        // the canonical `story.received_at`, and reconcile could
+        // never roll it back.
+        const { rows } = await client.query<{ received_at: Date }>(
+          `SELECT received_at FROM story
+            WHERE story_id = $1::bigint AND story_version = $2`,
+          [story.story_id, story.story_version],
+        );
+        storyReceivedAt = rows[0].received_at;
+      }
 
       for (const member of story.members) {
         totalMembers += 1;
@@ -235,7 +316,20 @@ export async function ingestStoryBatch(
             policyVersion,
           ],
         );
-        if (memberResult.rowCount === 1) membersAccepted += 1;
+        if (memberResult.rowCount === 1) {
+          membersAccepted += 1;
+          // Use the canonical customer-DB `story.received_at` value as
+          // the member-arrival timestamp (round-7 review item 3).
+          // Decision 1 derives `story_analysis_state.last_member_at`
+          // from `story.received_at`; reconcile's forward-only patch
+          // path can only roll it forward. JS wall-clock `new Date()`
+          // here would let a hook-time value get ahead of the
+          // canonical source — reconcile could never roll it back.
+          storyArrivals.push({
+            storyId: story.story_id,
+            arrivedAt: storyReceivedAt,
+          });
+        }
       }
     }
 
@@ -247,6 +341,7 @@ export async function ingestStoryBatch(
       storiesDuplicates: payload.stories.length - storiesAccepted,
       membersAccepted,
       membersDuplicates: totalMembers - membersAccepted,
+      storyArrivals,
     };
   });
 }

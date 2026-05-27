@@ -29,6 +29,14 @@ export async function register() {
       "@/lib/instrumentation/redaction-job-worker"
     );
     await installRedactionJobWorker();
+    const { installAnalysisJobWorker } = await import(
+      "@/lib/instrumentation/analysis-job-worker"
+    );
+    await installAnalysisJobWorker();
+    const { installAnalysisReconcileWorker } = await import(
+      "@/lib/instrumentation/analysis-reconcile-worker"
+    );
+    installAnalysisReconcileWorker();
     const { installAuthPoolCleanup } = await import(
       "@/lib/instrumentation/auth-pool-cleanup"
     );

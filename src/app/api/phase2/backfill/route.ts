@@ -1,3 +1,8 @@
+import {
+  applyWindowReplaceEnvelopeHook,
+  applyWindowReplaceStoryHook,
+} from "@/lib/analysis/ingest-hooks";
+import { getAuthPool } from "@/lib/db/client";
 import { createPhase2MutationHandler } from "../_shared/mutation-handler";
 import {
   executeWindowReplace,
@@ -10,11 +15,45 @@ export const POST = createPhase2MutationHandler({
   auditTargetType: "phase2_backfill",
   successAction: "phase2.backfill",
   mutate: async (customerPool, verified, payload) => {
-    const counts = await executeWindowReplace(
+    const { counts, extras } = await executeWindowReplace(
       customerPool,
       payload,
       verified.envelopeClaims.aiceId,
     );
+    // RFC 0002 Phase 0 (#294) — best-effort analysis state hooks.
+    // Backfill applies the same dirty/archive rules as refresh-window
+    // (issue #294 scope). Failure is logged and swallowed (decision 2).
+    //
+    // BOTH baseline and story envelopes dirty overlapping
+    // `periodic_report_state` rows (round-9 review item 1): a story
+    // backfill that mutates the inputs of an already-generated
+    // DAILY/WEEKLY/MONTHLY report must flip that periodic row to
+    // `dirty`. Reconcile's periodic dirty signals are baseline-only,
+    // so this is the only path that catches story-only envelopes.
+    const authPool = getAuthPool();
+    // Round-19 review item 1: forward pre-mutation source-time-aligned
+    // LIVE overlap flags captured inside the customer-DB transaction.
+    // The post-commit EXISTS-based LIVE touched checks miss delete-only
+    // envelopes that clear the LIVE input; these flags catch exactly
+    // that class.
+    const priorLiveBaselineOverlap =
+      extras.kind === "baseline" ? extras.baseline.liveBaselineDeleted : false;
+    const priorLiveStoryOverlap =
+      extras.kind === "story" ? extras.story.liveStoryDeleted : false;
+    await applyWindowReplaceEnvelopeHook(authPool, customerPool, {
+      customerId: verified.customerId,
+      from: new Date(payload.window.from),
+      to: new Date(payload.window.to),
+      priorLiveBaselineOverlap,
+      priorLiveStoryOverlap,
+    });
+    if (extras.kind === "story") {
+      await applyWindowReplaceStoryHook(authPool, {
+        customerId: verified.customerId,
+        mutatedStoryIds: extras.story.mutatedStoryIds,
+        storyVersionSurvivors: extras.story.storyVersionSurvivors,
+      });
+    }
     return {
       responseBody: {
         accepted: counts.accepted,

@@ -1778,7 +1778,7 @@ async function runRecovery(deps: WorkerDeps): Promise<void> {
       if (!lockRes.rows[0]?.locked) continue;
       locked = true;
       const job = await loadJob(authClient, candidate.id);
-      if (!job || job.status !== "running") continue;
+      if (job?.status !== "running") continue;
       // runJob's own `finally` releases the lock on success or throw.
       await runJob(authClient, job, deps);
       locked = false;

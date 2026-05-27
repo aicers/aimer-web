@@ -36,7 +36,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     );
     // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
     // 0003_redaction_foundation, 0004_retention_sweeper_support,
-    // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants
+    // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants,
+    // 0007_analysis_result_tables (RFC 0002 Phase 0, #294)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -45,6 +46,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0004",
       "0005",
       "0006",
+      "0007",
     ]);
   });
 
@@ -91,6 +93,125 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "event_analysis_result",
       "event_redaction_map",
     ]);
+  });
+
+  // -- RFC 0002 Phase 0 (#294) analysis result tables --
+
+  describe("RFC 0002 Phase 0 (#294) analysis result tables", () => {
+    it("creates story_analysis_result and periodic_report_result", async () => {
+      const { rows } = await pool.query(`
+        SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name IN ('story_analysis_result', 'periodic_report_result')
+         ORDER BY table_name`);
+      expect(rows.map((r) => r.table_name)).toEqual([
+        "periodic_report_result",
+        "story_analysis_result",
+      ]);
+    });
+
+    it("story_analysis_result has the locked round-10 + round-11 column shape", async () => {
+      const { rows } = await pool.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'story_analysis_result'`,
+      );
+      const byName = new Map(rows.map((c) => [c.column_name, c]));
+
+      // Round-10 score + tier columns.
+      expect(byName.get("severity_score")?.data_type).toBe("double precision");
+      expect(byName.get("severity_score")?.is_nullable).toBe("NO");
+      expect(byName.get("likelihood_score")?.data_type).toBe(
+        "double precision",
+      );
+      expect(byName.get("likelihood_score")?.is_nullable).toBe("NO");
+      expect(byName.get("priority_tier")?.data_type).toBe("text");
+      expect(byName.get("priority_tier")?.is_nullable).toBe("NO");
+
+      // Round-11 factor + tag columns — JSONB NOT NULL DEFAULT '[]'.
+      for (const col of [
+        "severity_factors",
+        "likelihood_factors",
+        "ttp_tags",
+      ]) {
+        expect(byName.get(col)?.data_type).toBe("jsonb");
+        expect(byName.get(col)?.is_nullable).toBe("NO");
+        expect(byName.get(col)?.column_default).toContain("'[]'");
+      }
+    });
+
+    it("periodic_report_result has aggregate scores + aggregate_ttp_tags (no factor columns)", async () => {
+      const { rows } = await pool.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT column_name, data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'periodic_report_result'`,
+      );
+      const byName = new Map(rows.map((c) => [c.column_name, c]));
+
+      expect(byName.get("aggregate_severity_score")?.data_type).toBe(
+        "double precision",
+      );
+      expect(byName.get("aggregate_likelihood_score")?.data_type).toBe(
+        "double precision",
+      );
+      expect(byName.get("aggregate_ttp_tags")?.data_type).toBe("jsonb");
+      expect(byName.get("aggregate_ttp_tags")?.is_nullable).toBe("NO");
+      expect(byName.get("aggregate_ttp_tags")?.column_default).toContain(
+        "'[]'",
+      );
+
+      // Issue spec: periodic reports do not score themselves and have
+      // no factor columns to aggregate. Catch a regression where Phase
+      // 1/2 tries to add them on the report table by mistake.
+      expect(byName.has("aggregate_severity_factors")).toBe(false);
+      expect(byName.has("aggregate_likelihood_factors")).toBe(false);
+    });
+
+    it("priority_tier CHECK rejects out-of-enum values on both result tables", async () => {
+      await expect(
+        pool.query(
+          `INSERT INTO story_analysis_result
+             (customer_id, story_id, lang, model_name, model,
+              model_actual_version, prompt_version, generation,
+              severity_score, likelihood_score, priority_tier,
+              analysis_text, input_event_refs, input_hash,
+              redaction_policy_version)
+           VALUES (gen_random_uuid(), 1, 'ENGLISH', 'openai', 'gpt-4o',
+                   'v1', 'p1', 1,
+                   0.5, 0.4, 'EXTREME',
+                   't', '[]'::jsonb, 'h', 'engine:1.0.0|ranges:empty')`,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        pool.query(
+          `INSERT INTO periodic_report_result
+             (customer_id, period, bucket_date, tz, lang, model_name, model,
+              model_actual_version, prompt_version, generation,
+              aggregate_severity_score, aggregate_likelihood_score,
+              priority_tier,
+              sections_jsonb, input_event_refs, input_story_refs, input_hash,
+              redaction_policy_version)
+           VALUES (gen_random_uuid(), 'DAILY', DATE '2026-01-01', 'Asia/Seoul',
+                   'ENGLISH', 'openai', 'gpt-4o',
+                   'v1', 'p1', 1,
+                   0.5, 0.4, 'EXTREME',
+                   '{}'::jsonb, '[]'::jsonb, '[]'::jsonb, 'h',
+                   'engine:1.0.0|ranges:empty')`,
+        ),
+      ).rejects.toThrow();
+    });
   });
 
   it("restructures detection_events into per-event rows", async () => {
@@ -984,6 +1105,70 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
         `DELETE FROM event_analysis_result
          WHERE aice_id = 'aice-ar' AND event_key = 1
            AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+      );
+    });
+
+    it("can SELECT/INSERT/UPDATE/DELETE on story_analysis_result and periodic_report_result (#294 grants)", async () => {
+      // Round-10 review item 3: explicit grant exercise for the new
+      // RFC 0002 Phase 0 result tables. Phase 1 / Phase 2 workers run
+      // under aimer_customer; a missing GRANT here would only surface
+      // when the real worker landed, well after #294 merged.
+      const customerId = "00000000-0000-0000-0000-00000000abcd";
+      await rolePool.query(
+        `INSERT INTO story_analysis_result
+           (customer_id, story_id, lang, model_name, model,
+            model_actual_version, prompt_version, generation,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, input_event_refs, input_hash,
+            redaction_policy_version, requested_by)
+         VALUES ($1, 9001, 'ENGLISH', 'openai', 'gpt-4o',
+                 'v1', 'p1', 1,
+                 0.5, 0.4, 'LOW',
+                 'narr', '[]'::jsonb, 'h',
+                 'engine:1.0.0|ranges:empty', gen_random_uuid())`,
+        [customerId],
+      );
+      await rolePool.query(
+        `UPDATE story_analysis_result SET analysis_text = 'updated'
+          WHERE customer_id = $1 AND story_id = 9001
+            AND lang = 'ENGLISH' AND model_name = 'openai'
+            AND model = 'gpt-4o' AND generation = 1`,
+        [customerId],
+      );
+      await rolePool.query(
+        `DELETE FROM story_analysis_result
+          WHERE customer_id = $1 AND story_id = 9001`,
+        [customerId],
+      );
+
+      await rolePool.query(
+        `INSERT INTO periodic_report_result
+           (customer_id, period, bucket_date, tz,
+            lang, model_name, model,
+            model_actual_version, prompt_version, generation,
+            aggregate_severity_score, aggregate_likelihood_score,
+            priority_tier, sections_jsonb,
+            input_event_refs, input_story_refs, input_hash,
+            redaction_policy_version, requested_by)
+         VALUES ($1, 'DAILY', DATE '2026-01-01', 'Asia/Seoul',
+                 'ENGLISH', 'openai', 'gpt-4o',
+                 'v1', 'p1', 1,
+                 0.5, 0.4, 'LOW', '{}'::jsonb,
+                 '[]'::jsonb, '[]'::jsonb, 'h',
+                 'engine:1.0.0|ranges:empty', gen_random_uuid())`,
+        [customerId],
+      );
+      await rolePool.query(
+        `UPDATE periodic_report_result SET priority_tier = 'MEDIUM'
+          WHERE customer_id = $1 AND period = 'DAILY'
+            AND bucket_date = DATE '2026-01-01' AND tz = 'Asia/Seoul'
+            AND lang = 'ENGLISH' AND model_name = 'openai'
+            AND model = 'gpt-4o' AND generation = 1`,
+        [customerId],
+      );
+      await rolePool.query(
+        `DELETE FROM periodic_report_result WHERE customer_id = $1`,
+        [customerId],
       );
     });
   });
