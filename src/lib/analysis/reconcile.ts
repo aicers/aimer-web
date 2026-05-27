@@ -992,6 +992,45 @@ interface PeriodicExistingRow {
   story_count: string;
 }
 
+/**
+ * Round-23 review item 1: enumerate every non-archived DAILY / WEEKLY /
+ * MONTHLY `periodic_report_state` row already on the auth side for the
+ * customer in the current `tz`. These keys are merged into the candidate
+ * set driven by `deriveAllBuckets` so reconcile visits buckets whose
+ * source rows have been fully deleted — `deriveAllBuckets` and the
+ * per-bucket aggregate loaders only see buckets with surviving customer-
+ * DB rows, so a delete-only refresh-window / backfill that takes a
+ * bucket's count to zero would otherwise leave the existing auth row
+ * untouched and the stale `event_count` / `story_count` never resync to
+ * 0. The success-path envelope hook handles this with LEFT JOINs against
+ * the auth-side state rows (see `computeOverlappingBucketCounts` /
+ * `computeOverlappingBucketStoryAggregates`); reconcile needs the same
+ * recovery property because the hook is best-effort.
+ *
+ * LIVE is excluded for the same reason `loadPerBucketMaxEventTimes`
+ * excludes it: the trailing-24h window is a moving target and the
+ * deletion-detection rule cannot reliably distinguish "the window
+ * shifted past the data" from "the data was deleted". LIVE deletion
+ * detection runs through the pre-mutation `priorLive*Overlap` flags
+ * threaded through `executeWindowReplace` (round-19 review item 1).
+ */
+async function loadExistingNonArchivedPeriodicBuckets(
+  authClient: PoolClient,
+  customerId: string,
+  tz: string,
+): Promise<BucketRow[]> {
+  const { rows } = await authClient.query<BucketRow>(
+    `SELECT period, bucket_date::text AS bucket_date
+       FROM periodic_report_state
+      WHERE customer_id = $1
+        AND tz          = $2
+        AND status IN ('pending', 'ready', 'dirty')
+        AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
+    [customerId, tz],
+  );
+  return rows;
+}
+
 async function loadExistingPeriodicStatesForBuckets(
   authClient: PoolClient,
   customerId: string,
@@ -1034,7 +1073,37 @@ async function reconcilePeriodicStates(
   authClient: PoolClient,
   batchSize: number,
 ): Promise<PeriodicSeedPatchCounts> {
-  const allBuckets = await deriveAllBuckets(customerConn, customerTz);
+  const derivedBuckets = await deriveAllBuckets(customerConn, customerTz);
+  // Round-23 review item 1: merge in DAILY/WEEKLY/MONTHLY buckets that
+  // exist as non-archived auth-side rows but have NO surviving customer-
+  // DB source data. Without this, a delete-only refresh-window /
+  // backfill that takes a bucket's count to zero is invisible to
+  // `derivedBuckets` (which is derived solely from current customer-DB
+  // source timestamps) and reconcile cannot recover the lost state on a
+  // hook failure. Merged keys with empty per-bucket aggregates fall
+  // through to the forward-patch branch below, which treats absent
+  // aggregates as zero-count for non-LIVE buckets and resyncs the
+  // stored count down + flips the row to `dirty`.
+  const existingNonArchivedBuckets =
+    await loadExistingNonArchivedPeriodicBuckets(
+      authClient,
+      customerId,
+      customerTz,
+    );
+  const allBuckets: BucketRow[] = [];
+  const seenBucketKey = new Set<string>();
+  for (const b of derivedBuckets) {
+    const k = `${b.period}|${b.bucket_date}`;
+    if (seenBucketKey.has(k)) continue;
+    seenBucketKey.add(k);
+    allBuckets.push(b);
+  }
+  for (const b of existingNonArchivedBuckets) {
+    const k = `${b.period}|${b.bucket_date}`;
+    if (seenBucketKey.has(k)) continue;
+    seenBucketKey.add(k);
+    allBuckets.push(b);
+  }
   if (allBuckets.length === 0) return { seeded: 0, patched: 0 };
 
   // Pin a single `latestBaseline` value across the entire customer
@@ -1189,7 +1258,19 @@ async function reconcilePeriodicStates(
               }
             : null
           : (bucketStoryAgg.get(key) ?? null);
-      if (patchSource === null && storyPatchSource === null) continue;
+      // LIVE has no count-deletion signal (see `currentCount` /
+      // `currentStoryCount` below — both are null on LIVE), so if both
+      // source-side signals are absent there is nothing for the
+      // forward-patch to do. For DAILY/WEEKLY/MONTHLY this early skip
+      // would mask the round-23 zero-count deletion path, so it is
+      // intentionally LIVE-only.
+      if (
+        b.period === "LIVE" &&
+        patchSource === null &&
+        storyPatchSource === null
+      ) {
+        continue;
+      }
       const advancesEventAt =
         patchSource !== null &&
         (row.last_event_at === null ||
@@ -1208,10 +1289,20 @@ async function reconcilePeriodicStates(
       // that the envelope-overlap dirty helper targets. The SQL below
       // dirties on a strict decrease but resyncs `event_count` to the
       // current count on any change so the next pass is a no-op.
+      //
+      // Round-23 review item 1: when there is no per-bucket baseline
+      // aggregate at all (no `patchSource`), the bucket has zero
+      // baseline events post-commit. Treat that as `currentCount = 0`
+      // for non-LIVE buckets so the deletion-detection signal fires on
+      // a bucket whose last baseline event was just removed. Without
+      // this, the previous `patchSource === null` branch left
+      // `currentCount = null` and the count check was skipped, leaving
+      // the stale `event_count` on the auth row forever (the bug
+      // round-23 flagged).
       const currentCount =
-        b.period === "LIVE" || patchSource === null
+        b.period === "LIVE"
           ? null
-          : (patchSource as BucketAggregate).eventCount;
+          : ((patchSource as BucketAggregate | null)?.eventCount ?? 0);
       const countChanged =
         currentCount !== null && currentCount !== Number(row.event_count);
       // Round-12 review item 1: story-side aggregates for DAILY /
@@ -1230,10 +1321,15 @@ async function reconcilePeriodicStates(
         (row.last_story_received_at === null ||
           currentStoryReceivedAt.getTime() >
             row.last_story_received_at.getTime());
+      // Round-23 review item 1: same recovery treatment as
+      // `currentCount` above — for non-LIVE buckets, an absent
+      // per-bucket story aggregate means the bucket has zero
+      // overlapping latest-version stories post-commit; treat as
+      // `currentStoryCount = 0` so a delete-only story refresh-window
+      // whose hook failed flips the stale row to `dirty` and resyncs
+      // the count down.
       const currentStoryCount =
-        b.period === "LIVE" || storyPatchSource === null
-          ? null
-          : storyPatchSource.storyCount;
+        b.period === "LIVE" ? null : (storyPatchSource?.storyCount ?? 0);
       const storyCountChanged =
         currentStoryCount !== null &&
         currentStoryCount !== Number(row.story_count);

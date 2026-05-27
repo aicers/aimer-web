@@ -976,6 +976,167 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(secondAfterDel.periodicStatesPatched).toBe(0);
   });
 
+  it("resyncs event_count to zero on a baseline delete-only refresh-window that empties the bucket (round-23 review item 1)", async () => {
+    // Round-23 review item 1: `deriveAllBuckets` only enumerates buckets
+    // with surviving customer-DB source rows. If a refresh-window /
+    // backfill envelope deletes the LAST baseline_event from a closed
+    // DAILY/WEEKLY/MONTHLY bucket and the auth-DB hook fails, the
+    // bucket no longer appears in the derived candidate set and the
+    // existing auth row's stale `event_count` never resyncs to zero.
+    // The success-path hook avoids this by enumerating existing auth
+    // buckets via LEFT JOIN (`computeOverlappingBucketCounts`);
+    // reconcile must match that recovery property because the hook
+    // is best-effort. This test reproduces the sequence and asserts
+    // reconcile flips the row to `dirty` and resyncs `event_count`
+    // to 0.
+    const customer = "00000000-0000-0000-0000-0000000000d3";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-baseline-empty', 'BaselineEmpty', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    // Pre-existing ready DAILY bucket with a done dry-run job and a
+    // stored `event_count = 2`. The bucket is 2025-04-10 KST
+    // (2025-04-09T15:00Z..2025-04-10T15:00Z). The customer DB is empty
+    // of baseline events for that bucket — this models the post-commit
+    // state right after a delete-only refresh-window whose auth hook
+    // failed.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul', 'ready',
+               '2025-04-10T05:00:00Z'::timestamptz,
+               '2025-04-10T05:00:01Z'::timestamptz,
+               2, NULL, 0, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: afterDelete } = await authPool.query<{
+      status: string;
+      event_count: string;
+    }>(
+      `SELECT status, event_count::text AS event_count
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-04-10'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(afterDelete[0].status).toBe("dirty");
+    expect(Number(afterDelete[0].event_count)).toBe(0);
+
+    // Second pass with stored == current (both 0) is a no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
+  it("resyncs story_count to zero on a story delete-only refresh-window that empties the bucket (round-23 review item 1)", async () => {
+    // Round-23 review item 1: symmetric to the baseline case above —
+    // a story-side delete-only envelope that removes the LAST
+    // overlapping latest-version story from a DAILY/WEEKLY/MONTHLY
+    // bucket. After the hook fails, the customer DB has zero stories
+    // overlapping the bucket; `deriveAllBuckets` does not return the
+    // bucket; without the round-23 fix, the existing auth row's stale
+    // `story_count` would never resync to zero. Reconcile must flip
+    // the row to `dirty` and resync `story_count` to 0.
+    const customer = "00000000-0000-0000-0000-0000000000d4";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-story-empty', 'StoryEmpty', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    // Pre-existing ready DAILY bucket with a done dry-run job and a
+    // stored `story_count = 1`. The customer DB is empty of stories
+    // for that bucket — this models the post-commit state right after
+    // a delete-only story refresh-window whose auth hook failed.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
+               NULL, NULL, 0,
+               '2025-06-10T07:00:00Z'::timestamptz, 1, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: afterDelete } = await authPool.query<{
+      status: string;
+      story_count: string;
+    }>(
+      `SELECT status, story_count::text AS story_count
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-06-10'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(afterDelete[0].status).toBe("dirty");
+    expect(Number(afterDelete[0].story_count)).toBe(0);
+
+    // Second pass with stored == current (both 0) is a no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
   it("does not spuriously dirty a boundary DAILY bucket whose start equals a story's time_window_end (round-13 review item 1)", async () => {
     // `generate_series(date_trunc(start), date_trunc(end), '1 day')` is
     // inclusive on both ends. For a story whose time_window_end lands
