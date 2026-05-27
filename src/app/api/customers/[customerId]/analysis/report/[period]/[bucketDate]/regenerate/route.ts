@@ -27,7 +27,27 @@ import { getAuthPool } from "@/lib/db/client";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const BUCKET_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const BUCKET_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// Validates an ISO calendar date `YYYY-MM-DD`. Rejects shape mismatches
+// AND impossible calendar dates (`2026-99-99`, `2026-02-31`, ...). The
+// regex alone would let nonsense values pass to authorization and 202,
+// pinning a surprising contract before Phase 1 casts this path segment
+// to a real SQL `date` — see #294 round-24 review item 2.
+function isValidBucketDate(value: string): boolean {
+  const m = BUCKET_DATE_RE.exec(value);
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return (
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day
+  );
+}
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
@@ -45,7 +65,7 @@ function extractReportPathParts(
   if (idx === -1 || idx + 2 >= segments.length) return null;
   const period = segments[idx + 1];
   const bucketDate = segments[idx + 2];
-  if (!PERIODS.has(period) || !BUCKET_DATE_RE.test(bucketDate)) return null;
+  if (!PERIODS.has(period) || !isValidBucketDate(bucketDate)) return null;
   return { period, bucketDate };
 }
 

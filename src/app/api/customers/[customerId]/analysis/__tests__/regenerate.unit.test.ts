@@ -304,6 +304,47 @@ describe("report regenerate stub", () => {
     expect(res.status).toBe(400);
   });
 
+  // Round-24 review item 2: the regex-only shape check let values like
+  // `2026-02-31` or `2026-99-99` pass to authorization and 202, locking
+  // a surprising contract before Phase 1 casts the path segment to a
+  // SQL `date`. The validator must reject impossible calendar dates.
+  it.each([
+    "2026-99-99",
+    "2026-02-31",
+    "2026-13-01",
+    "2025-02-29",
+    "2026-04-31",
+    "2026-00-15",
+    "2026-01-00",
+  ])("returns 400 on impossible calendar date %s", async (bucketDate) => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/DAILY/${bucketDate}/regenerate`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("accepts a real leap-year date (2024-02-29)", async () => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/DAILY/2024-02-29/regenerate`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(202);
+  });
+
   it("authorizes as a write op with no bridge scope for an ordinary session", async () => {
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"

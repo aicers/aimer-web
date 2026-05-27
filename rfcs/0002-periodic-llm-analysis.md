@@ -479,9 +479,18 @@ API (aimer-web):
 
 ```
 POST /api/customers/{customer_id}/analysis/story/{story_id}/regenerate
+        ?lang=...&model_name=...&model=...             (all optional;
+                                                        ?tz=... is rejected
+                                                        with 400 invalid_param)
 POST /api/customers/{customer_id}/analysis/report/{period}/{bucket_date}/regenerate
         ?tz=...&lang=...&model_name=...&model=...      (all optional)
 ```
+
+Story analysis output is timezone-independent (see §aimer changes), so
+the story endpoint does **not** accept `?tz=…` — a request that
+includes it is rejected with `400 invalid_param`. Only the report
+endpoint accepts `?tz=…`. The `lang` / `model_name` / `model` query
+params behave identically on both endpoints.
 
 `customer_id` is part of the path because aimer-web has no server-side
 "active customer" session selector — `selectedCustomerId` lives in
@@ -491,28 +500,29 @@ the existing `/api/admin/customers/[customerId]/...` admin layer and is
 extended here to the non-admin analyst layer. `story_id`, `period`, and
 `bucket_date` are scoped *under* that customer's database. (This URL
 shape supersedes an earlier sketch that omitted `customer_id` from the
-path; see issue #294 decision 5.)
+path; see issue #294 decision 5.) `bucket_date` must be a real ISO
+calendar date (`YYYY-MM-DD`) on the report endpoint; impossible values
+like `2026-02-31` are rejected with `400 invalid_report_path`.
 
 Default contract (path-only call):
 
-- `tz` defaults to the customer's **current** `customers.timezone`.
+- Report endpoint: `tz` defaults to the customer's **current** `customers.timezone`. Story endpoint: there is no `tz` axis to default — the result variant PK has no `tz` column on the story side.
 - `lang`, `model_name`, `model` default to the customer's configured defaults (env-overridable fallbacks: `ANALYSIS_DEFAULT_LANG`, `ANALYSIS_DEFAULT_MODEL_NAME`, `ANALYSIS_DEFAULT_MODEL`).
-- The result variant identified by the full PK (`customer_id, period, bucket_date, tz, lang, model_name, model`) is the one regenerated.
+- The result variant identified by the full variant PK is the one regenerated. The variant PK is `customer_id, period, bucket_date, tz, lang, model_name, model` for periodic reports and `customer_id, story_id, lang, model_name, model` (no `tz`) for stories.
 
 Variant selection (query params):
 
-- Any subset of `tz`, `lang`, `model_name`, `model` may be passed to target a non-default variant (e.g., regenerate the English copy without touching the Korean one).
+- Report endpoint: any subset of `tz`, `lang`, `model_name`, `model` may be passed to target a non-default variant.
+- Story endpoint: any subset of `lang`, `model_name`, `model` may be passed (e.g., regenerate the English copy without touching the Korean one). `tz` is rejected as above.
 - If a query value names a variant that has never been generated, a fresh `*_analysis_job` row is inserted for that variant with `generation = 1, status = 'queued'`. The corresponding `*_analysis_state` row is not modified.
 
 Behavior:
 
 - Resolves the target variant row in `story_analysis_job` or `periodic_report_job`. If a row exists, sets `force_requested_at = NOW()`, `force_requested_by = current user`, `status = 'queued'`, `generation++`. If no row exists for the requested variant (first-time generation in that language/model), inserts a fresh `generation=1` row in `queued`.
 - Does **not** touch the corresponding `state` row's status. Force is a variant-level operation; sibling variants are untouched.
-- Returns `202 Accepted` with `{state_pk, variant: {tz, lang, model_name, model}, generation}`.
+- Returns `202 Accepted` with `{state_pk, variant: {…}, generation}`. The `variant` object includes `tz` on the report endpoint and omits it on the story endpoint.
 - Worker on next tick picks up the `queued` job; result row written with the new `generation`; prior result row for the same `(state_pk, variant)` gets `superseded_at = NOW()`.
 - The aimer call carries no `force` flag — the new aimer mutations are stateless and have no cache to bypass. Force regenerate is entirely an aimer-web-side concern: aimer-web bypasses its own result cache by writing a fresh `generation` row.
-
-Story regenerate has no `tz` parameter (story analysis output is timezone-independent; see §aimer changes); `lang`/`model_name`/`model` work the same way.
 
 UI (aimer-web):
 
