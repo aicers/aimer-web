@@ -258,7 +258,11 @@ beforeEach(() => {
     counts: { ip: 0, email: 0, mac: 0 },
   });
   mockGraphqlRequest.mockReset().mockResolvedValue({
-    analyzeEvent: { threatScore: 0.42, analysis: "analysis text" },
+    analyzeEvent: {
+      severityScore: 0.42,
+      likelihoodScore: 0.42,
+      analysis: "analysis text",
+    },
   });
   authPool.query.mockClear();
   authPool.connect.mockClear();

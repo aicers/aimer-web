@@ -186,9 +186,10 @@ describe.skipIf(!hasPostgres)(
       for (const [aice, key, policy] of earRows) {
         await pool.query(
           `INSERT INTO event_analysis_result
-           (aice_id, event_key, lang, model_name, model, threat_score,
+           (aice_id, event_key, lang, model_name, model,
+            severity_score, likelihood_score, priority_tier,
             analysis_text, redaction_policy_version, requested_by)
-         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 0.5, '', $3, $4)`,
+         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 0.5, 0.5, 'LOW', '', $3, $4)`,
           [aice, key, policy, INGESTED_BY],
         );
       }

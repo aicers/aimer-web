@@ -20,6 +20,7 @@ import {
 } from "@/lib/redaction";
 import type { AnalyzeErrorCode } from "./analyze-types";
 import { parseEventTime } from "./event-time";
+import { computePriorityTier } from "./priority-tier";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -525,7 +526,11 @@ export async function runAnalyzeFlow(
     });
   }
 
-  let aimerResponse: { threatScore: number; analysis: string };
+  let aimerResponse: {
+    severityScore: number;
+    likelihoodScore: number;
+    analysis: string;
+  };
   try {
     // `event: String!` — aimer's auth-mtls resolver consumes a string
     // payload that its redact-and-LLM pipeline parses on the other side.
@@ -601,15 +606,22 @@ export async function runAnalyzeFlow(
   }
 
   const analysisPolicyVersion = computeAnalysisPolicyVersion(ranges);
+  const priorityTier = computePriorityTier(
+    aimerResponse.severityScore,
+    aimerResponse.likelihoodScore,
+  );
   try {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
-          threat_score, analysis_text, redaction_policy_version, requested_by)
-       VALUES ($1, $2::numeric, $3, $4, $5, $6, $7, $8, $9::uuid)
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version, requested_by)
+       VALUES ($1, $2::numeric, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid)
        ON CONFLICT (aice_id, event_key, lang, model_name, model)
        DO UPDATE SET
-         threat_score = EXCLUDED.threat_score,
+         severity_score = EXCLUDED.severity_score,
+         likelihood_score = EXCLUDED.likelihood_score,
+         priority_tier = EXCLUDED.priority_tier,
          analysis_text = EXCLUDED.analysis_text,
          redaction_policy_version = EXCLUDED.redaction_policy_version,
          requested_by = EXCLUDED.requested_by,
@@ -620,7 +632,9 @@ export async function runAnalyzeFlow(
         langForStorage,
         params.modelName,
         params.model,
-        aimerResponse.threatScore,
+        aimerResponse.severityScore,
+        aimerResponse.likelihoodScore,
+        priorityTier,
         scan.scanned,
         analysisPolicyVersion,
         params.accountId,

@@ -198,6 +198,8 @@ CREATE TABLE event_analysis_result (
     prompt_version           TEXT,                 -- NULL until aimer reports the prompt template version
     severity_score           DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "if real, how bad" (impact, blast radius)
     likelihood_score         DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "how likely this is a real threat"
+    priority_tier            TEXT NOT NULL
+        CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT NOT NULL,        -- redacted (tokens reference event's map)
     redaction_policy_version TEXT NOT NULL,        -- policy under which analysis_text was redacted
     requested_by             UUID NOT NULL,        -- accounts.id (auth_db cross-reference; not FK)
@@ -210,7 +212,7 @@ CREATE TABLE event_analysis_result (
 
 `customer_id` / `external_key` is implicit in the customer DB choice (same convention as `event_redaction_map`).
 
-`model_actual_version` (the LLM provider's specific snapshot — e.g. `gpt-4o-2025-05-13`) and `prompt_version` (aimer's prompt template version) are intentionally nullable. They are populated once aimer's response payload carries them (tracked as a separate aimer-side follow-up, not blocking this design); until then NULL records the "not reported by aimer at this time" state explicitly rather than fabricating a value. Scores arrive on the wire as `severityScore` and `likelihoodScore` per RFC 0002 §"Priority tiering"; both are `NOT NULL` on storage.
+`model_actual_version` (the LLM provider's specific snapshot — e.g. `gpt-4o-2025-05-13`) and `prompt_version` (aimer's prompt template version) are intentionally nullable. They are populated once aimer's response payload carries them (tracked as a separate aimer-side follow-up, not blocking this design); until then NULL records the "not reported by aimer at this time" state explicitly rather than fabricating a value. Scores arrive on the wire as `severityScore` and `likelihoodScore` per RFC 0002 §"Priority tiering"; both are `NOT NULL` on storage. `priority_tier` is a deterministic 4×4 matrix derivation per RFC 0002 §"Priority tiering", computed in aimer-web from the two scores at write time — it is not an LLM-returned value.
 
 `lang` is stored exactly as it appears on the wire to aimer (the `Language` GraphQL enum from aimer#384: `KOREAN` | `ENGLISH`). UI mapping to `next-intl` locales (`ko` / `en`) happens in the presentation layer; the storage uses aimer's vocabulary so there is no translation layer between the row and the call.
 

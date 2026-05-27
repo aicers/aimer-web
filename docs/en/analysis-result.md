@@ -1,0 +1,77 @@
+# Analysis Result Page
+
+The analysis result page shows a single LLM analysis of one security event.
+It is reached from aice-web-next by opening an event detail and following
+the deep link to aimer-web, or directly via
+`/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis`.
+
+## Priority and scores
+
+The header section shows three score-related fields:
+
+- **Priority tier** — one of `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`. The
+  tier is rendered as a colored badge and is derived deterministically
+  from the two scores below via a 4×4 matrix lookup; it is not a value
+  returned by the LLM.
+- **Severity score** — `0.000`–`1.000`, three decimal places. Answers
+  "if this event turned out to be a real attack, how bad would it be"
+  (impact, blast radius, asset criticality).
+- **Likelihood score** — `0.000`–`1.000`, three decimal places. Answers
+  "how likely is this actually malicious rather than noise or a false
+  positive" (evidence quality, IoC matches, plausible benign
+  explanations).
+
+The two axes are kept separate everywhere so that a high-impact but
+uncertain event (`severity≈1.0, likelihood≈0.5`) is not flattened into
+the same priority as a confirmed but low-impact event
+(`severity≈0.5, likelihood≈1.0`). The matrix translates this pair into
+one of the four tiers used for triage and aggregation.
+
+### Tier matrix
+
+|              | L < 0.4 | 0.4 ≤ L < 0.6 | 0.6 ≤ L < 0.8 | L ≥ 0.8  |
+|--------------|---------|---------------|---------------|----------|
+| S ≥ 0.8      | MEDIUM  | HIGH          | CRITICAL      | CRITICAL |
+| 0.6 ≤ S < 0.8 | LOW    | MEDIUM        | HIGH          | HIGH     |
+| 0.4 ≤ S < 0.6 | LOW    | LOW           | MEDIUM        | MEDIUM   |
+| S < 0.4      | LOW    | LOW           | LOW           | LOW      |
+
+## Metadata fields
+
+Below the score fields the page shows the analysis metadata in a
+two-column grid:
+
+- **Language** — `KOREAN` or `ENGLISH`. Matches the language the analysis
+  text was generated in.
+- **Provider** — the LLM provider name (e.g. `openai`).
+- **Model** — the model id requested (e.g. `gpt-4o`).
+- **Model snapshot** — the provider-reported specific model version, if
+  the upstream response carried one.
+- **Prompt version** — the aimer prompt template version, if reported.
+- **Requested by** — the account that triggered the analysis (rendered
+  as "deleted user" if the account no longer exists).
+- **Requested at** — ISO 8601 timestamp of the request.
+
+## Analysis body
+
+The body shows the LLM analysis text with PII tokens already restored
+to their original values. Any
+`<<UNVERIFIED_IP_...>>` / `<<UNVERIFIED_EMAIL_...>>` /
+`<<UNVERIFIED_MAC_...>>` markers — entities the LLM emitted that were
+not present in the original event — are rendered as red pill badges so
+they stand out from the rest of the analysis.
+
+## Retention banner
+
+If the source `detection_events` row has been removed by retention but
+the analysis row survives, the page shows a yellow banner reading
+"Source event removed by retention; analysis result preserved." The
+"Force re-run" button is hidden in this state because force re-run
+requires the original event payload, which only aice-web-next holds.
+
+## Force re-run
+
+When the source event is still present, the page shows a "Force re-run
+in aice-web-next" link. Clicking it opens aice-web-next at the original
+event detail with a query parameter that tells aice-web-next to send
+`force=true` on the next analyze click, bypassing the cached result.

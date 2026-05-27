@@ -1,8 +1,17 @@
+"""
+auth-jwt is on removal track per #358; the new severity/likelihood fields are
+exposed only under auth-mtls. Both LLM contract paths converge once auth-jwt
+is deleted.
+"""
 type AnalysisResult {
 	"""
-	Threat score from 0.0 to 1.0
+	Severity score from 0.0 to 1.0 ("if real, how bad")
 	"""
-	threatScore: Float!
+	severityScore: Float!
+	"""
+	Likelihood score from 0.0 to 1.0 ("how likely this is a real threat")
+	"""
+	likelihoodScore: Float!
 	"""
 	Markdown-formatted analysis
 	"""
@@ -16,39 +25,6 @@ type ChatChoice {
 }
 
 scalar DateTime
-
-type EventAnalysisResult {
-	"""
-	Event selector that identifies which event this analysis corresponds to
-	"""
-	event: EventSelector!
-	"""
-	Analysis results for this event (vector to support multiple LLM analyses)
-	"""
-	result: [AnalysisResult!]!
-}
-
-type EventSelector {
-	"""
-	Sensor name (typically the hostname)
-	"""
-	sensor: String!
-	"""
-	Event timestamp as nanoseconds since epoch
-	"""
-	timestamp: StringNumber!
-}
-
-input EventSelectorInput {
-	"""
-	Sensor name (typically the hostname)
-	"""
-	sensor: String!
-	"""
-	Event timestamp as nanoseconds since epoch
-	"""
-	timestamp: StringNumber!
-}
 
 type GenerateResponse {
 	model: String!
@@ -163,33 +139,6 @@ type OpenAiChatResponse {
 
 type Query {
 	hello: String!
-	"""
-	Retrieves cached event analyses for specified events.
-	
-	This method only returns previously cached analyses and does not generate new analyses.
-	If no cached analysis exists for an event, it will be omitted from the results.
-	
-	For users with the `User` role, only the single most recent analysis is returned per event.
-	If `name` and `model` are provided, the most recent analysis matching those parameters is returned.
-	If `name` and `model` are `None`, the most recent analysis across all name/model combinations is returned.
-	For users with the `Administrator` role, all analyses for all LLM name/model combinations
-	are returned.
-	
-	- The `customer_id` parameter specifies the customer identifier.
-	- The `events` parameter contains an array of event identifiers (sensor, timestamp pairs).
-	The array must contain at least one element.
-	- The `name` parameter, if provided, filters results to analyses from a specific LLM server.
-	- The `model` parameter, if provided, filters results to analyses from a specific LLM model.
-	- The `lang` parameter, if provided, specifies the language of the analysis report.
-	
-	# Errors
-	
-	Returns an error if:
-	- No kid is found in the JWT token (external REview-signed JWT required)
-	- Input validation fails (empty `customer_id`, empty events array, etc.)
-	- Database operations fail
-	"""
-	eventAnalyses(customerId: ID!, events: [EventSelectorInput!]!, name: String, model: String, lang: Language): [EventAnalysisResult!]!
 	ollamaGenerate(name: String!, model: String!, prompt: String!): GenerateResponse!
 	ollamaChat(name: String!, model: String!, messages: [OllamaChatMessageInput!]!): OllamaChatResponse!
 	openAiChat(name: String!, model: String!, messages: [OpenAiChatMessageInput!]!, maxTokens: Int): OpenAiChatResponse!
@@ -271,8 +220,6 @@ enum ReportType {
 	WEEKLY
 	MONTHLY
 }
-
-scalar StringNumber
 
 scalar TimestampIso8601
 

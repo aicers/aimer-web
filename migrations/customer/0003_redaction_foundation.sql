@@ -97,7 +97,10 @@ CREATE TABLE event_analysis_result (
     model                    TEXT           NOT NULL,
     model_actual_version     TEXT,
     prompt_version           TEXT,
-    threat_score             DOUBLE PRECISION NOT NULL,
+    severity_score           DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "if real, how bad" (impact, blast radius)
+    likelihood_score         DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "how likely this is a real threat"
+    priority_tier            TEXT NOT NULL
+        CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT           NOT NULL,
     redaction_policy_version TEXT           NOT NULL,
     requested_by             UUID           NOT NULL,

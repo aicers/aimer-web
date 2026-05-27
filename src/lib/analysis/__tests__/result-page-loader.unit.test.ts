@@ -84,7 +84,9 @@ function pushResultRow(extras: Record<string, unknown> = {}) {
     match: (s) => s.includes("FROM event_analysis_result"),
     rows: [
       {
-        threat_score: 0.42,
+        severity_score: 0.42,
+        likelihood_score: 0.81,
+        priority_tier: "HIGH",
         analysis_text: "attacker <<REDACTED_IP_001>> reached us",
         model_actual_version: null,
         prompt_version: null,
@@ -139,7 +141,9 @@ describe("loadAnalysisResultPage", () => {
     if (outcome.kind !== "ok") return;
     expect(outcome.data.analysisText).toBe("attacker 10.0.0.1 reached us");
     expect(outcome.data.sourceEventPresent).toBe(true);
-    expect(outcome.data.threatScore).toBe(0.42);
+    expect(outcome.data.severityScore).toBe(0.42);
+    expect(outcome.data.likelihoodScore).toBe(0.81);
+    expect(outcome.data.priorityTier).toBe("HIGH");
   });
 
   it("authorizes the read-only result page with the analyses:read permission key", async () => {
