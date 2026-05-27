@@ -270,6 +270,77 @@ interface StorySeedPatchCounts {
   patched: number;
 }
 
+/**
+ * Round-8 review item 1: archive non-archived `story_analysis_state`
+ * rows whose `story_id` no longer has any surviving `story` row in
+ * customer DB.
+ *
+ * Why this exists: `applyWindowReplaceStoryHook` calls
+ * `maybeArchiveStoryState` when `surviving === 0`, but the hook is
+ * best-effort (decision 2). A hook failure leaves a `ready`/jobbed
+ * state row permanently non-archived because the main reconcile pass
+ * pages from customer-DB `story` aggregates — a `story_id` with zero
+ * versions is invisible to that scan. This pass closes the gap by
+ * iterating non-archived auth-DB state rows and archiving any whose
+ * customer-DB row count is zero.
+ *
+ * Idempotent: re-running over the same input finds the previously
+ * archived rows already at `status='archived'` and skips them.
+ */
+async function archiveOrphanedStoryStates(
+  customerId: string,
+  customerConn: CustomerConnection,
+  authClient: PoolClient,
+  batchSize: number,
+): Promise<number> {
+  let totalArchived = 0;
+  let cursor: string | null = null;
+
+  while (true) {
+    // Page non-archived auth-DB state rows ordered by story_id so the
+    // cursor advances deterministically across pages.
+    const { rows: page }: { rows: Array<{ story_id: string }> } =
+      await authClient.query<{ story_id: string }>(
+        `SELECT story_id::text AS story_id
+           FROM story_analysis_state
+          WHERE customer_id = $1
+            AND status     <> 'archived'
+            AND ($2::bigint IS NULL OR story_id > $2::bigint)
+          ORDER BY story_id
+          LIMIT $3`,
+        [customerId, cursor, batchSize],
+      );
+    if (page.length === 0) break;
+
+    const ids: string[] = page.map((r) => r.story_id);
+    const { rows: survivors } = await customerConn.query<{ story_id: string }>(
+      `SELECT DISTINCT story_id::text AS story_id
+         FROM story
+        WHERE story_id = ANY($1::bigint[])`,
+      [ids],
+    );
+    const survivingSet = new Set(survivors.map((r) => r.story_id));
+    const orphans = ids.filter((id: string) => !survivingSet.has(id));
+
+    if (orphans.length > 0) {
+      const res = await authClient.query(
+        `UPDATE story_analysis_state
+            SET status = 'archived', updated_at = NOW()
+          WHERE customer_id = $1
+            AND story_id    = ANY($2::bigint[])
+            AND status     <> 'archived'`,
+        [customerId, orphans],
+      );
+      totalArchived += res.rowCount ?? 0;
+    }
+
+    cursor = page[page.length - 1].story_id;
+    if (page.length < batchSize) break;
+  }
+
+  return totalArchived;
+}
+
 async function reconcileStoryStates(
   customerId: string,
   customerConn: CustomerConnection,
@@ -409,6 +480,12 @@ async function deriveAllBuckets(
   customerConn: CustomerConnection,
   tz: string,
 ): Promise<BucketRow[]> {
+  // LIVE rows are seeded ONLY when source data exists in the trailing
+  // 24h (issue #294 decision 4 / round-8 review item 3). DAILY /
+  // WEEKLY / MONTHLY rows still derive from ALL observed source
+  // timestamps because a same-day backfill of historical events must
+  // produce its historical buckets even though no LIVE row should
+  // appear (round-2 review item 2 + round-8 review item 3).
   const { rows } = await customerConn.query<BucketRow>(
     `WITH latest_story AS (
        SELECT story_id, MAX(received_at) AS max_rcv
@@ -440,7 +517,10 @@ async function deriveAllBuckets(
      UNION
      SELECT 'LIVE'::text AS period,
             $2::date::text AS bucket_date
-       WHERE EXISTS (SELECT 1 FROM src)`,
+       WHERE EXISTS (
+         SELECT 1 FROM baseline_event
+          WHERE event_time >= NOW() - INTERVAL '24 hours'
+       )`,
     [tz, LIVE_BUCKET_DATE],
   );
   return rows;
@@ -451,11 +531,13 @@ interface BucketMaxEventRow {
   bucket_date: string;
   max_event_at: Date;
   max_received_at: Date;
+  event_count: string;
 }
 
 interface BucketAggregate {
   maxEventAt: Date;
   maxReceivedAt: Date;
+  eventCount: number;
 }
 
 /**
@@ -470,6 +552,16 @@ interface BucketAggregate {
  *     item 2). Comparing only `event_time` misses that case because
  *     `MAX(event_time)` does not change when a late-arriving event
  *     has an earlier `event_time` than the existing max.
+ *   - `eventCount` — `COUNT(*)` of `baseline_event` rows inside the
+ *     bucket. Used as the deletion-detection signal (round-8 review
+ *     item 1): when a window-replace / backfill envelope deletes
+ *     events from inside a closed bucket and the auth-DB hook fails,
+ *     the bucket's max `event_time` and `received_at` may not advance
+ *     (delete-only refresh) yet the bucket content has changed. The
+ *     stored `event_count` on the state row records the count
+ *     observed by the previous reconcile pass; when the current count
+ *     is strictly less than the stored count, content was removed and
+ *     the row is flipped to `dirty`.
  */
 async function loadPerBucketMaxEventTimes(
   customerConn: CustomerConnection,
@@ -480,21 +572,24 @@ async function loadPerBucketMaxEventTimes(
             (date_trunc('day', event_time AT TIME ZONE $1))::date::text
               AS bucket_date,
             MAX(event_time)  AS max_event_at,
-            MAX(received_at) AS max_received_at
+            MAX(received_at) AS max_received_at,
+            COUNT(*)::text   AS event_count
        FROM baseline_event
        GROUP BY 1, 2
      UNION ALL
      SELECT 'WEEKLY'::text,
             (date_trunc('week', event_time AT TIME ZONE $1))::date::text,
             MAX(event_time),
-            MAX(received_at)
+            MAX(received_at),
+            COUNT(*)::text
        FROM baseline_event
        GROUP BY 1, 2
      UNION ALL
      SELECT 'MONTHLY'::text,
             (date_trunc('month', event_time AT TIME ZONE $1))::date::text,
             MAX(event_time),
-            MAX(received_at)
+            MAX(received_at),
+            COUNT(*)::text
        FROM baseline_event
        GROUP BY 1, 2`,
     [tz],
@@ -504,25 +599,41 @@ async function loadPerBucketMaxEventTimes(
     out.set(`${r.period}|${r.bucket_date}|${tz}`, {
       maxEventAt: r.max_event_at,
       maxReceivedAt: r.max_received_at,
+      eventCount: Number(r.event_count),
     });
   }
   return out;
 }
 
 /**
- * Global maxima for the LIVE bucket. LIVE has no fixed window so
- * its forward-patch uses the customer-wide max `event_time` and
- * `received_at`.
+ * Global maxima for the LIVE bucket plus the trailing-24h existence
+ * check used by issue #294 decision 4 / round-8 review item 3.
+ *
+ * `liveActive` is true only when `baseline_event` rows exist whose
+ * `event_time >= NOW() - 24h`. LIVE state rows MUST NOT be seeded
+ * when the bucket would only be backed by historical data (e.g. a
+ * same-day backfill of years-old events). `maxEventAt` /
+ * `maxReceivedAt` are still computed from the full table so existing
+ * LIVE rows can be forward-patched if they already exist.
  */
 async function loadLatestBaselineActivity(
   customerConn: CustomerConnection,
-): Promise<{ maxEventAt: Date; maxReceivedAt: Date } | null> {
+): Promise<{
+  maxEventAt: Date;
+  maxReceivedAt: Date;
+  liveActive: boolean;
+} | null> {
   const { rows } = await customerConn.query<{
     max_event_at: Date | null;
     max_received_at: Date | null;
+    live_active: boolean;
   }>(
     `SELECT MAX(event_time)  AS max_event_at,
-            MAX(received_at) AS max_received_at
+            MAX(received_at) AS max_received_at,
+            EXISTS (
+              SELECT 1 FROM baseline_event
+               WHERE event_time >= NOW() - INTERVAL '24 hours'
+            ) AS live_active
        FROM baseline_event`,
   );
   const row = rows[0];
@@ -532,6 +643,7 @@ async function loadLatestBaselineActivity(
   return {
     maxEventAt: row.max_event_at,
     maxReceivedAt: row.max_received_at,
+    liveActive: row.live_active,
   };
 }
 
@@ -542,6 +654,7 @@ interface PeriodicExistingRow {
   status: "pending" | "ready" | "dirty" | "archived";
   last_event_at: Date | null;
   last_event_received_at: Date | null;
+  event_count: string;
 }
 
 async function loadExistingPeriodicStatesForBuckets(
@@ -555,7 +668,8 @@ async function loadExistingPeriodicStatesForBuckets(
   const dates = buckets.map((b) => b.bucket_date);
   const { rows } = await authClient.query<PeriodicExistingRow>(
     `SELECT period, bucket_date::text AS bucket_date, tz, status,
-            last_event_at, last_event_received_at
+            last_event_at, last_event_received_at,
+            event_count::text AS event_count
        FROM periodic_report_state
       WHERE customer_id = $1
         AND tz          = $2
@@ -643,13 +757,16 @@ async function reconcilePeriodicStates(
           // per-bucket aggregates. The forward-patch branch below
           // would otherwise patch the freshly-seeded NULLs on the
           // next pass and break the decision-2 idempotence
-          // acceptance criterion.
+          // acceptance criterion. `event_count` is seeded with the
+          // current bucket count so a second reconcile pass with no
+          // intervening ingest activity sees `stored == current` and
+          // is a no-op.
           const agg = bucketMaxEvent.get(key);
           await authClient.query(
             `INSERT INTO periodic_report_state
                (customer_id, period, bucket_date, tz, status,
-                last_event_at, last_event_received_at)
-             VALUES ($1, $2, $3::date, $4, 'pending', $5, $6)
+                last_event_at, last_event_received_at, event_count)
+             VALUES ($1, $2, $3::date, $4, 'pending', $5, $6, $7)
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
@@ -658,6 +775,7 @@ async function reconcilePeriodicStates(
               customerTz,
               agg ? agg.maxEventAt.toISOString() : null,
               agg ? agg.maxReceivedAt.toISOString() : null,
+              agg ? agg.eventCount : 0,
             ],
           );
         }
@@ -693,17 +811,37 @@ async function reconcilePeriodicStates(
         row.last_event_received_at === null ||
         patchSource.maxReceivedAt.getTime() >
           row.last_event_received_at.getTime();
-      if (!advancesEventAt && !advancesReceivedAt) continue;
+      // Round-8 review item 1: detect content removal from a closed
+      // bucket whose maxima did not advance (delete-only refresh /
+      // backfill envelope after a hook failure). LIVE buckets are
+      // global-count and cannot reliably distinguish "the trailing
+      // 24h shrank" from "events fell out of the window", so deletion
+      // detection runs on DAILY/WEEKLY/MONTHLY only — the periods
+      // that the envelope-overlap dirty helper targets. The SQL below
+      // dirties on a strict decrease but resyncs `event_count` to the
+      // current count on any change so the next pass is a no-op.
+      const currentCount =
+        b.period === "LIVE" || !("eventCount" in patchSource)
+          ? null
+          : patchSource.eventCount;
+      const countChanged =
+        currentCount !== null && currentCount !== Number(row.event_count);
+      if (!advancesEventAt && !advancesReceivedAt && !countChanged) continue;
 
       // The CASE WHEN mirrors `recordBaselineActivity`'s dirty trigger
       // exactly: only `ready` rows with at least one processing/done
       // job flip to `dirty`. `pending` and `dirty` rows are
       // forward-patched without status change. Dirty trigger fires
-      // when either `event_time` or `received_at` advances —
-      // `received_at` catches the round-7 case (new event with
-      // earlier event_time inside an already-done bucket).
-      // Idempotent: a second pass finds both columns already >=
-      // patchSource and the WHERE clause makes the UPDATE a no-op.
+      // when either `event_time` advances, `received_at` advances, or
+      // `event_count` strictly decreased (round-8 review item 1:
+      // catches delete-only refresh / backfill envelopes whose
+      // maxima do not move).
+      //
+      // `event_count` is always re-stored to the current count (max
+      // with stored value would prevent down-moves which is exactly
+      // what we need to detect on the next pass). Idempotent: a
+      // second pass with no intervening change finds `stored ==
+      // current` and the WHERE clause makes the UPDATE a no-op.
       const res = await authClient.query(
         `UPDATE periodic_report_state s
             SET last_event_at = GREATEST(
@@ -713,6 +851,7 @@ async function reconcilePeriodicStates(
                   COALESCE(s.last_event_received_at, $6::timestamptz),
                   $6::timestamptz
                 ),
+                event_count = COALESCE($7::bigint, s.event_count),
                 status = CASE
                   WHEN s.status = 'ready'
                     AND (
@@ -720,6 +859,7 @@ async function reconcilePeriodicStates(
                       OR $5::timestamptz > s.last_event_at
                       OR s.last_event_received_at IS NULL
                       OR $6::timestamptz > s.last_event_received_at
+                      OR ($7::bigint IS NOT NULL AND $7::bigint < s.event_count)
                     )
                     AND EXISTS (
                       SELECT 1 FROM periodic_report_job j
@@ -743,6 +883,7 @@ async function reconcilePeriodicStates(
               OR s.last_event_at < $5::timestamptz
               OR s.last_event_received_at IS NULL
               OR s.last_event_received_at < $6::timestamptz
+              OR ($7::bigint IS NOT NULL AND $7::bigint <> s.event_count)
             )`,
         [
           customerId,
@@ -751,6 +892,7 @@ async function reconcilePeriodicStates(
           customerTz,
           patchSource.maxEventAt.toISOString(),
           patchSource.maxReceivedAt.toISOString(),
+          currentCount,
         ],
       );
       if ((res.rowCount ?? 0) > 0) patched += 1;
@@ -794,6 +936,20 @@ export async function reconcileCustomer(
       authClient,
       batchSize,
     );
+    // Round-8 review item 1: archive state rows whose `story_id` has
+    // zero surviving customer-DB versions. Best-effort window-replace
+    // hooks can fail after the customer-DB commit; without this pass
+    // the orphaned state row would stay ready/dirty forever (it is
+    // invisible to `reconcileStoryStates` because the customer DB
+    // has no row for it). Archive counts roll into `storyStatesPatched`
+    // since they are forward-only state changes — same semantic class
+    // as forward-patching `last_member_at`.
+    const orphanArchived = await archiveOrphanedStoryStates(
+      customerId,
+      conn,
+      authClient,
+      batchSize,
+    );
     const periodic = await reconcilePeriodicStates(
       customerId,
       customerTz,
@@ -806,7 +962,7 @@ export async function reconcileCustomer(
       customerId,
       status: "completed",
       storyStatesSeeded: story.seeded,
-      storyStatesPatched: story.patched,
+      storyStatesPatched: story.patched + orphanArchived,
       periodicStatesSeeded: periodic.seeded,
       periodicStatesPatched: periodic.patched,
     };

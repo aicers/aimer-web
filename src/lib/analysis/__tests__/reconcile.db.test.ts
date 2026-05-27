@@ -584,6 +584,286 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.periodicStatesPatched).toBe(0);
   });
 
+  it("archives orphaned story_analysis_state rows whose customer-DB story is fully gone (round-8 review item 1)", async () => {
+    // The window-replace hook archives state rows when `surviving=0`
+    // but is best-effort (decision 2). After a hook failure, the
+    // main reconcile pass cannot see a `story_id` with zero versions
+    // because it pages from customer-DB `story` aggregates. The
+    // orphan-archive scan iterates non-archived auth-DB rows and
+    // archives any whose customer-DB row count is zero.
+    const customer = "00000000-0000-0000-0000-0000000000c8";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-orph', 'Orphan', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    // Pre-existing ready state row with a done job — never had a
+    // customer-DB story (or the story was deleted before any
+    // customer-DB seed).
+    await authPool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status,
+          first_member_at, last_member_at, last_ready_at)
+       VALUES ($1, 9201, 'ready',
+               '2025-01-01T00:00:00Z'::timestamptz,
+               '2025-01-01T00:00:00Z'::timestamptz,
+               NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO story_analysis_job
+         (customer_id, story_id, lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 9201, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    // The archive count rolls into storyStatesPatched (same semantic
+    // class as forward-only state changes).
+    expect(outcome.storyStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows } = await authPool.query(
+      `SELECT status FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = 9201`,
+      [customer],
+    );
+    expect(rows[0].status).toBe("archived");
+
+    // Second pass is a no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.storyStatesPatched).toBe(0);
+  });
+
+  it("dirties a closed DAILY bucket when reconcile detects deleted events (round-8 review item 1)", async () => {
+    // Round-8 review item 1: a window-replace / backfill envelope
+    // can delete `baseline_event` rows from inside a closed bucket
+    // and the auth-DB hook can fail. When the deletion does not
+    // advance `MAX(event_time)` or `MAX(received_at)` (delete-only
+    // refresh, or a replacement whose new events are older than
+    // the survivors), reconcile must still detect content removal.
+    // `event_count` is the deletion-detection signal: the state row
+    // stores the last observed count; when the recomputed count is
+    // strictly less, the row is flipped to `dirty`.
+    const customer = "00000000-0000-0000-0000-0000000000c9";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-delcnt', 'DelCount', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    // Use a unique bucket date to avoid leakage from the shared
+    // customer DB. Bucket 2025-04-10 KST.
+    // Pre-seed three baseline events in the bucket on the customer DB.
+    for (const [key, ts] of [
+      ["8001", "2025-04-09T20:00:00Z"],
+      ["8002", "2025-04-09T22:00:00Z"],
+      ["8003", "2025-04-10T05:00:00Z"],
+    ] as const) {
+      await customerPool.query(
+        `INSERT INTO baseline_event
+           (baseline_version, event_key, event_time, kind, raw_score,
+            raw_event, score_window_context, window_signals,
+            scoring_weights_snapshot, source_aice_id)
+         VALUES ('v1', $1::numeric, $2::timestamptz, 'k', 0.5,
+                 '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                 '{}'::jsonb, 'aice-1')`,
+        [key, ts],
+      );
+    }
+    // Pre-existing ready DAILY bucket with a done job and the
+    // matching count of 3 (steady state after the prior hook
+    // success), plus the corresponding `last_event_at` so the
+    // forward-patch path does not fire on event_time advance.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul', 'ready',
+               '2025-04-10T05:00:00Z'::timestamptz,
+               '2025-04-10T05:00:01Z'::timestamptz,
+               3, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    // First pass with stored count == current count: forward-patch
+    // path only advances `last_event_received_at` to match the
+    // customer-DB max (auto-NOW from INSERT). The dirty trigger
+    // SHOULD NOT fire on its own here because no envelope happened.
+    // We do not assert this directly — the next step is the
+    // interesting one.
+    await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+
+    // Simulate a delete-only refresh-window: remove one event from
+    // the bucket. The bucket's MAX(event_time) does NOT advance
+    // (still 2025-04-10T05:00:00Z if we delete an earlier event),
+    // and MAX(received_at) does not advance (we only deleted).
+    await customerPool.query(
+      `DELETE FROM baseline_event WHERE event_key = 8002::numeric`,
+    );
+
+    const dirtyOutcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(dirtyOutcome.status).toBe("completed");
+    expect(dirtyOutcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: afterDelete } = await authPool.query<{
+      status: string;
+      event_count: string;
+    }>(
+      `SELECT status, event_count::text AS event_count
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-04-10'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(afterDelete[0].status).toBe("dirty");
+    expect(Number(afterDelete[0].event_count)).toBe(2);
+
+    // Second pass with no further changes: stored == current → no-op.
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesPatched).toBe(0);
+  });
+
+  it("does not seed a LIVE row when no source data falls in the trailing 24h (round-8 review item 3)", async () => {
+    // Issue #294 decision 4 + round-8 review item 3: LIVE is the
+    // rolling current state and must only be seeded when source
+    // data exists in the trailing 24h. A same-day backfill of
+    // historical events seeds DAILY / WEEKLY / MONTHLY buckets
+    // only.
+    const customer = "00000000-0000-0000-0000-0000000000ca";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-livegate', 'LiveGate', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    // Isolate the customer DB: remove all baseline_event + story
+    // rows so the LIVE EXISTS check sees only this test's data.
+    // (The shared customer pool is okay because no test below
+    // depends on the prior fixture state.)
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    await seedBaselineEvent(customerPool, "9001", "2024-01-15T03:00:00Z");
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    const { rows } = await authPool.query<{ period: string }>(
+      `SELECT DISTINCT period
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period`,
+      [customer],
+    );
+    const periods = rows.map((r) => r.period).sort();
+    // LIVE MUST be absent; DAILY/WEEKLY/MONTHLY are seeded from the
+    // historical event_time.
+    expect(periods).toEqual(["DAILY", "MONTHLY", "WEEKLY"]);
+  });
+
+  it("archives periodic_report_state rows on tz change via the customers UPDATE trigger (round-8 review item 2)", async () => {
+    // Round-8 review item 2: the customer-level timezone change
+    // (admin SQL path, no UI in Phase 0) must archive any existing
+    // `periodic_report_state` rows whose `tz` does not match the
+    // new `customers.timezone`. The trigger added in migration
+    // 0030 fires on UPDATE OF timezone and runs the archive SET.
+    const customer = "00000000-0000-0000-0000-0000000000cb";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-tz', 'TZ', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active',
+                                      timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    // Pre-seed three Asia/Seoul rows (one of each period) so we
+    // can verify the trigger archives all of them.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES
+         ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'ready'),
+         ($1, 'DAILY',   DATE '2026-05-20', 'Asia/Seoul', 'ready'),
+         ($1, 'MONTHLY', DATE '2026-05-01', 'Asia/Seoul', 'pending')`,
+      [customer],
+    );
+
+    // Admin SQL path — UPDATE customers.timezone.
+    await authPool.query(
+      `UPDATE customers SET timezone = 'America/Los_Angeles' WHERE id = $1`,
+      [customer],
+    );
+
+    const { rows } = await authPool.query<{ period: string; status: string }>(
+      `SELECT period, status
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period, bucket_date`,
+      [customer],
+    );
+    expect(rows.length).toBe(3);
+    for (const r of rows) expect(r.status).toBe("archived");
+
+    // A subsequent reconcile pass for the new tz must not resurrect
+    // the archived rows: forward-patch skips archived (existing
+    // behavior). The trigger leaves the old-tz rows terminal and
+    // any new-tz rows are seeded lazily by reconcile when source
+    // data exists.
+    const newTzOutcome = await reconcileCustomer(
+      customer,
+      "America/Los_Angeles",
+      makeDeps(authPool, customerPool),
+    );
+    expect(newTzOutcome.status).toBe("completed");
+    const { rows: stillArchived } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+      [customer],
+    );
+    for (const r of stillArchived) expect(r.status).toBe("archived");
+  });
+
   it("runReconcileTick excludes customers with no recent activity", async () => {
     // Add an inactive-by-scope customer: 'active' database_status but
     // no state rows, no audit hits, no redaction-range rows.

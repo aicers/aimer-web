@@ -291,6 +291,15 @@ export async function recordBaselineActivity(
   // already exists. The ON CONFLICT WHERE clause excludes archived
   // rows so a terminal-archived LIVE row stays archived.
   //
+  // The `WHERE t >= NOW() - INTERVAL '24 hours'` filter on the input
+  // events restricts LIVE seeding / forward-patching to the trailing
+  // 24h window per issue #294 decision 4 and round-8 review item 3.
+  // A same-day backfill of historical `event_time` values must NOT
+  // create or advance a LIVE row — those events seed DAILY/WEEKLY/
+  // MONTHLY buckets only. If no event in the batch qualifies, the
+  // CTE's `max_t.t` is NULL and the `WHERE max_t.t IS NOT NULL`
+  // guard turns the INSERT into a no-op.
+  //
   // `last_event_received_at` is the reconcile safety-net signal
   // (round-7 review item 2): it advances every time the bucket
   // receives a new event regardless of whether `event_time`
@@ -305,12 +314,16 @@ export async function recordBaselineActivity(
   // column behind the customer DB and reconcile observes the lag.
   await client.query(
     `WITH max_t AS (
-       SELECT MAX(t) AS t FROM unnest($4::timestamptz[]) AS t
+       SELECT MAX(t) AS t
+         FROM unnest($4::timestamptz[]) AS t
+        WHERE t >= NOW() - INTERVAL '24 hours'
      )
      INSERT INTO periodic_report_state
        (customer_id, period, bucket_date, tz, status,
         last_event_at, last_event_received_at)
-     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t, NOW() FROM max_t
+     SELECT $1, 'LIVE', $2::date, $3, 'ready', max_t.t, NOW()
+       FROM max_t
+      WHERE max_t.t IS NOT NULL
      ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
        SET last_event_at = GREATEST(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at

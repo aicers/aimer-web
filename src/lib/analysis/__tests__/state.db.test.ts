@@ -890,6 +890,82 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(byKey.get("DAILY|2026-04-30")).toBe("ready");
   });
 
+  it("recordBaselineActivity does not seed a LIVE row when no event_time is in the trailing 24h (round-8 review item 3)", async () => {
+    // Issue #294 decision 4 + round-8 review item 3: LIVE bucket is
+    // the rolling current state. A baseline batch consisting only of
+    // historical event_times (e.g. a backfill replay) must NOT seed
+    // a LIVE row — those events seed DAILY/WEEKLY/MONTHLY buckets
+    // via the reconcile scan instead.
+    const customer = "00000000-0000-0000-0000-0000000000f8";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-livegate', 'LiveGate')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+
+    const old = new Date("2020-01-15T03:00:00Z");
+    const client = await pool.connect();
+    try {
+      await recordBaselineActivity(client, customer, "Asia/Seoul", [old]);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await pool.query(
+      `SELECT period FROM periodic_report_state
+        WHERE customer_id = $1`,
+      [customer],
+    );
+    expect(rows.length).toBe(0);
+  });
+
+  it("customers timezone change archives all old-tz periodic_report_state rows via trigger (round-8 review item 2)", async () => {
+    // Migration 0030 adds an AFTER UPDATE OF timezone trigger on
+    // customers that archives every periodic_report_state row whose
+    // tz no longer matches customers.timezone. The admin SQL update
+    // path is the only mutation in Phase 0; this test verifies the
+    // trigger fires on that path without needing app code.
+    const customer = "00000000-0000-0000-0000-0000000000f9";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name, timezone)
+       VALUES ($1, 'ck-tz', 'TZ', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET timezone = 'Asia/Seoul'`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES
+         ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'ready'),
+         ($1, 'DAILY',   DATE '2026-05-20', 'Asia/Seoul', 'ready'),
+         ($1, 'WEEKLY',  DATE '2026-05-18', 'Asia/Seoul', 'dirty'),
+         ($1, 'MONTHLY', DATE '2026-05-01', 'Asia/Seoul', 'pending')`,
+      [customer],
+    );
+
+    await pool.query(
+      `UPDATE customers SET timezone = 'America/Los_Angeles' WHERE id = $1`,
+      [customer],
+    );
+
+    const { rows } = await pool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(rows.length).toBe(4);
+    for (const r of rows) expect(r.status).toBe("archived");
+
+    // Idempotence: setting the timezone to the SAME value does not
+    // re-fire (the trigger's WHEN clause checks IS DISTINCT FROM).
+    await pool.query(
+      `UPDATE customers SET timezone = 'America/Los_Angeles' WHERE id = $1`,
+      [customer],
+    );
+    // No assertion needed — rows remain archived.
+  });
+
   it("recordBaselineActivity skips archived periodic rows (round-5 review item 2)", async () => {
     // RFC 0002 §"Timezone lifecycle" + issue #294 decision 2: archived
     // periodic rows are terminal — a later baseline batch must not
