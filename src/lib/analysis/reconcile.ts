@@ -14,14 +14,30 @@
 //   - Seed missing `story_analysis_state` rows from `story.story_id`.
 //   - Seed missing `periodic_report_state` rows by deriving the set
 //     of `(period, bucket_date, tz)` triples that should exist given
-//     the current `customers.timezone` and observed source data in
-//     the trailing 24h.
+//     the current `customers.timezone` and observed source data.
+//     Bucket derivation uses ALL observed source timestamps, not just
+//     the trailing 24h — a backfill committed today with old
+//     `event_time` values must still produce its historical buckets
+//     (round-2 review item 2).
 //   - Forward-patch `first_member_at` / `last_member_at` from
 //     `story.received_at` (proxy for member arrival — `story_member`
 //     itself has no timestamp; see decision 1).
 //   - Forward-patch `last_event_at` on periodic rows from
 //     `baseline_event.event_time`.
 //   - Never roll a value backwards. Never touch `archived` rows.
+//
+// Active-customer scope (decision 2): a customer is reconciled if any
+// of the following holds in the last 24h —
+//   (a) a non-archived state row was updated, or
+//   (b) an audit row with action in {phase2.ingest, phase2.ingest_failed,
+//       phase2.refresh_window, phase2.backfill} exists for the customer, or
+//   (c) a `customer_redaction_ranges` row was created for the customer.
+// Customers outside this set are skipped to keep the scan bounded.
+//
+// Batching (decision 2): per-customer work pages by `(customer_id,
+// story_id)` and `(customer_id, period, bucket_date, tz)` at
+// `ANALYSIS_RECONCILE_BATCH_SIZE` (default 500) per page so a customer
+// with millions of stories does not load everything into memory.
 //
 // Idempotence is the key acceptance criterion (issue verification
 // gate): the second pass over the same customer set must report
@@ -31,6 +47,20 @@ import "server-only";
 
 import type { Pool, PoolClient } from "pg";
 import { LIVE_BUCKET_DATE, type PeriodicPeriod } from "./state";
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BATCH_SIZE = 500;
+
+function resolveBatchSize(): number {
+  const raw = process.env.ANALYSIS_RECONCILE_BATCH_SIZE;
+  if (raw == null || raw === "") return DEFAULT_BATCH_SIZE;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_BATCH_SIZE;
+  return Math.floor(n);
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -66,6 +96,13 @@ export interface CustomerConnection {
 
 export interface ReconcileDeps {
   authPool: Pool;
+  /**
+   * Audit-DB pool. Used to filter the active-customer scope by recent
+   * `phase2.*` audit rows. Optional so tests that do not need the
+   * audit clause can pass `undefined`; production callers should
+   * always supply it.
+   */
+  auditPool?: Pool;
   connectCustomer: (customerId: string) => Promise<CustomerConnection>;
 }
 
@@ -79,28 +116,80 @@ interface ActiveCustomerRow {
 }
 
 /**
- * Active set for reconciliation. We walk every customer whose
- * `customers.database_status = 'active'` and let the per-customer SQL
- * short-circuit when there is no source data. This is operationally
- * equivalent to the issue's "audit row in last 24h OR state row OR
- * customer_redaction_ranges change" rule (decision 2): inactive
- * customers fall out of the loop via `database_status`, and customers
- * with no source data emit zero seeds and zero patches.
+ * Build the active-customer set for reconciliation per decision 2.
  *
- * Walking all active customers — rather than joining against audit
- * actions — keeps the scan self-contained in the auth DB and avoids
- * coupling reconcile to the audit-log retention window.
+ * The auth-DB clause covers (a) non-archived state rows updated in
+ * the trailing 24h and (c) recent `customer_redaction_ranges` rows.
+ * The audit-DB clause covers (b) recent `phase2.*` audit activity for
+ * customers that may have no state row yet (the case the safety net
+ * exists to recover — a hook failure with no auth-DB row written).
+ *
+ * The union is filtered back through `customers.database_status =
+ * 'active'` so an audit-only hit for a since-deactivated customer
+ * does not produce a customer-DB connection attempt.
  */
 async function listActiveCustomers(
   authPool: Pool,
+  auditPool: Pool | undefined,
 ): Promise<ActiveCustomerRow[]> {
+  const auditCustomerIds = await loadAuditActiveCustomerIds(auditPool);
   const { rows } = await authPool.query<ActiveCustomerRow>(
-    `SELECT id::text AS customer_id, timezone
-       FROM customers
-      WHERE database_status = 'active'
-      ORDER BY id`,
+    `SELECT c.id::text AS customer_id, c.timezone
+       FROM customers c
+      WHERE c.database_status = 'active'
+        AND (
+          c.id = ANY($1::uuid[])
+          OR EXISTS (
+            SELECT 1 FROM story_analysis_state s
+             WHERE s.customer_id = c.id
+               AND s.status <> 'archived'
+               AND s.updated_at >= NOW() - INTERVAL '24 hours'
+          )
+          OR EXISTS (
+            SELECT 1 FROM periodic_report_state p
+             WHERE p.customer_id = c.id
+               AND p.status <> 'archived'
+               AND p.updated_at >= NOW() - INTERVAL '24 hours'
+          )
+          OR EXISTS (
+            SELECT 1 FROM customer_redaction_ranges r
+             WHERE r.customer_id = c.id
+               AND r.created_at >= NOW() - INTERVAL '24 hours'
+          )
+        )
+      ORDER BY c.id`,
+    [auditCustomerIds],
   );
   return rows;
+}
+
+async function loadAuditActiveCustomerIds(
+  auditPool: Pool | undefined,
+): Promise<string[]> {
+  if (!auditPool) return [];
+  try {
+    const { rows } = await auditPool.query<{ customer_id: string }>(
+      `SELECT DISTINCT customer_id::text AS customer_id
+         FROM audit_logs
+        WHERE customer_id IS NOT NULL
+          AND timestamp >= NOW() - INTERVAL '24 hours'
+          AND action IN (
+            'phase2.ingest',
+            'phase2.ingest_failed',
+            'phase2.refresh_window',
+            'phase2.backfill'
+          )`,
+    );
+    return rows.map((r) => r.customer_id);
+  } catch (err) {
+    // Audit DB failures must not stall the scan — the auth-DB clauses
+    // are the primary signal. Log and proceed with an empty audit set.
+    console.error(
+      "[analysis-reconcile] audit pool query failed, proceeding without audit-active customers:",
+      err,
+    );
+    return [];
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,24 +203,29 @@ interface StoryAggregateRow {
 }
 
 /**
- * Compute `MIN(received_at)` and `MAX(received_at)` across all
- * `story_version` rows for every `story_id` in the customer DB.
+ * Page through `story_id` aggregates in the customer DB by ascending
+ * `story_id`. Each page returns `MIN(received_at)` and
+ * `MAX(received_at)` across all `story_version` rows.
  *
  * Per decision 1, `first_member_at = MIN(story.received_at)` and
  * `last_member_at = MAX(story.received_at)` because `story_member`
- * has no timestamp column. The MIN captures the original-narrative
- * arrival; the MAX captures the latest version's arrival (which equals
- * the canonical version under the window-replace pattern).
+ * has no timestamp column.
  */
-async function loadStoryAggregates(
+async function loadStoryAggregatePage(
   customerConn: CustomerConnection,
+  afterStoryId: string | null,
+  pageSize: number,
 ): Promise<StoryAggregateRow[]> {
   const { rows } = await customerConn.query<StoryAggregateRow>(
     `SELECT story_id::text AS story_id,
             MIN(received_at) AS first_received_at,
             MAX(received_at) AS last_received_at
        FROM story
-      GROUP BY story_id`,
+      WHERE $1::bigint IS NULL OR story_id > $1::bigint
+      GROUP BY story_id
+      ORDER BY story_id
+      LIMIT $2`,
+    [afterStoryId, pageSize],
   );
   return rows;
 }
@@ -143,16 +237,19 @@ interface StoryStateExistingRow {
   last_member_at: Date | null;
 }
 
-async function loadExistingStoryStates(
+async function loadExistingStoryStatesForIds(
   authClient: PoolClient,
   customerId: string,
+  storyIds: readonly string[],
 ): Promise<Map<string, StoryStateExistingRow>> {
+  if (storyIds.length === 0) return new Map();
   const { rows } = await authClient.query<StoryStateExistingRow>(
     `SELECT story_id::text AS story_id, status,
             first_member_at, last_member_at
        FROM story_analysis_state
-      WHERE customer_id = $1`,
-    [customerId],
+      WHERE customer_id = $1
+        AND story_id = ANY($2::bigint[])`,
+    [customerId, storyIds],
   );
   const out = new Map<string, StoryStateExistingRow>();
   for (const r of rows) out.set(r.story_id, r);
@@ -168,25 +265,75 @@ async function reconcileStoryStates(
   customerId: string,
   customerConn: CustomerConnection,
   authClient: PoolClient,
+  batchSize: number,
 ): Promise<StorySeedPatchCounts> {
-  const aggregates = await loadStoryAggregates(customerConn);
-  if (aggregates.length === 0) return { seeded: 0, patched: 0 };
-
-  const existing = await loadExistingStoryStates(authClient, customerId);
-
   let seeded = 0;
   let patched = 0;
+  let cursor: string | null = null;
 
-  for (const agg of aggregates) {
-    const cur = existing.get(agg.story_id);
-    if (!cur) {
-      // Seed missing row. New rows start `pending`; the worker tick
-      // promotes them to `ready` once the readiness rule fires.
+  while (true) {
+    const aggregates = await loadStoryAggregatePage(
+      customerConn,
+      cursor,
+      batchSize,
+    );
+    if (aggregates.length === 0) break;
+
+    const storyIds = aggregates.map((a) => a.story_id);
+    const existing = await loadExistingStoryStatesForIds(
+      authClient,
+      customerId,
+      storyIds,
+    );
+
+    for (const agg of aggregates) {
+      const cur = existing.get(agg.story_id);
+      if (!cur) {
+        // Seed missing row. New rows start `pending`; the worker tick
+        // promotes them to `ready` once the readiness rule fires.
+        await authClient.query(
+          `INSERT INTO story_analysis_state
+             (customer_id, story_id, status, first_member_at, last_member_at)
+           VALUES ($1, $2::bigint, 'pending', $3, $4)
+           ON CONFLICT (customer_id, story_id) DO NOTHING`,
+          [
+            customerId,
+            agg.story_id,
+            agg.first_received_at.toISOString(),
+            agg.last_received_at.toISOString(),
+          ],
+        );
+        seeded += 1;
+        continue;
+      }
+
+      // Skip archived rows on forward-patch (decision 2). The next
+      // member-arrival hook will unarchive in place.
+      if (cur.status === "archived") continue;
+
+      // Forward-patch only: LEAST/GREATEST guards keep the second pass
+      // a no-op. `first_member_at` only moves earlier; `last_member_at`
+      // only moves later.
+      const needsFirstPatch =
+        cur.first_member_at === null ||
+        agg.first_received_at.getTime() < cur.first_member_at.getTime();
+      const needsLastPatch =
+        cur.last_member_at === null ||
+        agg.last_received_at.getTime() > cur.last_member_at.getTime();
+      if (!needsFirstPatch && !needsLastPatch) continue;
+
       await authClient.query(
-        `INSERT INTO story_analysis_state
-           (customer_id, story_id, status, first_member_at, last_member_at)
-         VALUES ($1, $2::bigint, 'pending', $3, $4)
-         ON CONFLICT (customer_id, story_id) DO NOTHING`,
+        `UPDATE story_analysis_state
+            SET first_member_at = LEAST(
+                  COALESCE(first_member_at, $3::timestamptz), $3::timestamptz
+                ),
+                last_member_at = GREATEST(
+                  COALESCE(last_member_at,  $4::timestamptz), $4::timestamptz
+                ),
+                updated_at = NOW()
+          WHERE customer_id = $1
+            AND story_id    = $2::bigint
+            AND status      <> 'archived'`,
         [
           customerId,
           agg.story_id,
@@ -194,52 +341,11 @@ async function reconcileStoryStates(
           agg.last_received_at.toISOString(),
         ],
       );
-      seeded += 1;
-      continue;
+      patched += 1;
     }
 
-    // Skip archived rows on forward-patch (decision 2). The next
-    // member-arrival hook will unarchive in place.
-    if (cur.status === "archived") continue;
-
-    // Forward-patch only: GREATEST guards against rolling values
-    // backwards. `first_member_at` is only set if currently NULL;
-    // otherwise it stays put (per RFC §"Source state additions":
-    // first_member_at is set on first member ingest and never updated
-    // thereafter).
-    const needsFirstPatch =
-      cur.first_member_at === null ||
-      agg.first_received_at.getTime() < cur.first_member_at.getTime();
-    const needsLastPatch =
-      cur.last_member_at === null ||
-      agg.last_received_at.getTime() > cur.last_member_at.getTime();
-
-    if (!needsFirstPatch && !needsLastPatch) continue;
-
-    // For first_member_at we use LEAST (earliest wins), because the
-    // canonical "first member arrival" is the earliest version's
-    // received_at across all story_versions for this story_id. The
-    // GREATEST/LEAST guards keep this idempotent on a second pass.
-    await authClient.query(
-      `UPDATE story_analysis_state
-          SET first_member_at = LEAST(
-                COALESCE(first_member_at, $3::timestamptz), $3::timestamptz
-              ),
-              last_member_at = GREATEST(
-                COALESCE(last_member_at,  $4::timestamptz), $4::timestamptz
-              ),
-              updated_at = NOW()
-        WHERE customer_id = $1
-          AND story_id    = $2::bigint
-          AND status      <> 'archived'`,
-      [
-        customerId,
-        agg.story_id,
-        agg.first_received_at.toISOString(),
-        agg.last_received_at.toISOString(),
-      ],
-    );
-    patched += 1;
+    cursor = aggregates[aggregates.length - 1].story_id;
+    if (aggregates.length < batchSize) break;
   }
 
   return { seeded, patched };
@@ -249,50 +355,61 @@ async function reconcileStoryStates(
 // Periodic state seed + forward-patch
 // ---------------------------------------------------------------------------
 
-interface BucketDerivation {
+interface BucketRow {
   period: PeriodicPeriod;
   bucket_date: string;
 }
 
-interface SourceTimestampRow {
-  ts: Date;
-}
-
 /**
- * Collect every source timestamp that should derive a periodic bucket
- * in the trailing 24h. Per decision 2 the source set is:
- *   - `baseline_event.event_time` for the last 24h
- *   - `story.time_window_start` / `story.time_window_end` of the
- *     latest-received_at version of every story_id whose latest
- *     received_at is in the trailing 24h
+ * Derive the complete set of distinct `(period, bucket_date)` triples
+ * that should exist for the customer given its current `tz` and ALL
+ * observed source timestamps. The derivation runs in the customer DB
+ * (so we get PostgreSQL's tz-aware `date_trunc` semantics) and returns
+ * a `DISTINCT`-collapsed result — bounded by time-span, not event
+ * count.
  *
- * A single UNION query keeps the customer-DB round-trip count low.
+ * No `event_time >= NOW() - 24h` filter (round-2 review item 2): a
+ * backfill committed today with old event_time values must still
+ * derive its historical buckets. The active-customer scope above
+ * already gates whether we run this query at all.
  */
-async function loadActiveSourceTimestamps(
+async function deriveAllBuckets(
   customerConn: CustomerConnection,
-): Promise<SourceTimestampRow[]> {
-  const { rows } = await customerConn.query<SourceTimestampRow>(
+  tz: string,
+): Promise<BucketRow[]> {
+  const { rows } = await customerConn.query<BucketRow>(
     `WITH latest_story AS (
-       SELECT story_id,
-              MAX(received_at) AS max_rcv
+       SELECT story_id, MAX(received_at) AS max_rcv
          FROM story
         GROUP BY story_id
-       )
-     SELECT event_time AS ts
-       FROM baseline_event
-      WHERE event_time >= NOW() - INTERVAL '24 hours'
-     UNION ALL
-     SELECT s.time_window_start AS ts
-       FROM story s
-       JOIN latest_story ls
-         ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
-      WHERE ls.max_rcv >= NOW() - INTERVAL '24 hours'
-     UNION ALL
-     SELECT s.time_window_end AS ts
-       FROM story s
-       JOIN latest_story ls
-         ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
-      WHERE ls.max_rcv >= NOW() - INTERVAL '24 hours'`,
+     ),
+     src AS (
+       SELECT event_time AS ts FROM baseline_event
+       UNION ALL
+       SELECT s.time_window_start FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+       UNION ALL
+       SELECT s.time_window_end FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+     )
+     SELECT DISTINCT 'DAILY'::text AS period,
+            (date_trunc('day', ts AT TIME ZONE $1))::date::text AS bucket_date
+       FROM src
+     UNION
+     SELECT DISTINCT 'WEEKLY'::text AS period,
+            (date_trunc('week', ts AT TIME ZONE $1))::date::text AS bucket_date
+       FROM src
+     UNION
+     SELECT DISTINCT 'MONTHLY'::text AS period,
+            (date_trunc('month', ts AT TIME ZONE $1))::date::text AS bucket_date
+       FROM src
+     UNION
+     SELECT 'LIVE'::text AS period,
+            $2::date::text AS bucket_date
+       WHERE EXISTS (SELECT 1 FROM src)`,
+    [tz, LIVE_BUCKET_DATE],
   );
   return rows;
 }
@@ -310,49 +427,6 @@ async function loadLatestBaselineEventTime(
   return rows[0]?.max_ts ?? null;
 }
 
-/**
- * Derive the four periodic buckets that contain a given source
- * timestamp under a specific customer timezone (per decision 2).
- * LIVE always maps to the synthetic epoch bucket; DAILY/WEEKLY/MONTHLY
- * map to ISO day/week/month starts in that tz.
- *
- * Implemented as a single auth-DB SELECT so we get PostgreSQL's
- * `date_trunc(... AT TIME ZONE tz)::date` semantics for free —
- * doing it in JavaScript would require a tz library and would not
- * match PostgreSQL's ISO week conventions.
- */
-async function deriveBucketsForTimestamps(
-  authClient: PoolClient,
-  tz: string,
-  timestamps: Date[],
-): Promise<BucketDerivation[]> {
-  if (timestamps.length === 0) return [];
-  const isoStrings = timestamps.map((d) => d.toISOString());
-  const { rows } = await authClient.query<{
-    period: PeriodicPeriod;
-    bucket_date: string;
-  }>(
-    `WITH src AS (
-       SELECT unnest($1::timestamptz[]) AS ts
-     )
-     SELECT 'LIVE'::text AS period, $3::date::text AS bucket_date
-     UNION
-     SELECT 'DAILY'::text AS period,
-            (date_trunc('day', ts AT TIME ZONE $2))::date::text AS bucket_date
-       FROM src
-     UNION
-     SELECT 'WEEKLY'::text AS period,
-            (date_trunc('week', ts AT TIME ZONE $2))::date::text AS bucket_date
-       FROM src
-     UNION
-     SELECT 'MONTHLY'::text AS period,
-            (date_trunc('month', ts AT TIME ZONE $2))::date::text AS bucket_date
-       FROM src`,
-    [isoStrings, tz, LIVE_BUCKET_DATE],
-  );
-  return rows;
-}
-
 interface PeriodicExistingRow {
   period: PeriodicPeriod;
   bucket_date: string;
@@ -361,15 +435,24 @@ interface PeriodicExistingRow {
   last_event_at: Date | null;
 }
 
-async function loadExistingPeriodicStates(
+async function loadExistingPeriodicStatesForBuckets(
   authClient: PoolClient,
   customerId: string,
+  tz: string,
+  buckets: readonly BucketRow[],
 ): Promise<Map<string, PeriodicExistingRow>> {
+  if (buckets.length === 0) return new Map();
+  const periods = buckets.map((b) => b.period);
+  const dates = buckets.map((b) => b.bucket_date);
   const { rows } = await authClient.query<PeriodicExistingRow>(
     `SELECT period, bucket_date::text AS bucket_date, tz, status, last_event_at
        FROM periodic_report_state
-      WHERE customer_id = $1`,
-    [customerId],
+      WHERE customer_id = $1
+        AND tz          = $2
+        AND (period, bucket_date) IN (
+          SELECT p, d FROM unnest($3::text[], $4::date[]) AS u(p, d)
+        )`,
+    [customerId, tz, periods, dates],
   );
   const out = new Map<string, PeriodicExistingRow>();
   for (const r of rows) {
@@ -388,78 +471,76 @@ async function reconcilePeriodicStates(
   customerTz: string,
   customerConn: CustomerConnection,
   authClient: PoolClient,
+  batchSize: number,
 ): Promise<PeriodicSeedPatchCounts> {
-  const sources = await loadActiveSourceTimestamps(customerConn);
-  if (sources.length === 0) return { seeded: 0, patched: 0 };
+  const allBuckets = await deriveAllBuckets(customerConn, customerTz);
+  if (allBuckets.length === 0) return { seeded: 0, patched: 0 };
 
-  const buckets = await deriveBucketsForTimestamps(
-    authClient,
-    customerTz,
-    sources.map((s) => s.ts),
-  );
-  if (buckets.length === 0) return { seeded: 0, patched: 0 };
-
-  const existing = await loadExistingPeriodicStates(authClient, customerId);
-  // Load the latest baseline event time once, up-front. We use it both
-  // for the LIVE seed (so we don't have to patch a row we just seeded)
-  // and for the LIVE forward-patch on previously-existing rows. Pinning
-  // a single value across seed + patch is what makes the second pass
-  // a no-op.
+  // Pin a single `latestBaseline` value across the entire customer
+  // pass: LIVE seed and forward-patch must agree, or the second pass
+  // would forward-patch a row we just inserted.
   const latestBaseline = await loadLatestBaselineEventTime(customerConn);
 
   let seeded = 0;
-  // Seed missing rows. LIVE rows are seeded `ready` with their
-  // `last_event_at` set to the latest baseline event time at scan
-  // time — matches what `recordBaselineActivity` would have written
-  // had its hook succeeded. Non-LIVE rows are seeded `pending`; the
-  // readiness rule for DAILY/WEEKLY/MONTHLY is a Phase 2/3 worker
-  // concern and is not implemented here.
-  for (const b of buckets) {
-    const key = `${b.period}|${b.bucket_date}|${customerTz}`;
-    if (existing.has(key)) continue;
-    if (b.period === "LIVE") {
-      await authClient.query(
-        `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz,
-            status, last_event_at, last_ready_at)
-         VALUES ($1, 'LIVE', $2::date, $3,
-                 'ready', $4, NOW())
-         ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
-        [
-          customerId,
-          LIVE_BUCKET_DATE,
-          customerTz,
-          latestBaseline ? latestBaseline.toISOString() : null,
-        ],
-      );
-    } else {
-      await authClient.query(
-        `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
-         VALUES ($1, $2, $3::date, $4, 'pending')
-         ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
-        [customerId, b.period, b.bucket_date, customerTz],
-      );
-    }
-    seeded += 1;
-  }
-
-  // Forward-patch last_event_at on an already-existing LIVE row (the
-  // only periodic bucket whose `last_event_at` is directly observable
-  // in Phase 0). Newly-seeded LIVE rows have their `last_event_at`
-  // set at INSERT time above, so this branch only patches lagging
-  // pre-existing rows. DAILY/WEEKLY/MONTHLY last_event_at semantics
-  // are Phase 2/3 worker concerns and are not reconciled here.
   let patched = 0;
-  if (latestBaseline) {
-    const liveKey = `LIVE|${LIVE_BUCKET_DATE}|${customerTz}`;
-    const liveRow = existing.get(liveKey);
-    if (
-      liveRow &&
-      liveRow.status !== "archived" &&
-      (liveRow.last_event_at === null ||
-        latestBaseline.getTime() > liveRow.last_event_at.getTime())
-    ) {
+
+  // Page through derived buckets by `(period, bucket_date)`. The
+  // existing-row lookup is scoped to the page so memory stays bounded
+  // when the time-span is multi-year.
+  for (let i = 0; i < allBuckets.length; i += batchSize) {
+    const page = allBuckets.slice(i, i + batchSize);
+    const existing = await loadExistingPeriodicStatesForBuckets(
+      authClient,
+      customerId,
+      customerTz,
+      page,
+    );
+
+    for (const b of page) {
+      const key = `${b.period}|${b.bucket_date}|${customerTz}`;
+      if (!existing.has(key)) {
+        if (b.period === "LIVE") {
+          await authClient.query(
+            `INSERT INTO periodic_report_state
+               (customer_id, period, bucket_date, tz,
+                status, last_event_at, last_ready_at)
+             VALUES ($1, 'LIVE', $2::date, $3,
+                     'ready', $4, NOW())
+             ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
+            [
+              customerId,
+              LIVE_BUCKET_DATE,
+              customerTz,
+              latestBaseline ? latestBaseline.toISOString() : null,
+            ],
+          );
+        } else {
+          await authClient.query(
+            `INSERT INTO periodic_report_state
+               (customer_id, period, bucket_date, tz, status)
+             VALUES ($1, $2, $3::date, $4, 'pending')
+             ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
+            [customerId, b.period, b.bucket_date, customerTz],
+          );
+        }
+        seeded += 1;
+        continue;
+      }
+
+      // Forward-patch `last_event_at` on an existing LIVE row only.
+      // DAILY/WEEKLY/MONTHLY last_event_at semantics are Phase 2/3
+      // worker concerns and are not reconciled here.
+      if (b.period !== "LIVE") continue;
+      const liveRow = existing.get(key);
+      if (!liveRow) continue;
+      if (liveRow.status === "archived") continue;
+      if (latestBaseline === null) continue;
+      if (
+        liveRow.last_event_at !== null &&
+        latestBaseline.getTime() <= liveRow.last_event_at.getTime()
+      ) {
+        continue;
+      }
       const res = await authClient.query(
         `UPDATE periodic_report_state
             SET last_event_at = GREATEST(
@@ -495,6 +576,7 @@ export async function reconcileCustomer(
   customerTz: string,
   deps: ReconcileDeps,
 ): Promise<ReconcileCustomerOutcome> {
+  const batchSize = resolveBatchSize();
   let conn: CustomerConnection;
   try {
     conn = await deps.connectCustomer(customerId);
@@ -513,12 +595,18 @@ export async function reconcileCustomer(
   const authClient = await deps.authPool.connect();
   try {
     await authClient.query("BEGIN");
-    const story = await reconcileStoryStates(customerId, conn, authClient);
+    const story = await reconcileStoryStates(
+      customerId,
+      conn,
+      authClient,
+      batchSize,
+    );
     const periodic = await reconcilePeriodicStates(
       customerId,
       customerTz,
       conn,
       authClient,
+      batchSize,
     );
     await authClient.query("COMMIT");
     return {
@@ -553,7 +641,7 @@ export async function reconcileCustomer(
 export async function runReconcileTick(
   deps: ReconcileDeps,
 ): Promise<ReconcileTickOutcome> {
-  const customers = await listActiveCustomers(deps.authPool);
+  const customers = await listActiveCustomers(deps.authPool, deps.auditPool);
   const outcomes: ReconcileCustomerOutcome[] = [];
   let totalStoryStatesSeeded = 0;
   let totalStoryStatesPatched = 0;

@@ -20,7 +20,7 @@ import {
   type ReconcileDeps,
   runReconcileTick,
 } from "../analysis/reconcile";
-import { getAuthPool } from "../db/client";
+import { getAuditPool, getAuthPool } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
 
 // ---------------------------------------------------------------------------
@@ -65,6 +65,7 @@ async function defaultConnectCustomer(
 function defaultDeps(authPool?: Pool): ReconcileDeps {
   return {
     authPool: authPool ?? getAuthPool(),
+    auditPool: getAuditPool(),
     connectCustomer: defaultConnectCustomer,
   };
 }

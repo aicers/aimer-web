@@ -295,4 +295,65 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(tickOutcome.totalPeriodicStatesSeeded).toBe(0);
     expect(tickOutcome.totalPeriodicStatesPatched).toBe(0);
   });
+
+  it("derives historical periodic buckets from old baseline event_time committed today (round-2 review item 2)", async () => {
+    // A separate customer so we can observe a fresh seed count.
+    const historicalCustomer = "00000000-0000-0000-0000-0000000000c2";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-2', 'Historical', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [historicalCustomer],
+    );
+
+    // Old event_time — outside the trailing-24h window from a real
+    // clock — but committed "now" simulating a same-day backfill.
+    await seedBaselineEvent(customerPool, "777", "2024-01-15T03:00:00Z");
+
+    const outcome = await reconcileCustomer(
+      historicalCustomer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+
+    // 2024-01-15 03:00 UTC = 2024-01-15 12:00 KST → DAILY bucket
+    // 2024-01-15 KST, WEEKLY 2024-01-15 (Monday), MONTHLY 2024-01-01.
+    const { rows } = await authPool.query<{
+      period: string;
+      bucket_date: string;
+    }>(
+      `SELECT period, bucket_date::text AS bucket_date
+         FROM periodic_report_state
+        WHERE customer_id = $1
+        ORDER BY period, bucket_date`,
+      [historicalCustomer],
+    );
+    const set = new Set(rows.map((r) => `${r.period}|${r.bucket_date}`));
+    expect(set.has("DAILY|2024-01-15")).toBe(true);
+    expect(set.has("MONTHLY|2024-01-01")).toBe(true);
+    expect(set.has(`LIVE|${LIVE_BUCKET_DATE}`)).toBe(true);
+  });
+
+  it("runReconcileTick excludes customers with no recent activity", async () => {
+    // Add an inactive-by-scope customer: 'active' database_status but
+    // no state rows, no audit hits, no redaction-range rows.
+    const dormant = "00000000-0000-0000-0000-0000000000c3";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-3', 'Dormant', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO NOTHING`,
+      [dormant],
+    );
+
+    const tickOutcome = await runReconcileTick(
+      makeDeps(authPool, customerPool),
+    );
+    // Dormant customer must be excluded — the active-customer scope
+    // (decision 2) only walks customers with recent state/audit/
+    // redaction-range activity.
+    expect(tickOutcome.customers.some((c) => c.customerId === dormant)).toBe(
+      false,
+    );
+  });
 });
