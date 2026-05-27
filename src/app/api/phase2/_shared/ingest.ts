@@ -15,6 +15,26 @@ export interface IngestCounts {
   duplicatesSkipped: number;
 }
 
+/**
+ * Data captured during a successful baseline batch so the route handler
+ * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
+ * DB commit returns. See `src/lib/analysis/ingest-hooks.ts`.
+ */
+export interface BaselineIngestExtras {
+  /** Most-recent `event_time` accepted in the batch (null when none). */
+  lastEventArrivalAt: Date | null;
+}
+
+/**
+ * Data captured during a successful story batch so the route handler
+ * can fire the RFC 0002 Phase 0 analysis state hook after the customer-
+ * DB commit returns. One entry per `story_member` that was actually
+ * inserted (duplicates are skipped).
+ */
+export interface StoryIngestExtras {
+  storyArrivals: Array<{ storyId: string; arrivedAt: Date }>;
+}
+
 interface RedactionContext {
   customerId: string;
   aiceId: string;
@@ -83,13 +103,18 @@ export async function ingestBaselineBatch(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
-): Promise<IngestCounts> {
+): Promise<IngestCounts & BaselineIngestExtras> {
   if (payload.events.length === 0) {
-    return { accepted: 0, duplicatesSkipped: 0 };
+    return {
+      accepted: 0,
+      duplicatesSkipped: 0,
+      lastEventArrivalAt: null,
+    };
   }
 
   return withTransaction(pool, async (client) => {
     let accepted = 0;
+    let lastEventArrivalAt: Date | null = null;
     for (const event of payload.events) {
       const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
         event.raw_event,
@@ -136,11 +161,18 @@ export async function ingestBaselineBatch(
           policyVersion,
         ],
       );
-      if (result.rowCount === 1) accepted += 1;
+      if (result.rowCount === 1) {
+        accepted += 1;
+        const arrivedAt = new Date(event.event_time);
+        if (!lastEventArrivalAt || arrivedAt > lastEventArrivalAt) {
+          lastEventArrivalAt = arrivedAt;
+        }
+      }
     }
     return {
       accepted,
       duplicatesSkipped: payload.events.length - accepted,
+      lastEventArrivalAt,
     };
   });
 }
@@ -149,7 +181,7 @@ export async function ingestBaselineBatch(
 // story + story_member
 // ---------------------------------------------------------------------------
 
-export interface StoryIngestCounts extends IngestCounts {
+export interface StoryIngestCounts extends IngestCounts, StoryIngestExtras {
   storiesAccepted: number;
   storiesDuplicates: number;
   membersAccepted: number;
@@ -171,6 +203,7 @@ export async function ingestStoryBatch(
       storiesDuplicates: 0,
       membersAccepted: 0,
       membersDuplicates: 0,
+      storyArrivals: [],
     };
   }
 
@@ -178,6 +211,7 @@ export async function ingestStoryBatch(
     let storiesAccepted = 0;
     let membersAccepted = 0;
     let totalMembers = 0;
+    const storyArrivals: Array<{ storyId: string; arrivedAt: Date }> = [];
 
     for (const story of payload.stories) {
       // `story.summary_payload` is an aggregate (not redacted in v1 per
@@ -235,7 +269,17 @@ export async function ingestStoryBatch(
             policyVersion,
           ],
         );
-        if (memberResult.rowCount === 1) membersAccepted += 1;
+        if (memberResult.rowCount === 1) {
+          membersAccepted += 1;
+          // Phase 0 analysis hook uses a JS-side timestamp as the
+          // member-arrival proxy. The customer DB stamps `received_at`
+          // with NOW() on row insert; this value is close enough for
+          // readiness derivation and avoids a per-row RETURNING.
+          storyArrivals.push({
+            storyId: story.story_id,
+            arrivedAt: new Date(),
+          });
+        }
       }
     }
 
@@ -247,6 +291,7 @@ export async function ingestStoryBatch(
       storiesDuplicates: payload.stories.length - storiesAccepted,
       membersAccepted,
       membersDuplicates: totalMembers - membersAccepted,
+      storyArrivals,
     };
   });
 }

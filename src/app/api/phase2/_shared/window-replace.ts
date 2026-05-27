@@ -202,6 +202,38 @@ export interface WindowReplaceCounts {
 }
 
 /**
+ * Data captured during a successful story-window replace so the route
+ * handler can fire the RFC 0002 Phase 0 analysis state hook after the
+ * customer-DB commit returns. See `src/lib/analysis/ingest-hooks.ts`.
+ *
+ * - `mutatedStoryIds` — every `story_id` whose `story_member` set
+ *   changed (inserted, replaced, or deleted) in this window replace.
+ *   The hook transitions matching `story_analysis_state` rows past
+ *   ready/done into `dirty`.
+ * - `storyVersionSurvivors` — post-commit count of `story` rows that
+ *   remain for each affected `story_id`. A count of 0 archives the
+ *   state row (issue #294 decision 1: archive only when no version
+ *   remains).
+ */
+export interface StoryWindowReplaceExtras {
+  mutatedStoryIds: string[];
+  storyVersionSurvivors: Array<{ storyId: string; surviving: number }>;
+}
+
+/**
+ * Baseline-window replace's hook input is the raw window bounds —
+ * the hook walks `periodic_report_state` for overlapping rows itself.
+ */
+export interface BaselineWindowReplaceExtras {
+  from: Date;
+  to: Date;
+}
+
+export type WindowReplaceExtras =
+  | { kind: "baseline"; baseline: BaselineWindowReplaceExtras }
+  | { kind: "story"; story: StoryWindowReplaceExtras };
+
+/**
  * Atomically replace the contents of a window in a single per-customer
  * transaction. The advisory lock is keyed on
  * `phase2_window|<window_kind>|<external_key>|<from>|<to>` via
@@ -217,7 +249,7 @@ export async function executeWindowReplace(
   pool: Pool,
   payload: WindowReplacePayload,
   sourceAiceId: string,
-): Promise<WindowReplaceCounts> {
+): Promise<{ counts: WindowReplaceCounts; extras: WindowReplaceExtras }> {
   return withTransaction(pool, async (client) => {
     await client.query(
       `SELECT pg_advisory_xact_lock(
@@ -278,10 +310,36 @@ export async function executeWindowReplace(
         );
         accepted += result.rowCount ?? 0;
       }
-      return { accepted, deleted: deleteResult.rowCount ?? 0 };
+      return {
+        counts: { accepted, deleted: deleteResult.rowCount ?? 0 },
+        extras: {
+          kind: "baseline",
+          baseline: {
+            from: new Date(payload.window.from),
+            to: new Date(payload.window.to),
+          },
+        },
+      };
     }
 
     // story window
+    //
+    // Capture every `story_id` deleted by the window-replace before
+    // INSERTs land so the Phase 0 analysis-state hook can decide which
+    // state rows to archive (no surviving version) or dirty (mutated
+    // but not deleted). RFC 0002 §"Dirty transitions" rule 2 + issue
+    // #294 decision 1.
+    const deletedStoryIdRows = await client.query<{ story_id: string }>(
+      `SELECT DISTINCT story_id::text AS story_id
+         FROM story
+        WHERE kind = 'auto_correlated'
+          AND time_window_start >= $1
+          AND time_window_start <  $2`,
+      [payload.window.from, payload.window.to],
+    );
+    const deletedStoryIds = new Set(
+      deletedStoryIdRows.rows.map((r) => r.story_id),
+    );
     const deleteResult = await client.query(
       `DELETE FROM story
         WHERE kind = 'auto_correlated'
@@ -290,7 +348,12 @@ export async function executeWindowReplace(
       [payload.window.from, payload.window.to],
     );
     let accepted = 0;
+    // `mutatedStoryIds` starts with every story we deleted; every
+    // inserted `story_id` is added below. After the loop, survivors are
+    // looked up once for the union set.
+    const mutatedStoryIds = new Set<string>(deletedStoryIds);
     for (const story of payload.stories) {
+      mutatedStoryIds.add(String(story.story_id));
       const storyResult = await client.query(
         `INSERT INTO story (
            story_id, story_version, kind, correlation_rule_id, primary_asset,
@@ -331,6 +394,40 @@ export async function executeWindowReplace(
         );
       }
     }
-    return { accepted, deleted: deleteResult.rowCount ?? 0 };
+    // Survivor count per `story_id` across all `story_version`s,
+    // taken after both the DELETE and the INSERTs land. A count of 0
+    // is the archive condition (issue #294 decision 1).
+    const survivors: Array<{ storyId: string; surviving: number }> = [];
+    if (mutatedStoryIds.size > 0) {
+      const ids = [...mutatedStoryIds];
+      const { rows: survivorRows } = await client.query<{
+        story_id: string;
+        surviving: string;
+      }>(
+        `SELECT story_id::text AS story_id, COUNT(*)::text AS surviving
+           FROM story
+          WHERE story_id = ANY($1::bigint[])
+          GROUP BY story_id`,
+        [ids],
+      );
+      const observed = new Map(survivorRows.map((r) => [r.story_id, r]));
+      for (const id of ids) {
+        const row = observed.get(id);
+        survivors.push({
+          storyId: id,
+          surviving: row ? Number(row.surviving) : 0,
+        });
+      }
+    }
+    return {
+      counts: { accepted, deleted: deleteResult.rowCount ?? 0 },
+      extras: {
+        kind: "story",
+        story: {
+          mutatedStoryIds: [...mutatedStoryIds],
+          storyVersionSurvivors: survivors,
+        },
+      },
+    };
   });
 }

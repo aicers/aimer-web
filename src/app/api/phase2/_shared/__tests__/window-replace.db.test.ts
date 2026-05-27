@@ -137,8 +137,8 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — baseline", () => {
       "aice-1",
     );
 
-    expect(result.accepted).toBe(1);
-    expect(result.deleted).toBe(2);
+    expect(result.counts.accepted).toBe(1);
+    expect(result.counts.deleted).toBe(2);
 
     const { rows: vbRows } = await pool.query(
       "SELECT event_key::text AS k FROM baseline_event WHERE baseline_version = 'vB' ORDER BY k",
@@ -180,8 +180,8 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — baseline", () => {
       "aice-1",
     );
 
-    expect(result.accepted).toBe(0);
-    expect(result.deleted).toBe(2);
+    expect(result.counts.accepted).toBe(0);
+    expect(result.counts.deleted).toBe(2);
 
     const { rowCount } = await pool.query(
       "SELECT 1 FROM baseline_event WHERE baseline_version = 'vClear'",
@@ -204,11 +204,11 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — baseline", () => {
       ],
     };
     const first = await executeWindowReplace(pool, body, "aice-1");
-    expect(first.accepted).toBe(2);
+    expect(first.counts.accepted).toBe(2);
 
     const second = await executeWindowReplace(pool, body, "aice-1");
-    expect(second.accepted).toBe(2);
-    expect(second.deleted).toBe(2);
+    expect(second.counts.accepted).toBe(2);
+    expect(second.counts.deleted).toBe(2);
 
     const { rows } = await pool.query(
       "SELECT event_key::text AS k FROM baseline_event WHERE baseline_version = 'vIdem' ORDER BY k",
@@ -266,8 +266,8 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
       },
       "aice-1",
     );
-    expect(result.accepted).toBe(1);
-    expect(result.deleted).toBe(1); // only auto
+    expect(result.counts.accepted).toBe(1);
+    expect(result.counts.deleted).toBe(1); // only auto
 
     const { rows } = await pool.query(
       "SELECT story_id::text AS i, kind FROM story ORDER BY i",
@@ -305,7 +305,7 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
       "aice-1",
     );
 
-    expect(result.deleted).toBe(2);
+    expect(result.counts.deleted).toBe(2);
   });
 
   it("story whose start is before window survives even if end is inside (start-time assignment)", async () => {
@@ -335,7 +335,7 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
       "aice-1",
     );
 
-    expect(result.deleted).toBe(0);
+    expect(result.counts.deleted).toBe(0);
     const { rowCount } = await pool.query(
       "SELECT 1 FROM story WHERE story_id = 77",
     );
@@ -375,9 +375,9 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
 
     // The two calls serialize. After both, exactly one story remains
     // in the window (the loser's INSERT followed the winner's DELETE).
-    expect(a.accepted).toBe(1);
-    expect(b.accepted).toBe(1);
-    expect(a.deleted + b.deleted).toBeGreaterThanOrEqual(1);
+    expect(a.counts.accepted).toBe(1);
+    expect(b.counts.accepted).toBe(1);
+    expect(a.counts.deleted + b.counts.deleted).toBeGreaterThanOrEqual(1);
 
     const { rows } = await pool.query(
       `SELECT story_id::text AS i FROM story

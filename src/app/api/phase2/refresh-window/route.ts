@@ -1,3 +1,8 @@
+import {
+  applyWindowReplaceBaselineHook,
+  applyWindowReplaceStoryHook,
+} from "@/lib/analysis/ingest-hooks";
+import { getAuthPool } from "@/lib/db/client";
 import { createPhase2MutationHandler } from "../_shared/mutation-handler";
 import {
   executeWindowReplace,
@@ -10,11 +15,27 @@ export const POST = createPhase2MutationHandler({
   auditTargetType: "phase2_refresh_window",
   successAction: "phase2.refresh_window",
   mutate: async (customerPool, verified, payload) => {
-    const counts = await executeWindowReplace(
+    const { counts, extras } = await executeWindowReplace(
       customerPool,
       payload,
       verified.envelopeClaims.aiceId,
     );
+    // RFC 0002 Phase 0 (#294) — best-effort analysis state hook.
+    // Failure is logged and swallowed (decision 2).
+    const authPool = getAuthPool();
+    if (extras.kind === "baseline") {
+      await applyWindowReplaceBaselineHook(authPool, {
+        customerId: verified.customerId,
+        from: extras.baseline.from,
+        to: extras.baseline.to,
+      });
+    } else {
+      await applyWindowReplaceStoryHook(authPool, {
+        customerId: verified.customerId,
+        mutatedStoryIds: extras.story.mutatedStoryIds,
+        storyVersionSurvivors: extras.story.storyVersionSurvivors,
+      });
+    }
     return {
       responseBody: {
         accepted: counts.accepted,
