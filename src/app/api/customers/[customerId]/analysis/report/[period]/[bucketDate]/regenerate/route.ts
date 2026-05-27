@@ -1,0 +1,106 @@
+// RFC 0002 Phase 0 (#294) — periodic report regenerate API stub.
+//
+// `POST /api/customers/{customer_id}/analysis/report/{period}/{bucket_date}/regenerate`
+//
+// Accepts optional `?tz=…&lang=…&model_name=…&model=…` per RFC 0002
+// §"Force regenerate". Phase 0 DB side effects: none (see the story
+// regenerate stub header for rationale).
+//
+// Permission gate: `reports:create` (Analyst role only, existing
+// seed). Unauthenticated → 401, non-member or missing perm → 403.
+
+import type { NextRequest } from "next/server";
+import { assertAuthorized } from "@/lib/auth/authorization";
+import { HttpError } from "@/lib/auth/errors";
+import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import { getAuthPool } from "@/lib/db/client";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
+const BUCKET_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function extractCustomerId(req: NextRequest): string | null {
+  const segments = req.nextUrl.pathname.split("/");
+  const idx = segments.indexOf("customers");
+  if (idx === -1 || idx + 1 >= segments.length) return null;
+  const id = segments[idx + 1];
+  return UUID_RE.test(id) ? id : null;
+}
+
+function extractReportPathParts(
+  req: NextRequest,
+): { period: string; bucketDate: string } | null {
+  const segments = req.nextUrl.pathname.split("/");
+  const idx = segments.indexOf("report");
+  if (idx === -1 || idx + 2 >= segments.length) return null;
+  const period = segments[idx + 1];
+  const bucketDate = segments[idx + 2];
+  if (!PERIODS.has(period) || !BUCKET_DATE_RE.test(bucketDate)) return null;
+  return { period, bucketDate };
+}
+
+function errorBody(error: string, message?: string) {
+  return message ? { error, message } : { error };
+}
+
+export const POST = withAuth(
+  async (req: NextRequest, auth) => {
+    const originErr = verifyOrigin(req);
+    if (originErr) return originErr;
+    const csrfErr = verifyCsrf(req, {
+      ctx: auth.authContext,
+      sid: auth.sessionId,
+      iat: auth.iat,
+    });
+    if (csrfErr) return csrfErr;
+
+    const customerId = extractCustomerId(req);
+    if (!customerId) {
+      return Response.json(errorBody("invalid_customer_id"), { status: 400 });
+    }
+    const parts = extractReportPathParts(req);
+    if (!parts) {
+      return Response.json(errorBody("invalid_report_path"), { status: 400 });
+    }
+
+    const pool = getAuthPool();
+    const client = await pool.connect();
+    try {
+      await assertAuthorized(
+        client,
+        "general",
+        auth.accountId,
+        "reports:create",
+        { customerId },
+      );
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(errorBody(err.message), {
+          status: err.statusCode,
+        });
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const url = req.nextUrl;
+    return Response.json(
+      {
+        accepted: true,
+        customer_id: customerId,
+        period: parts.period,
+        bucket_date: parts.bucketDate,
+        variant: {
+          tz: url.searchParams.get("tz"),
+          lang: url.searchParams.get("lang"),
+          model_name: url.searchParams.get("model_name"),
+          model: url.searchParams.get("model"),
+        },
+      },
+      { status: 202 },
+    );
+  },
+  { ctx: "general" },
+);
