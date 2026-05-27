@@ -17,10 +17,18 @@ const mockConnect = vi.fn(() => ({
 const SELF = "00000000-0000-0000-0000-000000000099";
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";
 
+// Toggles `withAuth` between "authed" (calls handler with a stub session)
+// and "unauthed" (short-circuits with 401, mirroring the real guard's
+// behavior when no valid session cookie is present).
+const authMode = { current: "authed" as "authed" | "unauthed" };
+
 vi.mock("@/lib/auth/guards", () => ({
   // biome-ignore lint/complexity/noBannedTypes: test mock
-  withAuth: (handler: Function) => (req: NextRequest) =>
-    handler(req, {
+  withAuth: (handler: Function) => (req: NextRequest) => {
+    if (authMode.current === "unauthed") {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    return handler(req, {
       accountId: SELF,
       sessionId: "sess-1",
       authContext: "general",
@@ -30,7 +38,8 @@ vi.mock("@/lib/auth/guards", () => ({
       bridgeAiceId: null,
       bridgeCustomerIds: null,
       audit: {},
-    }),
+    });
+  },
   verifyOrigin: () => null,
   verifyCsrf: () => null,
 }));
@@ -65,6 +74,7 @@ describe("story regenerate stub", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    authMode.current = "authed";
     mockAssertAuthorized.mockResolvedValue(new Set(["analyses:configure"]));
   });
 
@@ -76,6 +86,26 @@ describe("story regenerate stub", () => {
     expect(body.accepted).toBe(true);
     expect(body.story_id).toBe("12345");
     expect(body.customer_id).toBe(CUSTOMER_ID);
+  });
+
+  it("returns 401 when the request is unauthenticated", async () => {
+    authMode.current = "unauthed";
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(401);
+    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller is not a member of customer_id", async () => {
+    // assertAuthorized throws the same HttpError("Forbidden", 403) for
+    // both non-member and missing-permission rejections (see
+    // src/lib/auth/authorization.ts). This test pins the non-member
+    // branch explicitly so the stub-level contract is reviewable.
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(403);
   });
 
   it("returns 403 when the caller lacks analyses:configure", async () => {
@@ -111,7 +141,28 @@ describe("report regenerate stub", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
+    authMode.current = "authed";
     mockAssertAuthorized.mockResolvedValue(new Set(["reports:create"]));
+  });
+
+  it("returns 401 when the request is unauthenticated", async () => {
+    authMode.current = "unauthed";
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest());
+    expect(res.status).toBe(401);
+    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller is not a member of customer_id", async () => {
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest());
+    expect(res.status).toBe(403);
   });
 
   it("returns 202 on the happy path with optional tz/lang/model", async () => {
