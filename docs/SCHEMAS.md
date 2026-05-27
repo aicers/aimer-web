@@ -181,3 +181,133 @@ rules still hold for `Mutation.analyzeEvent`:
   GraphQL variable is omitted and aimer applies its server-side
   default. The cache PK falls back to `DEFAULT_LANG` so explicit
   ENGLISH and "omitted, defaulted" callers land on the same row.
+
+## MITRE ATT&CK data
+
+aimer-web validates LLM-returned MITRE ATT&CK TTP tags
+(`ttp_tags`, added in RFC 0002 round 11) before storage. MITRE itself
+ships only static STIX bundles — not a classification API — so the
+knowledge base lives in this repo as a vendored snapshot.
+
+### Files
+
+```text
+schemas/
+  mitre-attack-techniques.json   # derived [{id, name}] list, sorted by id
+  mitre-attack.version           # pinned upstream revision
+scripts/
+  mitre-attack-vendor.ts         # bundle → derived JSON converter
+```
+
+`schemas/mitre-attack-techniques.json` is consumed at runtime by
+`src/lib/analysis/mitre-ttp.ts`'s `validateTtpTags` function. The list
+is committed (not generated at build time) so production builds do not
+fetch from `github.com/mitre-attack` and reviewers can see the exact
+data the validator is using.
+
+The JSON is `{id, name}` rather than `string[]`. `validateTtpTags`
+only reads `id`, but keeping `name` lets a human reviewer of a refresh
+PR sanity-check that, say, `T1059.001` is still "Command and Scripting
+Interpreter: PowerShell" and not a renamed mismatch. The extra bytes
+are cheap; the audit-log / UI-tooltip consumer of the name field is
+plausible enough to leave the column in place.
+
+### Version pin format
+
+`schemas/mitre-attack.version` accepts either:
+
+- **MITRE-style tag** — e.g. `v19.1` (or unprefixed `19.1`).
+  MITRE publishes two-component `vMAJOR.MINOR` tags on
+  `mitre-attack/attack-stix-data`. An optional patch component
+  (`v19.1.0`) is also accepted for the unlikely future where MITRE
+  adopts three-component versioning.
+- **Git commit SHA** of `mitre-attack/attack-stix-data` — 7-40 hex
+  chars.
+
+Validation regex (note: this **differs** from
+`schemas/aimer.version`'s regex — aimer requires three semver
+components, MITRE only two):
+
+```text
+^v?\d+\.\d+(\.\d+)?$|^[0-9a-f]{7,40}$
+```
+
+Both formats are permanent and equally first-class, same policy
+intent as `schemas/aimer.version`.
+
+The format is enforced by
+`schemas/__tests__/mitre-attack-version.unit.test.ts`.
+
+### Bundle / scope choice
+
+`attack-stix-data` ships three top-level bundles:
+`enterprise-attack`, `mobile-attack`, and `ics-attack`. aimer's
+threat-detection scope today is **Enterprise**, so the vendor script
+pins to `enterprise-attack/enterprise-attack-<semver>.json` only.
+Mobile and ICS coverage would land as a separate follow-up issue
+rather than an implicit scope expansion.
+
+### Revoked / deprecated filtering
+
+STIX `attack-pattern` objects carry `revoked: true` and
+`x_mitre_deprecated: true` flags for IDs MITRE has retired. The
+vendor script excludes both — including a retired ID would mean
+`validateTtpTags` accepts an LLM tag that MITRE itself no longer
+recognizes.
+
+### Bundle file selection from the pin
+
+- **Tag pin**: the Git ref is `v`-prefixed and the bundle filename is
+  `v`-stripped, so `v19.1` (or `19.1`) → ref `v19.1`, file
+  `enterprise-attack-19.1.json`.
+- **SHA pin**: the script lists
+  `enterprise-attack/enterprise-attack-*.json` in the tree at that
+  SHA and picks the highest semver. Deterministic because the tree at
+  a fixed SHA is immutable, so the same SHA always yields the same
+  bundle file. No second pin file (e.g.
+  `mitre-attack.bundle-version`) is needed.
+
+### Refresh procedure
+
+Run this when you want to consume a newer MITRE release or pull in an
+in-flight upstream change.
+
+1. **Pick the desired revision.** Browse
+   `https://github.com/mitre-attack/attack-stix-data/releases` for a
+   tag, or copy a commit SHA off `main` if you need to track an
+   in-flight change. There is no default; both formats are equally
+   first-class.
+
+2. **Update the pin.** Single line, no trailing notes:
+
+   ```sh
+   echo "<rev>" > schemas/mitre-attack.version
+   ```
+
+3. **Regenerate the derived JSON.**
+
+   ```sh
+   pnpm tsx scripts/mitre-attack-vendor.ts
+   ```
+
+   The script reads `schemas/mitre-attack.version`, fetches the
+   matching `enterprise-attack-<semver>.json` from GitHub, drops
+   revoked / deprecated `attack-pattern` objects, sorts by ID, and
+   writes `schemas/mitre-attack-techniques.json` with stable
+   serialization (`JSON.stringify(rows, null, 2) + "\n"`). Two runs
+   against the same pin produce byte-identical output, so refresh
+   PRs only show the upstream content delta.
+
+4. **Run the tests.**
+
+   ```sh
+   pnpm test:unit
+   ```
+
+   `schemas/__tests__/mitre-attack-version.unit.test.ts` asserts the
+   pin format; `src/lib/analysis/__tests__/mitre-ttp.unit.test.ts`
+   exercises the validator against the freshly vendored set.
+
+5. **Spot-check the diff.** Because the JSON carries `name`, a
+   reviewer can scan the diff for renamed / removed techniques that
+   would surface as `not_in_vendored_mitre` drops at runtime.
