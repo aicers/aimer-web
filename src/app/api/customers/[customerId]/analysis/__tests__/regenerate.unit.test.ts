@@ -331,6 +331,50 @@ describe("report regenerate stub", () => {
     expect(mockAssertAuthorized).not.toHaveBeenCalled();
   });
 
+  // Round-25 review item 1: LIVE rows are pinned to the synthetic bucket
+  // date `1970-01-01` (issue #294 decision 4; see `LIVE_BUCKET_DATE`).
+  // The stub must reject any other LIVE bucket_date before authorization
+  // so Phase 1 doesn't inherit a contract where LIVE accepts variant
+  // keys the worker/reconcile will never produce.
+  it.each([
+    "2026-05-27",
+    "1970-01-02",
+    "2024-02-29",
+    "1970-12-31",
+  ])("returns 400 on period=LIVE with non-epoch bucket_date %s", async (bucketDate) => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/LIVE/${bucketDate}/regenerate`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("invalid_report_path");
+    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("accepts period=LIVE with bucket_date=1970-01-01", async () => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/LIVE/1970-01-01/regenerate`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.period).toBe("LIVE");
+    expect(body.bucket_date).toBe("1970-01-01");
+  });
+
   it("accepts a real leap-year date (2024-02-29)", async () => {
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"

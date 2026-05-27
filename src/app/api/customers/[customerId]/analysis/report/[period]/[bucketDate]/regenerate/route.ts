@@ -28,6 +28,13 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 const BUCKET_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+// Synthetic bucket date for LIVE rows (issue #294 decision 4). Kept in
+// sync with `LIVE_BUCKET_DATE` in `src/lib/analysis/state.ts` and
+// migration 0029. Duplicated here instead of imported so this route
+// stays free of the server-only graph that `state.ts` pulls in (the
+// unit-test mocks the auth/db modules but not the analysis-state
+// module).
+const LIVE_BUCKET_DATE = "1970-01-01";
 
 // Validates an ISO calendar date `YYYY-MM-DD`. Rejects shape mismatches
 // AND impossible calendar dates (`2026-99-99`, `2026-02-31`, ...). The
@@ -66,6 +73,12 @@ function extractReportPathParts(
   const period = segments[idx + 1];
   const bucketDate = segments[idx + 2];
   if (!PERIODS.has(period) || !isValidBucketDate(bucketDate)) return null;
+  // LIVE rows are pinned to the synthetic bucket date `1970-01-01` (issue
+  // #294 decision 4; see `LIVE_BUCKET_DATE` and migration 0029). Anything
+  // else for LIVE is a variant key the worker/reconcile will never
+  // produce — reject before authorization so Phase 1 doesn't inherit a
+  // surprising contract (round-25 review item 1).
+  if (period === "LIVE" && bucketDate !== LIVE_BUCKET_DATE) return null;
   return { period, bucketDate };
 }
 

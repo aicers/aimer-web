@@ -502,7 +502,13 @@ extended here to the non-admin analyst layer. `story_id`, `period`, and
 shape supersedes an earlier sketch that omitted `customer_id` from the
 path; see issue #294 decision 5.) `bucket_date` must be a real ISO
 calendar date (`YYYY-MM-DD`) on the report endpoint; impossible values
-like `2026-02-31` are rejected with `400 invalid_report_path`.
+like `2026-02-31` are rejected with `400 invalid_report_path`. For
+`period=LIVE` the only accepted `bucket_date` is the synthetic epoch
+`1970-01-01` (issue #294 decision 4: LIVE rows are pinned to that
+date in `periodic_report_state` and `periodic_report_result`); any
+other value is rejected with `400 invalid_report_path` so the API
+contract matches the variant keys the worker and reconcile will
+actually produce.
 
 Default contract (path-only call):
 
