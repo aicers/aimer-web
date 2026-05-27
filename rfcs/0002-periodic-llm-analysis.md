@@ -260,6 +260,9 @@ CREATE TABLE story_analysis_result (
   generation               INT          NOT NULL,
   severity_score           DOUBLE PRECISION NOT NULL,     -- 0.0–1.0; "if real, how bad" (impact, blast radius)
   likelihood_score         DOUBLE PRECISION NOT NULL,     -- 0.0–1.0; "how likely this is a real threat" (evidence quality)
+  severity_factors         JSONB        NOT NULL DEFAULT '[]',    -- array of short noun phrases articulating severity_score, ordered most impactful first; see §"Score factor articulation"
+  likelihood_factors       JSONB        NOT NULL DEFAULT '[]',    -- same shape, articulating likelihood_score
+  ttp_tags                 JSONB        NOT NULL DEFAULT '[]',    -- array of validated MITRE ATT&CK technique IDs (e.g. ["T1078", "T1110.001"]); see §"MITRE ATT&CK TTP tagging"
   priority_tier            TEXT         NOT NULL,         -- CRITICAL|HIGH|MEDIUM|LOW; derived from (severity, likelihood) matrix
   analysis_text            TEXT         NOT NULL,
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
@@ -292,6 +295,7 @@ CREATE TABLE periodic_report_result (
   generation               INT          NOT NULL,
   aggregate_severity_score   DOUBLE PRECISION NOT NULL,   -- informational; max over included severities + baseline drift severity (NOT a priority_tier input)
   aggregate_likelihood_score DOUBLE PRECISION NOT NULL,   -- informational; max over included likelihoods + baseline drift likelihood (NOT a priority_tier input)
+  aggregate_ttp_tags       JSONB        NOT NULL DEFAULT '[]',    -- union of included leaf ttp_tags, deduplicated and sorted; see §"MITRE ATT&CK TTP tagging"
   priority_tier            TEXT         NOT NULL,         -- derived as max(included leaf priority_tiers, matrix(baseline_drift_severity, baseline_drift_likelihood)); see §"Priority tiering"
   sections_jsonb           JSONB        NOT NULL,         -- {executive_summary, story_highlights, baseline_drift, notable_events, recommendations}
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
@@ -576,7 +580,15 @@ This guarantees **leaf monotonicity**: a report can never be tagged at a lower t
 
 ### LLM contract
 
-`STORY_PROMPT` and the event-analysis prompt (RFC 0001) ask the model to return `severity_score` and `likelihood_score` as two distinct fields with the axis definitions above. `PERIODIC_SECURITY_REPORT_PROMPT` does **not** ask for scores — aggregation is computed by aimer-web from already-stored leaf rows.
+`STORY_PROMPT` and the event-analysis prompt (RFC 0001) ask the model to return five structured fields alongside the markdown `analysis`:
+
+- `severity_score` (integer 0–100, normalized to `Float` 0.0–1.0 on the wire)
+- `likelihood_score` (same shape)
+- `severity_factors` (array of short noun phrases, see §"Score factor articulation")
+- `likelihood_factors` (same shape)
+- `ttp_tags` (array of MITRE ATT&CK technique IDs, see §"MITRE ATT&CK TTP tagging")
+
+`PERIODIC_SECURITY_REPORT_PROMPT` does **not** ask for scores or factors — aggregation is computed by aimer-web from already-stored leaf rows. The prompt is, however, given the union of included-leaf `ttp_tags` as part of its input bundle and is instructed to reference techniques by ID when relevant in the narrative ("the highest-likelihood narrative this period mapped to T1078 and T1110.001").
 
 ### Why two axes, not one
 
@@ -592,6 +604,139 @@ UI policy:
 - aimer-web default list view shows CRITICAL + HIGH; explicit "show all" toggle for MEDIUM/LOW.
 - aice-web-next deep-link badges appear only for CRITICAL + HIGH.
 - Periodic report body cites top-K (3–5) story highlights; the rest collapse into a "Other analyzed stories" list.
+
+---
+
+## MITRE ATT&CK TTP tagging
+
+Each leaf analysis result (`event_analysis_result`, `story_analysis_result`) carries a `ttp_tags` array of MITRE ATT&CK technique IDs that the LLM judged applicable to the analyzed entity. Periodic reports carry `aggregate_ttp_tags` as the union of included leaves, deduplicated and sorted.
+
+### Why store TTP IDs
+
+Free-form `analysis_text` narrative is good for human reading but does not support slicing — operators cannot say "show me all CRITICAL analyses involving T1078 (Valid Accounts) this month". A structured ID list enables filtering, longitudinal trend tracking, and threat-hunting workflows that the markdown surface alone cannot.
+
+### LLM contract
+
+`STORY_PROMPT` and the event-analysis prompt instruct the model to emit `ttp_tags` in its structured output:
+
+```json
+"ttp_tags": {
+  "type": "array",
+  "items": {
+    "type": "string",
+    "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"
+  },
+  "description": "MITRE ATT&CK technique IDs matched by this analysis. Empty array if no clear mapping. Do not invent or guess IDs."
+}
+```
+
+The model relies on its training knowledge of ATT&CK; no RAG / retrieval is performed. The pattern enforces shape at decode time but cannot prevent the model from emitting a syntactically valid yet non-existent ID (e.g., `T9999.123`).
+
+### Validation against vendored MITRE data
+
+aimer-web vendors MITRE ATT&CK as derived data, refreshed manually like the aimer SDL (#281 pattern):
+
+- `schemas/mitre-attack-techniques.json` — derived list of `{id, name}` extracted from the upstream STIX 2.1 bundle (`github.com/mitre-attack/attack-stix-data`).
+- `schemas/mitre-attack.version` — pinned version (e.g., `v16.1`).
+
+MITRE does not provide a live classification API; only static versioned STIX bundles via GitHub and a TAXII server, both serving the same data. The vendored snapshot is sufficient for validation; refresh PRs follow MITRE's ~6-month release cadence or earlier on demand.
+
+Before storage, aimer-web's write path filters each LLM-returned `ttp_tags` value:
+
+- Tags present in the vendored list → kept.
+- Tags absent (hallucinated or post-vendored-version techniques) → dropped, count incremented in an `analysis_ttp_hallucination_total` metric for monitoring.
+
+The dropped raw value is preserved in an audit log row (not on the result row) for debugging prompt drift.
+
+### Aggregation
+
+`periodic_report_result.aggregate_ttp_tags` is computed at periodic-report write time as the set-union of `ttp_tags` over every included `story_analysis_result` and `event_analysis_result`, sorted ascending. Baseline drift contributes no TTP tags (statistical signal, no technique mapping).
+
+### UI
+
+The aimer-web result page renders TTP tags as chips next to the priority badge; hover reveals the technique name from the vendored list. The aimer-web overview list page (`/analysis`) adds a TTP filter for slicing across all analyses.
+
+aice-web-next deep-link badges do **not** expose TTP tags — same content-free principle as the score axes.
+
+---
+
+## Score factor articulation
+
+Each leaf analysis stores two arrays of short noun phrases — `severity_factors` and `likelihood_factors` — articulating what drove each score. Periodic reports do **not** have their own factors (they don't score themselves); the report prompt may reference leaf factors verbatim in its narrative.
+
+### Why store articulated factors
+
+`severity_score = 0.85` tells the operator *what* but not *why*. Without articulation, scores are opaque LLM judgement that operators cannot interrogate or learn to trust. Storing the LLM's own short reasoning per axis serves three purposes:
+
+- **Operator trust** — the chip list is auditable on first glance.
+- **Calibration data** — Phase 4 per-factor 👍/👎 feedback identifies which articulation patterns correlate with operator agreement.
+- **Drift detection** — if the LLM consistently produces vague factors ("suspicious activity") rather than concrete ones ("lsass.exe memory read from non-standard process"), prompt or model quality is degrading.
+
+Unlike `ttp_tags`, factors are **free text** — there is no external taxonomy to validate against. Quality is governed by prompt engineering and Phase 4 feedback, not by an enum.
+
+### LLM contract
+
+Both axes follow the same schema shape:
+
+```json
+"severity_factors": {
+  "type": "array",
+  "items": { "type": "string", "maxLength": 80 },
+  "minItems": 1,
+  "maxItems": 5,
+  "description": "Short noun phrases (not sentences) explaining what drives the severity score, ordered most impactful first. Each must reference something concrete observed in the input — not generic risk language."
+}
+```
+
+`minItems: 1` blocks empty arrays — if the LLM scored, it must articulate. `maxLength: 80` blocks paragraph-length factors. `maxItems: 5` caps the chip list to a glance-readable count.
+
+The prompt provides explicit good/bad examples to constrain content quality:
+
+- **Good**: `"domain controller targeted"`, `"credential dumping via lsass access"`, `"matches known T1110.001 pattern"`, `"two independent IoC hits"`.
+- **Bad**: `"the attacker did bad things"` (sentence, not phrase), `"suspicious activity"` (generic, not concrete), `"high risk"` (restates the score, no information).
+
+### `"insufficient evidence"` sentinel
+
+When the input is genuinely too thin to articulate even one concrete factor (e.g., redaction stripped most of the payload, or only one heavily-redacted member), the model returns:
+
+```json
+"severity_factors":   ["insufficient evidence"],
+"likelihood_factors": ["insufficient evidence"]
+```
+
+This is the **only** approved padding output and is explicitly distinguished from the "I tried but came up with generic words" failure mode. aimer-web tracks the rate of `"insufficient evidence"` per period as `analysis_factors_insufficient_total`. A spike indicates either input quality degradation (redaction too aggressive) or prompt instability.
+
+### Validation
+
+Shape-only at the aimer-web write path:
+
+- Each item: non-empty string, ≤ 80 characters.
+- Items starting with `"The "` or `"This "` (sentence detectors) are dropped — keeps the chip column purely noun-phrase.
+- Array capped at 5 after filtering.
+
+No content validation — the LLM owns articulation quality, monitored via metrics and Phase 4 feedback.
+
+### UI
+
+Result page shows factor chips inline under each score, expandable to full text on hover:
+
+```
+Severity 0.85  [HIGH]
+  ▸ domain controller targeted
+  ▸ credential dumping via lsass access
+  ▸ lateral movement to file server
+
+Likelihood 0.72
+  ▸ matches known T1003.001 pattern
+  ▸ two independent IoC hits
+  ▸ no plausible benign explanation found
+```
+
+aice-web-next deep-link badges do **not** expose factors — same content-free principle as scores and TTP tags.
+
+### Periodic report narrative
+
+`PERIODIC_SECURITY_REPORT_PROMPT` receives included-leaf `severity_factors` and `likelihood_factors` as part of its input bundle and is instructed to weave the strongest factors into the `notable_events` and `story_highlights` sections of the report — quoting verbatim is acceptable when the phrase is precise enough. The report itself does not produce its own factors arrays.
 
 ---
 
@@ -626,12 +771,14 @@ All items below are **new code on auth-mtls** and are **stateless** (aimer store
 |---|---|
 | `analyzeStory(customer_id, story_id, members: [StoryMemberInput!]!, story_metadata, lang, model, name)` | New mutation on **auth-mtls only**. `members` carry the redacted event content from `story_member.event` only, with tokens already namespaced per §"Token namespacing for multi-event LLM inputs". `story_metadata` is non-PII story facts (id, time range as UTC ISO 8601, member count, role distribution) — explicitly **does not** include `story.summary_payload`. **No `timezone` parameter** (story output is UTC). **No `force` parameter** (no aimer-side cache to bypass). Stateless: no keyspace, no cache key. |
 | `generatePeriodicSecurityReport(customer_id, period, date, timezone, lang, model, name, inputs)` | New mutation on **auth-mtls only**. `inputs` is a structured object: `{story_analyses: [...], event_analyses: [...], baseline_aggregates: {...}}`. `timezone` is retained and used **only** to render time strings inside the prompt (e.g., "events between 14:00–16:30 KST"); it is not a cache key dimension because there is no cache. **No `force` parameter**. Stateless. |
-| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Returns **two separate scores**, `severity_score` and `likelihood_score` (each `0.0–1.0`), with axis definitions per §"Priority tiering" embedded in the prompt. Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
-| `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Does **not** return scores; aimer-web aggregates `severity_score` / `likelihood_score` from leaf rows (see §"Priority tiering"). Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim (the prompt sees report-scope tokens, not story-scope, after the input builder's rewrite). |
+| `STORY_PROMPT` | New prompt — narrative framing (kill chain, lateral movement, attacker hypothesis). Returns the markdown `analysis` plus five structured fields: `severity_score`, `likelihood_score` (each `0.0–1.0`), `severity_factors`, `likelihood_factors` (short noun phrases, see §"Score factor articulation"), and `ttp_tags` (MITRE ATT&CK technique IDs, see §"MITRE ATT&CK TTP tagging"). Includes an explicit instruction to preserve `<<REDACTED_*_E{i}_*>>` tokens verbatim. |
+| `PERIODIC_SECURITY_REPORT_PROMPT` | New prompt — synthesis across stories, single events, and baseline statistics; period-aware framing. Receives included-leaf `ttp_tags` / `severity_factors` / `likelihood_factors` in its input bundle and is instructed to weave them into the narrative. Does **not** return its own scores or factors; aimer-web aggregates `severity_score` / `likelihood_score` / `ttp_tags` from leaf rows. Includes an explicit instruction to preserve `<<REDACTED_*_R{j}_*>>` tokens verbatim. |
 
 **Contract guarantee for tracking fields**: both new mutations always return `prompt_version` (string identifying the prompt revision used) and `model_actual_version` (the provider-reported model snapshot/version actually invoked) in their response payloads. aimer-web depends on these being present and uses them as `NOT NULL` columns. If a future model provider cannot supply `model_actual_version`, aimer must substitute a deterministic placeholder (e.g., the requested `model` string) rather than omitting the field.
 
 **Contract guarantee for scoring fields**: `analyzeStory` (and the RFC 0001 event-analysis mutation) always return both `severityScore` and `likelihoodScore` as separate `Float!` fields on the GraphQL wire (camelCase to match existing aimer SDL convention; aimer-web maps them to the snake_case storage columns), each clamped server-side to `[0.0, 1.0]`. There is no single `threatScore` field on the wire.
+
+**Contract guarantee for articulation and tagging fields**: same two mutations also return `severityFactors: [String!]!`, `likelihoodFactors: [String!]!`, and `ttpTags: [String!]!` as non-null arrays (possibly empty for `ttpTags`; `severityFactors` / `likelihoodFactors` carry at least one item, with `"insufficient evidence"` reserved as the explicit thin-input sentinel). Element-level validation (length, pattern, MITRE membership) happens server-side in aimer-web before storage; aimer itself only enforces shape via the LLM structured-output JSON schema.
 
 **Surface**: mTLS-only. The aimer-web background worker calls these mutations over mTLS for both automatic generation and operator-initiated force regenerate; the latter does not require a different surface because aimer is stateless either way.
 
@@ -765,3 +912,4 @@ The wholesale removal of aimer's auth-jwt surface is **out of scope for this RFC
 - 2026-05-25 (review round 8): all new aimer work scoped to **auth-mtls only and stateless**. The pre-existing auth-jwt surface is not modified by this RFC (deletion deferred to its own effort). Consequences: the originally-planned PR-1 (timezone in `ReportKey`, `generateReport` signature) is cancelled; new mutations (`analyzeStory`, `generatePeriodicSecurityReport`) drop the `force` parameter (no aimer cache to bypass) and drop the JWT exposure; force regenerate stays entirely an aimer-web-side concern. auth-jwt code may still be reused as in-process helpers (LLM client, prompt loader, redaction utilities).
 - 2026-05-25 (review round 9): stale cache/keyspace references cleaned up — top-of-file metadata, architecture diagram, and Phase 1/Phase 2 bullets in §"Phased delivery" no longer suggest aimer holds a cache or keyspace for the new mutations. All remaining "cache" mentions are explicit negations ("no aimer-side cache", "no keyspace, no cache key") or refer to aimer-web's cache, not aimer's.
 - 2026-05-26 (review round 10): `threat_score` split into two orthogonal axes `severity_score` and `likelihood_score` across all analysis result tables (`story_analysis_result`, `periodic_report_result` here; `event_analysis_result` in RFC 0001). `priority_tier` is now a deterministic 4×4 matrix lookup over the pair rather than a single-threshold formula. The previous `known_ioc_hit` / `member_count ≥ N` upgrade clauses fold into floors on `likelihood_score`, since each is evidence of being real, not of being severe. Floors apply only at matrix-lookup time; the stored `likelihood_score` always holds the LLM's raw estimate to preserve calibration data and let the floor policy evolve without rewriting history. `baseline_drift_score` similarly splits into severity and likelihood. Periodic report `priority_tier` is derived as `max(each included leaf's priority_tier, matrix(baseline_drift_severity, baseline_drift_likelihood))` rather than from the aggregate scores — this preserves leaf monotonicity (the report is never below the worst leaf in it) under the lookup-only floor policy, since the raw `likelihood_score` on leaves does not reflect floors. `aggregate_severity_score` / `aggregate_likelihood_score` remain stored as informational max-per-axis values for display and analytics. Summary endpoint shape becomes `{exists, priority_tier, severity_score, likelihood_score, score_kind, link}` with `score_kind ∈ {leaf, aggregate}`. LLM contract: `analyzeStory` and the RFC 0001 event-analysis mutation return both scores as separate `Float!` fields (camelCase `severityScore` / `likelihoodScore` on the GraphQL wire); `PERIODIC_SECURITY_REPORT_PROMPT` returns no scores (aggregation in aimer-web). A separate "LLM self-confidence" field was considered and rejected — `likelihood_score` is the domain-meaningful version of the same signal with better calibration semantics. Done before any production data accumulated; coordinated with RFC 0001 in the same PR.
+- 2026-05-27 (review round 11): Added MITRE ATT&CK TTP tagging and per-axis score factor breakdown to leaf-level analysis outputs. `ttp_tags` is an array of validated MITRE technique IDs (e.g. `"T1078"`, `"T1110.001"`); `severity_factors` and `likelihood_factors` are arrays of short noun phrases (`maxItems: 5`, `maxLength: 80` per item) articulating what drives each axis. All three are required on the LLM structured output (`severityFactors` / `likelihoodFactors` / `ttpTags` as `[String!]!` on the GraphQL wire, always present, possibly empty) and stored as JSONB columns on `event_analysis_result` and `story_analysis_result`. `periodic_report_result.aggregate_ttp_tags` is the deduplicated sorted union of included-leaf tags; no aggregate factors column (periodic reports do not score themselves). MITRE data is vendored in aimer-web at `schemas/mitre-attack-techniques.json` + `schemas/mitre-attack.version`, refreshed manually like the aimer SDL — MITRE provides no live classification API, only static STIX bundles. Hallucinated TTP IDs are dropped server-side against the vendored list. Score factor articulation has shape-only validation (length, count, sentence-start filter) plus an `"insufficient evidence"` sentinel for genuinely thin inputs; content quality is governed by prompt engineering and Phase 4 per-factor feedback. Rationale for adding now: LLM structured-output JSON schema is being designed in #399 and an aimer-side `analyzeEvent` follow-up to #404; storage migrations land in Phase 0 (#294) and #308. Adding later would require LLM re-run on every existing analysis to backfill — the same backfill cost as round 10. Other improvements identified during the round-10 retrospective (workflow integration, follow-up Q&A, external TI enrichment, trend / fleet dashboards, vector similarity, PDF export, operator annotations) are pure additions and deferred to future RFCs / follow-up issues without structural impact.
