@@ -198,6 +198,9 @@ CREATE TABLE event_analysis_result (
     prompt_version           TEXT,                 -- NULL until aimer reports the prompt template version
     severity_score           DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "if real, how bad" (impact, blast radius)
     likelihood_score         DOUBLE PRECISION NOT NULL,    -- 0.0–1.0; "how likely this is a real threat"
+    severity_factors         JSONB NOT NULL DEFAULT '[]',   -- short noun phrases articulating severity_score; see RFC 0002 §"Score factor articulation"
+    likelihood_factors       JSONB NOT NULL DEFAULT '[]',   -- same shape, articulating likelihood_score
+    ttp_tags                 JSONB NOT NULL DEFAULT '[]',   -- validated MITRE ATT&CK technique IDs; see RFC 0002 §"MITRE ATT&CK TTP tagging"
     priority_tier            TEXT NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT NOT NULL,        -- redacted (tokens reference event's map)
@@ -213,6 +216,10 @@ CREATE TABLE event_analysis_result (
 `customer_id` / `external_key` is implicit in the customer DB choice (same convention as `event_redaction_map`).
 
 `model_actual_version` (the LLM provider's specific snapshot — e.g. `gpt-4o-2025-05-13`) and `prompt_version` (aimer's prompt template version) are intentionally nullable. They are populated once aimer's response payload carries them (tracked as a separate aimer-side follow-up, not blocking this design); until then NULL records the "not reported by aimer at this time" state explicitly rather than fabricating a value. Scores arrive on the wire as `severityScore` and `likelihoodScore` per RFC 0002 §"Priority tiering"; both are `NOT NULL` on storage. `priority_tier` is a deterministic 4×4 matrix derivation per RFC 0002 §"Priority tiering", computed in aimer-web from the two scores at write time — it is not an LLM-returned value.
+
+`severity_factors` and `likelihood_factors` carry short noun-phrase articulation of each score axis (see RFC 0002 §"Score factor articulation"). Validation is shape-only (length, item count, sentence-start filter); the LLM owns content quality. `"insufficient evidence"` is the reserved sentinel for genuinely thin inputs.
+
+`ttp_tags` carries an array of MITRE ATT&CK technique IDs (e.g. `"T1078"`, `"T1110.001"`) judged applicable to the analyzed event (see RFC 0002 §"MITRE ATT&CK TTP tagging"). aimer-web validates each tag against the vendored MITRE data (`schemas/mitre-attack-techniques.json` + `schemas/mitre-attack.version`) and drops hallucinated IDs before storage. Empty array is valid.
 
 `lang` is stored exactly as it appears on the wire to aimer (the `Language` GraphQL enum from aimer#384: `KOREAN` | `ENGLISH`). UI mapping to `next-intl` locales (`ko` / `en`) happens in the presentation layer; the storage uses aimer's vocabulary so there is no translation layer between the row and the call.
 
@@ -687,7 +694,7 @@ Per the decision in this thread (option B), the result is shown in aimer-web's o
 - On load: authorize the caller against the event's customer (same `authorize()` call as the analyze route, with `operationKind: 'read'`).
 - Fetch `event_analysis_result` row by `(aice_id, event_key, lang, model_name, model)` within the customer_db (customer scope already established by the route's `customer_id` path segment).
 - **Always restore tokens for any UI display.** The redacted form exists for exactly two purposes: persistence in `analysis_text` / ingestion JSONB, and outbound traffic to the LLM (aimer). The UI never shows redacted tokens to an end user. Decrypt the corresponding `event_redaction_map` row and substitute every `<<REDACTED_*>>` token in `analysis_text` with its original entity before rendering. Callers without access to the customer are rejected at the route layer before any DB read; callers who pass the route gate are authorized to see the original entities by definition. There is no "view redacted" UI mode and no permission tier inside the UI that hides original values from someone who already loaded the page.
-- Display: priority tier badge, both `severity_score` and `likelihood_score` (each `0.0–1.0`, with axis labels), restored analysis narrative, `model_name` + `model` (+ `model_actual_version` / `prompt_version` if present), requested-by, requested-at, force-re-run button.
+- Display: priority tier badge, both `severity_score` and `likelihood_score` (each `0.0–1.0`, with axis labels), inline factor chips under each score from `severity_factors` / `likelihood_factors` (up to 5 phrases each, see RFC 0002 §"Score factor articulation"), TTP chip row from `ttp_tags` (technique IDs with technique-name tooltip from the vendored MITRE data, see RFC 0002 §"MITRE ATT&CK TTP tagging"), restored analysis narrative, `model_name` + `model` (+ `model_actual_version` / `prompt_version` if present), requested-by, requested-at, force-re-run button.
 - `<<UNVERIFIED_*>>` markers are rendered with a visual indicator (badge, tooltip) noting LLM hallucination origin. These are not restored (there is no original to restore to); the UI labels them explicitly.
 
 The button in aice-web-next opens this page in a **new tab** so the operator does not lose aice-web-next context.
@@ -744,7 +751,9 @@ Action on match:
 - `ai_analysis.request_issued` — every `analyze` call (cache hit or miss), with `customerId`, `aiceId`, `eventKey`, `lang`, `force`, `cached`.
 - `ai_analysis.result_stored` — successful UPSERT, with model/prompt versions.
 - `ai_analysis.aimer_call_failed` — transport or 5xx from aimer.
-- `ai_analysis.hallucination_detected` — see above.
+- `ai_analysis.hallucination_detected` — PII re-leak detection; see "LLM hallucination handling" above. Payload: `(customer_id, aice_id, event_key)`, `pattern_kind`, `occurrence_count`. This action is scoped to the PII unmasking case; the structured-output quality drops below (`ttp_tag_dropped`, `factor_dropped`) have their own action names so alerting policies can target each kind separately.
+- `ai_analysis.ttp_tag_dropped` — at least one LLM-returned `ttp_tags` ID was filtered before storage. Payload: target `(customer_id, aice_id, event_key)` for event-level, `(customer_id, story_id)` for story-level (set whichever applies; the other is NULL); `dropped_ids: string[]`; `reason: 'not_in_vendored_mitre' | 'invalid_format'`; `mitre_vendor_version` snapshot. Emitted at most once per analysis row write — multiple dropped IDs for the same row coalesce into one audit row.
+- `ai_analysis.factor_dropped` — at least one item in `severity_factors` or `likelihood_factors` was filtered before storage. Payload: target identifiers as above; `axis: 'severity' | 'likelihood'`; `dropped_items: string[]`; `reason: 'sentence_start' | 'oversized' | 'empty' | 'all_items_filtered'`; `replaced_with_sentinel: boolean` — `true` when post-filter recovery substituted `["insufficient evidence"]`. Emitted once per `(row, axis)` that lost items.
 - `customer_redaction_ranges.added`, `customer_redaction_ranges.removed` — config audit.
 - `customer_redaction_ranges.retroactive_started`, `customer_redaction_ranges.retroactive_completed`, `customer_redaction_ranges.retroactive_failed` — job lifecycle.
 
@@ -908,6 +917,6 @@ The implementation sub-issues collectively complete the feature; each is respons
 - **EN/KR manual pages with screenshots** for every user-visible surface (Send-to-aimer flow change, analysis result page, redaction range admin, retention settings) per `docs/AUTHORING.md`. Tracked as sub-issue 10 above.
 - **Redaction engine unit tests** covering at minimum: IPv4 / IPv6 private always-redact; public-IP customer-range match (matched ↔ redacted, unmatched ↔ pass-through); email and MAC regex matching; duplicate-entity collapse within one event (10 mentions of same IP → 1 map entry + 10 occurrences of same token); nested JSON traversal (tokens substituted at any depth, structural keys preserved); LLM response hallucination scan substitution.
 - **DB tests** covering: new permission grant assignments compile against existing role seed (no missing permission); upsert / force behaviour on `event_analysis_result` PK (same model overwrites, different model creates new row); map cascade rule (map deleted only when both ingestion-side and analysis-side referents are gone); retention clock origin per table.
-- **Contract test for `analyzeEvent`** TypedDocumentNode: parses against the vendored aimer SDL, types align with `AnalysisResult { severityScore, likelihoodScore, analysis }`. Required because the GraphQL client (#230) rejects raw query strings at runtime.
+- **Contract test for `analyzeEvent`** TypedDocumentNode: parses against the vendored aimer SDL, types align with `AnalysisResult { severityScore, likelihoodScore, severityFactors, likelihoodFactors, ttpTags, analysis }`. Required because the GraphQL client (#230) rejects raw query strings at runtime. The aimer-side `severityFactors` / `likelihoodFactors` / `ttpTags` additions are tracked as a post-aicers/aimer#404 follow-up issue.
 
 
