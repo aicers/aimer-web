@@ -17,6 +17,15 @@
 //
 // Permission gate: `analyses:configure` (Analyst role only, existing
 // seed). Unauthenticated → 401, non-member or missing perm → 403.
+//
+// Bridge-session policy: force-regenerate is a write action (Phase 1
+// will enqueue a real job row; the stub locks the auth contract for
+// that). Bridge sessions are AICE-side ingest/process flows, not
+// analyst UI actions, so this endpoint is blocked in bridge sessions
+// via `operationKind: "write"`. The bridge scope is still passed so a
+// bridge session whose customer_id matches the path can be rejected
+// uniformly with the cross-customer case (`bridge_write_blocked` →
+// 403) and so future relaxations stay scoped.
 
 import type { NextRequest } from "next/server";
 import { assertAuthorized } from "@/lib/auth/authorization";
@@ -86,7 +95,16 @@ export const POST = withAuth(
         "general",
         auth.accountId,
         "analyses:configure",
-        { customerId },
+        {
+          customerId,
+          operationKind: "write",
+          bridgeScope: auth.bridgeCustomerIds
+            ? {
+                aiceId: auth.bridgeAiceId ?? "",
+                customerIds: auth.bridgeCustomerIds,
+              }
+            : null,
+        },
       );
     } catch (err) {
       if (err instanceof HttpError) {

@@ -16,11 +16,17 @@ const mockConnect = vi.fn(() => ({
 
 const SELF = "00000000-0000-0000-0000-000000000099";
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";
+const OTHER_CUSTOMER_ID = "c0000000-0000-0000-0000-000000000002";
+const BRIDGE_AICE_ID = "aice-bridge-1";
 
 // Toggles `withAuth` between "authed" (calls handler with a stub session)
 // and "unauthed" (short-circuits with 401, mirroring the real guard's
-// behavior when no valid session cookie is present).
+// behavior when no valid session cookie is present). The bridge fields
+// can be overridden per-test to simulate a bridge-scoped session.
 const authMode = { current: "authed" as "authed" | "unauthed" };
+const bridgeOverride = {
+  current: null as { bridgeAiceId: string; bridgeCustomerIds: string[] } | null,
+};
 
 vi.mock("@/lib/auth/guards", () => ({
   // biome-ignore lint/complexity/noBannedTypes: test mock
@@ -35,8 +41,8 @@ vi.mock("@/lib/auth/guards", () => ({
       tokenVersion: 1,
       iat: 1000,
       meta: { ipAddress: "127.0.0.1", userAgent: "test" },
-      bridgeAiceId: null,
-      bridgeCustomerIds: null,
+      bridgeAiceId: bridgeOverride.current?.bridgeAiceId ?? null,
+      bridgeCustomerIds: bridgeOverride.current?.bridgeCustomerIds ?? null,
       audit: {},
     });
   },
@@ -75,6 +81,7 @@ describe("story regenerate stub", () => {
     vi.clearAllMocks();
     vi.resetModules();
     authMode.current = "authed";
+    bridgeOverride.current = null;
     mockAssertAuthorized.mockResolvedValue(new Set(["analyses:configure"]));
   });
 
@@ -135,6 +142,84 @@ describe("story regenerate stub", () => {
     const res = await POST(req);
     expect(res.status).toBe(400);
   });
+
+  it("authorizes as a write op with no bridge scope for an ordinary session", async () => {
+    // Force-regenerate is a write action; the stub locks the auth
+    // contract so Phase 1 cannot be reached without `operationKind`.
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(202);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "analyses:configure",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: null,
+      }),
+    );
+  });
+
+  it("rejects bridge sessions (writes are blocked in bridge sessions)", async () => {
+    // A bridge session scoped to *this* customer must still be
+    // rejected: force-regenerate is an analyst UI action, not an
+    // AICE-side ingest/process flow. `authorize` returns
+    // `bridge_write_blocked` for `operationKind: "write"`.
+    bridgeOverride.current = {
+      bridgeAiceId: BRIDGE_AICE_ID,
+      bridgeCustomerIds: [CUSTOMER_ID],
+    };
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(403);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "analyses:configure",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: {
+          aiceId: BRIDGE_AICE_ID,
+          customerIds: [CUSTOMER_ID],
+        },
+      }),
+    );
+  });
+
+  it("rejects bridge sessions targeting a customer outside bridge scope", async () => {
+    // Bridge scoped to OTHER_CUSTOMER_ID, request hits CUSTOMER_ID. Even
+    // ignoring the write-block, `authorize` returns unauthorized when
+    // `customerId` is not in `bridgeScope.customerIds`.
+    bridgeOverride.current = {
+      bridgeAiceId: BRIDGE_AICE_ID,
+      bridgeCustomerIds: [OTHER_CUSTOMER_ID],
+    };
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(403);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "analyses:configure",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: {
+          aiceId: BRIDGE_AICE_ID,
+          customerIds: [OTHER_CUSTOMER_ID],
+        },
+      }),
+    );
+  });
 });
 
 describe("report regenerate stub", () => {
@@ -142,6 +227,7 @@ describe("report regenerate stub", () => {
     vi.clearAllMocks();
     vi.resetModules();
     authMode.current = "authed";
+    bridgeOverride.current = null;
     mockAssertAuthorized.mockResolvedValue(new Set(["reports:create"]));
   });
 
@@ -216,5 +302,80 @@ describe("report regenerate stub", () => {
     );
     const res = await POST(req);
     expect(res.status).toBe(400);
+  });
+
+  it("authorizes as a write op with no bridge scope for an ordinary session", async () => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest());
+    expect(res.status).toBe(202);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "reports:create",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: null,
+      }),
+    );
+  });
+
+  it("rejects bridge sessions (writes are blocked in bridge sessions)", async () => {
+    bridgeOverride.current = {
+      bridgeAiceId: BRIDGE_AICE_ID,
+      bridgeCustomerIds: [CUSTOMER_ID],
+    };
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest());
+    expect(res.status).toBe(403);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "reports:create",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: {
+          aiceId: BRIDGE_AICE_ID,
+          customerIds: [CUSTOMER_ID],
+        },
+      }),
+    );
+  });
+
+  it("rejects bridge sessions targeting a customer outside bridge scope", async () => {
+    bridgeOverride.current = {
+      bridgeAiceId: BRIDGE_AICE_ID,
+      bridgeCustomerIds: [OTHER_CUSTOMER_ID],
+    };
+    const { HttpError } = await import("@/lib/auth/errors");
+    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest());
+    expect(res.status).toBe(403);
+    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      SELF,
+      "reports:create",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        operationKind: "write",
+        bridgeScope: {
+          aiceId: BRIDGE_AICE_ID,
+          customerIds: [OTHER_CUSTOMER_ID],
+        },
+      }),
+    );
   });
 });
