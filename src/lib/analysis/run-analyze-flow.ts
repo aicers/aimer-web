@@ -343,12 +343,23 @@ function groupBy<K extends string, V>(
 
 function emitFactorAuditRows(args: {
   auditBase: AuditEmissionBase;
-  targetId: string;
+  eventKey: string;
   axis: FactorAxis;
   rawInput: readonly string[];
   filter: FilterFactorsResult;
 }): void {
-  const { auditBase, targetId, axis, rawInput, filter } = args;
+  const { auditBase, eventKey, axis, rawInput, filter } = args;
+  const targetId = `${auditBase.aiceId}/${eventKey}`;
+  // RFC 0001:756 locks the payload to include the event-level target
+  // identifiers (`customer_id`, `aice_id`, `event_key`, `story_id: null`)
+  // alongside the axis/reason/items fields so consumers do not need to
+  // parse `targetId` to recover the event.
+  const targetFields = {
+    customer_id: auditBase.customerId,
+    aice_id: auditBase.aiceId,
+    event_key: eventKey,
+    story_id: null,
+  } as const;
   // Per-`(row, axis, reason)` rows describing which shape rule each
   // dropped item violated. Cap-truncated items deliberately do not
   // appear here — RFC 0001:756's `reason` enum has no cap value.
@@ -359,7 +370,7 @@ function emitFactorAuditRows(args: {
       action: "ai_analysis.factor_dropped",
       targetId,
       details: {
-        story_id: null,
+        ...targetFields,
         axis,
         dropped_items: items.map((d) => d.item),
         reason,
@@ -376,7 +387,7 @@ function emitFactorAuditRows(args: {
       action: "ai_analysis.factor_dropped",
       targetId,
       details: {
-        story_id: null,
+        ...targetFields,
         axis,
         dropped_items: [...rawInput],
         reason: "all_items_filtered",
@@ -388,10 +399,20 @@ function emitFactorAuditRows(args: {
 
 function emitTtpDropAuditRows(args: {
   auditBase: AuditEmissionBase;
-  targetId: string;
+  eventKey: string;
   dropped: readonly { id: string; reason: string }[];
 }): void {
-  const { auditBase, targetId, dropped } = args;
+  const { auditBase, eventKey, dropped } = args;
+  const targetId = `${auditBase.aiceId}/${eventKey}`;
+  // RFC 0001:755 locks the payload to include `customer_id`, `aice_id`,
+  // `event_key`, and `story_id: null` so consumers can read the
+  // event-level scope directly from the JSON without parsing `targetId`.
+  const targetFields = {
+    customer_id: auditBase.customerId,
+    aice_id: auditBase.aiceId,
+    event_key: eventKey,
+    story_id: null,
+  } as const;
   // One audit row per `reason` group. RFC 0001:755's payload `reason` is
   // single-valued, so mixed-reason drops split into separate rows.
   const byReason = groupBy(dropped, (d) => d.reason);
@@ -401,7 +422,7 @@ function emitTtpDropAuditRows(args: {
       action: "ai_analysis.ttp_tag_dropped",
       targetId,
       details: {
-        story_id: null,
+        ...targetFields,
         dropped_ids: items.map((d) => d.id),
         reason,
         mitre_vendor_version: MITRE_VENDOR_VERSION,
@@ -731,21 +752,21 @@ export async function runAnalyzeFlow(
 
   emitFactorAuditRows({
     auditBase,
-    targetId: `${params.aiceId}/${params.eventKey}`,
+    eventKey: params.eventKey,
     axis: "severity",
     rawInput: aimerResponse.severityFactors,
     filter: severityFilter,
   });
   emitFactorAuditRows({
     auditBase,
-    targetId: `${params.aiceId}/${params.eventKey}`,
+    eventKey: params.eventKey,
     axis: "likelihood",
     rawInput: aimerResponse.likelihoodFactors,
     filter: likelihoodFilter,
   });
   emitTtpDropAuditRows({
     auditBase,
-    targetId: `${params.aiceId}/${params.eventKey}`,
+    eventKey: params.eventKey,
     dropped: ttpResult.dropped,
   });
 

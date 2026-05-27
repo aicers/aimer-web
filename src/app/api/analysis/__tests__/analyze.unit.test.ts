@@ -1216,9 +1216,14 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
     );
     expect(reasons).toEqual(new Set(["oversized", "empty"]));
     for (const row of sevDrops) {
-      expect(
-        (row.details as Record<string, unknown>).replaced_with_sentinel,
-      ).toBe(false);
+      const d = row.details as Record<string, unknown>;
+      expect(d.replaced_with_sentinel).toBe(false);
+      // Event-level target identifiers must live inside the payload per
+      // RFC 0001:756 so consumers do not have to parse `targetId`.
+      expect(d.customer_id).toBe(CUSTOMER_ID);
+      expect(d.aice_id).toBe(AICE_ID);
+      expect(d.event_key).toBe(EVENT_KEY);
+      expect(d.story_id).toBeNull();
     }
   });
 
@@ -1245,12 +1250,16 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
       (c) => (c.details as Record<string, unknown>).axis === "severity",
     );
     expect(sevDrops).toHaveLength(1);
-    expect((sevDrops[0].details as Record<string, unknown>).reason).toBe(
-      "sentence_start",
-    );
-    expect(
-      (sevDrops[0].details as Record<string, unknown>).dropped_items,
-    ).toEqual(["The attacker pivoted", "This event uses PS"]);
+    const d = sevDrops[0].details as Record<string, unknown>;
+    expect(d.reason).toBe("sentence_start");
+    expect(d.dropped_items).toEqual([
+      "The attacker pivoted",
+      "This event uses PS",
+    ]);
+    expect(d.customer_id).toBe(CUSTOMER_ID);
+    expect(d.aice_id).toBe(AICE_ID);
+    expect(d.event_key).toBe(EVENT_KEY);
+    expect(d.story_id).toBeNull();
   });
 
   it("cap-only firing emits NO audit row but stores first 5 items", async () => {
@@ -1335,6 +1344,13 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
       expect(d.replaced_with_sentinel).toBe(true);
       expect(d.dropped_items).toEqual(rawSeverity);
     }
+    for (const row of sevDrops) {
+      const d = row.details as Record<string, unknown>;
+      expect(d.customer_id).toBe(CUSTOMER_ID);
+      expect(d.aice_id).toBe(AICE_ID);
+      expect(d.event_key).toBe(EVENT_KEY);
+      expect(d.story_id).toBeNull();
+    }
   });
 
   it("ttp drops with mixed reasons emit one row per reason with mitre_vendor_version", async () => {
@@ -1379,6 +1395,10 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
       const d = row.details as Record<string, unknown>;
       expect(typeof d.mitre_vendor_version).toBe("string");
       expect((d.mitre_vendor_version as string).length).toBeGreaterThan(0);
+      expect(d.customer_id).toBe(CUSTOMER_ID);
+      expect(d.aice_id).toBe(AICE_ID);
+      expect(d.event_key).toBe(EVENT_KEY);
+      expect(d.story_id).toBeNull();
     }
   });
 });
