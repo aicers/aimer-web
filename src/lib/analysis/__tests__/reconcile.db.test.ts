@@ -761,6 +761,173 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(second.periodicStatesPatched).toBe(0);
   });
 
+  it("dirties an existing DAILY bucket when a story envelope hook failure changes the bucket's stories (round-12 review item 1)", async () => {
+    // Story refresh-window / backfill envelopes can mutate the inputs
+    // of an already-generated DAILY/WEEKLY/MONTHLY report WITHOUT
+    // touching any baseline_event row. `applyWindowReplaceEnvelopeHook`
+    // is the success path; on hook failure (decision 2), only reconcile
+    // can rescue the stale report. Without per-bucket story aggregates,
+    // baseline-only reconcile signals do not move and the stale row
+    // stays ready/done forever. This test reproduces that sequence and
+    // asserts reconcile flips the row to dirty via the new
+    // `last_story_received_at` / `story_count` columns.
+    const customer = "00000000-0000-0000-0000-0000000000ce";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-storydirty', 'StoryDirty', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [customer],
+    );
+    await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
+    await customerPool.query(`TRUNCATE TABLE story CASCADE`);
+
+    // Two stories whose time_window lands inside the 2025-06-10 KST
+    // DAILY bucket (UTC 2025-06-09T15:00 .. 2025-06-10T15:00). Use
+    // explicit time_window* via a direct INSERT so we can pin the
+    // story's window precisely; seedStory() uses received_at for both.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (7001, 'v1', 'auto_correlated',
+               '2025-06-10T01:00:00Z'::timestamptz,
+               '2025-06-10T02:00:00Z'::timestamptz,
+               '{}'::jsonb, 'aice-1',
+               '2025-06-10T03:00:00Z'::timestamptz),
+              (7002, 'v1', 'auto_correlated',
+               '2025-06-10T04:00:00Z'::timestamptz,
+               '2025-06-10T05:00:00Z'::timestamptz,
+               '{}'::jsonb, 'aice-1',
+               '2025-06-10T06:00:00Z'::timestamptz)`,
+    );
+
+    // Pre-existing ready DAILY bucket with a done job, story aggregates
+    // already in sync with the current customer-DB state (count = 2,
+    // last_story_received_at = 2025-06-10T06:00:00Z). This mirrors the
+    // steady state after a prior successful envelope-hook cycle.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          last_event_at, last_event_received_at, event_count,
+          last_story_received_at, story_count, last_ready_at)
+       VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
+               NULL, NULL, 0,
+               '2025-06-10T06:00:00Z'::timestamptz, 2, NOW())`,
+      [customer],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul',
+               'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, TRUE, NOW(), NOW())`,
+      [customer],
+    );
+
+    // Simulate a story-side refresh-window envelope that landed in
+    // customer DB but whose auth-side hook failed: a new version of
+    // story 7001 with a strictly later `received_at`, no baseline
+    // change. Reconcile must detect this via `last_story_received_at`.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind,
+          time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (7001, 'v2', 'auto_correlated',
+               '2025-06-10T01:30:00Z'::timestamptz,
+               '2025-06-10T02:30:00Z'::timestamptz,
+               '{}'::jsonb, 'aice-1',
+               '2025-06-10T07:00:00Z'::timestamptz)`,
+    );
+
+    const outcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(outcome.status).toBe("completed");
+    expect(outcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: afterAdd } = await authPool.query<{
+      status: string;
+      story_count: string;
+      last_story_received_at: Date;
+    }>(
+      `SELECT status, story_count::text AS story_count,
+              last_story_received_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-06-10'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(afterAdd[0].status).toBe("dirty");
+    expect(Number(afterAdd[0].story_count)).toBe(2);
+    expect(new Date(afterAdd[0].last_story_received_at).toISOString()).toBe(
+      "2025-06-10T07:00:00.000Z",
+    );
+
+    // Second pass with no further changes is a no-op (decision-2
+    // idempotence gate).
+    const second = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(second.periodicStatesPatched).toBe(0);
+
+    // Now exercise the deletion path: drop story 7002 (a story
+    // window-replace whose hook failed). `story_count` decreases from
+    // 2 to 1 while `last_story_received_at` does not advance. The
+    // row must still be flipped to dirty and `story_count` re-synced.
+    // First reset status to ready so we can observe a fresh dirty flip.
+    await authPool.query(
+      `UPDATE periodic_report_state
+          SET status = 'ready', updated_at = NOW()
+        WHERE customer_id = $1
+          AND period = 'DAILY'
+          AND bucket_date = '2025-06-10'::date
+          AND tz = 'Asia/Seoul'`,
+      [customer],
+    );
+    await customerPool.query(`DELETE FROM story WHERE story_id = 7002`);
+
+    const deletionOutcome = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(deletionOutcome.periodicStatesPatched).toBeGreaterThanOrEqual(1);
+
+    const { rows: afterDel } = await authPool.query<{
+      status: string;
+      story_count: string;
+    }>(
+      `SELECT status, story_count::text AS story_count
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period      = 'DAILY'
+          AND bucket_date = '2025-06-10'::date
+          AND tz          = 'Asia/Seoul'`,
+      [customer],
+    );
+    expect(afterDel[0].status).toBe("dirty");
+    expect(Number(afterDel[0].story_count)).toBe(1);
+
+    // Second pass after deletion is also a no-op.
+    const secondAfterDel = await reconcileCustomer(
+      customer,
+      "Asia/Seoul",
+      makeDeps(authPool, customerPool),
+    );
+    expect(secondAfterDel.periodicStatesPatched).toBe(0);
+  });
+
   it("does not seed a LIVE row when no source data falls in the trailing 24h (round-8 review item 3)", async () => {
     // Issue #294 decision 4 + round-8 review item 3: LIVE is the
     // rolling current state and must only be seeded when source

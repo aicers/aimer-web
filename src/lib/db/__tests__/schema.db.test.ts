@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(33);
+    expect(rows).toHaveLength(34);
   });
 
   // -- Built-in roles --
@@ -487,6 +487,37 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       expect(ev[0]?.data_type).toBe("bigint");
       expect(ev[0]?.is_nullable).toBe("NO");
       expect(ev[0]?.column_default).toContain("0");
+
+      // last_story_received_at + story_count: round-12 review item 1
+      // adds the per-bucket story-side dirty-trigger pair so a story
+      // envelope hook failure can be recovered by reconcile without
+      // any baseline change to observe.
+      const { rows: sr } = await pool.query<{
+        is_nullable: string;
+        data_type: string;
+      }>(
+        `SELECT is_nullable, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'periodic_report_state'
+            AND column_name = 'last_story_received_at'`,
+      );
+      expect(sr[0]?.data_type).toBe("timestamp with time zone");
+      expect(sr[0]?.is_nullable).toBe("YES");
+      const { rows: sc } = await pool.query<{
+        column_default: string | null;
+        is_nullable: string;
+        data_type: string;
+      }>(
+        `SELECT column_default, is_nullable, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'periodic_report_state'
+            AND column_name = 'story_count'`,
+      );
+      expect(sc[0]?.data_type).toBe("bigint");
+      expect(sc[0]?.is_nullable).toBe("NO");
+      expect(sc[0]?.column_default).toContain("0");
     });
 
     it("story_analysis_job + periodic_report_job have dry_run BOOLEAN NOT NULL DEFAULT FALSE (decision 3)", async () => {

@@ -570,6 +570,18 @@ interface BucketAggregate {
   eventCount: number;
 }
 
+interface BucketStoryAggregateRow {
+  period: PeriodicPeriod;
+  bucket_date: string;
+  max_story_received_at: Date | null;
+  story_count: string;
+}
+
+interface BucketStoryAggregate {
+  maxStoryReceivedAt: Date | null;
+  storyCount: number;
+}
+
 /**
  * Per-bucket aggregates over `baseline_event`, keyed by
  * `(period, bucket_date)` in the customer's `tz`:
@@ -636,6 +648,118 @@ async function loadPerBucketMaxEventTimes(
 }
 
 /**
+ * Per-bucket aggregates over latest-version `story` rows, keyed by
+ * `(period, bucket_date)` in the customer's `tz`. Round-12 review item
+ * 1: story refresh-window / backfill envelopes can mutate the inputs
+ * of an already-generated DAILY / WEEKLY / MONTHLY report without
+ * touching any `baseline_event` row. When the best-effort envelope
+ * hook fails, baseline-only reconcile signals do not advance and the
+ * stale report stays `ready` / `done` forever. These story-side
+ * aggregates are the per-bucket mirror of `loadPerBucketMaxEventTimes`:
+ *
+ *   - `maxStoryReceivedAt` — `MAX(received_at)` across latest-version
+ *     stories overlapping the bucket. Monotone advance signal: a new
+ *     `story_version` for any story in the bucket bumps the bucket's
+ *     stored `last_story_received_at` and flips the row to `dirty`.
+ *   - `storyCount` — `COUNT(DISTINCT story_id)` of latest-version
+ *     stories overlapping the bucket. Mirrors `event_count` for the
+ *     story side: a delete-only refresh that removes stories from a
+ *     bucket without advancing `received_at` is still detected as a
+ *     `storyCount` change.
+ *
+ * Latest-version semantics mirror `deriveAllBuckets`: each
+ * `(story_id)` contributes only its row with `MAX(received_at)` so
+ * superseded versions do not double-count or distort the max. Bucket
+ * overlap uses `time_window_start < bucket_end AND time_window_end >
+ * bucket_start` — i.e. true range intersection in the customer's tz.
+ * A story whose `time_window` spans multiple buckets contributes to
+ * every overlapping bucket via `generate_series`.
+ *
+ * LIVE is excluded for the same reason `loadPerBucketMaxEventTimes`
+ * excludes LIVE: the LIVE window is a moving trailing-24h target and
+ * the deletion-detection rule cannot reliably distinguish "the window
+ * shifted past the story" from "the story was deleted".
+ */
+async function loadPerBucketStoryAggregates(
+  customerConn: CustomerConnection,
+  tz: string,
+): Promise<Map<string, BucketStoryAggregate>> {
+  const { rows } = await customerConn.query<BucketStoryAggregateRow>(
+    `WITH latest_story AS (
+       SELECT story_id, MAX(received_at) AS max_rcv
+         FROM story
+         GROUP BY story_id
+     ),
+     latest_versions AS (
+       SELECT s.story_id, s.time_window_start, s.time_window_end,
+              s.received_at
+         FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+     ),
+     daily AS (
+       SELECT lv.story_id, lv.received_at,
+              gs::date AS bucket_date
+         FROM latest_versions lv,
+              LATERAL generate_series(
+                date_trunc('day',
+                  lv.time_window_start AT TIME ZONE $1),
+                date_trunc('day',
+                  lv.time_window_end   AT TIME ZONE $1),
+                INTERVAL '1 day'
+              ) AS gs
+     ),
+     weekly AS (
+       SELECT lv.story_id, lv.received_at,
+              gs::date AS bucket_date
+         FROM latest_versions lv,
+              LATERAL generate_series(
+                date_trunc('week',
+                  lv.time_window_start AT TIME ZONE $1),
+                date_trunc('week',
+                  lv.time_window_end   AT TIME ZONE $1),
+                INTERVAL '1 week'
+              ) AS gs
+     ),
+     monthly AS (
+       SELECT lv.story_id, lv.received_at,
+              gs::date AS bucket_date
+         FROM latest_versions lv,
+              LATERAL generate_series(
+                date_trunc('month',
+                  lv.time_window_start AT TIME ZONE $1),
+                date_trunc('month',
+                  lv.time_window_end   AT TIME ZONE $1),
+                INTERVAL '1 month'
+              ) AS gs
+     )
+     SELECT 'DAILY'::text AS period, bucket_date::text AS bucket_date,
+            MAX(received_at) AS max_story_received_at,
+            COUNT(DISTINCT story_id)::text AS story_count
+       FROM daily GROUP BY 1, 2
+     UNION ALL
+     SELECT 'WEEKLY', bucket_date::text,
+            MAX(received_at),
+            COUNT(DISTINCT story_id)::text
+       FROM weekly GROUP BY 1, 2
+     UNION ALL
+     SELECT 'MONTHLY', bucket_date::text,
+            MAX(received_at),
+            COUNT(DISTINCT story_id)::text
+       FROM monthly GROUP BY 1, 2`,
+    [tz],
+  );
+  const out = new Map<string, BucketStoryAggregate>();
+  for (const r of rows) {
+    out.set(`${r.period}|${r.bucket_date}|${tz}`, {
+      maxStoryReceivedAt: r.max_story_received_at,
+      storyCount: Number(r.story_count),
+    });
+  }
+  return out;
+}
+
+/**
  * Global maxima for the LIVE bucket plus the trailing-24h existence
  * check used by issue #294 decision 4 / round-8 review item 3.
  *
@@ -685,6 +809,8 @@ interface PeriodicExistingRow {
   last_event_at: Date | null;
   last_event_received_at: Date | null;
   event_count: string;
+  last_story_received_at: Date | null;
+  story_count: string;
 }
 
 async function loadExistingPeriodicStatesForBuckets(
@@ -699,7 +825,9 @@ async function loadExistingPeriodicStatesForBuckets(
   const { rows } = await authClient.query<PeriodicExistingRow>(
     `SELECT period, bucket_date::text AS bucket_date, tz, status,
             last_event_at, last_event_received_at,
-            event_count::text AS event_count
+            event_count::text AS event_count,
+            last_story_received_at,
+            story_count::text AS story_count
        FROM periodic_report_state
       WHERE customer_id = $1
         AND tz          = $2
@@ -740,6 +868,15 @@ async function reconcilePeriodicStates(
   // round trip serves every existing-row update below — same
   // idempotence guarantee as the LIVE path.
   const bucketMaxEvent = await loadPerBucketMaxEventTimes(
+    customerConn,
+    customerTz,
+  );
+  // Per-bucket story aggregates (round-12 review item 1): when the
+  // story envelope hook fails, baseline aggregates don't move, so
+  // these are the only signal that lets reconcile detect a story-
+  // side mutation of an existing periodic bucket. Same one-trip /
+  // idempotence pattern as `bucketMaxEvent`.
+  const bucketStoryAgg = await loadPerBucketStoryAggregates(
     customerConn,
     customerTz,
   );
@@ -792,11 +929,14 @@ async function reconcilePeriodicStates(
           // intervening ingest activity sees `stored == current` and
           // is a no-op.
           const agg = bucketMaxEvent.get(key);
+          const storyAgg = bucketStoryAgg.get(key);
           await authClient.query(
             `INSERT INTO periodic_report_state
                (customer_id, period, bucket_date, tz, status,
-                last_event_at, last_event_received_at, event_count)
-             VALUES ($1, $2, $3::date, $4, 'pending', $5, $6, $7)
+                last_event_at, last_event_received_at, event_count,
+                last_story_received_at, story_count)
+             VALUES ($1, $2, $3::date, $4, 'pending',
+                     $5, $6, $7, $8, $9)
              ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
@@ -806,6 +946,10 @@ async function reconcilePeriodicStates(
               agg ? agg.maxEventAt.toISOString() : null,
               agg ? agg.maxReceivedAt.toISOString() : null,
               agg ? agg.eventCount : 0,
+              storyAgg?.maxStoryReceivedAt
+                ? storyAgg.maxStoryReceivedAt.toISOString()
+                : null,
+              storyAgg ? storyAgg.storyCount : 0,
             ],
           );
         }
@@ -833,14 +977,18 @@ async function reconcilePeriodicStates(
         b.period === "LIVE"
           ? latestBaseline
           : (bucketMaxEvent.get(key) ?? null);
-      if (patchSource === null) continue;
+      const storyPatchSource =
+        b.period === "LIVE" ? null : (bucketStoryAgg.get(key) ?? null);
+      if (patchSource === null && storyPatchSource === null) continue;
       const advancesEventAt =
-        row.last_event_at === null ||
-        patchSource.maxEventAt.getTime() > row.last_event_at.getTime();
+        patchSource !== null &&
+        (row.last_event_at === null ||
+          patchSource.maxEventAt.getTime() > row.last_event_at.getTime());
       const advancesReceivedAt =
-        row.last_event_received_at === null ||
-        patchSource.maxReceivedAt.getTime() >
-          row.last_event_received_at.getTime();
+        patchSource !== null &&
+        (row.last_event_received_at === null ||
+          patchSource.maxReceivedAt.getTime() >
+            row.last_event_received_at.getTime());
       // Round-8 review item 1: detect content removal from a closed
       // bucket whose maxima did not advance (delete-only refresh /
       // backfill envelope after a hook failure). LIVE buckets are
@@ -851,45 +999,111 @@ async function reconcilePeriodicStates(
       // dirties on a strict decrease but resyncs `event_count` to the
       // current count on any change so the next pass is a no-op.
       const currentCount =
-        b.period === "LIVE" || !("eventCount" in patchSource)
+        b.period === "LIVE" || patchSource === null
           ? null
-          : patchSource.eventCount;
+          : (patchSource as BucketAggregate).eventCount;
       const countChanged =
         currentCount !== null && currentCount !== Number(row.event_count);
-      if (!advancesEventAt && !advancesReceivedAt && !countChanged) continue;
+      // Round-12 review item 1: story-side aggregates for DAILY /
+      // WEEKLY / MONTHLY. The story envelope hook is best-effort
+      // (decision 2); on failure, only the story aggregates surface
+      // the mutation. Dirty trigger fires on advance of
+      // `last_story_received_at` OR any change to `story_count`
+      // (additions and deletions). Idempotent: a second pass with
+      // no intervening change finds `stored == current` and the
+      // WHERE clause makes the UPDATE a no-op.
+      const currentStoryReceivedAt = storyPatchSource?.maxStoryReceivedAt
+        ? storyPatchSource.maxStoryReceivedAt
+        : null;
+      const advancesStoryReceivedAt =
+        currentStoryReceivedAt !== null &&
+        (row.last_story_received_at === null ||
+          currentStoryReceivedAt.getTime() >
+            row.last_story_received_at.getTime());
+      const currentStoryCount =
+        b.period === "LIVE" || storyPatchSource === null
+          ? null
+          : storyPatchSource.storyCount;
+      const storyCountChanged =
+        currentStoryCount !== null &&
+        currentStoryCount !== Number(row.story_count);
+      if (
+        !advancesEventAt &&
+        !advancesReceivedAt &&
+        !countChanged &&
+        !advancesStoryReceivedAt &&
+        !storyCountChanged
+      ) {
+        continue;
+      }
 
       // The CASE WHEN mirrors `recordBaselineActivity`'s dirty trigger
       // exactly: only `ready` rows with at least one processing/done
       // job flip to `dirty`. `pending` and `dirty` rows are
       // forward-patched without status change. Dirty trigger fires
-      // when either `event_time` advances, `received_at` advances, or
-      // `event_count` strictly decreased (round-8 review item 1:
-      // catches delete-only refresh / backfill envelopes whose
-      // maxima do not move).
+      // when any of the per-bucket signals indicates a content change
+      // since the previous pass:
+      //   - `last_event_at` advances (a new event landed in the bucket)
+      //   - `last_event_received_at` advances (a late-arriving event
+      //     whose `event_time` did not advance the max — round-7 r2)
+      //   - `event_count` strictly decreased (delete-only baseline
+      //     envelope after a hook failure — round-8 r1)
+      //   - `last_story_received_at` advances (a new story version
+      //     landed in the bucket — round-12 r1)
+      //   - `story_count` changed (story added or removed from the
+      //     bucket via a window-replace / backfill envelope — round-12
+      //     r1; covers the case where the story envelope hook failed
+      //     and baseline aggregates show no change).
       //
-      // `event_count` is always re-stored to the current count (max
-      // with stored value would prevent down-moves which is exactly
-      // what we need to detect on the next pass). Idempotent: a
-      // second pass with no intervening change finds `stored ==
-      // current` and the WHERE clause makes the UPDATE a no-op.
+      // `event_count` and `story_count` are always re-stored to the
+      // current value when supplied: max-with-stored would prevent
+      // down-moves which is exactly the deletion signal we need to
+      // detect on the next pass. Idempotent: a second pass with no
+      // intervening change finds `stored == current` and the WHERE
+      // clause makes the UPDATE a no-op. NULL inputs (no aggregate
+      // for this bucket — e.g. LIVE row or bucket no longer covered
+      // by any story) leave the stored column unchanged.
+      const eventMaxIso = patchSource
+        ? patchSource.maxEventAt.toISOString()
+        : null;
+      const eventRcvIso = patchSource
+        ? patchSource.maxReceivedAt.toISOString()
+        : null;
+      const storyRcvIso = currentStoryReceivedAt
+        ? currentStoryReceivedAt.toISOString()
+        : null;
       const res = await authClient.query(
         `UPDATE periodic_report_state s
             SET last_event_at = GREATEST(
-                  COALESCE(s.last_event_at, $5::timestamptz), $5::timestamptz
+                  COALESCE(s.last_event_at, $5::timestamptz),
+                  COALESCE($5::timestamptz, s.last_event_at)
                 ),
                 last_event_received_at = GREATEST(
                   COALESCE(s.last_event_received_at, $6::timestamptz),
-                  $6::timestamptz
+                  COALESCE($6::timestamptz, s.last_event_received_at)
                 ),
                 event_count = COALESCE($7::bigint, s.event_count),
+                last_story_received_at = GREATEST(
+                  COALESCE(s.last_story_received_at, $8::timestamptz),
+                  COALESCE($8::timestamptz, s.last_story_received_at)
+                ),
+                story_count = COALESCE($9::bigint, s.story_count),
                 status = CASE
                   WHEN s.status = 'ready'
                     AND (
-                      s.last_event_at IS NULL
-                      OR $5::timestamptz > s.last_event_at
-                      OR s.last_event_received_at IS NULL
-                      OR $6::timestamptz > s.last_event_received_at
-                      OR ($7::bigint IS NOT NULL AND $7::bigint < s.event_count)
+                      ($5::timestamptz IS NOT NULL
+                        AND (s.last_event_at IS NULL
+                             OR $5::timestamptz > s.last_event_at))
+                      OR ($6::timestamptz IS NOT NULL
+                        AND (s.last_event_received_at IS NULL
+                             OR $6::timestamptz > s.last_event_received_at))
+                      OR ($7::bigint IS NOT NULL
+                        AND $7::bigint < s.event_count)
+                      OR ($8::timestamptz IS NOT NULL
+                        AND (s.last_story_received_at IS NULL
+                             OR $8::timestamptz > s.last_story_received_at))
+                      OR ($9::bigint IS NOT NULL
+                        AND $9::bigint <> s.story_count)
                     )
                     AND EXISTS (
                       SELECT 1 FROM periodic_report_job j
@@ -909,20 +1123,28 @@ async function reconcilePeriodicStates(
             AND s.tz          = $4
             AND s.status      <> 'archived'
             AND (
-              s.last_event_at IS NULL
-              OR s.last_event_at < $5::timestamptz
-              OR s.last_event_received_at IS NULL
-              OR s.last_event_received_at < $6::timestamptz
+              ($5::timestamptz IS NOT NULL
+                AND (s.last_event_at IS NULL
+                     OR s.last_event_at < $5::timestamptz))
+              OR ($6::timestamptz IS NOT NULL
+                AND (s.last_event_received_at IS NULL
+                     OR s.last_event_received_at < $6::timestamptz))
               OR ($7::bigint IS NOT NULL AND $7::bigint <> s.event_count)
+              OR ($8::timestamptz IS NOT NULL
+                AND (s.last_story_received_at IS NULL
+                     OR s.last_story_received_at < $8::timestamptz))
+              OR ($9::bigint IS NOT NULL AND $9::bigint <> s.story_count)
             )`,
         [
           customerId,
           b.period,
           b.bucket_date,
           customerTz,
-          patchSource.maxEventAt.toISOString(),
-          patchSource.maxReceivedAt.toISOString(),
+          eventMaxIso,
+          eventRcvIso,
           currentCount,
+          storyRcvIso,
+          currentStoryCount,
         ],
       );
       if ((res.rowCount ?? 0) > 0) patched += 1;

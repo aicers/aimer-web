@@ -503,13 +503,32 @@ export async function recordBaselineActivity(
  * processes the dirty row, reconcile sees `currentCount < stored` and
  * re-dirties the same bucket. Idempotent: replaying with the same map
  * is a no-op (status already `dirty`, count unchanged).
+ *
+ * `storyAggregateByBucket`, when supplied, mirrors `eventCountByBucket`
+ * for the story side (round-12 review item 1). The map carries the
+ * post-commit `MAX(story.received_at)` (`maxReceivedAt`, null if no
+ * stories overlap) and `COUNT(DISTINCT story_id)` (`count`) for every
+ * DAILY / WEEKLY / MONTHLY bucket that overlaps the envelope. The
+ * dirty UPDATE forwards both columns in the same statement that flips
+ * the status, so reconcile's story-side dirty trigger
+ * (`last_story_received_at` advance OR `story_count` change) cannot
+ * fire a second time on the same mutation once the worker handles the
+ * first dirty cycle. LIVE rows skip these columns for the same reason
+ * they skip `event_count`: the trailing-24h window is not a fixed
+ * bucket and deletion detection is unreliable there.
  */
+export interface PeriodicEnvelopeStoryAggregate {
+  maxReceivedAt: Date | null;
+  count: number;
+}
+
 export async function dirtyPeriodicStatesOverlapping(
   client: PoolClient,
   customerId: string,
   from: Date,
   to: Date,
   eventCountByBucket?: ReadonlyMap<string, number>,
+  storyAggregateByBucket?: ReadonlyMap<string, PeriodicEnvelopeStoryAggregate>,
 ): Promise<void> {
   const periodArr: string[] = [];
   const dateArr: string[] = [];
@@ -523,10 +542,32 @@ export async function dirtyPeriodicStatesOverlapping(
       countArr.push(String(cnt));
     }
   }
+  const storyPeriodArr: string[] = [];
+  const storyDateArr: string[] = [];
+  const storyMaxArr: (string | null)[] = [];
+  const storyCountArr: string[] = [];
+  if (storyAggregateByBucket) {
+    for (const [key, agg] of storyAggregateByBucket) {
+      const sep = key.indexOf("|");
+      if (sep < 0) continue;
+      storyPeriodArr.push(key.slice(0, sep));
+      storyDateArr.push(key.slice(sep + 1));
+      storyMaxArr.push(
+        agg.maxReceivedAt ? agg.maxReceivedAt.toISOString() : null,
+      );
+      storyCountArr.push(String(agg.count));
+    }
+  }
   await client.query(
     `WITH cnt(period, bucket_date, event_count) AS (
        SELECT p, d::date, c::bigint
          FROM unnest($4::text[], $5::date[], $6::bigint[]) AS u(p, d, c)
+     ),
+     story_agg(period, bucket_date, max_rcv, story_count) AS (
+       SELECT p, d::date, r::timestamptz, c::bigint
+         FROM unnest(
+                $7::text[], $8::date[], $9::timestamptz[], $10::bigint[]
+              ) AS u(p, d, r, c)
      )
      UPDATE periodic_report_state s
         SET status = 'dirty',
@@ -536,6 +577,20 @@ export async function dirtyPeriodicStatesOverlapping(
                 WHERE c.period = s.period
                   AND c.bucket_date = s.bucket_date),
               s.event_count
+            ),
+            last_story_received_at = GREATEST(
+              s.last_story_received_at,
+              (SELECT sa.max_rcv
+                 FROM story_agg sa
+                WHERE sa.period = s.period
+                  AND sa.bucket_date = s.bucket_date)
+            ),
+            story_count = COALESCE(
+              (SELECT sa.story_count
+                 FROM story_agg sa
+                WHERE sa.period = s.period
+                  AND sa.bucket_date = s.bucket_date),
+              s.story_count
             ),
             updated_at = NOW()
       WHERE s.customer_id = $1
@@ -570,6 +625,10 @@ export async function dirtyPeriodicStatesOverlapping(
       periodArr,
       dateArr,
       countArr,
+      storyPeriodArr,
+      storyDateArr,
+      storyMaxArr,
+      storyCountArr,
     ],
   );
 }

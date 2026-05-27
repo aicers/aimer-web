@@ -17,6 +17,7 @@ import {
   dirtyPeriodicStatesOverlapping,
   dirtyStoryStatesInRange,
   maybeArchiveStoryState,
+  type PeriodicEnvelopeStoryAggregate,
   recordBaselineActivity,
   recordStoryMemberArrival,
   unarchiveStoryStateIfArchived,
@@ -186,12 +187,20 @@ export async function applyWindowReplaceEnvelopeHook(
         input.from,
         input.to,
       );
+      const storyAggregateByBucket =
+        await computeOverlappingBucketStoryAggregates(
+          authClient,
+          customerPool,
+          input.customerId,
+          tz,
+        );
       await dirtyPeriodicStatesOverlapping(
         authClient,
         input.customerId,
         input.from,
         input.to,
         eventCountByBucket,
+        storyAggregateByBucket,
       );
     } finally {
       authClient.release();
@@ -274,6 +283,91 @@ async function computeOverlappingBucketCounts(
   const out = new Map<string, number>();
   for (const r of counts) {
     out.set(`${r.period}|${r.bucket_date}`, Number(r.cnt));
+  }
+  return out;
+}
+
+/**
+ * Round-12 review item 1: per-bucket post-commit story aggregates for
+ * every DAILY / WEEKLY / MONTHLY `periodic_report_state` row in the
+ * customer's tz (NOT scoped to the envelope range — the dirty UPDATE
+ * uses its own overlap predicate). Bucket enumeration comes from the
+ * auth-DB state rows, the same way `computeOverlappingBucketCounts`
+ * enumerates buckets, so a story-side delete-only envelope that leaves
+ * a bucket with zero overlapping stories still reaches the
+ * `story_count = 0` reset.
+ *
+ * Latest-version semantics match `loadPerBucketStoryAggregates` in
+ * reconcile: only each `(story_id)`'s `MAX(received_at)` version
+ * participates, so superseded versions do not double-count or skew
+ * the max.
+ */
+async function computeOverlappingBucketStoryAggregates(
+  authClient: import("pg").PoolClient,
+  customerPool: Pool,
+  customerId: string,
+  tz: string,
+): Promise<Map<string, PeriodicEnvelopeStoryAggregate>> {
+  const { rows: keys } = await authClient.query<{
+    period: string;
+    bucket_date: string;
+  }>(
+    `SELECT period, bucket_date::text AS bucket_date
+       FROM periodic_report_state
+      WHERE customer_id = $1
+        AND tz          = $2
+        AND status IN ('ready', 'dirty')
+        AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
+    [customerId, tz],
+  );
+  if (keys.length === 0) return new Map();
+  const periods = keys.map((k) => k.period);
+  const dates = keys.map((k) => k.bucket_date);
+  const { rows } = await customerPool.query<{
+    period: string;
+    bucket_date: string;
+    max_rcv: Date | null;
+    cnt: string;
+  }>(
+    `WITH targets(period, bucket_date, bucket_start, bucket_end) AS (
+       SELECT p, d::date,
+              (d::date::timestamp) AT TIME ZONE $1,
+              (CASE p
+                 WHEN 'DAILY'   THEN d::date::timestamp + INTERVAL '1 day'
+                 WHEN 'WEEKLY'  THEN d::date::timestamp + INTERVAL '1 week'
+                 WHEN 'MONTHLY' THEN d::date::timestamp + INTERVAL '1 month'
+               END) AT TIME ZONE $1
+         FROM unnest($2::text[], $3::date[]) AS u(p, d)
+     ),
+     latest_story AS (
+       SELECT story_id, MAX(received_at) AS max_rcv
+         FROM story
+         GROUP BY story_id
+     ),
+     latest_versions AS (
+       SELECT s.story_id, s.time_window_start, s.time_window_end,
+              s.received_at
+         FROM story s
+         JOIN latest_story ls
+           ON ls.story_id = s.story_id AND ls.max_rcv = s.received_at
+     )
+     SELECT t.period,
+            t.bucket_date::text AS bucket_date,
+            MAX(lv.received_at)         AS max_rcv,
+            COUNT(DISTINCT lv.story_id)::text AS cnt
+       FROM targets t
+       LEFT JOIN latest_versions lv
+         ON lv.time_window_start < t.bucket_end
+        AND lv.time_window_end   > t.bucket_start
+      GROUP BY t.period, t.bucket_date`,
+    [tz, periods, dates],
+  );
+  const out = new Map<string, PeriodicEnvelopeStoryAggregate>();
+  for (const r of rows) {
+    out.set(`${r.period}|${r.bucket_date}`, {
+      maxReceivedAt: r.max_rcv,
+      count: Number(r.cnt),
+    });
   }
   return out;
 }
