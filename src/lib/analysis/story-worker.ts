@@ -34,6 +34,7 @@ import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { AnalyzeStoryDocument } from "@/lib/graphql/__generated__/analyze-story";
 import { graphqlRequest } from "@/lib/graphql/client";
+import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import {
   type FactorAxis,
   type FilterFactorsResult,
@@ -949,6 +950,7 @@ export async function recoverStuckStoryJobs(authPool: Pool): Promise<void> {
 export async function seedRealStoryJobs(
   authClient: PoolClient,
   batchSize: number,
+  nowIso: string = getCurrentTimestamp().toISOString(),
 ): Promise<void> {
   const { rows: actionable } = await authClient.query<{
     customer_id: string;
@@ -987,7 +989,7 @@ export async function seedRealStoryJobs(
                 last_error = NULL,
                 processing_started_at = NULL,
                 dry_run = FALSE,
-                updated_at = NOW()
+                updated_at = $6::timestamptz
           WHERE customer_id = $1 AND story_id = $2::bigint
             AND lang = $3 AND model_name = $4 AND model = $5`,
         [
@@ -996,22 +998,25 @@ export async function seedRealStoryJobs(
           WORKER_LANG,
           WORKER_MODEL_NAME,
           WORKER_MODEL,
+          nowIso,
         ],
       );
       await authClient.query(
         `UPDATE story_analysis_state
-            SET status = 'ready', last_ready_at = NOW(), updated_at = NOW()
+            SET status = 'ready',
+                last_ready_at = $3::timestamptz,
+                updated_at = $3::timestamptz
           WHERE customer_id = $1 AND story_id = $2::bigint AND status = 'dirty'`,
-        [row.customer_id, row.story_id],
+        [row.customer_id, row.story_id, nowIso],
       );
       continue;
     }
     await authClient.query(
       `INSERT INTO story_analysis_job
          (customer_id, story_id, lang, model_name, model,
-          status, generation, dry_run)
+          status, generation, dry_run, created_at, updated_at)
        VALUES ($1, $2::bigint, $3, $4, $5,
-               'queued', 1, FALSE)
+               'queued', 1, FALSE, $6::timestamptz, $6::timestamptz)
        ON CONFLICT (customer_id, story_id, lang, model_name, model)
        DO NOTHING`,
       [
@@ -1020,6 +1025,7 @@ export async function seedRealStoryJobs(
         WORKER_LANG,
         WORKER_MODEL_NAME,
         WORKER_MODEL,
+        nowIso,
       ],
     );
   }

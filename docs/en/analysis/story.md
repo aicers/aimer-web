@@ -19,7 +19,9 @@ within a customer. Opening a story-scoped URL without the customer
 segment would resolve to the wrong story when the tab's selected
 customer differs from the story's owner.
 
-![Story analysis page with priority badge, factor chips, and TTP chips](../assets/story-detail.en.png)
+<!-- Screenshot pending: a UI capture of the story analysis page
+(priority badge, factor chips, TTP chips) will be added in the
+follow-up PR that extends `e2e/capture-manual-screenshots.spec.ts`. -->
 
 ## How a story enters analysis
 
@@ -133,7 +135,8 @@ blocked at write time and never reaches this view.
 Operators with `analyses:configure` can rerun the analysis manually via
 the **Regenerate** button at the bottom of the page.
 
-![Confirmation modal explaining the cost of a regenerate request](../assets/story-regenerate-modal.en.png)
+<!-- Screenshot pending: the regenerate confirmation modal will be
+captured in the follow-up PR. -->
 
 The confirmation modal explicitly mentions that a fresh LLM call is
 issued and the latest generation is superseded once the new result
@@ -178,4 +181,5 @@ summary so the aice-web-next badge cannot leak details of the
 analysis. To filter stories by TTP, use the aimer-web overview list at
 `/analysis` rather than the badge.
 
-![aice-web-next badge consuming the story summary endpoint](../assets/story-summary-badge.en.png)
+<!-- Screenshot pending: the aice-web-next deep-link badge will be
+captured in the follow-up PR. -->

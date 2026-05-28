@@ -166,7 +166,7 @@ async function tickStoryStates(
   // 2. Seed real (non-dry-run) `queued` jobs for every actionable
   //    state row. See `seedRealStoryJobs` for the same NOT-EXISTS /
   //    SKIP-LOCKED rules previously inlined here.
-  await seedRealStoryJobs(client, BATCH_SIZE);
+  await seedRealStoryJobs(client, BATCH_SIZE, nowIso);
 }
 
 // ---------------------------------------------------------------------------

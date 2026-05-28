@@ -17,7 +17,9 @@
 세그먼트 없이 스토리 범위 URL을 열면, 탭에서 선택된 고객이 스토리 소유자와
 다른 경우 잘못된 스토리로 해석될 수 있습니다.
 
-![우선순위 배지, 점수 근거 칩, TTP 칩이 표시된 스토리 분석 페이지](../assets/story-detail.ko.png)
+<!-- 스크린샷 추가 예정: 스토리 분석 페이지(우선순위 배지, 점수 근거
+칩, TTP 칩)의 캡처는 `e2e/capture-manual-screenshots.spec.ts`를 확장
+하는 후속 PR에서 추가됩니다. -->
 
 ## 스토리가 분석에 진입하는 방식
 
@@ -119,7 +121,8 @@ LLM 분석 텍스트가 표시됩니다. 토큰 네임스페이싱은 LLM이 멤
 `analyses:configure` 권한을 가진 운영자는 페이지 하단의 **Regenerate**
 버튼으로 분석을 수동으로 다시 실행할 수 있습니다.
 
-![재생성 요청의 비용을 설명하는 확인 모달](../assets/story-regenerate-modal.ko.png)
+<!-- 스크린샷 추가 예정: 재생성 확인 모달의 캡처는 후속 PR에서
+추가됩니다. -->
 
 확인 모달은 새 LLM 호출이 발생하며 새 결과가 도착하면 최신 세대가
 슈퍼시드된다는 점을 명시합니다. 이전 결과 행은 `superseded_at`
@@ -164,4 +167,5 @@ GET /api/customers/{customerId}/analysis/story/{storyId}/summary
 못하도록 요약에서 제외됩니다. TTP로 스토리를 필터링하려면 배지가 아니라
 aimer-web의 `/analysis` 개요 목록을 사용하세요.
 
-![스토리 요약 엔드포인트를 사용하는 aice-web-next 배지](../assets/story-summary-badge.ko.png)
+<!-- 스크린샷 추가 예정: 스토리 요약 엔드포인트를 사용하는
+aice-web-next 배지의 캡처는 후속 PR에서 추가됩니다. -->
