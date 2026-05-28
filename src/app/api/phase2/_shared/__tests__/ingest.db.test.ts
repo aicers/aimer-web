@@ -29,6 +29,7 @@ const {
   ingestPolicyRun: _ingestPolicyRun,
   ingestStoryBatch: _ingestStoryBatch,
 } = await import("../ingest");
+const { storyBatchSchema } = await import("../schemas");
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID_CUSTOMER = 1002;
@@ -174,6 +175,7 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
             },
             score: 0.7,
             summary_payload: {},
+            known_ioc_hit: false,
             members: [
               {
                 event_key: "1",
@@ -207,6 +209,62 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
       expect(replay.membersDuplicates).toBe(1);
     });
 
+    it("round-trips known_ioc_hit=true to the story column (#330)", async () => {
+      const payload = {
+        external_key: "ext-1",
+        source_aice_id: "aice-1",
+        stories: [
+          {
+            story_id: "5200",
+            story_version: "v1",
+            kind: "auto_correlated" as const,
+            time_window: {
+              start: "2026-01-02T03:00:00Z",
+              end: "2026-01-02T03:10:00Z",
+            },
+            summary_payload: {},
+            known_ioc_hit: true,
+            members: [],
+          },
+        ],
+      };
+      await ingestStoryBatch(pool, payload, "aice-1");
+      const { rows } = await pool.query<{ known_ioc_hit: boolean }>(
+        "SELECT known_ioc_hit FROM story WHERE story_id = 5200",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].known_ioc_hit).toBe(true);
+    });
+
+    it("defaults known_ioc_hit to false when omitted from the payload (#330)", async () => {
+      // Wire shape: `known_ioc_hit` absent. Parse via the schema so the
+      // default-true wiring of the producer is exercised against the
+      // post-parse payload (matches the production handler path).
+      const payload = storyBatchSchema.parse({
+        external_key: "ext-1",
+        source_aice_id: "aice-1",
+        stories: [
+          {
+            story_id: "5201",
+            story_version: "v1",
+            kind: "auto_correlated",
+            time_window: {
+              start: "2026-01-02T03:00:00Z",
+              end: "2026-01-02T03:10:00Z",
+            },
+            summary_payload: {},
+            members: [],
+          },
+        ],
+      });
+      await ingestStoryBatch(pool, payload, "aice-1");
+      const { rows } = await pool.query<{ known_ioc_hit: boolean }>(
+        "SELECT known_ioc_hit FROM story WHERE story_id = 5201",
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].known_ioc_hit).toBe(false);
+    });
+
     it("accepts mixed story_version values in a single batch", async () => {
       const payload = {
         external_key: "ext-1",
@@ -220,6 +278,7 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
               end: "2026-01-02T03:10:00Z",
             },
             summary_payload: {},
+            known_ioc_hit: false,
             members: [],
           },
           {
@@ -231,6 +290,7 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
               end: "2026-01-02T03:10:00Z",
             },
             summary_payload: {},
+            known_ioc_hit: false,
             members: [],
           },
         ],

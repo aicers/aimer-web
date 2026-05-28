@@ -47,8 +47,8 @@ export function computePriorityTier(
   return MATRIX[s][l];
 }
 
-// RFC 0002 Phase 1 (#296) — likelihood-floor signals applied at the
-// matrix-lookup site (NOT persisted; the on-disk `likelihood_score`
+// RFC 0002 Phase 1 (#296, #330) — likelihood-floor signals applied at
+// the matrix-lookup site (NOT persisted; the on-disk `likelihood_score`
 // always holds the raw LLM value so calibration data and the floor
 // policy stay revisable without rewriting history).
 //
@@ -56,9 +56,8 @@ export function computePriorityTier(
 //   - `memberCount` = COUNT(*) over `story_member` rows for the
 //      canonical (story_id, story_version). The `story` schema has no
 //      precomputed count column.
-//   - `knownIocHit` = FALSE for Phase 1. The floor is wired but always
-//      receives `false`; the producer-side signal lands as a follow-up
-//      once the upstream column / JSON path is defined.
+//   - `knownIocHit` = `story.known_ioc_hit` for the canonical story
+//      version, populated at ingest time from the Phase 2 payload.
 export interface LikelihoodSignals {
   knownIocHit: boolean;
   memberCount: number;

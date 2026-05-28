@@ -450,11 +450,11 @@ export async function executeWindowReplace(
         `INSERT INTO story (
            story_id, story_version, kind, correlation_rule_id, primary_asset,
            time_window_start, time_window_end, score,
-           summary_payload, source_aice_id
+           summary_payload, known_ioc_hit, source_aice_id
          ) VALUES (
            $1::bigint, $2, $3, $4, $5,
            $6, $7, $8,
-           $9::jsonb, $10
+           $9::jsonb, $10, $11
          )`,
         [
           story.story_id,
@@ -466,6 +466,7 @@ export async function executeWindowReplace(
           story.time_window.end,
           story.score ?? null,
           JSON.stringify(story.summary_payload),
+          story.known_ioc_hit ?? false,
           sourceAiceId,
         ],
       );

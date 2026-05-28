@@ -285,6 +285,29 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     expect(byName.get("redaction_policy_version")).toBe("text");
   });
 
+  it("story.known_ioc_hit is BOOLEAN NOT NULL DEFAULT FALSE (#330)", async () => {
+    // Locks the column shape so a future edit to the CREATE TABLE
+    // cannot silently change nullability / default / type. The floor
+    // policy in applyLikelihoodFloors treats `false` as the
+    // signal-absent state — relaxing NOT NULL would let the worker
+    // read `null` and the floor would silently never fire.
+    const { rows } = await pool.query<{
+      data_type: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'story'
+          AND column_name = 'known_ioc_hit'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].data_type).toBe("boolean");
+    expect(rows[0].is_nullable).toBe("NO");
+    expect(rows[0].column_default).toContain("false");
+  });
+
   it("adds redaction_policy_version to baseline_event and story_member but not story / policy_run", async () => {
     const { rows } = await pool.query<{
       table_name: string;
