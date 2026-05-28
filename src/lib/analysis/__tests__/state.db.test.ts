@@ -531,12 +531,16 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(jobs.count).toBe(0);
   });
 
+  // `recordBaselineActivity` filters the input events through the SQL
+  // predicate `t >= NOW() - INTERVAL '24 hours' AND t < NOW()` (state.ts
+  // round-20 review item 1), where NOW() is the live database clock —
+  // the test file does not mock the time seam. A fixed fixture date
+  // therefore falls outside the rolling LIVE window once enough
+  // wall-clock time elapses, which is exactly how this test broke when
+  // CI ran ~28h after the original 2026-05-27T08:00:00Z fixture. Stamp
+  // the event one hour before the real `Date.now()` so the assertion
+  // round-trips against the same instant the worker just observed.
   it("recordBaselineActivity seeds a ready LIVE periodic_report_state row", async () => {
-    // The LIVE seed in `recordBaselineActivity` filters events to the
-    // trailing 24h window with SQL `NOW() - INTERVAL '24 hours'`. Tests
-    // that hard-coded an absolute event_time silently expired once
-    // wall-clock drifted past 24h after that timestamp; use a relative
-    // time that always lands inside the rolling LIVE window.
     const eventTime = new Date(Date.now() - 60 * 60 * 1000);
     const client = await pool.connect();
     try {
