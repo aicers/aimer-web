@@ -436,7 +436,7 @@ export async function processStoryJob(
   const flooredLikelihood = applyLikelihoodFloors(
     aimerResponse.likelihoodScore,
     {
-      knownIocHit: false,
+      knownIocHit: canonical.knownIocHit,
       memberCount: canonical.members.length,
     },
   );
@@ -503,6 +503,7 @@ export async function processStoryJob(
 interface CanonicalMembers {
   storyVersion: string;
   sourceAiceId: string;
+  knownIocHit: boolean;
   members: StoryMemberRow[];
 }
 
@@ -514,8 +515,9 @@ async function loadCanonicalMembers(
   const storyRow = await customerPool.query<{
     story_version: string;
     source_aice_id: string;
+    known_ioc_hit: boolean;
   }>(
-    `SELECT story_version, source_aice_id
+    `SELECT story_version, source_aice_id, known_ioc_hit
        FROM story
       WHERE story_id = $1::bigint
       ORDER BY received_at DESC
@@ -523,7 +525,7 @@ async function loadCanonicalMembers(
     [storyId],
   );
   if (storyRow.rows.length === 0) return null;
-  const { story_version, source_aice_id } = storyRow.rows[0];
+  const { story_version, source_aice_id, known_ioc_hit } = storyRow.rows[0];
 
   const memberRows = await customerPool.query<StoryMemberRow>(
     `SELECT story_id::text          AS story_id,
@@ -542,6 +544,7 @@ async function loadCanonicalMembers(
   return {
     storyVersion: story_version,
     sourceAiceId: source_aice_id,
+    knownIocHit: known_ioc_hit,
     members: memberRows.rows,
   };
 }

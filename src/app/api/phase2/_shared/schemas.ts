@@ -131,6 +131,7 @@ export const storySchema = z.object({
   }),
   score: z.number().nullable().optional(),
   summary_payload: jsonObject,
+  known_ioc_hit: z.boolean().optional().default(false),
   members: z.array(storyMemberSchema),
 });
 export type Story = z.infer<typeof storySchema>;

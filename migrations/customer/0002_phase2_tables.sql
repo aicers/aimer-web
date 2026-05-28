@@ -62,6 +62,7 @@ CREATE TABLE story (
     time_window_end     TIMESTAMPTZ   NOT NULL,
     score               DOUBLE PRECISION,
     summary_payload     JSONB         NOT NULL,
+    known_ioc_hit       BOOLEAN       NOT NULL DEFAULT FALSE,
     source_aice_id      TEXT          NOT NULL,
     received_at         TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     PRIMARY KEY (story_id, story_version)

@@ -94,6 +94,7 @@ const story = (
   kind,
   time_window: { start, end },
   summary_payload: {},
+  known_ioc_hit: false,
   members: [],
 });
 
@@ -354,6 +355,50 @@ describe.skipIf(!hasPostgres)("executeWindowReplace — story", () => {
       "SELECT 1 FROM story WHERE story_id = 77",
     );
     expect(rowCount).toBe(1);
+  });
+
+  it("round-trips known_ioc_hit on the refresh/backfill path (#330)", async () => {
+    // The window-replace path is a separate INSERT site from
+    // `ingestStoryBatch`; omitting known_ioc_hit here would silently
+    // default backfilled rows to FALSE and disable the floor for the
+    // refresh/backfill path. Cover both true and omitted-(default)
+    // false through the same code path.
+    const result = await executeWindowReplace(
+      pool,
+      {
+        external_key: "ext",
+        window: {
+          kind: "story",
+          from: "2026-08-01T00:00:00Z",
+          to: "2026-08-01T01:00:00Z",
+        },
+        stories: [
+          {
+            ...story(
+              "8800",
+              "v1",
+              "2026-08-01T00:10:00Z",
+              "2026-08-01T00:20:00Z",
+            ),
+            known_ioc_hit: true,
+          },
+          story("8801", "v1", "2026-08-01T00:30:00Z", "2026-08-01T00:40:00Z"),
+        ],
+      },
+      "aice-1",
+    );
+    expect(result.counts.accepted).toBe(2);
+
+    const { rows } = await pool.query<{
+      story_id: string;
+      known_ioc_hit: boolean;
+    }>(
+      "SELECT story_id::text AS story_id, known_ioc_hit FROM story WHERE story_id IN (8800, 8801) ORDER BY story_id",
+    );
+    expect(rows).toEqual([
+      { story_id: "8800", known_ioc_hit: true },
+      { story_id: "8801", known_ioc_hit: false },
+    ]);
   });
 
   it("serializes concurrent same-window refreshes via the advisory lock", async () => {

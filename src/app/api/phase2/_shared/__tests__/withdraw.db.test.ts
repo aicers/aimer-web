@@ -142,6 +142,7 @@ describe.skipIf(!hasPostgres)("executeWithdraw", () => {
               end: "2026-01-02T02:00:00Z",
             },
             summary_payload: {},
+            known_ioc_hit: false,
             members: [
               { event_key: "1", role: "primary", event: {} },
               { event_key: "2", role: "context", event: {} },
@@ -297,6 +298,7 @@ describe.skipIf(!hasPostgres)("executeWithdraw", () => {
               end: "2026-01-02T02:00:00Z",
             },
             summary_payload: {},
+            known_ioc_hit: false,
             members: [],
           },
         ],

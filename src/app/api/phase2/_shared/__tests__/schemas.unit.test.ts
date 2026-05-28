@@ -100,6 +100,53 @@ describe("storyBatchSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("accepts a story omitting known_ioc_hit and defaults it to false", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "1",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.stories[0].known_ioc_hit).toBe(false);
+    }
+  });
+
+  it("accepts a story with known_ioc_hit=true and round-trips it", () => {
+    const result = storyBatchSchema.safeParse({
+      external_key: "ext-1",
+      stories: [
+        {
+          story_id: "1",
+          story_version: "v1",
+          kind: "auto_correlated",
+          time_window: {
+            start: "2026-01-02T03:04:05Z",
+            end: "2026-01-02T03:14:05Z",
+          },
+          summary_payload: {},
+          known_ioc_hit: true,
+          members: [],
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.stories[0].known_ioc_hit).toBe(true);
+    }
+  });
+
   it("rejects a JSON-number story_id (RFC requires stringified BIGINT)", () => {
     const result = storyBatchSchema.safeParse({
       external_key: "ext-1",

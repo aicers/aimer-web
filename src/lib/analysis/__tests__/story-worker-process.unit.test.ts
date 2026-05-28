@@ -92,9 +92,20 @@ function baseJob() {
   };
 }
 
-function goodMembersQuery(): Array<unknown> {
+function goodMembersQuery(
+  opts: { knownIocHit?: boolean } = {},
+): Array<unknown> {
+  const knownIocHit = opts.knownIocHit ?? false;
   return [
-    { rows: [{ story_version: "v1", source_aice_id: "aice-1" }] },
+    {
+      rows: [
+        {
+          story_version: "v1",
+          source_aice_id: "aice-1",
+          known_ioc_hit: knownIocHit,
+        },
+      ],
+    },
     {
       rows: [
         {
@@ -204,6 +215,88 @@ describe("processStoryJob — happy path", () => {
   });
 });
 
+describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Score pair chosen so the floor crosses a 2-tier boundary:
+  //   severity=0.85, raw likelihood=0.3 → buckets (3, 0) → MEDIUM
+  //   floored likelihood=0.95            → buckets (3, 3) → CRITICAL
+  // The on-disk `likelihood_score` always holds the raw value (0.3),
+  // never the floored one — that is the calibration-preserving
+  // invariant from RFC 0002 §"Priority tiering".
+  const SEVERITY = 0.85;
+  const RAW_LIKELIHOOD = 0.3;
+
+  it("known_ioc_hit=false: floor does not fire, tier=MEDIUM, raw likelihood stored", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery({ knownIocHit: false })],
+      clientQueryPlan: [{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }],
+    });
+    const callAnalyzeStory = async () => ({
+      ...goodAimerResponse(),
+      severityScore: SEVERITY,
+      likelihoodScore: RAW_LIKELIHOOD,
+    });
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    expect(insertCall).toBeDefined();
+    // params: ..., $9 severity_score, $10 likelihood_score, ..., $14 priority_tier
+    expect(insertCall?.params?.[8]).toBe(SEVERITY);
+    expect(insertCall?.params?.[9]).toBe(RAW_LIKELIHOOD);
+    expect(insertCall?.params?.[13]).toBe("MEDIUM");
+  });
+
+  it("known_ioc_hit=true: floor raises likelihood to 0.95, tier=CRITICAL, raw likelihood still stored", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery({ knownIocHit: true })],
+      clientQueryPlan: [{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }],
+    });
+    const callAnalyzeStory = async () => ({
+      ...goodAimerResponse(),
+      severityScore: SEVERITY,
+      likelihoodScore: RAW_LIKELIHOOD,
+    });
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    expect(insertCall).toBeDefined();
+    // The floor is matrix-lookup-only; the on-disk likelihood_score
+    // remains the raw LLM value (0.3), never the floored 0.95.
+    expect(insertCall?.params?.[8]).toBe(SEVERITY);
+    expect(insertCall?.params?.[9]).toBe(RAW_LIKELIHOOD);
+    expect(insertCall?.params?.[13]).toBe("CRITICAL");
+  });
+});
+
 describe("processStoryJob — result-row probe", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -280,7 +373,15 @@ describe("processStoryJob — redaction-policy precondition", () => {
     const customerPool = makePool({
       queryPlan: [
         { rows: [] }, // probe
-        { rows: [{ story_version: "v1", source_aice_id: "aice-1" }] },
+        {
+          rows: [
+            {
+              story_version: "v1",
+              source_aice_id: "aice-1",
+              known_ioc_hit: false,
+            },
+          ],
+        },
         {
           rows: [
             {
@@ -321,7 +422,15 @@ describe("processStoryJob — redaction-policy precondition", () => {
     const customerPool = makePool({
       queryPlan: [
         { rows: [] },
-        { rows: [{ story_version: "v1", source_aice_id: "aice-1" }] },
+        {
+          rows: [
+            {
+              story_version: "v1",
+              source_aice_id: "aice-1",
+              known_ioc_hit: false,
+            },
+          ],
+        },
         {
           rows: [
             {
