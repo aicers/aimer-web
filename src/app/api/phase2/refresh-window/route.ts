@@ -3,6 +3,7 @@ import {
   applyWindowReplaceStoryHook,
 } from "@/lib/analysis/ingest-hooks";
 import { getAuthPool } from "@/lib/db/client";
+import { loadCustomerRanges } from "@/lib/redaction";
 import { createPhase2MutationHandler } from "../_shared/mutation-handler";
 import {
   executeWindowReplace,
@@ -15,10 +16,14 @@ export const POST = createPhase2MutationHandler({
   auditTargetType: "phase2_refresh_window",
   successAction: "phase2.refresh_window",
   mutate: async (customerPool, verified, payload) => {
+    const authPool = getAuthPool();
+    const ranges = await loadCustomerRanges(authPool, verified.customerId);
     const { counts, extras } = await executeWindowReplace(
       customerPool,
       payload,
+      verified.customerId,
       verified.envelopeClaims.aiceId,
+      ranges,
     );
     // RFC 0002 Phase 0 (#294) — best-effort analysis state hooks.
     // Failure is logged and swallowed (decision 2).
@@ -32,7 +37,6 @@ export const POST = createPhase2MutationHandler({
     // story-only refresh left a stale periodic report ready/done
     // indefinitely — reconcile's periodic dirty signals are
     // baseline-only and could not recover that case.
-    const authPool = getAuthPool();
     // Round-19 review item 1: forward pre-mutation source-time-aligned
     // LIVE overlap flags captured inside the customer-DB transaction.
     // The post-commit EXISTS-based LIVE touched checks miss delete-only

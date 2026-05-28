@@ -1,13 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "@/lib/db/client";
-import {
-  ENGINE_VERSION,
-  type RangeSet,
-  RedactionInjectivityError,
-  readMapWithLock,
-  redact,
-  writeMap,
-} from "@/lib/redaction";
+import type { RangeSet } from "@/lib/redaction";
+import { redactAndMaybeUpsertMap } from "./redaction";
 import type { BaselineBatch, PolicyRunPayload, StoryBatch } from "./schemas";
 
 export interface IngestCounts {
@@ -53,64 +47,6 @@ export interface BaselineIngestExtras {
  */
 export interface StoryIngestExtras {
   storyArrivals: Array<{ storyId: string; arrivedAt: Date }>;
-}
-
-interface RedactionContext {
-  customerId: string;
-  aiceId: string;
-  eventKey: string;
-  ranges: RangeSet;
-  client: PoolClient;
-}
-
-/**
- * Redact one Phase 2 event payload and UPSERT the matching
- * `event_redaction_map` row when needed (engine merged new entities
- * OR the row did not exist yet — second clause keeps the "every
- * ingested event has a map row" invariant from RFC 0001).
- *
- * Returns the redacted payload plus the
- * `engine:<semver>|ranges:<sha256-short>` policy version to stamp on
- * the referent row.
- */
-async function redactAndMaybeUpsertMap(
-  payload: unknown,
-  ctx: RedactionContext,
-): Promise<{ redacted: unknown; policyVersion: string }> {
-  const existing = await readMapWithLock(
-    ctx.client,
-    ctx.customerId,
-    ctx.aiceId,
-    ctx.eventKey,
-  );
-  let out: ReturnType<typeof redact>;
-  try {
-    out = redact({
-      payload,
-      existingMap: existing ?? {},
-      ranges: ctx.ranges,
-      engineVersion: ENGINE_VERSION,
-    });
-  } catch (err) {
-    // Engine has no per-event context — attach the failing
-    // event_key so the route handler's
-    // `redaction.injectivity_violation` audit can identify the
-    // `(aice_id, event_key)` map row that needs investigation.
-    if (err instanceof RedactionInjectivityError) {
-      err.eventKey = ctx.eventKey;
-    }
-    throw err;
-  }
-  if (existing === null || out.mapChanged) {
-    await writeMap(
-      ctx.client,
-      ctx.customerId,
-      ctx.aiceId,
-      ctx.eventKey,
-      out.mergedMap,
-    );
-  }
-  return { redacted: out.redacted, policyVersion: out.policyVersion };
 }
 
 // ---------------------------------------------------------------------------

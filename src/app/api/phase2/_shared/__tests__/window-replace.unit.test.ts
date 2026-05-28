@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { windowReplacePayloadSchema } from "../window-replace";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+const { windowReplacePayloadSchema } = await import("../window-replace");
 
 const baseEvent = {
   event_key: "1",
