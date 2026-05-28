@@ -54,6 +54,13 @@ exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx,
 hallucination detected, mixed or missing redaction policy versions)
 mark the job `failed` immediately.
 
+Automatic dirty re-queues are bounded by `ANALYSIS_MAX_GENERATION`
+(default `50`): once a story's current generation is at the cap, the
+worker leaves the dirty state row alone and emits an
+`analysis.story_max_generation_reached` log line. Force regenerate is
+exempt from this cap — operators can always issue a fresh LLM call
+from the **Regenerate** button.
+
 ## Priority and scores
 
 The header section shows three score-related fields:
@@ -124,13 +131,17 @@ two-column grid:
 
 ## Analysis body
 
-The body shows the LLM analysis narrative with story-scope tokens
-(`<<REDACTED_*_E{i}_*>>`) preserved verbatim. The token namespacing
-prevents the LLM from accidentally merging entities across member
-events; the analyst UI keeps the tokens visible rather than
-substituting back to plaintext, which makes residual unmapped tokens
-(a hallucination signal) easy to spot. A hallucinated decode is
-blocked at write time and never reaches this view.
+The body shows the LLM analysis narrative with every story-scope
+token (`<<REDACTED_*_E{i}_*>>`) restored to its original plaintext
+entity. The token namespacing prevents the LLM from accidentally
+merging entities across member events while the analysis is being
+generated; on the rendering side, the loader parses each `E{i}`,
+looks up `(aice_id, event_key)` in `input_event_refs`, decrypts the
+referenced event's redaction map, and substitutes the original
+value. Tokens that cannot be restored (decrypt failure, missing map
+row, out-of-range index) are passed through unchanged so the page
+still renders. Hallucinated decodes are blocked at write time and
+never reach this view.
 
 ## Force regenerate
 

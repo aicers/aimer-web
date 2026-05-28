@@ -17,9 +17,10 @@
 //      `queued`.
 //
 // Persisting real `*_analysis_job` rows lets the 48h verification gate
-// observe dirty transitions (issue #294 decision 3). `dry_run=TRUE`
-// rows are not counted against `ANALYSIS_MAX_GENERATION` (Phase 1
-// concern; the cap is enforced by the real worker once it lands).
+// observe dirty transitions (issue #294 decision 3). The
+// `ANALYSIS_MAX_GENERATION` cap on automatic dirty re-queues is
+// enforced inside `seedRealStoryJobs` (story side); `dry_run=TRUE`
+// rows are not counted against it.
 //
 // Phase 1 (#296) deletes any leftover `dry_run=TRUE` rows in its own
 // migration before enabling LLM calls.

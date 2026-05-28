@@ -60,6 +60,10 @@ const DEFAULT_WORKER_ACCOUNT_ID = "system:analysis-worker";
 const DEFAULT_LANG = "ENGLISH";
 const DEFAULT_MODEL_NAME = "openai";
 const DEFAULT_MODEL = "gpt-4o";
+// RFC 0002 §"Force regenerate" guardrail — caps automatic dirty
+// re-queues. Force regeneration is intentionally allowed past this
+// cap (see `regenerate/route.ts`).
+const DEFAULT_MAX_GENERATION = 50;
 
 function resolveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -82,6 +86,10 @@ export const MAX_ATTEMPTS = resolveInt(
 export const PROCESSING_TIMEOUT_MINUTES = resolveInt(
   process.env.ANALYSIS_PROCESSING_TIMEOUT_MINUTES,
   DEFAULT_PROCESSING_TIMEOUT_MINUTES,
+);
+export const MAX_GENERATION = resolveInt(
+  process.env.ANALYSIS_MAX_GENERATION,
+  DEFAULT_MAX_GENERATION,
 );
 export const WORKER_ACCOUNT_ID =
   process.env.ANALYSIS_WORKER_ACCOUNT_ID ?? DEFAULT_WORKER_ACCOUNT_ID;
@@ -989,10 +997,18 @@ export async function seedRealStoryJobs(
   );
   for (const row of actionable) {
     if (row.status === "dirty") {
-      // Bump the existing job to a fresh queued generation. The worker
-      // tick picks it up immediately (attempts=0 short-circuits the
-      // backoff predicate).
-      await authClient.query(
+      // Bump the existing job to a fresh queued generation, but only
+      // if the current generation is below `ANALYSIS_MAX_GENERATION`.
+      // RFC 0002 §"Force regenerate" calls this guardrail out
+      // explicitly: dirty re-queue is capped to bound LLM spend on
+      // noisy stories that keep re-entering `dirty`; force regenerate
+      // (via the API endpoint) is intentionally exempt.
+      //
+      // We move the state row back to `ready` regardless — the
+      // pipeline is "done" until the next dirty transition, and
+      // leaving it stuck on `dirty` would make the seeding pass keep
+      // re-selecting it forever.
+      const bumped = await authClient.query<{ generation: number }>(
         `UPDATE story_analysis_job
             SET generation = generation + 1,
                 status = 'queued',
@@ -1002,7 +1018,9 @@ export async function seedRealStoryJobs(
                 dry_run = FALSE,
                 updated_at = $6::timestamptz
           WHERE customer_id = $1 AND story_id = $2::bigint
-            AND lang = $3 AND model_name = $4 AND model = $5`,
+            AND lang = $3 AND model_name = $4 AND model = $5
+            AND generation < $7
+          RETURNING generation`,
         [
           row.customer_id,
           row.story_id,
@@ -1010,8 +1028,20 @@ export async function seedRealStoryJobs(
           WORKER_MODEL_NAME,
           WORKER_MODEL,
           nowIso,
+          MAX_GENERATION,
         ],
       );
+      if (bumped.rowCount === 0) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            event: "analysis.story_max_generation_reached",
+            customer_id: row.customer_id,
+            story_id: row.story_id,
+            max_generation: MAX_GENERATION,
+          }),
+        );
+      }
       await authClient.query(
         `UPDATE story_analysis_state
             SET status = 'ready',
