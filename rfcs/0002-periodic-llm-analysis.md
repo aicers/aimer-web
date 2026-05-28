@@ -901,7 +901,7 @@ Verification gate: story-analysis quality validated. Passed via **either** path:
 
 - **(a) Operator-driven qualitative review**: 20–50 stories manually reviewed by an operator for quality; cost-per-story tracked; priority distribution sanity-checked (CRITICAL is neither 0% nor 90%).
 - **(b) AI-proxy review** (preferred when operator time is constrained): produces a markdown report at `docs/verification/phase-1-gate-{YYYY-MM-DD}.md` covering:
-  1. **Automated metrics**: priority-tier distribution across `story_analysis_result`; mean/median LLM token count per story (cost proxy); rates of `ai_analysis.factor_dropped`, `ai_analysis.ttp_tag_dropped`, `ai_analysis.hallucination_detected`.
+  1. **Automated metrics**: priority-tier distribution across `story_analysis_result`; rates of `ai_analysis.factor_dropped`, `ai_analysis.ttp_tag_dropped`, `ai_analysis.hallucination_detected` from the audit log. **Cost is not gated by path (b)**: LLM token usage is not on the GraphQL wire today (`StoryAnalysisResult` does not carry it, and `story_analysis_result` does not store it) so the proxy reports `mean/median tokens per story` only when aimer-side LLM call logs are accessible at gate-pass time — best-effort. When unavailable, the artifact records `cost_proxy_available: false` and dollar-cost tracking falls back to the path (a) operator-tracked concern. Neither high token usage nor missing token data fails the gate.
   2. **Narrative scoring on a stratified sample of 15–25 stories** (across CRITICAL/HIGH/MEDIUM/LOW), each scored on (i) prompt adherence (kill-chain / lateral-movement / attacker-hypothesis questions answered), (ii) factor articulation quality vs §"Score factor articulation" rules, (iii) TTP tag plausibility vs MITRE descriptions, (iv) narrative coherence (no contradictions, redaction tokens preserved verbatim, no plaintext PII leaks), (v) score calibration vs proxy intuition.
   3. **Issues flagged by severity** (BLOCKER / WARNING / NOTE) with proxy-recommended pass/fail.
   4. **Human spot-check** (≤ 30 min): reviewer scans the proxy report's findings, randomly samples 3–5 unflagged stories to catch proxy blind spots, stamps the gate-pass.
@@ -961,6 +961,15 @@ The **next** gate reverts to path (a) regardless of operator availability when *
 - (ii) the human added a BLOCKER-severity finding the proxy missed on any pass (a single missed blocker is sufficient to revert — proxy reliability is on the line, not just calibration).
 
 All four counts (`proxy_flagged`, `human_confirmed`, `human_overridden`, `human_added`) plus per-finding severity are recorded in each `docs/verification/phase-{N}-gate-{date}.md` artifact so the trail is auditable.
+
+**Zero-denominator case** — when `proxy_flagged == 0 && human_added == 0` (both proxy and human spot-check find nothing on this pass), the agreement metric is `0 / 0`. Treat this as **insufficient calibration data**, not as 100% agreement:
+
+- The pass itself counts as a successful gate pass (no issues found, gate passes normally).
+- The consecutive-pass counter for the shrink rule does **not** advance — this pass produces no signal to evaluate proxy reliability against.
+- The artifact records `agreement: null` with reason `"no findings on either side — pass succeeded but cumulative-confidence counter not advanced"`.
+- Counting it as 100% would let two trivially-clean gates chain into the shrink rule without any actual proxy validation, defeating the rule's purpose; counting it as 0% would unfairly punish a clean dataset. Neither is correct — the honest answer is "no data to score, hold the counter".
+
+Two consecutive **insufficient-calibration** passes still leave the next gate at full spot-check. The counter advances only when a path-(b) pass produces at least one finding to score (either side).
 
 ### Phase 4 — Polish
 
