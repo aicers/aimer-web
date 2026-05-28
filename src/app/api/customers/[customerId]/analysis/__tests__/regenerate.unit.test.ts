@@ -170,25 +170,32 @@ describe("story regenerate", () => {
     expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when the caller is not a member of customer_id", async () => {
-    // `authorize()` returns `{authorized: false}` without a reason
-    // for non-member / missing-permission rejections; the route
-    // serializes a generic `Forbidden`. This test pins the
-    // non-member branch explicitly so the stub-level contract is
-    // reviewable.
+  it("returns 404 story_not_found when the caller is not a member of customer_id", async () => {
+    // Non-member: `authorizeGeneral` returns `{authorized: false}`
+    // with no `permissions` field. Existence-hiding policy collapses
+    // this to 404 (RFC 0002 amendment, #333) — uniform with the page
+    // route and the summary endpoint.
     mockAuthorize.mockResolvedValue({ authorized: false });
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("story_not_found");
+  });
+
+  it("returns 403 when the caller is a member but lacks analyses:configure", async () => {
+    // Member: `authorizeGeneral` returns `{authorized: false,
+    // permissions: Set<...>}` when the caller holds membership but
+    // not the required permission key. Surfaces as a precise 403.
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      permissions: new Set(["analyses:read"]),
+    });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(403);
     const body = await res.json();
     expect(body.error).toBe("Forbidden");
-  });
-
-  it("returns 403 when the caller lacks analyses:configure", async () => {
-    mockAuthorize.mockResolvedValue({ authorized: false });
-    const { POST } = await import("../story/[storyId]/regenerate/route");
-    const res = await POST(storyRequest());
-    expect(res.status).toBe(403);
   });
 
   it("rejects tz with 400 invalid_param (story analysis is timezone-independent)", async () => {
@@ -286,8 +293,12 @@ describe("story regenerate", () => {
 
   it("rejects bridge sessions targeting a customer outside bridge scope", async () => {
     // Bridge scoped to OTHER_CUSTOMER_ID, request hits CUSTOMER_ID. Even
-    // ignoring the write-block, `authorize` returns unauthorized when
-    // `customerId` is not in `bridgeScope.customerIds`.
+    // ignoring the write-block, `authorize` returns
+    // `{authorized: false}` with no `reason` and no `permissions`
+    // when `customerId` is not in `bridgeScope.customerIds`. Under
+    // the existence-hiding policy (#333) the route collapses this
+    // to 404 — the bridge session must not be able to confirm whether
+    // a story id exists in a customer outside its scope.
     bridgeOverride.current = {
       bridgeAiceId: BRIDGE_AICE_ID,
       bridgeCustomerIds: [OTHER_CUSTOMER_ID],
@@ -295,7 +306,7 @@ describe("story regenerate", () => {
     mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
       "general",

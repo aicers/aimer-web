@@ -12,9 +12,14 @@
 //
 // Permission gate: `analyses:read` (analyst-readable). Bridge sessions
 // are allowed for reads; mirrors the report-summary contract.
+//
+// Non-member denials surface as `404 story_not_found` (existence-hiding
+// uniform with the page route — see RFC 0002 amendment, issue #333).
+// Bridge-not-allowed surfaces with its named reason at 403; a member
+// without the required permission gets a generic 403 Forbidden.
 
 import type { NextRequest } from "next/server";
-import { assertAuthorized } from "@/lib/auth/authorization";
+import { type AuthorizeResult, authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
@@ -60,8 +65,9 @@ export const GET = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let authResult: AuthorizeResult;
     try {
-      await assertAuthorized(
+      authResult = await authorize(
         client,
         "general",
         auth.accountId,
@@ -86,6 +92,22 @@ export const GET = withAuth(
       throw err;
     } finally {
       client.release();
+    }
+    if (!authResult.authorized) {
+      // Bridge-not-allowed leaks only session-type, not story
+      // existence — keep its 403 contract intact.
+      if (authResult.reason === "bridge_not_allowed") {
+        return Response.json(errorBody(authResult.reason), { status: 403 });
+      }
+      // Non-member: `permissions` is undefined because
+      // `authorizeGeneral` returns early before the permission set is
+      // built. Surface as 404 to hide story existence (uniform with
+      // the page route).
+      if (authResult.permissions === undefined) {
+        return Response.json(errorBody("story_not_found"), { status: 404 });
+      }
+      // Member without the required permission — precise 403.
+      return Response.json(errorBody("Forbidden"), { status: 403 });
     }
 
     // Read the latest non-superseded result for the default variant.

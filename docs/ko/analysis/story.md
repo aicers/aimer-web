@@ -96,6 +96,19 @@
   "점수는 기록되었지만 설명을 제공할 수 없음"을 의미하며, 입력 없이 LLM이
   실행되었다는 뜻은 아닙니다.
 
+`LOW` 등급 결과에서는 심각도와 신뢰도 점수 근거 칩 행이 각각 `Show
+severity factors` / `Show likelihood factors` 디스클로저 안으로 접혀,
+페이지가 칩 세부 대신 등급 배지, 점수, MITRE 칩을 먼저 보여줍니다.
+디스클로저는 네이티브 `<details>` 요소로 구현되어 키보드와 스크린
+리더 접근성을 그대로 따르며, 클릭 시 페이지를 떠나지 않고 인라인으로
+펼쳐집니다. `MEDIUM` 이상 등급에서는 트리아지에 칩 근거가 곧바로
+필요한 경우가 많으므로 칩 행을 항상 노출합니다.
+
+<!-- 스크린샷 추가 예정: #331 — `story-detail-low.{en,ko}.png`가
+`e2e/capture-manual-screenshots.spec.ts`로 캡처되어 이 자리 표시자를
+대체합니다. -->
+
+
 ## MITRE ATT&CK 기법
 
 우선순위 배지 옆에는 LLM이 스토리와 연관시킨 MITRE ATT&CK 기법 칩
@@ -156,7 +169,13 @@ POST /api/customers/{customerId}/analysis/story/{storyId}/regenerate
 - 작업 행의 `generation`이 1 증가합니다 (해당 변형의 이전 행이 없으면
   `1`로 시작). `status`는 `queued`, `attempts`는 `0`으로 초기화되며, 다음
   워커 틱부터 LLM 호출이 시작됩니다.
-- 브리지 세션과 `analyses:configure` 권한이 없는 계정은 `403`으로 거부됩니다.
+- 브리지 세션(`bridge_write_blocked`, `bridge_not_allowed`)과
+  `analyses:configure` 권한이 없는 멤버 계정은 `403`으로 거부되며,
+  거부 사유가 응답 본문에 포함됩니다. 해당 고객의 멤버가 아닌 호출자는
+  `404 story_not_found`를 받습니다. 따라서 이 엔드포인트는 호출자가
+  접근할 수 없는 고객에 대해 스토리 ID 존재 여부를 탐지하는 데
+  사용할 수 없습니다 (스토리 페이지와 요약 엔드포인트와 동일한
+  존재 은닉 정책).
 - 아카이브된 상태 행이나 정규 버전이 남아 있지 않은 스토리는 `409
   source_unavailable`를 반환하고, 알 수 없는 스토리는 `404
   story_not_found`를 반환합니다. 스토리 분석은 시간대 독립적이므로
@@ -181,6 +200,13 @@ GET /api/customers/{customerId}/analysis/story/{storyId}/summary
 메타데이터가 아니므로, aice-web-next 배지가 분석 세부 정보를 누설하지
 못하도록 요약에서 제외됩니다. TTP로 스토리를 필터링하려면 배지가 아니라
 aimer-web의 `/analysis` 개요 목록을 사용하세요.
+
+요약 엔드포인트는 페이지 및 재생성 라우트와 동일한 존재 은닉 정책을
+적용합니다. 고객의 멤버가 아닌 호출자는 `403`이 아니라 `404
+story_not_found`를 받으므로 배지 탐지가 고객 간 스토리 ID 열거에
+사용될 수 없습니다. `analyses:read` 권한이 없는 멤버는 명시적인
+`403 Forbidden`을, 엔드포인트가 즉시 거부한 브리지 세션은 `403
+bridge_not_allowed`를 받습니다.
 
 <!-- 스크린샷 추가 예정: 스토리 요약 엔드포인트를 사용하는
 aice-web-next 배지의 캡처는 후속 PR에서 추가됩니다. -->

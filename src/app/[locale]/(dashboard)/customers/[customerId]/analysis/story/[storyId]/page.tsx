@@ -44,6 +44,7 @@ export default async function StoryAnalysisPage({ params }: PageProps) {
 
   const data = outcome.data;
   const requestedAt = data.requestedAt.toISOString();
+  const collapseFactors = data.priorityTier === "LOW";
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -63,14 +64,18 @@ export default async function StoryAnalysisPage({ params }: PageProps) {
         </Field>
         <Field label="Severity score (if real, how bad)">
           <div>{data.severityScore.toFixed(3)}</div>
-          <FactorChipRow
+          <CollapsibleFactors
+            collapsed={collapseFactors}
+            summaryLabel="Show severity factors"
             factors={data.severityFactors}
             ariaLabel="severity-factors"
           />
         </Field>
         <Field label="Likelihood score (is it real)">
           <div>{data.likelihoodScore.toFixed(3)}</div>
-          <FactorChipRow
+          <CollapsibleFactors
+            collapsed={collapseFactors}
+            summaryLabel="Show likelihood factors"
             factors={data.likelihoodFactors}
             ariaLabel="likelihood-factors"
           />
@@ -139,6 +144,31 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
     >
       {tier}
     </span>
+  );
+}
+
+function CollapsibleFactors({
+  collapsed,
+  summaryLabel,
+  factors,
+  ariaLabel,
+}: {
+  collapsed: boolean;
+  summaryLabel: string;
+  factors: readonly string[];
+  ariaLabel: string;
+}) {
+  if (factors.length === 0) return null;
+  if (!collapsed) {
+    return <FactorChipRow factors={factors} ariaLabel={ariaLabel} />;
+  }
+  return (
+    <details data-testid={`${ariaLabel}-details`} className="mt-2">
+      <summary className="cursor-pointer text-xs text-muted-foreground">
+        {summaryLabel}
+      </summary>
+      <FactorChipRow factors={factors} ariaLabel={ariaLabel} />
+    </details>
   );
 }
 
