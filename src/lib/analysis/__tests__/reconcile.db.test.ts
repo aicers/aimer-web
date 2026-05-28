@@ -2143,13 +2143,20 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
       [delCustomer],
     );
 
-    // Minimal mock audit pool. Reconcile only invokes `query` against
-    // the audit pool with a single SELECT — anything else is unused.
+    // Minimal mock audit pool. Reconcile invokes `query` against the
+    // audit pool from two paths: (1) `loadAuditActiveCustomerIds` —
+    // the customer_redaction_ranges-aware active-customer scan we are
+    // asserting against here, and (2) `loadCursorAuditAggregate` —
+    // the issue #295 cursor watermark recovery scan. Capture only the
+    // active-scope query so the assertion below stays focused.
     let captured = "";
     const mockAuditPool = {
       query: async (sql: string) => {
-        captured = sql;
-        return { rows: [{ customer_id: delCustomer }] };
+        if (sql.includes("customer_redaction_ranges")) {
+          captured = sql;
+          return { rows: [{ customer_id: delCustomer }] };
+        }
+        return { rows: [] };
       },
     } as unknown as Pool;
 
@@ -2165,5 +2172,90 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(
       tickOutcome.customers.some((c) => c.customerId === delCustomer),
     ).toBe(true);
+  });
+
+  it("cursor recovery: newer soft beats older strict (round-2 review item 1)", async () => {
+    // Issue #295 round-2 review item 1. The cursor audit aggregate
+    // returns `MAX(cursorEventTime)` per quality. The recovery patch
+    // must collapse those two values to a single winning candidate
+    // (max timestamp wins; strict only breaks ties) before touching
+    // SQL. The pre-fix SQL evaluated the strict branch first, so a
+    // sequence like `strict @ 01:00` followed by `soft @ 02:00` left
+    // the row at `01:00 strict` on a NULL stored watermark — the
+    // worker would then shorten DAILY settle on stale strict data
+    // even though the latest known sender progress was soft.
+    const wmCustomer = "00000000-0000-0000-0000-0000000000c7";
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'recon-cwm', 'Cursor Watermark Recovery', 'active', 'Asia/Seoul')
+       ON CONFLICT (id) DO UPDATE SET database_status = 'active'`,
+      [wmCustomer],
+    );
+    // Seed a periodic row with NULL watermark — the worst case for
+    // the pre-fix ordering bug.
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES ($1, 'DAILY', '2026-05-27'::date, 'Asia/Seoul', 'pending')
+       ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
+         SET cursor_watermark = NULL,
+             cursor_watermark_quality = NULL,
+             status = 'pending'`,
+      [wmCustomer],
+    );
+
+    const olderStrict = "2026-05-28T01:00:00.000Z";
+    const newerSoft = "2026-05-28T02:00:00.000Z";
+
+    // Mock audit pool. `loadAuditActiveCustomerIds` queries by the
+    // `phase2.%`/`customer_redaction_ranges.%` action allowlist;
+    // `loadCursorAuditAggregate` queries by `phase2.ingest` and
+    // `details ? 'cursorEventTime'`. Match each by the SQL shape so
+    // the assertion stays focused.
+    const mockAuditPool = {
+      query: async (sql: string, params?: unknown[]) => {
+        if (sql.includes("max_strict") && sql.includes("max_soft")) {
+          if (params?.[0] === wmCustomer) {
+            return {
+              rows: [
+                {
+                  max_strict: new Date(olderStrict),
+                  max_soft: new Date(newerSoft),
+                },
+              ],
+            };
+          }
+          return { rows: [{ max_strict: null, max_soft: null }] };
+        }
+        if (
+          sql.includes("phase2.%") ||
+          sql.includes("customer_redaction_ranges")
+        ) {
+          return { rows: [{ customer_id: wmCustomer }] };
+        }
+        return { rows: [] };
+      },
+    } as unknown as Pool;
+
+    await reconcileCustomer(wmCustomer, "Asia/Seoul", {
+      authPool,
+      auditPool: mockAuditPool,
+      connectCustomer: makeDeps(authPool, customerPool).connectCustomer,
+    });
+
+    const { rows } = await authPool.query<{
+      cursor_watermark: Date | null;
+      cursor_watermark_quality: string | null;
+    }>(
+      `SELECT cursor_watermark, cursor_watermark_quality
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period = 'DAILY'
+          AND bucket_date = '2026-05-27'::date
+          AND tz = 'Asia/Seoul'`,
+      [wmCustomer],
+    );
+    expect(rows[0]?.cursor_watermark?.toISOString()).toBe(newerSoft);
+    expect(rows[0]?.cursor_watermark_quality).toBe("soft");
   });
 });

@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import type { Pool } from "pg";
 import type { z } from "zod";
-import { auditLog, UNKNOWN_ACTOR_ID } from "@/lib/audit";
+import { applyCursorWatermarkHook } from "@/lib/analysis/ingest-hooks";
+import { auditLog, auditLogOrThrow, UNKNOWN_ACTOR_ID } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import {
   EnvelopeVerificationError,
@@ -213,24 +214,84 @@ export function createPhase2BatchHandler<TSchema extends z.ZodTypeAny>(
         );
       }
 
+      // RFC 0002 Phase 0.5 (#295) — cursor watermark write. Forward-only
+      // customer-wide update of `periodic_report_state.cursor_watermark`
+      // / `_quality`. Fires only when the envelope carried both cursor
+      // claims (verified together by `verifyEventsEnvelope`). The hot
+      // path is best-effort like the other auth-DB state hooks: a
+      // failure is logged at error level and the customer-DB commit's
+      // normal 200 still flows back. Recovery on hook failure is the
+      // reconcile pass scanning the (awaited) `phase2.ingest` audit
+      // row written below (decision 9).
+      if (envelopeClaims.cursorEventTime && envelopeClaims.cursorQuality) {
+        try {
+          await applyCursorWatermarkHook(resolveAuthPool(), {
+            customerId,
+            cursorEventTime: envelopeClaims.cursorEventTime,
+            cursorQuality: envelopeClaims.cursorQuality,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[analysis-hook] cursor_watermark failed for customer ${customerId}: ${message}`,
+          );
+        }
+      }
+
       const receivedAt = new Date().toISOString();
 
       // 6. Audit (success only — failed ingests do NOT emit phase2.ingest).
-      void auditLog({
+      //
+      // RFC 0002 Phase 0.5 (#295) — when the envelope carried cursor
+      // claims, the `phase2.ingest` row is the reconcile recovery
+      // source for the watermark. Decision 9: the cursor-bearing write
+      // is awaited via `auditLogOrThrow` so a swallowed audit failure
+      // cannot silently lose the watermark advance; on failure we log
+      // at `error` with the cursor fields and still return 200 (the
+      // JTI is already consumed and a retry would hit 409). Other
+      // ingest call sites stay on fire-and-forget `auditLog` because
+      // their audit row carries no reconcile-critical payload.
+      const cursorEventTimeIso = envelopeClaims.cursorEventTime
+        ? envelopeClaims.cursorEventTime.toISOString()
+        : undefined;
+      const cursorQuality = envelopeClaims.cursorQuality;
+      const auditDetails: Record<string, unknown> = {
+        schemaVersion: envelopeClaims.schemaVersion,
+        accepted: counts.accepted,
+        duplicatesSkipped: counts.duplicatesSkipped,
+        eventCountClaim: envelopeClaims.eventCount,
+        ...(extraDetails ?? {}),
+        ...(cursorEventTimeIso ? { cursorEventTime: cursorEventTimeIso } : {}),
+        ...(cursorQuality ? { cursorQuality } : {}),
+      };
+      const auditParams = {
         actorId: contextClaims.sub,
-        action: "phase2.ingest",
+        action: "phase2.ingest" as const,
         targetType: config.auditTargetType,
-        details: {
-          schemaVersion: envelopeClaims.schemaVersion,
-          accepted: counts.accepted,
-          duplicatesSkipped: counts.duplicatesSkipped,
-          eventCountClaim: envelopeClaims.eventCount,
-          ...(extraDetails ?? {}),
-        },
+        details: auditDetails,
         customerId,
         aiceId: envelopeClaims.aiceId,
         correlationId: contextClaims.jti,
-      });
+      };
+      if (cursorEventTimeIso && cursorQuality) {
+        try {
+          await auditLogOrThrow(auditParams);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            "[phase2] cursor-bearing audit write failed; watermark advance for this batch may be lost until next envelope arrives:",
+            {
+              customerId,
+              contextJti: contextClaims.jti,
+              cursorEventTime: cursorEventTimeIso,
+              cursorQuality,
+              error: message,
+            },
+          );
+        }
+      } else {
+        void auditLog(auditParams);
+      }
 
       return NextResponse.json(
         {

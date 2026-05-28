@@ -1464,6 +1464,162 @@ async function reconcilePeriodicStates(
 // Per-customer driver
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cursor watermark forward-patch (RFC 0002 Phase 0.5 — issue #295)
+// ---------------------------------------------------------------------------
+
+const CURSOR_AUDIT_SCAN_HOURS = 24;
+
+interface CursorAuditAggregate {
+  maxStrict: Date | null;
+  maxSoft: Date | null;
+}
+
+/**
+ * Scan recent `phase2.ingest` audit rows for the customer and compute
+ * the max `cursorEventTime` per quality. The cursor-bearing handler
+ * (`createPhase2BatchHandler`) embeds these fields in the audit row's
+ * `details` JSONB on every successful ingest that carried cursor
+ * claims; this scan is the reconcile recovery channel when the
+ * customer-DB commit succeeded, the cursor-watermark hot-path write
+ * failed, AND no follow-on envelope advanced the row through its own
+ * hook (issue #295 decision 9 — residual fail-closed semantics).
+ *
+ * Scoped to the trailing `CURSOR_AUDIT_SCAN_HOURS` window. That window
+ * is intentionally wider than `ANALYSIS_RECONCILE_INTERVAL_MINUTES`
+ * (default 15min) so a transient audit-pool / reconcile-pool outage
+ * cannot drop a watermark advance.
+ */
+async function loadCursorAuditAggregate(
+  auditPool: Pool | undefined,
+  customerId: string,
+): Promise<CursorAuditAggregate> {
+  if (!auditPool) return { maxStrict: null, maxSoft: null };
+  try {
+    const { rows } = await auditPool.query<{
+      max_strict: Date | null;
+      max_soft: Date | null;
+    }>(
+      `SELECT
+         MAX((details->>'cursorEventTime')::timestamptz)
+           FILTER (WHERE details->>'cursorQuality' = 'strict')
+           AS max_strict,
+         MAX((details->>'cursorEventTime')::timestamptz)
+           FILTER (WHERE details->>'cursorQuality' = 'soft')
+           AS max_soft
+         FROM audit_logs
+        WHERE customer_id = $1::uuid
+          AND action      = 'phase2.ingest'
+          AND timestamp   >= NOW() - ($2 || ' hours')::interval
+          AND details ? 'cursorEventTime'`,
+      [customerId, CURSOR_AUDIT_SCAN_HOURS],
+    );
+    return {
+      maxStrict: rows[0]?.max_strict ?? null,
+      maxSoft: rows[0]?.max_soft ?? null,
+    };
+  } catch (err) {
+    console.error(
+      "[analysis-reconcile] cursor audit-scan failed, skipping watermark forward-patch:",
+      err,
+    );
+    return { maxStrict: null, maxSoft: null };
+  }
+}
+
+/**
+ * Forward-patch every `periodic_report_state` row for the customer
+ * using the aggregate computed by `loadCursorAuditAggregate`. The
+ * update policy mirrors the hot-path `recordCursorWatermark` write
+ * (issue #295 decision 3):
+ *
+ *   - Pick a single winning `(cursorEventTime, cursorQuality)` candidate
+ *     from the aggregate: max timestamp wins, with strict as the
+ *     tie-breaker on equal `cursorEventTime` (round-2 review item 1).
+ *     Folding to one candidate first prevents the older-strict /
+ *     newer-soft inversion where an older strict aggregate would
+ *     overwrite an unset row before the newer soft candidate was even
+ *     considered.
+ *   - Once a single candidate is selected, apply it with the same
+ *     semantics as the hot path: strictly-greater timestamp overwrites
+ *     both columns, and strict can upgrade an equal-time soft row.
+ *
+ * Customer-wide and archived-inclusive (cursor reflects sender
+ * progress, not bucket-specific data). Idempotent: a second pass with
+ * the same aggregate finds the row already at `stored == candidate`
+ * and the CASE leaves the columns unchanged.
+ *
+ * Returns the number of rows actually updated so the outer driver can
+ * roll the count into `periodicStatesPatched`. A zero return is the
+ * expected steady-state outcome — most reconcile passes will not have
+ * an audit row to recover from.
+ *
+ * Round-2 review item 2: cursor-only advances must NOT touch
+ * `updated_at`. The worker's quiet-window gate uses `updated_at` as
+ * a source-ingest activity proxy; stamping it here would keep
+ * historical DAILY pending rows out of readiness whenever reconcile
+ * recovers a cursor advance, even though no source data for those
+ * buckets changed.
+ */
+async function patchCursorWatermark(
+  authClient: PoolClient,
+  customerId: string,
+  agg: CursorAuditAggregate,
+): Promise<number> {
+  if (agg.maxStrict === null && agg.maxSoft === null) return 0;
+  // Collapse the aggregate to a single winning candidate before
+  // touching SQL (round-2 review item 1). The hot path
+  // (`recordCursorWatermark`) takes one `(time, quality)` argument, and
+  // mirroring that shape here is the only way to make older-strict /
+  // newer-soft sequences resolve the same way reconcile is documented
+  // to resolve them: max timestamp wins, strict only breaks ties.
+  let candidateTime: Date;
+  let candidateQuality: "strict" | "soft";
+  if (agg.maxStrict !== null && agg.maxSoft !== null) {
+    if (agg.maxStrict.getTime() >= agg.maxSoft.getTime()) {
+      candidateTime = agg.maxStrict;
+      candidateQuality = "strict";
+    } else {
+      candidateTime = agg.maxSoft;
+      candidateQuality = "soft";
+    }
+  } else if (agg.maxStrict !== null) {
+    candidateTime = agg.maxStrict;
+    candidateQuality = "strict";
+  } else {
+    // agg.maxSoft is non-null here — guarded by the early-return above.
+    candidateTime = agg.maxSoft as Date;
+    candidateQuality = "soft";
+  }
+  const res = await authClient.query(
+    `UPDATE periodic_report_state
+        SET cursor_watermark = CASE
+              WHEN cursor_watermark IS NULL THEN $2::timestamptz
+              WHEN $2::timestamptz > cursor_watermark THEN $2::timestamptz
+              ELSE cursor_watermark
+            END,
+            cursor_watermark_quality = CASE
+              WHEN cursor_watermark IS NULL THEN $3
+              WHEN $2::timestamptz > cursor_watermark THEN $3
+              WHEN $2::timestamptz = cursor_watermark
+                AND cursor_watermark_quality = 'soft'
+                AND $3 = 'strict'
+              THEN 'strict'
+              ELSE cursor_watermark_quality
+            END
+      WHERE customer_id = $1
+        AND (
+          cursor_watermark IS NULL
+          OR $2::timestamptz > cursor_watermark
+          OR ($2::timestamptz = cursor_watermark
+              AND cursor_watermark_quality = 'soft'
+              AND $3 = 'strict')
+        )`,
+    [customerId, candidateTime.toISOString(), candidateQuality],
+  );
+  return res.rowCount ?? 0;
+}
+
 export async function reconcileCustomer(
   customerId: string,
   customerTz: string,
@@ -1484,6 +1640,13 @@ export async function reconcileCustomer(
       errorMessage: err instanceof Error ? err.message : String(err),
     };
   }
+
+  // Issue #295 decision 9: scan recent `phase2.ingest` audit rows for
+  // cursor recovery. Read the audit aggregate BEFORE opening the
+  // auth-DB transaction so an audit-pool stall does not hold a long
+  // BEGIN open. The aggregate is small (two timestamps) and the
+  // forward-patch UPDATE is fast.
+  const cursorAgg = await loadCursorAuditAggregate(deps.auditPool, customerId);
 
   const authClient = await deps.authPool.connect();
   try {
@@ -1515,6 +1678,16 @@ export async function reconcileCustomer(
       authClient,
       batchSize,
     );
+    // Issue #295 decision 9: forward-patch `cursor_watermark` /
+    // `cursor_watermark_quality` from the audit aggregate. Rolled into
+    // `periodicStatesPatched` since the count reports a forward-only
+    // state change of the same semantic class as the bucket-level
+    // forward-patch above. Idempotent — see `patchCursorWatermark`.
+    const cursorPatched = await patchCursorWatermark(
+      authClient,
+      customerId,
+      cursorAgg,
+    );
     await authClient.query("COMMIT");
     return {
       customerId,
@@ -1522,7 +1695,7 @@ export async function reconcileCustomer(
       storyStatesSeeded: story.seeded,
       storyStatesPatched: story.patched + orphanArchived,
       periodicStatesSeeded: periodic.seeded,
-      periodicStatesPatched: periodic.patched,
+      periodicStatesPatched: periodic.patched + (cursorPatched > 0 ? 1 : 0),
     };
   } catch (err) {
     await authClient.query("ROLLBACK").catch(() => {});

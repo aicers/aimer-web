@@ -368,6 +368,7 @@ CREATE TABLE periodic_report_state (
   created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_event_at         TIMESTAMPTZ,                    -- most recent ingest that fell into this bucket's range
   cursor_watermark      TIMESTAMPTZ,                    -- from aice-web-next, if available
+  cursor_watermark_quality TEXT,                        -- 'strict' | 'soft' (#295); strict is required to shorten DAILY settle
   last_ready_at         TIMESTAMPTZ,
   updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (customer_id, period, bucket_date, tz)
@@ -425,9 +426,9 @@ On entering `ready`, the worker ensures a `queued` `story_analysis_job` row exis
 | period | state `ready` condition |
 |---|---|
 | LIVE | always immediately ready upon creation; subsequent re-readying is driven by the job-level `next_due_at` (per variant), not the state row |
-| DAILY | `bucket_date` end (in customer tz) + `ANALYSIS_SETTLE_HOURS_DAILY` (default 3h, or 1h when `cursor_watermark` covers the bucket); AND no ingest activity for `ANALYSIS_IDLE_QUIET_MINUTES` (default 30min) |
-| WEEKLY | same with 6h settle |
-| MONTHLY | same with 12h settle |
+| DAILY | `bucket_date` end (in customer tz) + settle window; AND no ingest activity for `ANALYSIS_IDLE_QUIET_MINUTES` (default 30min). The settle window is `ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK` (default 1h) when a `strict` `cursor_watermark` is at or past the bucket end; otherwise `ANALYSIS_SETTLE_HOURS_DAILY` (default 3h). Soft watermarks and missing watermarks both fall back to the baseline. |
+| WEEKLY | same with 6h settle (watermark not consumed in Phase 0.5 — deferred to #298) |
+| MONTHLY | same with 12h settle (watermark not consumed in Phase 0.5 — deferred to #298) |
 
 For LIVE, each variant has its own `next_due_at = last_generated_at + ANALYSIS_LIVE_REFRESH_MINUTES` (default 60min). The worker re-queues the variant job (status back to `queued`, `generation++`) when `NOW() >= next_due_at`, regardless of state row status. Previous LIVE result row gets `superseded_at` on the next successful generation.
 
@@ -828,11 +829,12 @@ Minimal — sender-side stays mostly intact. Two additions:
 
 ### 1. Optional `cursor_event_time` watermark (small PR, recommended but not required)
 
-- `EventsEnvelopeInput` gains two optional fields: `cursor_event_time?: string` (ISO 8601 UTC) and `cursor_quality?: 'strict' | 'soft'`.
+- `EventsEnvelopeInput` gains two optional fields: `cursor_event_time?: string` (ISO 8601 UTC) and `cursor_quality?: 'strict' | 'soft'`. Both must appear together or both absent; aimer-web rejects half-present claims as malformed (#295 decision 1).
 - Baseline batches send `strict` with `aimer_push_state.last_pushed_event_time`.
 - Story batches send `soft` (late-commit stragglers exist).
 - Backward compatible: schema_version bump not required.
-- aimer-web's worker uses this to shorten DAILY settle from 3h to 1h when a strict watermark covers the bucket.
+- aimer-web stores both fields on every `periodic_report_state` row for the customer (forward-only via `GREATEST`; strict wins ties), and the worker uses `ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK` (default 1h) instead of `ANALYSIS_SETTLE_HOURS_DAILY` (default 3h) when a `strict` watermark is at or past a DAILY bucket's end.
+- The recovery path on hot-path-hook failure is the `phase2.ingest` audit row: aimer-web extends its `details` JSONB with `cursorEventTime` / `cursorQuality` on every successful cursor-bearing ingest. The cursor-bearing handler awaits an `auditLogOrThrow` variant so audit-write failures surface; on failure the handler logs at error level and still returns 200 (the JTI is already consumed). The reconcile pass scans recent `phase2.ingest` audit rows and forward-patches the watermark accordingly (#295 decision 9).
 
 ### 2. Deep links to aimer-web
 
