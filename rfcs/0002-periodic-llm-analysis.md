@@ -871,14 +871,14 @@ The transition scenarios the suite must cover (each verified by SQL inspection o
 4. **Periodic refresh-window overlap → dirty** — refresh-window envelope overlapping a `ready` `periodic_report_state` row → dirty.
 5. **Periodic regular-batch dirtying a done bucket** — regular (non-refresh-window, non-backfill) Phase 2 batch ingested with `event_time` inside a `done` bucket's date range → state `dirty`. Distinct from scenario 4: this covers the late-event ingest path documented in §"Dirty transitions" beyond refresh-window/backfill.
 6. **DAILY settle → ready** — fast-forward bucket end + `ANALYSIS_SETTLE_HOURS_DAILY` + 30min idle-quiet → ready (additional sub-case: 1h settle when a strict `cursor_watermark` covers the bucket).
-7. **WEEKLY settle → ready** — same shape as scenario 6 with `ANALYSIS_SETTLE_HOURS_WEEKLY` (default 6h).
-8. **MONTHLY settle → ready** — same shape with `ANALYSIS_SETTLE_HOURS_MONTHLY` (default 12h).
+7. **WEEKLY settle → ready** — same shape as scenario 6, but with the 6h settle window §"Readiness and scheduling" specifies for WEEKLY (no separate env var).
+8. **MONTHLY settle → ready** — same shape with the 12h settle window §"Readiness and scheduling" specifies for MONTHLY (no separate env var).
 9. **LIVE `next_due_at` requeue** — LIVE variant job at `done` with `last_generated_at` stamped past `next_due_at` → variant job re-queued (`generation++`, `status='queued'`) regardless of state row status, per the per-variant cadence documented in §"Periodic report readiness".
 10. **Archived → re-pending cycle** — window-replace removes all versions of a `story_id` → state `archived`; same `story_id` re-appears → state row reset to `pending` and prior dry-run job rows deleted (#294 decision 1).
 11. **Reconciliation seed** — delete one state row after ingest, run reconciliation tick → row re-seeded; second tick reports zero changes (#294 decision 2).
 12. **Generation cap exemption (dry-run)** — repeat dirty trigger past `ANALYSIS_MAX_GENERATION` on a dry-run job → cap not applied to dry-run rows, real-call jobs would still cap.
 
-The synthetic suite is implemented in #326 (filed alongside this amendment as the round-12 follow-up). The 48h path remains a valid alternative.
+The synthetic suite is tracked in #326 (filed alongside this amendment as the round-12 follow-up). The 48h path remains a valid alternative until that suite lands.
 
 ### Phase 0.5 — Watermark (parallel, optional)
 
