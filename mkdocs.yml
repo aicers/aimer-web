@@ -41,6 +41,7 @@ plugins:
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
             - Retention Sweeper: operations/retention-sweeper.md
+            - Analysis Worker: operations/analysis-worker.md
         - locale: ko
           name: 한국어
           build: true
@@ -63,6 +64,7 @@ plugins:
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
             - Retention Sweeper: operations/retention-sweeper.md
+            - Analysis Worker: operations/analysis-worker.md
           nav_translations:
             Overview: 개요
             Getting Started: 시작하기
@@ -81,6 +83,7 @@ plugins:
             Backup & Restore: 백업 및 복원
             Phase 2 Ingest: Phase 2 수집
             Retention Sweeper: 보존 스위퍼
+            Analysis Worker: 분석 워커
 
 extra_css:
   - styles/lists.css

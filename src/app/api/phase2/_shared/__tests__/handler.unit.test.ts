@@ -9,6 +9,8 @@ import { z } from "zod";
 
 const mockVerifyPhase2Multipart = vi.fn();
 const mockAuditLog = vi.fn();
+const mockAuditLogOrThrow = vi.fn();
+const mockApplyCursorWatermarkHook = vi.fn();
 
 vi.mock("server-only", () => ({}));
 
@@ -24,7 +26,13 @@ vi.mock("@/lib/auth/envelope-verify", async (importOriginal) => {
 
 vi.mock("@/lib/audit", () => ({
   auditLog: (...args: unknown[]) => mockAuditLog(...args),
+  auditLogOrThrow: (...args: unknown[]) => mockAuditLogOrThrow(...args),
   UNKNOWN_ACTOR_ID: "unknown",
+}));
+
+vi.mock("@/lib/analysis/ingest-hooks", () => ({
+  applyCursorWatermarkHook: (...args: unknown[]) =>
+    mockApplyCursorWatermarkHook(...args),
 }));
 
 const { EnvelopeVerificationError } = await import(
@@ -446,5 +454,165 @@ describe("createPhase2BatchHandler", () => {
       },
     );
     await expect(handler(makeRequest())).rejects.toThrow("boom");
+  });
+
+  // RFC 0002 Phase 0.5 (#295) — cursor-bearing audit fail-closed path.
+  describe("cursor-bearing audit write (issue #295 decision 9)", () => {
+    const cursorEventTime = new Date("2026-05-28T12:00:00.000Z");
+    const cursorEnvelopeClaims = {
+      ...baseEnvelopeClaims,
+      cursorEventTime,
+      cursorQuality: "strict" as const,
+    };
+
+    it("uses auditLogOrThrow and includes cursor fields on the success path", async () => {
+      const authPool = fakeAuthPool();
+      const customerPool = fakeAuthPool();
+      mockVerifyPhase2Multipart.mockResolvedValue({
+        contextClaims: baseContextClaims,
+        envelopeClaims: cursorEnvelopeClaims,
+        eventsData: baseEventsData,
+        customerId: "11111111-2222-3333-4444-555555555555",
+        externalKey: "ext-1",
+      });
+      mockAuditLogOrThrow.mockResolvedValue(undefined);
+
+      const ingest = vi
+        .fn()
+        .mockResolvedValue({ counts: { accepted: 1, duplicatesSkipped: 0 } });
+
+      const handler = createPhase2BatchHandler(
+        {
+          expectedSchemaVersion: "test.v1",
+          payloadSchema: testSchema,
+          auditTargetType: "test",
+          ingest,
+        },
+        {
+          getAuthPool: () => authPool,
+          getCustomerRuntimePool: () => customerPool,
+        },
+      );
+
+      const res = await handler(makeRequest());
+      expect(res.status).toBe(200);
+
+      // fire-and-forget auditLog was NOT used for the success row.
+      expect(mockAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "phase2.ingest" }),
+      );
+      expect(mockAuditLogOrThrow).toHaveBeenCalledOnce();
+      const params = mockAuditLogOrThrow.mock.calls[0][0];
+      expect(params.action).toBe("phase2.ingest");
+      expect(params.details).toMatchObject({
+        cursorEventTime: cursorEventTime.toISOString(),
+        cursorQuality: "strict",
+      });
+
+      // Watermark hook fired with the same fields.
+      expect(mockApplyCursorWatermarkHook).toHaveBeenCalledWith(
+        authPool,
+        expect.objectContaining({
+          customerId: "11111111-2222-3333-4444-555555555555",
+          cursorEventTime,
+          cursorQuality: "strict",
+        }),
+      );
+    });
+
+    it("still returns 200 when the awaited audit write throws (fail-closed)", async () => {
+      const authPool = fakeAuthPool();
+      const customerPool = fakeAuthPool();
+      mockVerifyPhase2Multipart.mockResolvedValue({
+        contextClaims: baseContextClaims,
+        envelopeClaims: cursorEnvelopeClaims,
+        eventsData: baseEventsData,
+        customerId: "11111111-2222-3333-4444-555555555555",
+        externalKey: "ext-1",
+      });
+      mockAuditLogOrThrow.mockRejectedValue(new Error("audit pool down"));
+
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const ingest = vi
+        .fn()
+        .mockResolvedValue({ counts: { accepted: 1, duplicatesSkipped: 0 } });
+
+      const handler = createPhase2BatchHandler(
+        {
+          expectedSchemaVersion: "test.v1",
+          payloadSchema: testSchema,
+          auditTargetType: "test",
+          ingest,
+        },
+        {
+          getAuthPool: () => authPool,
+          getCustomerRuntimePool: () => customerPool,
+        },
+      );
+
+      const res = await handler(makeRequest());
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { accepted: number };
+      expect(body.accepted).toBe(1);
+
+      // Error log emitted with cursor fields for ops recovery.
+      const cursorLogs = errorSpy.mock.calls.filter((c) =>
+        String(c[0] ?? "").includes("cursor-bearing audit write failed"),
+      );
+      expect(cursorLogs.length).toBeGreaterThanOrEqual(1);
+      const ctx = cursorLogs[0][1] as Record<string, unknown>;
+      expect(ctx).toMatchObject({
+        customerId: "11111111-2222-3333-4444-555555555555",
+        cursorEventTime: cursorEventTime.toISOString(),
+        cursorQuality: "strict",
+        contextJti: baseContextClaims.jti,
+      });
+
+      // JTI is consumed (the auth pool INSERT happened).
+      expect(authPool.query).toHaveBeenCalledWith(
+        expect.stringContaining("phase2_consumed_jtis"),
+        [baseContextClaims.jti],
+      );
+
+      errorSpy.mockRestore();
+    });
+
+    it("stays on fire-and-forget auditLog when no cursor claims are present", async () => {
+      const authPool = fakeAuthPool();
+      const customerPool = fakeAuthPool();
+      mockVerifyPhase2Multipart.mockResolvedValue({
+        contextClaims: baseContextClaims,
+        envelopeClaims: baseEnvelopeClaims,
+        eventsData: baseEventsData,
+        customerId: "c-1",
+        externalKey: "ext-1",
+      });
+
+      const ingest = vi
+        .fn()
+        .mockResolvedValue({ counts: { accepted: 1, duplicatesSkipped: 0 } });
+
+      const handler = createPhase2BatchHandler(
+        {
+          expectedSchemaVersion: "test.v1",
+          payloadSchema: testSchema,
+          auditTargetType: "test",
+          ingest,
+        },
+        {
+          getAuthPool: () => authPool,
+          getCustomerRuntimePool: () => customerPool,
+        },
+      );
+
+      const res = await handler(makeRequest());
+      expect(res.status).toBe(200);
+      expect(mockAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "phase2.ingest" }),
+      );
+      expect(mockAuditLogOrThrow).not.toHaveBeenCalled();
+      expect(mockApplyCursorWatermarkHook).not.toHaveBeenCalled();
+    });
   });
 });

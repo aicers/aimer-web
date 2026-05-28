@@ -24,6 +24,11 @@ import type { PoolClient } from "pg";
 export const DEFAULT_STORY_IDLE_MINUTES = 15;
 export const DEFAULT_STORY_MAX_WAIT_HOURS = 6;
 export const DEFAULT_REPORT_SETTLE_HOURS_DAILY = 3;
+// RFC 0002 Phase 0.5 (#295) — shortened DAILY settle when a strict
+// cursor watermark covers the bucket end. The full
+// `DEFAULT_REPORT_SETTLE_HOURS_DAILY` stays in effect for soft or
+// missing watermarks (story stragglers can lag).
+export const DEFAULT_REPORT_SETTLE_HOURS_DAILY_WITH_WATERMARK = 1;
 export const DEFAULT_REPORT_SETTLE_HOURS_WEEKLY = 6;
 export const DEFAULT_REPORT_SETTLE_HOURS_MONTHLY = 12;
 export const DEFAULT_REPORT_IDLE_QUIET_MINUTES = 30;
@@ -796,6 +801,71 @@ export async function dirtyPeriodicStatesOverlapping(
       liveBaselineMaxReceivedAt,
       liveStoryMaxReceivedAt,
     ],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cursor watermark (RFC 0002 Phase 0.5 — issue #295)
+// ---------------------------------------------------------------------------
+
+export type CursorQuality = "strict" | "soft";
+
+/**
+ * Forward-only customer-wide cursor watermark write. Called from the
+ * Phase 2 ingest hook after the customer-DB commit succeeds and the
+ * envelope carried `cursor_event_time` + `cursor_quality` claims
+ * (issue #295 decision 2).
+ *
+ * Update policy (decision 3):
+ *   - If the incoming `cursorEventTime` is strictly greater than the
+ *     stored `cursor_watermark`, overwrite BOTH fields.
+ *   - If equal, prefer `strict` over `soft` — strict wins ties.
+ *   - Otherwise leave the row unchanged.
+ *
+ * Customer-wide: every `periodic_report_state` row for the customer is
+ * touched (all periods, buckets, tz values), including `status='archived'`
+ * rows. The watermark reflects sender progress, not bucket-specific
+ * data; the readiness check (`tickPeriodicStates`) and job dispatch
+ * still ignore archived rows.
+ *
+ * Idempotent under `GREATEST` semantics: concurrent writers cannot roll
+ * the watermark backwards. No-op when no row exists for the customer
+ * yet — the reconcile pass seeds rows on its own cadence.
+ *
+ * Round-2 review item 2: cursor-only advances must NOT touch
+ * `updated_at`. The worker's quiet-window gate
+ * (`analysis-job-worker.ts` `tickPeriodicStates`) reads `updated_at`
+ * as a source-ingest activity proxy. Because the cursor write fans
+ * out to every periodic row for the customer, stamping `updated_at`
+ * here would keep historical DAILY pending rows out of readiness
+ * indefinitely whenever envelopes arrive faster than
+ * `ANALYSIS_IDLE_QUIET_MINUTES`, even though no source data for those
+ * buckets changed.
+ */
+export async function recordCursorWatermark(
+  client: PoolClient,
+  customerId: string,
+  cursorEventTime: Date,
+  cursorQuality: CursorQuality,
+): Promise<void> {
+  await client.query(
+    `UPDATE periodic_report_state
+        SET cursor_watermark = CASE
+              WHEN cursor_watermark IS NULL THEN $2::timestamptz
+              WHEN $2::timestamptz > cursor_watermark THEN $2::timestamptz
+              ELSE cursor_watermark
+            END,
+            cursor_watermark_quality = CASE
+              WHEN cursor_watermark IS NULL THEN $3
+              WHEN $2::timestamptz > cursor_watermark THEN $3
+              WHEN $2::timestamptz = cursor_watermark
+                AND cursor_watermark_quality = 'soft'
+                AND $3 = 'strict'
+              THEN 'strict'
+              ELSE cursor_watermark_quality
+            END
+      WHERE customer_id = $1`,
+    [customerId, cursorEventTime.toISOString(), cursorQuality],
   );
 }
 

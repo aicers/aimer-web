@@ -40,6 +40,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   DEFAULT_REPORT_IDLE_QUIET_MINUTES,
   DEFAULT_REPORT_SETTLE_HOURS_DAILY,
+  DEFAULT_REPORT_SETTLE_HOURS_DAILY_WITH_WATERMARK,
   DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
   DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
   DEFAULT_STORY_IDLE_MINUTES,
@@ -64,6 +65,27 @@ const BATCH_SIZE = resolveInt(
   process.env.ANALYSIS_JOB_BATCH_SIZE,
   DEFAULT_BATCH_SIZE,
 );
+
+// RFC 0002 Phase 0.5 (#295) — read-at-tick-time settle env vars so
+// tests and dev environments can override the defaults without
+// reloading the process. The two-knob model: `ANALYSIS_SETTLE_HOURS_DAILY`
+// (default 3h) is the baseline; `ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK`
+// (default 1h) is used when a strict cursor watermark covers the
+// bucket end (decision 4). Soft watermarks and missing watermarks both
+// fall back to the baseline.
+function resolveDailySettleHours(): number {
+  return resolveInt(
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY,
+    DEFAULT_REPORT_SETTLE_HOURS_DAILY,
+  );
+}
+
+function resolveDailySettleHoursWithWatermark(): number {
+  return resolveInt(
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK,
+    DEFAULT_REPORT_SETTLE_HOURS_DAILY_WITH_WATERMARK,
+  );
+}
 
 // Default variant — matches the RFC 0002 §"Force regenerate" defaults
 // (`ANALYSIS_DEFAULT_LANG` / `_MODEL_NAME` / `_MODEL`). Phase 1 wires
@@ -295,39 +317,119 @@ async function tickPeriodicStates(
   // promoted and dry-run-jobbed immediately even though ingest activity
   // just occurred.
   //
+  // Issue #295 round-2 review item 2: cursor-only advances
+  // (`recordCursorWatermark` and reconcile's `patchCursorWatermark`)
+  // intentionally do NOT touch `updated_at`. The cursor write fans out
+  // customer-wide to every periodic row, so stamping `updated_at` from
+  // it would push historical pending rows out of the quiet window every
+  // time a fresh envelope arrived, even though no source data for those
+  // buckets changed. The quiet gate therefore reflects source-ingest
+  // activity only — exactly what it was originally meant to.
+  //
   // The readiness rule is pushed into SQL so we don't have to fetch
   // every pending row into JS just to filter most of them out. Bucket
   // end is `bucket_date + 1 period` interpreted at the customer tz
   // (the bucket was derived in that tz). NOW() is UTC; converting the
   // wall-clock end via `AT TIME ZONE tz` yields the same UTC instant
   // we want to compare against.
-  await client.query(
+  //
+  // RFC 0002 Phase 0.5 (#295) — DAILY uses
+  // `ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK` (default 1h) when
+  // `cursor_watermark` is non-null, `cursor_watermark_quality='strict'`,
+  // and the watermark is at or past the bucket end. Otherwise DAILY
+  // falls back to `ANALYSIS_SETTLE_HOURS_DAILY` (default 3h). Soft
+  // watermarks and missing watermarks both fall back to the baseline
+  // (decision 4). RETURNING surfaces the shortened-branch rows so the
+  // hook below can emit the operator-visible "settle shortened" log
+  // line (decision 10).
+  const dailySettleHours = resolveDailySettleHours();
+  const dailySettleHoursWithWatermark = resolveDailySettleHoursWithWatermark();
+  const { rows: promoted } = await client.query<{
+    customer_id: string;
+    period: string;
+    bucket_date: string;
+    tz: string;
+    cursor_watermark: Date | null;
+    cursor_watermark_quality: string | null;
+    bucket_end_at: Date;
+  }>(
     `UPDATE periodic_report_state
         SET status        = 'ready',
-            last_ready_at = $5::timestamptz,
-            updated_at    = $5::timestamptz
+            last_ready_at = $6::timestamptz,
+            updated_at    = $6::timestamptz
       WHERE status = 'pending'
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
-        AND updated_at <= $5::timestamptz - ($4 || ' minutes')::interval
+        AND updated_at <= $6::timestamptz - ($5 || ' minutes')::interval
         AND (
           (period = 'DAILY'
-           AND ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
-               + ($1 || ' hours')::interval <= $5::timestamptz)
+           AND (
+             (cursor_watermark IS NOT NULL
+               AND cursor_watermark_quality = 'strict'
+               AND cursor_watermark
+                 >= ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
+               AND ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
+                   + ($2 || ' hours')::interval <= $6::timestamptz)
+             OR ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
+                + ($1 || ' hours')::interval <= $6::timestamptz
+           ))
           OR (period = 'WEEKLY'
               AND ((bucket_date + INTERVAL '7 days')::timestamp AT TIME ZONE tz)
-                  + ($2 || ' hours')::interval <= $5::timestamptz)
+                  + ($3 || ' hours')::interval <= $6::timestamptz)
           OR (period = 'MONTHLY'
               AND ((bucket_date + INTERVAL '1 month')::timestamp AT TIME ZONE tz)
-                  + ($3 || ' hours')::interval <= $5::timestamptz)
-        )`,
+                  + ($4 || ' hours')::interval <= $6::timestamptz)
+        )
+      RETURNING
+        customer_id::text  AS customer_id,
+        period,
+        bucket_date::text  AS bucket_date,
+        tz,
+        cursor_watermark,
+        cursor_watermark_quality,
+        ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
+          AS bucket_end_at`,
     [
-      DEFAULT_REPORT_SETTLE_HOURS_DAILY,
+      dailySettleHours,
+      dailySettleHoursWithWatermark,
       DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
       DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
       DEFAULT_REPORT_IDLE_QUIET_MINUTES,
       nowIso,
     ],
   );
+  // Emit an `info`-level structured log line for every DAILY promotion
+  // that fired against the shortened-watermark branch — per issue #295
+  // decision 10 the verification gate requires "watermark-driven settle
+  // reduction observable in logs". WEEKLY / MONTHLY promotions are
+  // silent in Phase 0.5: they do not yet consume the watermark (scope
+  // deferred to #298 per decision 6).
+  if (dailySettleHoursWithWatermark < dailySettleHours) {
+    // The shortened branch was the deciding factor when the baseline
+    // settle hasn't elapsed yet: `bucket_end + baseline_settle > NOW()`.
+    // Without this filter the log would also fire for DAILY rows that
+    // would have promoted under the baseline anyway, which is exactly
+    // the noise decision 10 says to avoid.
+    const now = Date.parse(nowIso);
+    const baselineSettleMs = dailySettleHours * 3_600_000;
+    for (const row of promoted) {
+      if (row.period !== "DAILY") continue;
+      if (!row.cursor_watermark) continue;
+      if (row.cursor_watermark_quality !== "strict") continue;
+      if (row.bucket_end_at.getTime() + baselineSettleMs <= now) continue;
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "analysis.daily_settle_shortened",
+          customer_id: row.customer_id,
+          period: row.period,
+          bucket_date: row.bucket_date,
+          tz: row.tz,
+          cursor_watermark: row.cursor_watermark.toISOString(),
+          bucket_end_at: row.bucket_end_at.toISOString(),
+        }),
+      );
+    }
+  }
 
   // FOR UPDATE SKIP LOCKED here mirrors the story tick — two replicas
   // racing on the same dirty periodic state row would otherwise both

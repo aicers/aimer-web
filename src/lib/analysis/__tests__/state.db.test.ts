@@ -22,6 +22,7 @@ const {
   dirtyStoryStatesInRange,
   maybeArchiveStoryState,
   recordBaselineActivity,
+  recordCursorWatermark,
   recordStoryMemberArrival,
   unarchiveStoryStateIfArchived,
 } = await import("../state");
@@ -1669,5 +1670,414 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     expect(periodicJob[0]?.status).toBe("done");
     expect(periodicJob[0]?.last_generated_at).not.toBeNull();
+  });
+});
+
+// RFC 0002 Phase 0.5 (#295) — cursor watermark write + worker readiness.
+describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
+  let dbName: string;
+  let pool: Pool;
+  const CUSTOMER = "00000000-0000-0000-0000-0000000000c1";
+
+  async function seedRow(opts: {
+    period: "DAILY" | "WEEKLY" | "MONTHLY" | "LIVE";
+    bucketDate: string;
+    tz: string;
+    status?: string;
+    cursor?: Date | null;
+    quality?: "strict" | "soft" | null;
+    updatedAt?: Date;
+  }): Promise<void> {
+    const updatedAt = (opts.updatedAt ?? new Date()).toISOString();
+    await pool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status,
+          cursor_watermark, cursor_watermark_quality, updated_at)
+       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8)
+       ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
+         SET status = EXCLUDED.status,
+             cursor_watermark = EXCLUDED.cursor_watermark,
+             cursor_watermark_quality = EXCLUDED.cursor_watermark_quality,
+             updated_at = EXCLUDED.updated_at`,
+      [
+        CUSTOMER,
+        opts.period,
+        opts.bucketDate,
+        opts.tz,
+        opts.status ?? "pending",
+        opts.cursor ? opts.cursor.toISOString() : null,
+        opts.quality ?? null,
+        updatedAt,
+      ],
+    );
+  }
+
+  async function getRow(
+    period: string,
+    bucketDate: string,
+    tz: string,
+  ): Promise<{
+    cursor_watermark: Date | null;
+    cursor_watermark_quality: string | null;
+    status: string;
+  } | null> {
+    const { rows } = await pool.query<{
+      cursor_watermark: Date | null;
+      cursor_watermark_quality: string | null;
+      status: string;
+    }>(
+      `SELECT cursor_watermark, cursor_watermark_quality, status
+         FROM periodic_report_state
+        WHERE customer_id = $1 AND period = $2
+          AND bucket_date = $3::date AND tz = $4`,
+      [CUSTOMER, period, bucketDate, tz],
+    );
+    return rows[0] ?? null;
+  }
+
+  beforeAll(async () => {
+    const db = await createTestDatabase("analysis_cursor_wm");
+    dbName = db.dbName;
+    pool = db.pool;
+    await runMigrations(pool, AUTH_MIGRATIONS_DIR, LOCK_ID);
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-cwm', 'CWM')
+       ON CONFLICT (id) DO NOTHING`,
+      [CUSTOMER],
+    );
+  });
+
+  afterAll(async () => {
+    await dropTestDatabase(dbName, pool);
+    await closeAdminPool();
+  });
+
+  it("seeds cursor_watermark on a row with NULL watermark", async () => {
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-27",
+      tz: "UTC",
+      cursor: null,
+      quality: null,
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "strict",
+      );
+    } finally {
+      client.release();
+    }
+    const row = await getRow("DAILY", "2026-05-27", "UTC");
+    expect(row?.cursor_watermark?.toISOString()).toBe(
+      "2026-05-28T01:00:00.000Z",
+    );
+    expect(row?.cursor_watermark_quality).toBe("strict");
+  });
+
+  it("forward-only: a stale (older) write does not roll the watermark back", async () => {
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-27",
+      tz: "UTC",
+      cursor: new Date("2026-05-28T05:00:00Z"),
+      quality: "strict",
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "strict",
+      );
+    } finally {
+      client.release();
+    }
+    const row = await getRow("DAILY", "2026-05-27", "UTC");
+    expect(row?.cursor_watermark?.toISOString()).toBe(
+      "2026-05-28T05:00:00.000Z",
+    );
+    expect(row?.cursor_watermark_quality).toBe("strict");
+  });
+
+  it("strict beats soft on equal timestamps", async () => {
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-27",
+      tz: "UTC",
+      cursor: new Date("2026-05-28T01:00:00Z"),
+      quality: "soft",
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "strict",
+      );
+    } finally {
+      client.release();
+    }
+    const row = await getRow("DAILY", "2026-05-27", "UTC");
+    expect(row?.cursor_watermark_quality).toBe("strict");
+  });
+
+  it("soft does NOT downgrade an existing strict watermark at the same timestamp", async () => {
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-27",
+      tz: "UTC",
+      cursor: new Date("2026-05-28T01:00:00Z"),
+      quality: "strict",
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "soft",
+      );
+    } finally {
+      client.release();
+    }
+    const row = await getRow("DAILY", "2026-05-27", "UTC");
+    expect(row?.cursor_watermark_quality).toBe("strict");
+  });
+
+  it("updates archived rows in place (customer-wide policy)", async () => {
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-26",
+      tz: "UTC",
+      status: "archived",
+      cursor: null,
+      quality: null,
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "strict",
+      );
+    } finally {
+      client.release();
+    }
+    const row = await getRow("DAILY", "2026-05-26", "UTC");
+    expect(row?.cursor_watermark?.toISOString()).toBe(
+      "2026-05-28T01:00:00.000Z",
+    );
+    expect(row?.status).toBe("archived");
+  });
+
+  // The worker uses Postgres NOW(), not JS Date.now(), so we can't fake
+  // the clock. Instead, set the two settle env vars so the gap between
+  // shortened and baseline is wide. With BASELINE=48h and SHORTENED=0h,
+  // any closed bucket fails the baseline gate but passes the shortened
+  // gate when (and only when) a strict watermark covers it.
+  //
+  // `bucket_end_at` must exactly match the SQL gate's expression
+  // `(bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz`,
+  // which for tz='UTC' is the UTC midnight of `bucket_date + 1 day`.
+  // A wall-clock NOW()-24h would otherwise drift past that midnight and
+  // the "cursor does NOT cover" case would silently flip into the
+  // strict-cover branch. Pin `bucket_date` to "day before yesterday"
+  // (UTC) so `bucket_end_at` lands on yesterday-midnight UTC: 24-48h
+  // before NOW (well above the 1h fallback shortened gate, well below
+  // the 48h baseline gate) for any test wall-clock.
+  function pickPastBucket(): { bucketDate: string; bucketEndAt: Date } {
+    const now = new Date();
+    const todayMidnightMs = Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+    );
+    const bucketEndAt = new Date(todayMidnightMs - 24 * 3_600_000);
+    const bucketStart = new Date(bucketEndAt.getTime() - 24 * 3_600_000);
+    return {
+      bucketDate: bucketStart.toISOString().slice(0, 10),
+      bucketEndAt,
+    };
+  }
+
+  function setShortSettleEnv(): void {
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY = "48";
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK = "0";
+  }
+
+  function resetSettleEnv(): void {
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY = undefined;
+    process.env.ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK = undefined;
+    delete process.env.ANALYSIS_SETTLE_HOURS_DAILY;
+    delete process.env.ANALYSIS_SETTLE_HOURS_DAILY_WITH_WATERMARK;
+  }
+
+  it("worker uses shortened settle when strict watermark covers bucket end", async () => {
+    setShortSettleEnv();
+    const { bucketDate, bucketEndAt } = pickPastBucket();
+    await pool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [CUSTOMER],
+    );
+    await seedRow({
+      period: "DAILY",
+      bucketDate,
+      tz: "UTC",
+      status: "pending",
+      cursor: bucketEndAt,
+      quality: "strict",
+      updatedAt: new Date(Date.now() - 6 * 3_600_000),
+    });
+    try {
+      await runAnalysisJobTickOnce(pool);
+      const row = await getRow("DAILY", bucketDate, "UTC");
+      expect(row?.status).not.toBe("pending");
+    } finally {
+      resetSettleEnv();
+    }
+  });
+
+  it("worker falls back to baseline settle when watermark is soft", async () => {
+    setShortSettleEnv();
+    const { bucketDate, bucketEndAt } = pickPastBucket();
+    await pool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [CUSTOMER],
+    );
+    await seedRow({
+      period: "DAILY",
+      bucketDate,
+      tz: "UTC",
+      status: "pending",
+      cursor: bucketEndAt,
+      quality: "soft",
+      updatedAt: new Date(Date.now() - 6 * 3_600_000),
+    });
+    try {
+      await runAnalysisJobTickOnce(pool);
+      const row = await getRow("DAILY", bucketDate, "UTC");
+      expect(row?.status).toBe("pending");
+    } finally {
+      resetSettleEnv();
+    }
+  });
+
+  it("worker falls back to baseline settle when watermark is NULL", async () => {
+    setShortSettleEnv();
+    const { bucketDate } = pickPastBucket();
+    await pool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [CUSTOMER],
+    );
+    await seedRow({
+      period: "DAILY",
+      bucketDate,
+      tz: "UTC",
+      status: "pending",
+      cursor: null,
+      quality: null,
+      updatedAt: new Date(Date.now() - 6 * 3_600_000),
+    });
+    try {
+      await runAnalysisJobTickOnce(pool);
+      const row = await getRow("DAILY", bucketDate, "UTC");
+      expect(row?.status).toBe("pending");
+    } finally {
+      resetSettleEnv();
+    }
+  });
+
+  it("cursor watermark write does NOT advance updated_at (round-2 review item 2)", async () => {
+    // Round-2 review item 2: the worker's quiet-window gate
+    // (`analysis-job-worker.ts` `tickPeriodicStates`) uses
+    // `updated_at` as a source-ingest activity proxy. Because the
+    // cursor write fans out customer-wide to every periodic row,
+    // stamping `updated_at` from it would keep historical DAILY
+    // pending rows out of readiness indefinitely whenever envelopes
+    // arrive more often than `ANALYSIS_IDLE_QUIET_MINUTES`, even
+    // though no source data for those buckets changed. The cursor
+    // write must therefore leave `updated_at` alone.
+    await pool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [CUSTOMER],
+    );
+    const oldUpdatedAt = new Date(Date.now() - 6 * 3_600_000);
+    await seedRow({
+      period: "DAILY",
+      bucketDate: "2026-05-26",
+      tz: "UTC",
+      status: "pending",
+      cursor: null,
+      quality: null,
+      updatedAt: oldUpdatedAt,
+    });
+    const client = await pool.connect();
+    try {
+      await recordCursorWatermark(
+        client,
+        CUSTOMER,
+        new Date("2026-05-28T01:00:00Z"),
+        "strict",
+      );
+    } finally {
+      client.release();
+    }
+    const { rows } = await pool.query<{
+      cursor_watermark: Date | null;
+      cursor_watermark_quality: string | null;
+      updated_at: Date;
+    }>(
+      `SELECT cursor_watermark, cursor_watermark_quality, updated_at
+         FROM periodic_report_state
+        WHERE customer_id = $1
+          AND period = 'DAILY'
+          AND bucket_date = '2026-05-26'::date
+          AND tz = 'UTC'`,
+      [CUSTOMER],
+    );
+    expect(rows[0]?.cursor_watermark?.toISOString()).toBe(
+      "2026-05-28T01:00:00.000Z",
+    );
+    expect(rows[0]?.cursor_watermark_quality).toBe("strict");
+    // Tolerate the second-precision round-trip from Postgres.
+    const updatedAt = rows[0]?.updated_at;
+    expect(updatedAt).toBeInstanceOf(Date);
+    expect(
+      Math.abs((updatedAt as Date).getTime() - oldUpdatedAt.getTime()),
+    ).toBeLessThan(2000);
+  });
+
+  it("worker falls back to baseline settle when strict watermark does NOT cover bucket end", async () => {
+    setShortSettleEnv();
+    const { bucketDate, bucketEndAt } = pickPastBucket();
+    await pool.query(
+      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      [CUSTOMER],
+    );
+    await seedRow({
+      period: "DAILY",
+      bucketDate,
+      tz: "UTC",
+      status: "pending",
+      // strict watermark one hour BEFORE the bucket end → does not cover.
+      cursor: new Date(bucketEndAt.getTime() - 3_600_000),
+      quality: "strict",
+      updatedAt: new Date(Date.now() - 6 * 3_600_000),
+    });
+    try {
+      await runAnalysisJobTickOnce(pool);
+      const row = await getRow("DAILY", bucketDate, "UTC");
+      expect(row?.status).toBe("pending");
+    } finally {
+      resetSettleEnv();
+    }
   });
 });

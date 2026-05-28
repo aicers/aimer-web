@@ -224,6 +224,124 @@ describe("events envelope verification", () => {
     ).rejects.toThrow("missing event_count");
   });
 
+  describe("cursor watermark claims (RFC 0002 Phase 0.5 / issue #295)", () => {
+    it("accepts an envelope with both cursor fields present (strict)", async () => {
+      setupTrustRegistry();
+      const cursorIso = "2026-05-28T12:00:00.000Z";
+      const envelope = await signEnvelope({
+        cursor_event_time: cursorIso,
+        cursor_quality: "strict",
+      });
+      const result = await verifyEventsEnvelope(
+        fakePool,
+        envelope,
+        samplePayload,
+        baseClaims,
+      );
+      expect(result.cursorEventTime?.toISOString()).toBe(cursorIso);
+      expect(result.cursorQuality).toBe("strict");
+    });
+
+    it("accepts an envelope with both cursor fields present (soft)", async () => {
+      setupTrustRegistry();
+      const cursorIso = "2026-05-28T12:00:00.000Z";
+      const envelope = await signEnvelope({
+        cursor_event_time: cursorIso,
+        cursor_quality: "soft",
+      });
+      const result = await verifyEventsEnvelope(
+        fakePool,
+        envelope,
+        samplePayload,
+        baseClaims,
+      );
+      expect(result.cursorEventTime?.toISOString()).toBe(cursorIso);
+      expect(result.cursorQuality).toBe("soft");
+    });
+
+    it("accepts an envelope with both cursor fields absent (backward compat)", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope();
+      const result = await verifyEventsEnvelope(
+        fakePool,
+        envelope,
+        samplePayload,
+        baseClaims,
+      );
+      expect(result.cursorEventTime).toBeUndefined();
+      expect(result.cursorQuality).toBeUndefined();
+    });
+
+    it("rejects half-present cursor claims (cursor_event_time only)", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({
+        cursor_event_time: "2026-05-28T12:00:00.000Z",
+      });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(
+        /cursor_event_time and cursor_quality must appear together/,
+      );
+    });
+
+    it("rejects half-present cursor claims (cursor_quality only)", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({ cursor_quality: "strict" });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(
+        /cursor_event_time and cursor_quality must appear together/,
+      );
+    });
+
+    it("rejects unknown cursor_quality values", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({
+        cursor_event_time: "2026-05-28T12:00:00.000Z",
+        cursor_quality: "best-effort",
+      });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(/cursor_quality must be 'strict' or 'soft'/);
+    });
+
+    it("rejects non-ISO-8601 cursor_event_time", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({
+        cursor_event_time: "yesterday",
+        cursor_quality: "strict",
+      });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(/cursor_event_time is not ISO 8601/);
+    });
+
+    it("rejects date-only cursor_event_time (no T separator)", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({
+        cursor_event_time: "2026-05-28",
+        cursor_quality: "strict",
+      });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(/cursor_event_time is not ISO 8601/);
+    });
+
+    // `new Date("2026-02-31T00:00:00Z")` normalizes to 2026-03-03 instead
+    // of throwing. Without explicit calendar round-trip validation a
+    // botched sender could short-circuit settle with an invalid date.
+    it("rejects invalid calendar date that Date would silently normalize", async () => {
+      setupTrustRegistry();
+      const envelope = await signEnvelope({
+        cursor_event_time: "2026-02-31T00:00:00Z",
+        cursor_quality: "strict",
+      });
+      await expect(
+        verifyEventsEnvelope(fakePool, envelope, samplePayload, baseClaims),
+      ).rejects.toThrow(/cursor_event_time is not ISO 8601/);
+    });
+  });
+
   it("checks size cap before crypto (performance guard)", async () => {
     // Even without trust registry setup (no key), size cap should fail first
     vi.stubEnv("BRIDGE_MAX_PAYLOAD_BYTES", "5");

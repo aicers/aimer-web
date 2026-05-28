@@ -14,12 +14,14 @@ import "server-only";
 
 import type { Pool } from "pg";
 import {
+  type CursorQuality,
   dirtyPeriodicStatesOverlapping,
   dirtyStoryStatesInRange,
   maybeArchiveStoryState,
   type PeriodicEnvelopeLiveActivity,
   type PeriodicEnvelopeStoryAggregate,
   recordBaselineActivity,
+  recordCursorWatermark,
   recordStoryMemberArrival,
   unarchiveStoryStateIfArchived,
 } from "./state";
@@ -40,6 +42,43 @@ function logHookFailure(scope: string, customerId: string, err: unknown): void {
   console.error(
     `[analysis-hook] ${scope} failed for customer ${customerId}: ${message}`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Cursor watermark hook (RFC 0002 Phase 0.5 — issue #295)
+// ---------------------------------------------------------------------------
+
+export interface CursorWatermarkHookInput {
+  customerId: string;
+  cursorEventTime: Date;
+  cursorQuality: CursorQuality;
+}
+
+/**
+ * Forward-only customer-wide cursor watermark write. Throws on
+ * failure: callers in the handler treat watermark loss as a
+ * reconcile-critical event and need to react (log + still return 200,
+ * per issue #295 decision 9). The other ingest hooks in this file are
+ * fire-and-forget because they have a reconcile recovery path keyed on
+ * customer-DB state; the cursor watermark's only recovery source is
+ * the `phase2.ingest` audit row, so we must NOT swallow the underlying
+ * write failure here.
+ */
+export async function applyCursorWatermarkHook(
+  authPool: Pool,
+  input: CursorWatermarkHookInput,
+): Promise<void> {
+  const client = await authPool.connect();
+  try {
+    await recordCursorWatermark(
+      client,
+      input.customerId,
+      input.cursorEventTime,
+      input.cursorQuality,
+    );
+  } finally {
+    client.release();
+  }
 }
 
 // ---------------------------------------------------------------------------
