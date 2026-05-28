@@ -103,4 +103,31 @@ describe("scanStoryAnalysisForLeaks", () => {
     const kinds = r.leaks.map((l) => l.kind);
     expect(kinds).toContain("plaintext_pii");
   });
+
+  it("flags plaintext IPv6 PII (private and public)", () => {
+    // The redaction engine would have tokenised any IPv6 the prompt
+    // carried in, so an IPv6 literal in the analysis output is either
+    // a model hallucination or a leak — both blockers per #296.
+    const r = scanStoryAnalysisForLeaks(
+      "Suspicious peer fc00::1 contacted 2001:db8::dead:beef over TCP",
+      allowed,
+    );
+    expect(r.hasLeak).toBe(true);
+    const matches = r.leaks
+      .filter((l) => l.kind === "plaintext_pii")
+      .map((l) => l.match);
+    expect(matches).toContain("fc00::1");
+    expect(matches).toContain("2001:db8::dead:beef");
+  });
+
+  it("does not flag colon-grouped non-IPv6 text (e.g. timestamps)", () => {
+    // The candidate regex matches `09:30:00` but parseIPv6 rejects
+    // it because each group must be valid hex of length 1-4 with
+    // proper grouping rules; verify the scan stays quiet.
+    const r = scanStoryAnalysisForLeaks(
+      "Activity at 09:30:00 then again at 11:45:12 from <<REDACTED_IP_E0_001>>.",
+      allowed,
+    );
+    expect(r.hasLeak).toBe(false);
+  });
 });

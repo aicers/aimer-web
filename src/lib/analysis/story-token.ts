@@ -29,6 +29,8 @@
 
 import "server-only";
 
+import { parseIPv6 } from "../redaction/ranges";
+
 const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_([0-9]+)>>/g;
 const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_([0-9]+)>>/g;
 
@@ -45,10 +47,20 @@ const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_[0-9]+>>/g;
 // `src/lib/redaction/engine.ts`'s patterns; intentionally duplicated
 // here so the module has no runtime dependency on the event-scope
 // engine.
-const PII_PATTERNS: ReadonlyArray<RegExp> = [
-  /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-  /\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b/g,
-  /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
+const EMAIL_PII_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const MAC_PII_RE = /\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b/g;
+const IPV4_PII_RE =
+  /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g;
+// Same broad IPv6 candidate matcher used by `src/lib/redaction/engine.ts`;
+// validated with `parseIPv6` so version-style strings like `09:30:00`
+// don't trip the scan.
+const IPV6_PII_CANDIDATE_RE =
+  /(?<![A-Za-z0-9:.])[A-Fa-f0-9]{0,4}(?::[A-Fa-f0-9]{0,4}){2,}(?![A-Za-z0-9:.])/g;
+
+const SIMPLE_PII_PATTERNS: ReadonlyArray<RegExp> = [
+  EMAIL_PII_RE,
+  MAC_PII_RE,
+  IPV4_PII_RE,
 ];
 
 export interface StoryMemberInput {
@@ -199,9 +211,28 @@ export function scanStoryAnalysisForLeaks(
     leaks.push({ kind: "residual_event_token", match: m[0] });
   }
 
-  for (const re of PII_PATTERNS) {
+  for (const re of SIMPLE_PII_PATTERNS) {
     re.lastIndex = 0;
     for (let m = re.exec(analysisText); m !== null; m = re.exec(analysisText)) {
+      leaks.push({ kind: "plaintext_pii", match: m[0] });
+    }
+  }
+
+  // IPv6 needs structural validation: the broad regex matches things
+  // like `09:30:00` (timestamps) that aren't addresses. Defer to the
+  // same `parseIPv6` the redaction engine uses, and flag any match
+  // that round-trips to 16 valid bytes — public or private. The
+  // engine itself would have redacted any IPv6 a member event carried
+  // into the prompt, so anything in the analysis output is either a
+  // hallucination (private/internal IPv6 the model fabricated) or a
+  // legitimate plaintext leak; both are blockers per #296.
+  IPV6_PII_CANDIDATE_RE.lastIndex = 0;
+  for (
+    let m = IPV6_PII_CANDIDATE_RE.exec(analysisText);
+    m !== null;
+    m = IPV6_PII_CANDIDATE_RE.exec(analysisText)
+  ) {
+    if (parseIPv6(m[0]) !== null) {
       leaks.push({ kind: "plaintext_pii", match: m[0] });
     }
   }

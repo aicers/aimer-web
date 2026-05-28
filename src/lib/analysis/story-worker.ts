@@ -1025,41 +1025,65 @@ export async function seedRealStoryJobs(
   );
   for (const row of actionable) {
     if (row.status === "dirty") {
-      // Bump the existing job to a fresh queued generation, but only
-      // if the current generation is below `ANALYSIS_MAX_GENERATION`.
-      // RFC 0002 §"Force regenerate" calls this guardrail out
-      // explicitly: dirty re-queue is capped to bound LLM spend on
-      // noisy stories that keep re-entering `dirty`; force regenerate
-      // (via the API endpoint) is intentionally exempt.
+      // The dirty branch has three sub-cases:
+      //
+      //  (a) A default-variant job already exists and its generation
+      //      is below `ANALYSIS_MAX_GENERATION`: bump it to the next
+      //      generation and reset the queued state.
+      //  (b) A default-variant job exists but already sits at the
+      //      cap: emit `analysis.story_max_generation_reached` and
+      //      leave the row alone (operators can still force past the
+      //      cap via the regenerate endpoint).
+      //  (c) NO default-variant job exists (e.g. after the Phase 1
+      //      migration that purged Phase 0 dry-run rows): seed
+      //      generation 1, same shape as the ready branch.
+      //
+      // Conflating (b) and (c) — what the v1 code did — would both
+      // miss the promised first real enqueue for dirty rows after the
+      // migration AND emit a false `story_max_generation_reached`
+      // log. Probe the existing job's generation first, then dispatch.
       //
       // We move the state row back to `ready` regardless — the
       // pipeline is "done" until the next dirty transition, and
       // leaving it stuck on `dirty` would make the seeding pass keep
       // re-selecting it forever.
-      const bumped = await authClient.query<{ generation: number }>(
-        `UPDATE story_analysis_job
-            SET generation = generation + 1,
-                status = 'queued',
-                attempts = 0,
-                last_error = NULL,
-                processing_started_at = NULL,
-                dry_run = FALSE,
-                updated_at = $6::timestamptz
+      const { rows: existingJob } = await authClient.query<{
+        generation: number;
+      }>(
+        `SELECT generation FROM story_analysis_job
           WHERE customer_id = $1 AND story_id = $2::bigint
-            AND lang = $3 AND model_name = $4 AND model = $5
-            AND generation < $7
-          RETURNING generation`,
+            AND lang = $3 AND model_name = $4 AND model = $5`,
         [
           row.customer_id,
           row.story_id,
           WORKER_LANG,
           WORKER_MODEL_NAME,
           WORKER_MODEL,
-          nowIso,
-          MAX_GENERATION,
         ],
       );
-      if (bumped.rowCount === 0) {
+      if (existingJob.length === 0) {
+        // Sub-case (c): no default-variant job to bump. Seed a fresh
+        // generation 1 row, identical to the ready-branch insert.
+        await authClient.query(
+          `INSERT INTO story_analysis_job
+             (customer_id, story_id, lang, model_name, model,
+              status, generation, dry_run, created_at, updated_at)
+           VALUES ($1, $2::bigint, $3, $4, $5,
+                   'queued', 1, FALSE, $6::timestamptz, $6::timestamptz)
+           ON CONFLICT (customer_id, story_id, lang, model_name, model)
+           DO NOTHING`,
+          [
+            row.customer_id,
+            row.story_id,
+            WORKER_LANG,
+            WORKER_MODEL_NAME,
+            WORKER_MODEL,
+            nowIso,
+          ],
+        );
+      } else if (existingJob[0].generation >= MAX_GENERATION) {
+        // Sub-case (b): cap reached. Surface the audit log so operators
+        // know why this dirty row stopped re-queuing.
         console.warn(
           JSON.stringify({
             level: "warn",
@@ -1068,6 +1092,32 @@ export async function seedRealStoryJobs(
             story_id: row.story_id,
             max_generation: MAX_GENERATION,
           }),
+        );
+      } else {
+        // Sub-case (a): bump the existing job. The `generation < $7`
+        // guard is belt-and-braces — the SELECT above already proved
+        // it's below the cap inside this transaction's row lock.
+        await authClient.query(
+          `UPDATE story_analysis_job
+              SET generation = generation + 1,
+                  status = 'queued',
+                  attempts = 0,
+                  last_error = NULL,
+                  processing_started_at = NULL,
+                  dry_run = FALSE,
+                  updated_at = $6::timestamptz
+            WHERE customer_id = $1 AND story_id = $2::bigint
+              AND lang = $3 AND model_name = $4 AND model = $5
+              AND generation < $7`,
+          [
+            row.customer_id,
+            row.story_id,
+            WORKER_LANG,
+            WORKER_MODEL_NAME,
+            WORKER_MODEL,
+            nowIso,
+            MAX_GENERATION,
+          ],
         );
       }
       await authClient.query(

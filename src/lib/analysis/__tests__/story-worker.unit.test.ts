@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { __testables } from "../story-worker";
+import { __testables, seedRealStoryJobs } from "../story-worker";
 
 const { classifyAimerError, checkRedactionPolicyVersion, jobStoryLockId2 } =
   __testables;
@@ -110,5 +110,120 @@ describe("jobStoryLockId2", () => {
   });
   it("returns a non-zero positive integer", () => {
     expect(jobStoryLockId2("12345")).toBeGreaterThan(0);
+  });
+});
+
+describe("seedRealStoryJobs — dirty/no-job post-purge case", () => {
+  // After migration 0034 deletes all dry-run jobs, a dirty state row
+  // whose only job WAS a dry-run row ends up with no default-variant
+  // job at all. The seeding pass must insert generation 1 in that
+  // case rather than treating it as max-generation-reached. The
+  // reviewer's Round-4 scenario.
+  it("inserts generation 1 when a dirty state has no default-variant job", async () => {
+    const actionable = [
+      {
+        customer_id: "c1",
+        story_id: "1001",
+        status: "dirty" as const,
+      },
+    ];
+    const calls: Array<{ sql: string; params?: readonly unknown[] }> = [];
+    const warns: string[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((msg) => {
+      warns.push(String(msg));
+    });
+    const client = {
+      query: vi.fn(async (sql: string, params?: readonly unknown[]) => {
+        calls.push({ sql, params });
+        // First call: SELECT actionable rows.
+        if (sql.includes("FROM story_analysis_state s")) {
+          return { rows: actionable };
+        }
+        // Probe for existing default-variant job: return empty.
+        if (
+          sql.includes("SELECT generation FROM story_analysis_job") &&
+          sql.includes("customer_id = $1")
+        ) {
+          return { rows: [] };
+        }
+        // INSERT or UPDATE: shape doesn't matter, just acknowledge.
+        return { rows: [], rowCount: 1 };
+      }),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: minimal PoolClient stub
+    await seedRealStoryJobs(client as any, 100);
+    warnSpy.mockRestore();
+
+    // The dirty/no-job case must NOT emit story_max_generation_reached.
+    expect(warns.some((w) => w.includes("story_max_generation_reached"))).toBe(
+      false,
+    );
+    // It MUST issue an INSERT for the dirty row (the seed-generation-1 path).
+    const insertCall = calls.find(
+      (c) =>
+        c.sql.includes("INSERT INTO story_analysis_job") &&
+        c.sql.includes("'queued', 1, FALSE"),
+    );
+    expect(insertCall).toBeDefined();
+    // It MUST flip the state row back to ready in the same iteration.
+    const stateUpdate = calls.find(
+      (c) =>
+        c.sql.includes("UPDATE story_analysis_state") &&
+        c.sql.includes("status = 'ready'"),
+    );
+    expect(stateUpdate).toBeDefined();
+  });
+
+  it("logs story_max_generation_reached only when an existing job sits at the cap", async () => {
+    const actionable = [
+      {
+        customer_id: "c1",
+        story_id: "2002",
+        status: "dirty" as const,
+      },
+    ];
+    const calls: Array<{ sql: string; params?: readonly unknown[] }> = [];
+    const warns: string[] = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation((msg) => {
+      warns.push(String(msg));
+    });
+    const client = {
+      query: vi.fn(async (sql: string, params?: readonly unknown[]) => {
+        calls.push({ sql, params });
+        if (sql.includes("FROM story_analysis_state s")) {
+          return { rows: actionable };
+        }
+        if (
+          sql.includes("SELECT generation FROM story_analysis_job") &&
+          sql.includes("customer_id = $1")
+        ) {
+          // Default `ANALYSIS_MAX_GENERATION` is 50; report a row at
+          // the cap.
+          return { rows: [{ generation: 50 }] };
+        }
+        return { rows: [], rowCount: 1 };
+      }),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: minimal PoolClient stub
+    await seedRealStoryJobs(client as any, 100);
+    warnSpy.mockRestore();
+
+    expect(warns.some((w) => w.includes("story_max_generation_reached"))).toBe(
+      true,
+    );
+    // No INSERT and no bump UPDATE should fire — only the state-row
+    // flip back to ready.
+    const insertCall = calls.find(
+      (c) =>
+        c.sql.includes("INSERT INTO story_analysis_job") &&
+        c.sql.includes("'queued', 1, FALSE"),
+    );
+    expect(insertCall).toBeUndefined();
+    const bumpCall = calls.find(
+      (c) =>
+        c.sql.includes("UPDATE story_analysis_job") &&
+        c.sql.includes("generation = generation + 1"),
+    );
+    expect(bumpCall).toBeUndefined();
   });
 });
