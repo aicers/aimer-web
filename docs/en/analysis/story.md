@@ -56,10 +56,13 @@ mark the job `failed` immediately.
 
 Automatic dirty re-queues are bounded by `ANALYSIS_MAX_GENERATION`
 (default `50`): once a story's current generation is at the cap, the
-worker leaves the dirty state row alone and emits an
-`analysis.story_max_generation_reached` log line. Force regenerate is
-exempt from this cap — operators can always issue a fresh LLM call
-from the **Regenerate** button.
+worker emits an `analysis.story_max_generation_reached` log line and
+clears the dirty marker — the `story_analysis_state` row is flipped
+back to `ready` so the seeding pass does not keep re-selecting it on
+every tick. The existing analysis result row is retained; no new LLM
+call is made. Force regenerate is exempt from this cap — operators
+can always issue a fresh LLM call from the **Regenerate** button,
+which is the supported way to advance a capped story.
 
 ## Priority and scores
 

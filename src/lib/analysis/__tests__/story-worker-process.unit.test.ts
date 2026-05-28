@@ -225,6 +225,37 @@ describe("processStoryJob — result-row probe", () => {
   });
 });
 
+describe("processStoryJob — lost pickup race", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("bails before calling the LLM when the claim UPDATE matches zero rows", async () => {
+    // Simulates: another worker picked the same queued row from a
+    // parallel pickup tick and already transitioned it (e.g. requeued
+    // with bumped attempts, or finalized to done/failed). The claim
+    // UPDATE here returns rowCount=0 and the worker must abort before
+    // calling aimer.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 0 }, // claim UPDATE — race lost
+      ],
+    });
+    const customerPool = makePool({ queryPlan: [] });
+    const callAnalyzeStory = vi.fn();
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+    });
+
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    // No customer-DB work at all — not even the probe.
+    expect(customerPool.query).not.toHaveBeenCalled();
+    // No follow-up auth-DB writes (no requeue, no finalize, no failJob).
+    expect(authPool.__calls).toHaveLength(1);
+  });
+});
+
 describe("processStoryJob — redaction-policy precondition", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -389,7 +420,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
 
     expect(customerPool.connect).not.toHaveBeenCalled();
     const requeue = authPool.__calls.find((c) =>
-      c.sql.includes("status = 'queued'"),
+      c.sql.includes("SET status = 'queued'"),
     );
     expect(requeue).toBeDefined();
     expect(requeue?.params?.[6]).toBe(1); // attempts = 0 + 1
@@ -428,7 +459,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
     expect(failCall?.params?.[7]).toBe("aimer_5xx");
     // No re-queue was issued.
     const requeue = authPool.__calls.find((c) =>
-      c.sql.includes("status = 'queued'"),
+      c.sql.includes("SET status = 'queued'"),
     );
     expect(requeue).toBeUndefined();
   });
@@ -459,7 +490,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
     expect(failCall?.params?.[6]).toBe("aimer_4xx");
     // No re-queue.
     const requeue = authPool.__calls.find((c) =>
-      c.sql.includes("status = 'queued'"),
+      c.sql.includes("SET status = 'queued'"),
     );
     expect(requeue).toBeUndefined();
   });

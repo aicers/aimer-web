@@ -199,16 +199,30 @@ export async function processStoryJob(
     job.customer_id,
   );
 
-  // Mark the job processing (best-effort; the watchdog flips orphans
-  // back to queued if we crash between here and the customer-DB write).
-  await opts.authPool.query(
+  // Claim the row for this worker. The pickup transaction commits with
+  // the row still `status='queued'` (FOR UPDATE SKIP LOCKED only holds
+  // for the lifetime of that transaction), so we have to guard against
+  // another worker that picked the same row in a parallel pickup tick:
+  //   - `status = 'queued'` filters rows that another worker already
+  //     transitioned to `processing`/`done`/`failed`.
+  //   - `attempts = <captured>` filters rows that another worker
+  //     already requeued via `requeueWithBackoff` (incrementing
+  //     attempts) — running again with stale `job.attempts` would
+  //     bypass the exponential backoff predicate.
+  // A zero `rowCount` here means we lost the race; bail without calling
+  // the LLM. The advisory lock further prevents simultaneous execution
+  // for the same `(customer_id, story_id)`, but it does not by itself
+  // reserve the picked row, hence the predicates below.
+  const claim = await opts.authPool.query(
     `UPDATE story_analysis_job
         SET status = 'processing',
             processing_started_at = NOW(),
             updated_at = NOW()
       WHERE customer_id = $1 AND story_id = $2::bigint
         AND lang = $3 AND model_name = $4 AND model = $5
-        AND generation = $6`,
+        AND generation = $6
+        AND status = 'queued'
+        AND attempts = $7`,
     [
       job.customer_id,
       job.story_id,
@@ -216,8 +230,22 @@ export async function processStoryJob(
       job.model_name,
       job.model,
       job.generation,
+      job.attempts,
     ],
   );
+  if (claim.rowCount === 0) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.story_pickup_race_lost",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        generation: job.generation,
+        attempts: job.attempts,
+      }),
+    );
+    return;
+  }
 
   // Result-row probe — if the result row at the captured PK already
   // exists, step 1 was completed by a previous attempt that crashed

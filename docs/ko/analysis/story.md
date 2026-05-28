@@ -50,10 +50,14 @@
 리댁션 정책 버전 누락 또는 불일치)는 즉시 작업을 `failed`로 표시합니다.
 
 자동 dirty 재큐잉은 `ANALYSIS_MAX_GENERATION`(기본 `50`)으로
-제한됩니다. 스토리의 현재 세대가 상한에 도달하면 워커는 dirty 상태
-행을 그대로 두고 `analysis.story_max_generation_reached` 로그 라인을
-남깁니다. 강제 재실행은 이 상한에서 제외되므로, 운영자는 언제든지
-**Regenerate** 버튼으로 새로운 LLM 호출을 발행할 수 있습니다.
+제한됩니다. 스토리의 현재 세대가 상한에 도달하면 워커는
+`analysis.story_max_generation_reached` 로그 라인을 남기고 dirty
+표시를 정리합니다. `story_analysis_state` 행은 다시 `ready`로
+되돌려져 시드 단계가 매 틱마다 같은 행을 재선택하지 않게 합니다.
+기존 분석 결과 행은 그대로 유지되며 새 LLM 호출은 발생하지
+않습니다. 강제 재실행은 이 상한에서 제외되므로, 운영자는 **Regenerate**
+버튼으로 언제든지 새로운 LLM 호출을 발행할 수 있고 이 방법이 상한에
+도달한 스토리를 진행시키는 정식 경로입니다.
 
 ## 우선순위와 점수
 
