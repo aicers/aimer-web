@@ -105,6 +105,20 @@ row.
   but no articulation is available", not that the LLM ran with no
   input.
 
+For `LOW`-tier results the severity and likelihood factor chip rows
+collapse behind a `Show severity factors` / `Show likelihood factors`
+disclosure so the page leads with the tier badge, scores, and MITRE
+chips rather than the chip detail. The disclosure is a native
+`<details>` element — keyboard- and screen-reader-accessible — and
+expands inline without navigating away. Tiers `MEDIUM` and above keep
+the chip rows always visible because operators triaging those rows
+generally want the rationale on screen by default.
+
+<!-- Screenshot pending: #331 — story-detail-low.{en,ko}.png will be
+captured by `e2e/capture-manual-screenshots.spec.ts` and replace this
+placeholder. -->
+
+
 ## MITRE ATT&CK techniques
 
 Next to the priority badge, the page renders a row of MITRE ATT&CK
@@ -167,8 +181,13 @@ variant). Behaviour:
 - The job row's `generation` is bumped by one (or `1` if no prior row
   for the variant exists), `status` resets to `queued`, `attempts` resets
   to `0`, and the LLM call begins on the next worker tick.
-- Bridge sessions and accounts without `analyses:configure` are
-  rejected with `403`.
+- Bridge sessions (`bridge_write_blocked`, `bridge_not_allowed`) and
+  members without `analyses:configure` are rejected with `403` and the
+  reason in the response body. A caller that is not a member of the
+  customer at all gets `404 story_not_found` instead, so the endpoint
+  cannot be used to probe whether a story id exists in a customer the
+  caller has no access to (existence-hiding policy uniform with the
+  story page and the summary endpoint).
 - An archived state row or a story without a surviving canonical
   version returns `409 source_unavailable`; an unknown story returns
   `404 story_not_found`. The endpoint rejects `?tz=…` with `400
@@ -196,6 +215,13 @@ and factors are content, not surface metadata, and stay out of the
 summary so the aice-web-next badge cannot leak details of the
 analysis. To filter stories by TTP, use the aimer-web overview list at
 `/analysis` rather than the badge.
+
+The summary endpoint applies the same existence-hiding policy as the
+page and the regenerate route: a caller that is not a member of the
+customer gets `404 story_not_found` rather than `403`, so the badge
+probe cannot enumerate story ids across customers. Members without
+`analyses:read` get a precise `403 Forbidden`, and bridge sessions
+that the endpoint rejects outright get `403 bridge_not_allowed`.
 
 <!-- Screenshot pending: the aice-web-next deep-link badge will be
 captured in the follow-up PR. -->

@@ -127,8 +127,20 @@ export const POST = withAuth(
         },
       );
       if (!authResult.authorized) {
-        const code = authResult.reason ?? "Forbidden";
-        return Response.json(errorBody(code), { status: 403 });
+        // Bridge-write / bridge-not-allowed leak only session-type, not
+        // story existence — keep their 403 contract intact (#296).
+        if (authResult.reason) {
+          return Response.json(errorBody(authResult.reason), { status: 403 });
+        }
+        // Non-member: `permissions` is undefined because
+        // `authorizeGeneral` returns early before the permission set
+        // is built. Surface as 404 to hide story existence (uniform
+        // with the page route — see RFC 0002 amendment / #333).
+        if (authResult.permissions === undefined) {
+          return Response.json(errorBody("story_not_found"), { status: 404 });
+        }
+        // Member without the required permission — precise 403.
+        return Response.json(errorBody("Forbidden"), { status: 403 });
       }
 
       // Source-availability precheck. The state row is the source-of-

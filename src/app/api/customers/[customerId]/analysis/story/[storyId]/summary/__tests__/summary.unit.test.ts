@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-const mockAssertAuthorized = vi.fn();
+const mockAuthorize = vi.fn();
 const mockConnect = vi.fn(() => ({
   query: vi.fn(),
   release: vi.fn(),
@@ -38,7 +38,7 @@ vi.mock("@/lib/auth/guards", () => ({
 }));
 
 vi.mock("@/lib/auth/authorization", () => ({
-  assertAuthorized: (...args: unknown[]) => mockAssertAuthorized(...args),
+  authorize: (...args: unknown[]) => mockAuthorize(...args),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -62,7 +62,10 @@ describe("story summary endpoint", () => {
     vi.clearAllMocks();
     vi.resetModules();
     authMode.current = "authed";
-    mockAssertAuthorized.mockResolvedValue(new Set(["analyses:read"]));
+    mockAuthorize.mockResolvedValue({
+      authorized: true,
+      permissions: new Set(["analyses:read"]),
+    });
   });
 
   it("returns {exists: false} when no result row exists", async () => {
@@ -105,11 +108,42 @@ describe("story summary endpoint", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 403 when the caller lacks analyses:read", async () => {
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+  it("returns 404 story_not_found when the caller is not a member", async () => {
+    // Non-member: `authorizeGeneral` returns `{authorized: false}`
+    // with no `permissions` field. Existence-hiding policy collapses
+    // this to 404 (RFC 0002 amendment, #333).
+    mockAuthorize.mockResolvedValue({ authorized: false });
+    const { GET } = await import("../route");
+    const res = await GET(summaryRequest());
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("story_not_found");
+  });
+
+  it("returns 403 when the caller is a member but lacks analyses:read", async () => {
+    // Member: `authorizeGeneral` returns `{authorized: false,
+    // permissions: Set<...>}` when the caller holds membership but
+    // not the required permission key. Surfaces as a precise 403.
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      permissions: new Set(["analyses:notify"]),
+    });
     const { GET } = await import("../route");
     const res = await GET(summaryRequest());
     expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("Forbidden");
+  });
+
+  it("returns 403 bridge_not_allowed for a bridge session blocked from the endpoint", async () => {
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "bridge_not_allowed",
+    });
+    const { GET } = await import("../route");
+    const res = await GET(summaryRequest());
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("bridge_not_allowed");
   });
 });

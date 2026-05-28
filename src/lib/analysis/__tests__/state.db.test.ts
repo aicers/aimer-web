@@ -532,13 +532,19 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   });
 
   it("recordBaselineActivity seeds a ready LIVE periodic_report_state row", async () => {
+    // The LIVE seed in `recordBaselineActivity` filters events to the
+    // trailing 24h window with SQL `NOW() - INTERVAL '24 hours'`. Tests
+    // that hard-coded an absolute event_time silently expired once
+    // wall-clock drifted past 24h after that timestamp; use a relative
+    // time that always lands inside the rolling LIVE window.
+    const eventTime = new Date(Date.now() - 60 * 60 * 1000);
     const client = await pool.connect();
     try {
       await recordBaselineActivity(
         client,
         CUSTOMER_B,
         "Asia/Seoul",
-        asAcceptedEvents([new Date("2026-05-27T08:00:00Z")]),
+        asAcceptedEvents([eventTime]),
       );
     } finally {
       client.release();
@@ -552,9 +558,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       [CUSTOMER_B],
     );
     expect(rows[0]?.status).toBe("ready");
-    expect(rows[0]?.last_event_at?.toISOString()).toBe(
-      "2026-05-27T08:00:00.000Z",
-    );
+    expect(rows[0]?.last_event_at?.toISOString()).toBe(eventTime.toISOString());
   });
 
   it("worker dispatches a dry-run job for the LIVE periodic state row", async () => {
