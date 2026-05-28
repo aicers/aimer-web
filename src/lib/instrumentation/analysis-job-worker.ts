@@ -23,6 +23,16 @@
 //
 // Phase 1 (#296) deletes any leftover `dry_run=TRUE` rows in its own
 // migration before enabling LLM calls.
+//
+// Time seam (#326): every time-dependent SQL predicate inside this
+// worker uses `$n::timestamptz` bind parameters whose value is sourced
+// from `getCurrentTimestamp()` in JS, NOT inline SQL `NOW()`. The tick
+// captures `nowIso` once at entry and threads it through every sub-call
+// so all rows touched in one tick share one "now" — and tests can
+// advance the mocked clock between ticks for deterministic state-
+// machine assertions. SQL `NOW()` calls inside ingest hooks / `state.ts`
+// are out of scope — those run inside the customer-DB write transaction
+// and are stamped at ingest, not consulted as a comparator.
 
 import "server-only";
 
@@ -37,6 +47,7 @@ import {
   LIVE_BUCKET_DATE,
 } from "../analysis/state";
 import { getAuthPool } from "../db/client";
+import { getCurrentTimestamp } from "./time";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -80,7 +91,10 @@ interface StoryStateRow {
   last_member_at: Date | null;
 }
 
-async function tickStoryStates(client: PoolClient): Promise<void> {
+async function tickStoryStates(
+  client: PoolClient,
+  nowIso: string,
+): Promise<void> {
   // Row-claiming pickup. Both pending and ready/dirty batches use
   // `FOR UPDATE SKIP LOCKED` so multiple worker replicas cannot pick
   // the same state row in the same tick. The surrounding BEGIN/COMMIT
@@ -104,24 +118,29 @@ async function tickStoryStates(client: PoolClient): Promise<void> {
       WHERE status = 'pending'
         AND (
           (last_member_at  IS NOT NULL
-            AND last_member_at  <= NOW() - ($2 || ' minutes')::interval)
+            AND last_member_at  <= $4::timestamptz - ($2 || ' minutes')::interval)
           OR (first_member_at IS NOT NULL
-            AND first_member_at <= NOW() - ($3 || ' hours')::interval)
+            AND first_member_at <= $4::timestamptz - ($3 || ' hours')::interval)
         )
       ORDER BY customer_id, story_id
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE, DEFAULT_STORY_IDLE_MINUTES, DEFAULT_STORY_MAX_WAIT_HOURS],
+    [
+      BATCH_SIZE,
+      DEFAULT_STORY_IDLE_MINUTES,
+      DEFAULT_STORY_MAX_WAIT_HOURS,
+      nowIso,
+    ],
   );
   for (const row of pending) {
     await client.query(
       `UPDATE story_analysis_state
           SET status = 'ready',
-              last_ready_at = NOW(),
-              updated_at = NOW()
+              last_ready_at = $3::timestamptz,
+              updated_at = $3::timestamptz
         WHERE customer_id = $1 AND story_id = $2::bigint
           AND status = 'pending'`,
-      [row.customer_id, row.story_id],
+      [row.customer_id, row.story_id, nowIso],
     );
   }
 
@@ -163,13 +182,14 @@ async function tickStoryStates(client: PoolClient): Promise<void> {
     [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
   );
   for (const row of actionable) {
-    await dispatchStoryDryRunJob(client, row);
+    await dispatchStoryDryRunJob(client, row, nowIso);
   }
 }
 
 async function dispatchStoryDryRunJob(
   client: PoolClient,
   row: StoryStateRow,
+  nowIso: string,
 ): Promise<void> {
   // Ready: ensure a job exists. Dirty: bump generation on the existing
   // job. Splitting the two cases avoids an ON-CONFLICT WHERE clause
@@ -180,10 +200,10 @@ async function dispatchStoryDryRunJob(
           SET generation = generation + 1,
               status = 'done',
               dry_run = TRUE,
-              processing_started_at = NOW(),
-              last_generated_at = NOW(),
+              processing_started_at = $6::timestamptz,
+              last_generated_at = $6::timestamptz,
               last_error = NULL,
-              updated_at = NOW()
+              updated_at = $6::timestamptz
         WHERE customer_id = $1 AND story_id = $2::bigint
           AND lang = $3 AND model_name = $4 AND model = $5`,
       [
@@ -192,13 +212,16 @@ async function dispatchStoryDryRunJob(
         DEFAULT_LANG,
         DEFAULT_MODEL_NAME,
         DEFAULT_MODEL,
+        nowIso,
       ],
     );
     await client.query(
       `UPDATE story_analysis_state
-          SET status = 'ready', last_ready_at = NOW(), updated_at = NOW()
+          SET status = 'ready',
+              last_ready_at = $3::timestamptz,
+              updated_at = $3::timestamptz
         WHERE customer_id = $1 AND story_id = $2::bigint AND status = 'dirty'`,
-      [row.customer_id, row.story_id],
+      [row.customer_id, row.story_id, nowIso],
     );
     return;
   }
@@ -209,7 +232,7 @@ async function dispatchStoryDryRunJob(
         processing_started_at, last_generated_at)
      VALUES ($1, $2::bigint, $3, $4, $5,
              'done', 1, TRUE,
-             NOW(), NOW())
+             $6::timestamptz, $6::timestamptz)
      ON CONFLICT (customer_id, story_id, lang, model_name, model)
      DO NOTHING`,
     [
@@ -218,6 +241,7 @@ async function dispatchStoryDryRunJob(
       DEFAULT_LANG,
       DEFAULT_MODEL_NAME,
       DEFAULT_MODEL,
+      nowIso,
     ],
   );
 }
@@ -234,18 +258,23 @@ interface PeriodicStateRow {
   status: "pending" | "ready" | "dirty";
 }
 
-async function tickPeriodicStates(client: PoolClient): Promise<void> {
+async function tickPeriodicStates(
+  client: PoolClient,
+  nowIso: string,
+): Promise<void> {
   // Pending LIVE rows are ready on creation (RFC 0002 §"Periodic
   // report readiness"). The ingest hook normally inserts them as
   // `ready` directly; this catches any that slipped through (e.g. a
   // reconcile seed).
   await client.query(
     `UPDATE periodic_report_state
-        SET status = 'ready', last_ready_at = NOW(), updated_at = NOW()
+        SET status = 'ready',
+            last_ready_at = $2::timestamptz,
+            updated_at = $2::timestamptz
       WHERE status = 'pending'
         AND period  = 'LIVE'
         AND bucket_date = $1::date`,
-    [LIVE_BUCKET_DATE],
+    [LIVE_BUCKET_DATE, nowIso],
   );
 
   // Pending DAILY/WEEKLY/MONTHLY rows become ready once their bucket
@@ -275,27 +304,28 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
   await client.query(
     `UPDATE periodic_report_state
         SET status        = 'ready',
-            last_ready_at = NOW(),
-            updated_at    = NOW()
+            last_ready_at = $5::timestamptz,
+            updated_at    = $5::timestamptz
       WHERE status = 'pending'
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
-        AND updated_at <= NOW() - ($4 || ' minutes')::interval
+        AND updated_at <= $5::timestamptz - ($4 || ' minutes')::interval
         AND (
           (period = 'DAILY'
            AND ((bucket_date + INTERVAL '1 day')::timestamp AT TIME ZONE tz)
-               + ($1 || ' hours')::interval <= NOW())
+               + ($1 || ' hours')::interval <= $5::timestamptz)
           OR (period = 'WEEKLY'
               AND ((bucket_date + INTERVAL '7 days')::timestamp AT TIME ZONE tz)
-                  + ($2 || ' hours')::interval <= NOW())
+                  + ($2 || ' hours')::interval <= $5::timestamptz)
           OR (period = 'MONTHLY'
               AND ((bucket_date + INTERVAL '1 month')::timestamp AT TIME ZONE tz)
-                  + ($3 || ' hours')::interval <= NOW())
+                  + ($3 || ' hours')::interval <= $5::timestamptz)
         )`,
     [
       DEFAULT_REPORT_SETTLE_HOURS_DAILY,
       DEFAULT_REPORT_SETTLE_HOURS_WEEKLY,
       DEFAULT_REPORT_SETTLE_HOURS_MONTHLY,
       DEFAULT_REPORT_IDLE_QUIET_MINUTES,
+      nowIso,
     ],
   );
 
@@ -332,13 +362,14 @@ async function tickPeriodicStates(client: PoolClient): Promise<void> {
     [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
   );
   for (const row of actionable) {
-    await dispatchPeriodicDryRunJob(client, row);
+    await dispatchPeriodicDryRunJob(client, row, nowIso);
   }
 }
 
 async function dispatchPeriodicDryRunJob(
   client: PoolClient,
   row: PeriodicStateRow,
+  nowIso: string,
 ): Promise<void> {
   if (row.status === "dirty") {
     await client.query(
@@ -346,10 +377,10 @@ async function dispatchPeriodicDryRunJob(
           SET generation = generation + 1,
               status = 'done',
               dry_run = TRUE,
-              processing_started_at = NOW(),
-              last_generated_at = NOW(),
+              processing_started_at = $8::timestamptz,
+              last_generated_at = $8::timestamptz,
               last_error = NULL,
-              updated_at = NOW()
+              updated_at = $8::timestamptz
         WHERE customer_id = $1
           AND period = $2 AND bucket_date = $3::date AND tz = $4
           AND lang = $5 AND model_name = $6 AND model = $7`,
@@ -361,17 +392,20 @@ async function dispatchPeriodicDryRunJob(
         DEFAULT_LANG,
         DEFAULT_MODEL_NAME,
         DEFAULT_MODEL,
+        nowIso,
       ],
     );
     await client.query(
       `UPDATE periodic_report_state
-          SET status = 'ready', last_ready_at = NOW(), updated_at = NOW()
+          SET status = 'ready',
+              last_ready_at = $5::timestamptz,
+              updated_at = $5::timestamptz
         WHERE customer_id = $1
           AND period = $2
           AND bucket_date = $3::date
           AND tz = $4
           AND status = 'dirty'`,
-      [row.customer_id, row.period, row.bucket_date, row.tz],
+      [row.customer_id, row.period, row.bucket_date, row.tz, nowIso],
     );
     return;
   }
@@ -384,7 +418,7 @@ async function dispatchPeriodicDryRunJob(
      VALUES ($1, $2, $3::date, $4,
              $5, $6, $7,
              'done', 1, TRUE,
-             NOW(), NOW())
+             $8::timestamptz, $8::timestamptz)
      ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
      DO NOTHING`,
     [
@@ -395,6 +429,7 @@ async function dispatchPeriodicDryRunJob(
       DEFAULT_LANG,
       DEFAULT_MODEL_NAME,
       DEFAULT_MODEL,
+      nowIso,
     ],
   );
 }
@@ -423,26 +458,31 @@ async function dispatchPeriodicDryRunJob(
  * queued-job dispatcher and must not see Phase 0's drain step touch
  * its rows.
  */
-async function drainQueuedDryRunJobs(client: PoolClient): Promise<void> {
+async function drainQueuedDryRunJobs(
+  client: PoolClient,
+  nowIso: string,
+): Promise<void> {
   await client.query(
     `UPDATE story_analysis_job
         SET status = 'done',
-            processing_started_at = COALESCE(processing_started_at, NOW()),
-            last_generated_at = NOW(),
+            processing_started_at = COALESCE(processing_started_at, $1::timestamptz),
+            last_generated_at = $1::timestamptz,
             last_error = NULL,
-            updated_at = NOW()
+            updated_at = $1::timestamptz
       WHERE status = 'queued'
         AND dry_run = TRUE`,
+    [nowIso],
   );
   await client.query(
     `UPDATE periodic_report_job
         SET status = 'done',
-            processing_started_at = COALESCE(processing_started_at, NOW()),
-            last_generated_at = NOW(),
+            processing_started_at = COALESCE(processing_started_at, $1::timestamptz),
+            last_generated_at = $1::timestamptz,
             last_error = NULL,
-            updated_at = NOW()
+            updated_at = $1::timestamptz
       WHERE status = 'queued'
         AND dry_run = TRUE`,
+    [nowIso],
   );
 }
 
@@ -458,15 +498,24 @@ async function drainQueuedDryRunJobs(client: PoolClient): Promise<void> {
  * (round-10 review item 1).
  */
 async function runRecovery(authPool: Pool): Promise<void> {
+  // Recovery runs on its own pool outside the tick transaction, so it
+  // captures its own `nowIso` independent of any concurrent tick.
+  const nowIso = getCurrentTimestamp().toISOString();
   await authPool.query(
     `UPDATE story_analysis_job
-        SET status = 'queued', processing_started_at = NULL, updated_at = NOW()
+        SET status = 'queued',
+            processing_started_at = NULL,
+            updated_at = $1::timestamptz
       WHERE status = 'processing'`,
+    [nowIso],
   );
   await authPool.query(
     `UPDATE periodic_report_job
-        SET status = 'queued', processing_started_at = NULL, updated_at = NOW()
+        SET status = 'queued',
+            processing_started_at = NULL,
+            updated_at = $1::timestamptz
       WHERE status = 'processing'`,
+    [nowIso],
   );
 }
 
@@ -476,12 +525,17 @@ async function runRecovery(authPool: Pool): Promise<void> {
 
 export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   const pool = authPool ?? getAuthPool();
+  // Capture once per tick so every row touched by this tick shares one
+  // "now" — eliminates intra-tick drift (e.g. a row promoted to ready
+  // at the start of the tick and a job row inserted at the end share
+  // exactly one timestamp).
+  const nowIso = getCurrentTimestamp().toISOString();
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await drainQueuedDryRunJobs(client);
-    await tickStoryStates(client);
-    await tickPeriodicStates(client);
+    await drainQueuedDryRunJobs(client, nowIso);
+    await tickStoryStates(client, nowIso);
+    await tickPeriodicStates(client, nowIso);
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
