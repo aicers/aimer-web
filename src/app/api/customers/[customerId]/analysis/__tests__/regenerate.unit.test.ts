@@ -1,10 +1,12 @@
 // RFC 0002 Phase 1 (#296) — story regenerate API tests (Phase 0
 // public-shape contract preserved, Phase 1 DB side-effects added).
 //
-// Locks in: 401 unauthenticated, 403 non-member / missing permission,
-// 400 invalid_param for tz on story, 404 missing state row, 409
-// archived / no surviving version, 202 happy-path returning state_pk
-// + variant + generation.
+// Locks in: 401 unauthenticated, 404 story_not_found for non-member
+// denials (existence-hiding policy from #333), 403 Forbidden for
+// member-without-permission, 403 with reason for
+// bridge_write_blocked / bridge_not_allowed, 400 invalid_param for tz
+// on story, 404 missing state row, 409 archived / no surviving
+// version, 202 happy-path returning state_pk + variant + generation.
 
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
