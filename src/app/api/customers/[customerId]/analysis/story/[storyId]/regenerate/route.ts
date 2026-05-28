@@ -23,7 +23,7 @@
 // model_name, model}, generation}`.
 
 import type { NextRequest } from "next/server";
-import { assertAuthorized } from "@/lib/auth/authorization";
+import { authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
@@ -103,7 +103,14 @@ export const POST = withAuth(
     const pool = getAuthPool();
     const client = await pool.connect();
     try {
-      await assertAuthorized(
+      // Use `authorize()` directly (not `assertAuthorized`) because
+      // bridge-write rejections need to surface as
+      // `{error: "bridge_write_blocked"}` per the RFC 0002 / #296
+      // contract. `assertAuthorized` collapses every denial into the
+      // same `HttpError("Forbidden", 403)`, which would lose the
+      // reason and force the route to return a generic `Forbidden`
+      // body.
+      const authResult = await authorize(
         client,
         "general",
         auth.accountId,
@@ -119,6 +126,10 @@ export const POST = withAuth(
             : null,
         },
       );
+      if (!authResult.authorized) {
+        const code = authResult.reason ?? "Forbidden";
+        return Response.json(errorBody(code), { status: 403 });
+      }
 
       // Source-availability precheck. The state row is the source-of-
       // truth handle into the analysis pipeline; force-regenerate

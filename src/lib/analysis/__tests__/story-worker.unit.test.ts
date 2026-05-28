@@ -79,6 +79,29 @@ describe("checkRedactionPolicyVersion", () => {
   it("returns missing for zero members", () => {
     expect(checkRedactionPolicyVersion([])).toEqual({ kind: "missing" });
   });
+
+  it("returns missing when any member's version is null", () => {
+    // pg's typed row reader can surface null if a future migration
+    // relaxes the NOT NULL constraint on `redaction_policy_version`.
+    // The precondition must reject this defensively rather than
+    // returning ok with a `null` version (which would then be passed
+    // to the result-row INSERT and recorded as a missing policy
+    // stamp).
+    expect(
+      checkRedactionPolicyVersion([
+        // biome-ignore lint/suspicious/noExplicitAny: test fixture
+        { redaction_policy_version: null } as any,
+      ]),
+    ).toEqual({ kind: "missing" });
+    expect(
+      checkRedactionPolicyVersion([
+        // biome-ignore lint/suspicious/noExplicitAny: test fixture
+        { redaction_policy_version: "engine:1.0|ranges:abc" } as any,
+        // biome-ignore lint/suspicious/noExplicitAny: test fixture
+        { redaction_policy_version: null } as any,
+      ]),
+    ).toEqual({ kind: "missing" });
+  });
 });
 
 describe("jobStoryLockId2", () => {

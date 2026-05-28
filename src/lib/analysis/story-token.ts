@@ -79,8 +79,16 @@ export interface BuildStoryTokenMapResult {
     eventKey: string;
     event: unknown;
   }>;
-  /** Per-member references for downstream provenance and leak scans. */
+  /** Per-member references for downstream provenance. */
   refs: StoryMemberRef[];
+  /**
+   * Exact set of story-scope tokens that appeared in the rewritten
+   * input. The hallucination scan rejects any `<<REDACTED_*_E{i}_*>>`
+   * the LLM emits that is not in this set — including tokens whose
+   * member index is valid but whose token number was never produced
+   * (those are fabrications, not decodes).
+   */
+  allowedTokens: Set<string>;
 }
 
 /**
@@ -100,13 +108,17 @@ export function buildStoryTokenMap(
   members: ReadonlyArray<StoryMemberInput>,
 ): BuildStoryTokenMapResult {
   const refs: StoryMemberRef[] = [];
+  const allowedTokens = new Set<string>();
   const rewrittenMembers = members.map((member, index) => {
     refs.push({ index, aiceId: member.aiceId, eventKey: member.eventKey });
     const json = JSON.stringify(member.event);
     const rewritten = json.replace(
       EVENT_TOKEN_RE,
-      (_match, kind: string, nnn: string) =>
-        `<<REDACTED_${kind}_E${index}_${nnn}>>`,
+      (_match, kind: string, nnn: string) => {
+        const token = `<<REDACTED_${kind}_E${index}_${nnn}>>`;
+        allowedTokens.add(token);
+        return token;
+      },
     );
     return {
       index,
@@ -115,7 +127,7 @@ export function buildStoryTokenMap(
       event: JSON.parse(rewritten) as unknown,
     };
   });
-  return { rewrittenMembers, refs };
+  return { rewrittenMembers, refs, allowedTokens };
 }
 
 export type LeakKind =
@@ -139,9 +151,16 @@ export interface ScanResult {
 
 /**
  * Walk the LLM's analysis narrative for tokens that don't map back to
- * the input `refs` or for plaintext PII patterns. Used by the worker
- * to detect hallucinated decodes before any result row is written —
- * RFC 0001 §"LLM hallucination handling" adapted to story scope.
+ * `allowedTokens` (the exact rewritten set produced by
+ * `buildStoryTokenMap`) or for plaintext PII patterns. Used by the
+ * worker to detect hallucinated decodes before any result row is
+ * written — RFC 0001 §"LLM hallucination handling" adapted to story
+ * scope.
+ *
+ * Membership uses the full token string (kind + member index + token
+ * number) rather than just the member index, so a token like
+ * `<<REDACTED_IP_E0_999>>` is rejected even when member 0 exists —
+ * the LLM cannot have read a number that was never in the input.
  *
  * The check is intentionally permissive in two ways the RFC calls
  * out: it ignores narrative prose that re-says the redacted value
@@ -150,9 +169,8 @@ export interface ScanResult {
  */
 export function scanStoryAnalysisForLeaks(
   analysisText: string,
-  refs: ReadonlyArray<StoryMemberRef>,
+  allowedTokens: ReadonlySet<string>,
 ): ScanResult {
-  const indexSet = new Set(refs.map((r) => r.index));
   const leaks: AnalysisLeak[] = [];
 
   // Reset stateful regex objects defensively — `lastIndex` is shared
@@ -163,12 +181,11 @@ export function scanStoryAnalysisForLeaks(
     m !== null;
     m = STORY_TOKEN_RE.exec(analysisText)
   ) {
-    const index = Number(m[2]);
-    if (!indexSet.has(index)) {
+    if (!allowedTokens.has(m[0])) {
       leaks.push({
         kind: "unmapped_story_token",
         match: m[0],
-        index,
+        index: Number(m[2]),
       });
     }
   }

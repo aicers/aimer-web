@@ -26,10 +26,12 @@
 워커 파이프라인은 운영자 조작 없이 다음 단계를 실행합니다.
 
 1. Phase 2 인제스트가 고객의 스토리 멤버 이벤트를 기록하면
-   `story_analysis_state` 행이 준비 상태를 추적합니다. 설정된 조용 기간
+   `story_analysis_state` 행이 준비 상태를 추적합니다. 준비 조용 기간
    동안 스토리가 유휴 상태이거나 최대 대기 시간이 경과하면 `pending`에서
-   `ready`로 승격됩니다 (`ANALYSIS_STORY_IDLE_MINUTES` /
-   `ANALYSIS_STORY_MAX_WAIT_HOURS`는 설정 문서를 참고하세요).
+   `ready`로 승격됩니다. Phase 1에서는 두 값 모두 컴파일타임 상수입니다 —
+   `src/lib/analysis/state.ts`의 `DEFAULT_STORY_IDLE_MINUTES`(15분)와
+   `DEFAULT_STORY_MAX_WAIT_HOURS`(6시간)가 단일 출처이며, 아직 환경 변수로
+   노출되지 않습니다.
 2. 디스패처는 기본 변형의 실제 `story_analysis_job` 행을 비어 있는 모든
    `ready` 또는 `dirty` 상태 행에 대해 시드한 뒤, `FOR UPDATE SKIP
    LOCKED`로 `queued` 행을 선택하며 `(customer_id, story_id)` 단위 어드바이저리

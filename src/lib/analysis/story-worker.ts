@@ -264,7 +264,7 @@ export async function processStoryJob(
   }
 
   // Token rewrite + LLM call.
-  const { rewrittenMembers, refs } = buildStoryTokenMap(
+  const { rewrittenMembers, refs, allowedTokens } = buildStoryTokenMap(
     canonical.members.map((m) => ({
       aiceId: m.source_aice_id,
       eventKey: m.member_event_key,
@@ -322,7 +322,10 @@ export async function processStoryJob(
   }
 
   // Hallucination scan.
-  const leakScan = scanStoryAnalysisForLeaks(aimerResponse.analysis, refs);
+  const leakScan = scanStoryAnalysisForLeaks(
+    aimerResponse.analysis,
+    allowedTokens,
+  );
   if (leakScan.hasLeak) {
     void auditLog({
       ...auditBase,
@@ -493,12 +496,20 @@ type PolicyCheck =
   | { kind: "missing" }
   | { kind: "mismatched" };
 
-function checkRedactionPolicyVersion(
+export function checkRedactionPolicyVersion(
   members: ReadonlyArray<StoryMemberRow>,
 ): PolicyCheck {
   if (members.length === 0) return { kind: "missing" };
   let version: string | null = null;
   for (const m of members) {
+    // Defensive: reject empty string AND any nullish shape (null /
+    // undefined) — the column is NOT NULL today, but pg's typed row
+    // reader can surface null if a future migration relaxes that
+    // constraint or a JOIN drops the row. Either way, "no policy
+    // version" must fail the precondition, not silently coerce.
+    if (typeof m.redaction_policy_version !== "string") {
+      return { kind: "missing" };
+    }
     if (m.redaction_policy_version === "") return { kind: "missing" };
     if (version === null) version = m.redaction_policy_version;
     else if (m.redaction_policy_version !== version) {

@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mockAssertAuthorized = vi.fn();
+const mockAuthorize = vi.fn();
 const mockClientQuery = vi.fn();
 const mockConnect = vi.fn(() => ({
   query: mockClientQuery,
@@ -57,6 +58,7 @@ vi.mock("@/lib/auth/guards", () => ({
 
 vi.mock("@/lib/auth/authorization", () => ({
   assertAuthorized: (...args: unknown[]) => mockAssertAuthorized(...args),
+  authorize: (...args: unknown[]) => mockAuthorize(...args),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -92,6 +94,10 @@ describe("story regenerate", () => {
     authMode.current = "authed";
     bridgeOverride.current = null;
     mockAssertAuthorized.mockResolvedValue(new Set(["analyses:configure"]));
+    mockAuthorize.mockResolvedValue({
+      authorized: true,
+      permissions: new Set(["analyses:configure"]),
+    });
     // Default happy-path DB chain: state row exists & ready, story
     // version survives, upsert returns generation=1 as a fresh insert.
     mockClientQuery
@@ -161,24 +167,25 @@ describe("story regenerate", () => {
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(401);
-    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+    expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
   it("returns 403 when the caller is not a member of customer_id", async () => {
-    // assertAuthorized throws the same HttpError("Forbidden", 403) for
-    // both non-member and missing-permission rejections (see
-    // src/lib/auth/authorization.ts). This test pins the non-member
-    // branch explicitly so the stub-level contract is reviewable.
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    // `authorize()` returns `{authorized: false}` without a reason
+    // for non-member / missing-permission rejections; the route
+    // serializes a generic `Forbidden`. This test pins the
+    // non-member branch explicitly so the stub-level contract is
+    // reviewable.
+    mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("Forbidden");
   });
 
   it("returns 403 when the caller lacks analyses:configure", async () => {
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(403);
@@ -198,7 +205,7 @@ describe("story regenerate", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("invalid_param");
-    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+    expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
   it("accepts KOREAN as a valid lang override", async () => {
@@ -227,7 +234,7 @@ describe("story regenerate", () => {
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(202);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+    expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
       "general",
       SELF,
@@ -240,21 +247,28 @@ describe("story regenerate", () => {
     );
   });
 
-  it("rejects bridge sessions (writes are blocked in bridge sessions)", async () => {
+  it("rejects bridge sessions with bridge_write_blocked body", async () => {
     // A bridge session scoped to *this* customer must still be
     // rejected: force-regenerate is an analyst UI action, not an
     // AICE-side ingest/process flow. `authorize` returns
-    // `bridge_write_blocked` for `operationKind: "write"`.
+    // `bridge_write_blocked` for `operationKind: "write"`, and the
+    // route MUST forward that reason as the response body so the
+    // client can distinguish bridge-blocked writes from generic
+    // 403s (#296 contract / RFC 0002 §"Force regenerate").
     bridgeOverride.current = {
       bridgeAiceId: BRIDGE_AICE_ID,
       bridgeCustomerIds: [CUSTOMER_ID],
     };
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "bridge_write_blocked",
+    });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(403);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+    const body = await res.json();
+    expect(body.error).toBe("bridge_write_blocked");
+    expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
       "general",
       SELF,
@@ -278,12 +292,11 @@ describe("story regenerate", () => {
       bridgeAiceId: BRIDGE_AICE_ID,
       bridgeCustomerIds: [OTHER_CUSTOMER_ID],
     };
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import("../story/[storyId]/regenerate/route");
     const res = await POST(storyRequest());
     expect(res.status).toBe(403);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+    expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
       "general",
       SELF,
