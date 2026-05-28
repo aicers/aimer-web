@@ -152,7 +152,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(row?.last_member_at?.toISOString()).toBe("2026-05-27T10:30:00.000Z");
   });
 
-  it("worker tick promotes pending → ready once idle window elapses, then dispatches a dry-run job", async () => {
+  it("worker tick promotes pending → ready once idle window elapses, then seeds a real queued job", async () => {
     // Back-date `last_member_at` past the 15min idle threshold so the
     // worker's NOW()-based readiness check fires deterministically.
     await pool.query(
@@ -170,16 +170,29 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(jobs.count).toBe(1);
     expect(jobs.generation).toBe(1);
 
+    // Phase 1 (#296): the tick seeds a real `dry_run=FALSE` queued job
+    // (the LLM-calling tick lands separately via `tickStoryJobsOnce`).
     const { rows } = await pool.query(
       `SELECT status, dry_run FROM story_analysis_job
         WHERE customer_id = $1 AND story_id = 1001`,
       [CUSTOMER_A],
     );
-    expect(rows[0].status).toBe("done");
-    expect(rows[0].dry_run).toBe(true);
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].dry_run).toBe(false);
   });
 
   it("late member after ready+done transitions the state to dirty and re-queues", async () => {
+    // The "ready+done" transition path requires a prior `done` job —
+    // Phase 1 leaves jobs in `queued` until `tickStoryJobsOnce` runs
+    // (which would need a live aimer client). Stamp the job done
+    // manually so this test exercises the state-transition logic in
+    // isolation from the worker pickup path.
+    await pool.query(
+      `UPDATE story_analysis_job
+          SET status = 'done', last_generated_at = NOW()
+        WHERE customer_id = $1 AND story_id = 1001`,
+      [CUSTOMER_A],
+    );
     const client = await pool.connect();
     try {
       await recordStoryMemberArrival(client, CUSTOMER_A, "1001", new Date());
@@ -198,6 +211,14 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   });
 
   it("dirtyStoryStatesInRange only flips rows whose jobs are processing/done", async () => {
+    // Stamp the existing 1001 job as done so the dirty flip can fire
+    // (Phase 1 leaves jobs in `queued` after the dispatcher tick).
+    await pool.query(
+      `UPDATE story_analysis_job
+          SET status = 'done', last_generated_at = NOW()
+        WHERE customer_id = $1 AND story_id = 1001`,
+      [CUSTOMER_A],
+    );
     // Seed a fresh pending row that has no jobs yet — must NOT be
     // dirtied by an overlap (decision: dirty only past-ready states).
     const client = await pool.connect();
@@ -240,6 +261,14 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // value.
     const storyId = "1001";
     const newLastMemberAt = new Date(Date.now() + 60 * 60 * 1000);
+    // Stamp the existing job as done so the dirty flip can fire (the
+    // forward-patch lives in the same UPDATE as the status flip).
+    await pool.query(
+      `UPDATE story_analysis_job
+          SET status = 'done', last_generated_at = NOW()
+        WHERE customer_id = $1 AND story_id = 1001`,
+      [CUSTOMER_A],
+    );
     const client = await pool.connect();
     try {
       await dirtyStoryStatesInRange(client, CUSTOMER_A, [

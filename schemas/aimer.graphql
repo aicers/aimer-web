@@ -40,6 +40,61 @@ type ChatChoice {
 
 scalar DateTime
 
+"""
+Round-11 `StoryAnalysisResult` wire shape. Exposed only under
+auth-mtls; the BFF (aimer-web) supplies pre-redacted story member
+events with story-scope tokens (`<<REDACTED_*_E{i}_*>>`) and persists
+the result on its own side, so aimer never caches a story analysis.
+
+Scores carry the `[0.0, 1.0]` shape per RFC 0002 §"LLM contract" —
+aimer-side clamped before reply. Both factor arrays are ordered most
+impactful first; the sentinel `["insufficient evidence"]` indicates
+genuinely thin input.
+"""
+type StoryAnalysisResult {
+	"""
+	Severity score from 0.0 to 1.0 ("if real, how bad").
+	"""
+	severityScore: Float!
+	"""
+	Likelihood score from 0.0 to 1.0 ("how likely this is a real threat").
+	"""
+	likelihoodScore: Float!
+	"""
+	Short noun phrases articulating the severity score (1-5 items).
+	Ordered most impactful first. The sentinel
+	`["insufficient evidence"]` indicates thin input.
+	"""
+	severityFactors: [String!]!
+	"""
+	Short noun phrases articulating the likelihood score (1-5 items).
+	Ordered most impactful first. The sentinel
+	`["insufficient evidence"]` indicates thin input.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	MITRE ATT&CK technique IDs (e.g., `T1078`, `T1110.001`). May be empty
+	when no clear mapping applies.
+	"""
+	ttpTags: [String!]!
+	"""
+	Markdown-formatted analysis narrative. Stored by aimer-web as
+	`story_analysis_result.analysis_text`.
+	"""
+	analysis: String!
+	"""
+	Prompt template version that produced this result (aimer-side
+	`STORY_PROMPT` revision). Stored on the result row as `prompt_version`.
+	"""
+	promptVersion: String!
+	"""
+	Model version actually selected by the aimer LLM router for this
+	request. May differ from the input `model` when an alias is resolved.
+	Stored on the result row as `model_actual_version`.
+	"""
+	modelActualVersion: String!
+}
+
 type GenerateResponse {
 	model: String!
 	createdAt: String!
@@ -81,6 +136,27 @@ type Mutation {
 	- LLM analysis fails
 	"""
 	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
+	"""
+	Analyzes a multi-event story using an LLM and returns the
+	round-11 `StoryAnalysisResult`.
+
+	Stateless under `auth-mtls`: the BFF (aimer-web) supplies the
+	already-redacted member events with story-scope token namespacing
+	(`<<REDACTED_*_E{i}_*>>`) and persists the result on its own side.
+	aimer caches nothing here.
+
+	The `members` payload is a JSON-encoded list of redacted member
+	events in the canonical order; aimer treats it as opaque LLM input
+	and does not parse it.
+
+	# Errors
+
+	Returns an error if:
+	- Input validation fails (empty `members` or `model`)
+	- The requested LLM server `name` is not registered
+	- LLM analysis fails or response parsing fails
+	"""
+	analyzeStory(members: String!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
 	"""
 	Generates a report for a given customer.
 	

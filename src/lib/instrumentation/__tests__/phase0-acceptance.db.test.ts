@@ -334,13 +334,16 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     const state = await getStoryState(authPool, customerId, "101");
     expect(state?.status).toBe("ready");
     expect(state?.last_ready_at?.toISOString()).toBe(MOCK_NOW.toISOString());
-    // Worker also dispatched the default-variant dry-run job in the same
-    // tick (the tick's two-phase: promote-then-dispatch).
+    // Phase 1 (#296): the tick seeds a real (non-dry-run) queued job
+    // for the default variant. The LLM dispatch pass in the same tick
+    // attempts to process it but fails to resolve a customer pool in
+    // this test env (no CUSTOMER_DATABASE_URL); the failure is swallowed
+    // by `tickStoryJobsOnce`, so the job remains queued.
     const job = await getStoryJob(authPool, customerId, "101");
-    expect(job?.status).toBe("done");
-    expect(job?.dry_run).toBe(true);
+    expect(job?.status).toBe("queued");
+    expect(job?.dry_run).toBe(false);
     expect(job?.generation).toBe(1);
-    expect(job?.last_generated_at?.toISOString()).toBe(MOCK_NOW.toISOString());
+    expect(job?.last_generated_at).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -402,14 +405,14 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
 
     await runAnalysisJobTickOnce(authPool);
 
-    // Phase 0 worker writes dirty re-queues inline as `done` (not
-    // `queued`) — see issue #326 evaluation §3 and
-    // analysis-job-worker.ts:177. The job's generation is bumped to 2
-    // and `last_generated_at` advances to the tick's mocked now.
+    // Phase 1 (#296): dirty re-queues bump the existing job to a fresh
+    // queued generation with `dry_run=FALSE` and `attempts=0`. The LLM
+    // dispatch pass attempts to run but the test env lacks a customer
+    // pool, so the job stays queued at generation=2.
     const job = await getStoryJob(authPool, customerId, "103");
-    expect(job?.status).toBe("done");
+    expect(job?.status).toBe("queued");
+    expect(job?.dry_run).toBe(false);
     expect(job?.generation).toBe(2);
-    expect(job?.last_generated_at?.toISOString()).toBe(MOCK_NOW.toISOString());
 
     const post = await getStoryState(authPool, customerId, "103");
     expect(post?.status).toBe("ready");
