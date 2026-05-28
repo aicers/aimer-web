@@ -29,7 +29,14 @@
 
 import "server-only";
 
-import { parseIPv6 } from "../redaction/ranges";
+import {
+  isPrivateIPv4,
+  isPrivateIPv6,
+  parseIPv4,
+  parseIPv6,
+  shouldRedactPublicIP,
+} from "../redaction/ranges";
+import type { RangeSet } from "../redaction/types";
 
 const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_([0-9]+)>>/g;
 const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_([0-9]+)>>/g;
@@ -40,13 +47,10 @@ const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_([0-9]+)>>/g;
 // LLM cannot have read one from the input.
 const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_[0-9]+>>/g;
 
-// Plaintext-PII leak heuristics. The token rewrite consumes everything
-// already redacted by the event-scope engine, so any of these patterns
-// in the LLM output came from the model fabricating one — not from a
-// leak through the redaction layer. Same lexical shapes as
-// `src/lib/redaction/engine.ts`'s patterns; intentionally duplicated
-// here so the module has no runtime dependency on the event-scope
-// engine.
+// Plaintext-PII leak heuristics. Email + MAC are always-redacted
+// kinds in the event-scope engine, so any match here is a leak or a
+// hallucination (the prompt cannot have carried one in unredacted).
+// IPv4/IPv6 are policy-driven and handled separately below.
 const EMAIL_PII_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const MAC_PII_RE = /\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b/g;
 const IPV4_PII_RE =
@@ -57,10 +61,9 @@ const IPV4_PII_RE =
 const IPV6_PII_CANDIDATE_RE =
   /(?<![A-Za-z0-9:.])[A-Fa-f0-9]{0,4}(?::[A-Fa-f0-9]{0,4}){2,}(?![A-Za-z0-9:.])/g;
 
-const SIMPLE_PII_PATTERNS: ReadonlyArray<RegExp> = [
+const ALWAYS_REDACTED_PII_PATTERNS: ReadonlyArray<RegExp> = [
   EMAIL_PII_RE,
   MAC_PII_RE,
-  IPV4_PII_RE,
 ];
 
 export interface StoryMemberInput {
@@ -178,10 +181,21 @@ export interface ScanResult {
  * out: it ignores narrative prose that re-says the redacted value
  * count (e.g. "5 tokens"), and it does not require story-scope tokens
  * be QUOTED in the output — analysts read raw markdown.
+ *
+ * IPv4/IPv6 leak detection mirrors the **redaction-engine policy**:
+ * a literal is flagged only if the engine WOULD HAVE redacted it
+ * given the customer's `ranges` (private always; public per
+ * `shouldRedactPublicIP`, which treats an empty range set as
+ * "redact all public"). Public out-of-range IPs that legitimately
+ * passed through redaction into `story_member.event` are NOT flagged
+ * — otherwise the LLM faithfully echoing such an input would
+ * permanently fail the job for any customer that narrowed their
+ * redaction scope.
  */
 export function scanStoryAnalysisForLeaks(
   analysisText: string,
   allowedTokens: ReadonlySet<string>,
+  ranges: RangeSet,
 ): ScanResult {
   const leaks: AnalysisLeak[] = [];
 
@@ -211,28 +225,39 @@ export function scanStoryAnalysisForLeaks(
     leaks.push({ kind: "residual_event_token", match: m[0] });
   }
 
-  for (const re of SIMPLE_PII_PATTERNS) {
+  for (const re of ALWAYS_REDACTED_PII_PATTERNS) {
     re.lastIndex = 0;
     for (let m = re.exec(analysisText); m !== null; m = re.exec(analysisText)) {
       leaks.push({ kind: "plaintext_pii", match: m[0] });
     }
   }
 
+  IPV4_PII_RE.lastIndex = 0;
+  for (
+    let m = IPV4_PII_RE.exec(analysisText);
+    m !== null;
+    m = IPV4_PII_RE.exec(analysisText)
+  ) {
+    const bytes = parseIPv4(m[0]);
+    if (!bytes) continue;
+    if (isPrivateIPv4(bytes) || shouldRedactPublicIP(bytes, 4, ranges)) {
+      leaks.push({ kind: "plaintext_pii", match: m[0] });
+    }
+  }
+
   // IPv6 needs structural validation: the broad regex matches things
   // like `09:30:00` (timestamps) that aren't addresses. Defer to the
-  // same `parseIPv6` the redaction engine uses, and flag any match
-  // that round-trips to 16 valid bytes — public or private. The
-  // engine itself would have redacted any IPv6 a member event carried
-  // into the prompt, so anything in the analysis output is either a
-  // hallucination (private/internal IPv6 the model fabricated) or a
-  // legitimate plaintext leak; both are blockers per #296.
+  // same `parseIPv6` the redaction engine uses, then apply the same
+  // private/range-set policy as the IPv4 branch.
   IPV6_PII_CANDIDATE_RE.lastIndex = 0;
   for (
     let m = IPV6_PII_CANDIDATE_RE.exec(analysisText);
     m !== null;
     m = IPV6_PII_CANDIDATE_RE.exec(analysisText)
   ) {
-    if (parseIPv6(m[0]) !== null) {
+    const bytes = parseIPv6(m[0]);
+    if (!bytes) continue;
+    if (isPrivateIPv6(bytes) || shouldRedactPublicIP(bytes, 6, ranges)) {
       leaks.push({ kind: "plaintext_pii", match: m[0] });
     }
   }

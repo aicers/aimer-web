@@ -35,6 +35,7 @@ import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { AnalyzeStoryDocument } from "@/lib/graphql/__generated__/analyze-story";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
   type FactorAxis,
   type FilterFactorsResult,
@@ -188,6 +189,8 @@ interface ProcessOptions {
   callAnalyzeStory?: typeof callAnalyzeStory;
   /** Override the customer-DB pool resolver — used by tests. */
   resolveCustomerPool?: (customerId: string) => Pool;
+  /** Override the customer redaction-range loader — used by tests. */
+  loadRanges?: typeof loadCustomerRanges;
 }
 
 export async function processStoryJob(
@@ -350,17 +353,32 @@ export async function processStoryJob(
       },
     });
     if (!classification.retryable) {
-      await failJob(opts.authPool, job, classification.code);
+      // Non-retryable aimer failures still consumed an LLM attempt —
+      // record it in `attempts` so the request/audit trail and the row
+      // agree on how many calls were made.
+      await failJob(opts.authPool, job, classification.code, {
+        attempts: job.attempts + 1,
+      });
       return;
     }
     await requeueWithBackoff(opts.authPool, job, classification.code);
     return;
   }
 
-  // Hallucination scan.
+  // Hallucination scan. IP-leak detection mirrors the redaction
+  // engine's policy: only IPs the engine would have redacted (private,
+  // or in the customer's configured range set — empty range set falls
+  // back to "redact all public") are treated as leaks. Public
+  // out-of-range IPs that legitimately reached the prompt unredacted
+  // are NOT flagged when the LLM echoes them back.
+  const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
+    opts.authPool,
+    job.customer_id,
+  );
   const leakScan = scanStoryAnalysisForLeaks(
     aimerResponse.analysis,
     allowedTokens,
+    ranges,
   );
   if (leakScan.hasLeak) {
     void auditLog({
@@ -372,7 +390,12 @@ export async function processStoryJob(
         leaks: leakScan.leaks.slice(0, 20),
       },
     });
-    await failJob(opts.authPool, job, "hallucination_detected");
+    // Hallucination is detected AFTER a completed LLM call, so this
+    // attempt consumed a real aimer call — bump `attempts` accordingly
+    // even though the path is fatal (per #296 attempt-accounting).
+    await failJob(opts.authPool, job, "hallucination_detected", {
+      attempts: job.attempts + 1,
+    });
     return;
   }
 
@@ -745,11 +768,21 @@ async function failJob(
   authPool: Pool,
   job: JobPickup,
   reason: string,
+  opts: { attempts?: number } = {},
 ): Promise<void> {
+  // Precondition failures that happen BEFORE the LLM call leave
+  // `attempts` at the captured value (no aimer call was made). Fatal
+  // outcomes that follow a real aimer call (non-retryable 4xx,
+  // hallucination_detected) pass `attempts = job.attempts + 1` so the
+  // row reflects the consumed attempt, matching the issue's
+  // attempt-accounting requirement and what `requeueWithBackoff` would
+  // have written on the retryable path.
+  const nextAttempts = opts.attempts ?? job.attempts;
   await authPool.query(
     `UPDATE story_analysis_job
         SET status = 'failed',
-            last_error = $7,
+            attempts = $7,
+            last_error = $8,
             updated_at = NOW()
       WHERE customer_id = $1 AND story_id = $2::bigint
         AND lang = $3 AND model_name = $4 AND model = $5
@@ -761,6 +794,7 @@ async function failJob(
       job.model_name,
       job.model,
       job.generation,
+      nextAttempts,
       reason,
     ],
   );

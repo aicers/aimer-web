@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { buildRangeSet } from "../../redaction/ranges";
+import type { RangeSet } from "../../redaction/types";
 import { buildStoryTokenMap, scanStoryAnalysisForLeaks } from "../story-token";
+
+const EMPTY_RANGES: RangeSet = buildRangeSet([]);
 
 describe("buildStoryTokenMap", () => {
   it("rewrites event-scope tokens to story-scope with the member index", () => {
@@ -51,6 +55,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Saw <<REDACTED_IP_E0_001>> talking to <<REDACTED_IP_E1_004>>.",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(false);
     expect(r.leaks).toEqual([]);
@@ -60,6 +65,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Suspicious traffic from <<REDACTED_IP_E9_007>>.",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(true);
     expect(r.leaks[0]).toMatchObject({
@@ -76,6 +82,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Talked to <<REDACTED_IP_E0_999>>.",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(true);
     expect(r.leaks[0]).toMatchObject({
@@ -89,6 +96,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Event-scope leak: <<REDACTED_IP_001>>.",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(true);
     expect(r.leaks.some((l) => l.kind === "residual_event_token")).toBe(true);
@@ -98,6 +106,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "User alice@example.com from 10.0.0.5 (mac 00:11:22:33:44:55).",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(true);
     const kinds = r.leaks.map((l) => l.kind);
@@ -111,6 +120,7 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Suspicious peer fc00::1 contacted 2001:db8::dead:beef over TCP",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(true);
     const matches = r.leaks
@@ -127,7 +137,98 @@ describe("scanStoryAnalysisForLeaks", () => {
     const r = scanStoryAnalysisForLeaks(
       "Activity at 09:30:00 then again at 11:45:12 from <<REDACTED_IP_E0_001>>.",
       allowed,
+      EMPTY_RANGES,
     );
     expect(r.hasLeak).toBe(false);
+  });
+
+  // Regression for #296 round 5 (item 1): under a NON-EMPTY range set,
+  // the redaction engine intentionally lets public IPs that fall
+  // outside the configured CIDRs through unredacted into the prompt.
+  // The leak scan must NOT flag those when the LLM faithfully repeats
+  // them, otherwise valid stories permanently fail for customers that
+  // narrowed their redaction scope.
+  describe("IP policy alignment with the redaction engine", () => {
+    const narrowRanges = buildRangeSet(["203.0.113.0/24", "2001:db8::/32"]);
+
+    it("does not flag public IPv4 outside the configured range", () => {
+      // 8.8.8.8 is public and not in 203.0.113.0/24 → engine would
+      // not have redacted it, so an echo in the output is not a leak.
+      const r = scanStoryAnalysisForLeaks(
+        "Beacon to 8.8.8.8 observed.",
+        allowed,
+        narrowRanges,
+      );
+      expect(r.leaks.filter((l) => l.match === "8.8.8.8")).toEqual([]);
+    });
+
+    it("still flags public IPv4 inside the configured range", () => {
+      // 203.0.113.5 IS in the redacted range → engine would have
+      // tokenised it; an unredacted occurrence in the output is a leak.
+      const r = scanStoryAnalysisForLeaks(
+        "Beacon to 203.0.113.5 observed.",
+        allowed,
+        narrowRanges,
+      );
+      expect(
+        r.leaks.some(
+          (l) => l.kind === "plaintext_pii" && l.match === "203.0.113.5",
+        ),
+      ).toBe(true);
+    });
+
+    it("still flags private IPv4 even when ranges are non-empty", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Internal host 10.0.0.5 contacted.",
+        allowed,
+        narrowRanges,
+      );
+      expect(
+        r.leaks.some(
+          (l) => l.kind === "plaintext_pii" && l.match === "10.0.0.5",
+        ),
+      ).toBe(true);
+    });
+
+    it("does not flag public IPv6 outside the configured range", () => {
+      // 2606:4700:4700::1111 is public and not in 2001:db8::/32.
+      // The trailing space (not punctuation) keeps the IPv6 candidate
+      // regex's right-boundary lookahead satisfied.
+      const r = scanStoryAnalysisForLeaks(
+        "Resolver was 2606:4700:4700::1111 today",
+        allowed,
+        narrowRanges,
+      );
+      expect(r.leaks.some((l) => l.match === "2606:4700:4700::1111")).toEqual(
+        false,
+      );
+    });
+
+    it("still flags public IPv6 inside the configured range", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Beacon to 2001:db8::dead:beef seen",
+        allowed,
+        narrowRanges,
+      );
+      expect(
+        r.leaks.some(
+          (l) =>
+            l.kind === "plaintext_pii" && l.match === "2001:db8::dead:beef",
+        ),
+      ).toBe(true);
+    });
+
+    it("flags every public IP when the range set is empty (redact-all default)", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Public 8.8.8.8 and 2606:4700:4700::1111 echoed",
+        allowed,
+        EMPTY_RANGES,
+      );
+      const matches = r.leaks
+        .filter((l) => l.kind === "plaintext_pii")
+        .map((l) => l.match);
+      expect(matches).toContain("8.8.8.8");
+      expect(matches).toContain("2606:4700:4700::1111");
+    });
   });
 });

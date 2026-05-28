@@ -135,6 +135,16 @@ function sqlIncludes(pool: MockPool, fragment: string): QueryCall | undefined {
   return pool.__calls.find((c) => c.sql.includes(fragment));
 }
 
+// Default test stub for the customer redaction-range loader. The
+// production path queries the auth pool, but the unit tests treat the
+// auth pool as a script of expected statements, so we short-circuit
+// the load and return an empty `RangeSet`. The hallucination-scan
+// behavior under non-empty ranges has dedicated tests below.
+const emptyRangesLoader = async () => ({
+  normalisedCidrs: [],
+  ranges: [],
+});
+
 describe("processStoryJob — happy path", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -167,6 +177,7 @@ describe("processStoryJob — happy path", () => {
       authPool: authPool as never,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
     });
 
     expect(llmCalls).toHaveLength(1);
@@ -296,7 +307,8 @@ describe("processStoryJob — redaction-policy precondition", () => {
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe("missing_redaction_policy_version");
+    expect(failCall?.params?.[6]).toBe(0); // attempts unchanged (no LLM call)
+    expect(failCall?.params?.[7]).toBe("missing_redaction_policy_version");
   });
 
   it("fails the job with mismatched_redaction_policy_version when members disagree", async () => {
@@ -344,7 +356,8 @@ describe("processStoryJob — redaction-policy precondition", () => {
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe("mismatched_redaction_policy_version");
+    expect(failCall?.params?.[6]).toBe(0); // attempts unchanged
+    expect(failCall?.params?.[7]).toBe("mismatched_redaction_policy_version");
   });
 });
 
@@ -371,6 +384,7 @@ describe("processStoryJob — hallucination scan", () => {
       authPool: authPool as never,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
     });
 
     expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
@@ -379,7 +393,8 @@ describe("processStoryJob — hallucination scan", () => {
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe("hallucination_detected");
+    expect(failCall?.params?.[6]).toBe(1); // attempts bumped (LLM call consumed)
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
   });
 });
 
@@ -487,12 +502,47 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe("aimer_4xx");
+    expect(failCall?.params?.[6]).toBe(1); // attempts bumped on fatal 4xx
+    expect(failCall?.params?.[7]).toBe("aimer_4xx");
     // No re-queue.
     const requeue = authPool.__calls.find((c) =>
       c.sql.includes("SET status = 'queued'"),
     );
     expect(requeue).toBeUndefined();
+  });
+
+  it("bumps attempts onto the captured value on a 4xx after prior retries", async () => {
+    // Regression for #296 round 5 (item 2): a fatal post-LLM outcome
+    // must increment `attempts` by 1 from whatever the captured value
+    // was, so jobs that already retried surface the correct count in
+    // the audit/request trail.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn(async () => {
+      throw fakeClientError(400);
+    });
+
+    await processStoryJob(
+      { ...baseJob(), attempts: 2 },
+      {
+        authPool: authPool as never,
+        callAnalyzeStory: callAnalyzeStory as never,
+        resolveCustomerPool: () => customerPool as never,
+      },
+    );
+
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(3); // 2 → 3
+    expect(failCall?.params?.[7]).toBe("aimer_4xx");
   });
 });
 
@@ -524,6 +574,7 @@ describe("processStoryJob — source unavailable", () => {
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe("source_unavailable");
+    expect(failCall?.params?.[6]).toBe(0); // attempts unchanged (no LLM call)
+    expect(failCall?.params?.[7]).toBe("source_unavailable");
   });
 });
