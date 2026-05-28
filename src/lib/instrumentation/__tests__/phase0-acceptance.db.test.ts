@@ -15,9 +15,8 @@
 // (`first_member_at`, `last_member_at`, `updated_at`, `received_at`,
 // ...) are stamped as `mockNow - N` in JS rather than via SQL `NOW()`.
 //
-// In-scope scenarios (issue #326): 1, 2, 3, 4, 5, 6a, 7, 8, 10a, 10b,
-// 11a, 11b, 11c. Scenarios 6b/6c, 9, and 12 are deferred to the phases
-// that implement their underlying features (Phase 0.5 / Phase 1).
+// Scenarios in scope: 1, 2, 3, 4, 5, 6a, 6b, 6c, 7, 8, 10a, 10b, 11a,
+// 11b, 11c, 12. Scenario 9 is added by #297.
 
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
@@ -61,6 +60,7 @@ const { applyWindowReplaceStoryHook } = await import(
   "@/lib/analysis/ingest-hooks"
 );
 const { reconcileCustomer } = await import("@/lib/analysis/reconcile");
+const { MAX_GENERATION } = await import("@/lib/analysis/story-worker");
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -78,6 +78,27 @@ function minutesBefore(base: Date, minutes: number): Date {
 }
 function hoursBefore(base: Date, hours: number): Date {
   return new Date(base.getTime() - hours * 3_600_000);
+}
+
+// `vi.spyOn(console, ...)` does not intercept structured `console.info`/
+// `console.warn` calls reliably under this vitest config; install a
+// direct console-method override that records arguments and restores
+// the original on teardown.
+function captureConsole(method: "info" | "warn"): {
+  calls: unknown[][];
+  restore: () => void;
+} {
+  const original = console[method];
+  const calls: unknown[][] = [];
+  console[method] = (...args: unknown[]) => {
+    calls.push(args);
+  };
+  return {
+    calls,
+    restore: () => {
+      console[method] = original;
+    },
+  };
 }
 
 async function seedCustomer(
@@ -134,16 +155,18 @@ async function seedStoryJob(
     status?: "queued" | "processing" | "done" | "failed";
     generation?: number;
     lastGeneratedAt?: Date | null;
+    dryRun?: boolean;
+    attempts?: number;
   } = {},
 ): Promise<void> {
   const status = opts.status ?? "done";
   await pool.query(
     `INSERT INTO story_analysis_job
        (customer_id, story_id, lang, model_name, model,
-        status, generation, dry_run,
+        status, generation, dry_run, attempts,
         processing_started_at, last_generated_at)
      VALUES ($1, $2::bigint, $3, $4, $5,
-             $6, $7, TRUE,
+             $6, $7, $9, $10,
              $8, $8)`,
     [
       customerId,
@@ -154,6 +177,8 @@ async function seedStoryJob(
       status,
       opts.generation ?? 1,
       opts.lastGeneratedAt ? opts.lastGeneratedAt.toISOString() : null,
+      opts.dryRun ?? true,
+      opts.attempts ?? 0,
     ],
   );
 }
@@ -167,6 +192,8 @@ interface PeriodicStateSeed {
   lastEventAt?: Date | null;
   lastEventReceivedAt?: Date | null;
   lastReadyAt?: Date | null;
+  cursorWatermark?: Date | null;
+  cursorWatermarkQuality?: "strict" | "soft" | null;
 }
 
 async function seedPeriodicState(
@@ -178,10 +205,12 @@ async function seedPeriodicState(
     `INSERT INTO periodic_report_state
        (customer_id, period, bucket_date, tz, status,
         last_event_at, last_event_received_at, last_ready_at,
+        cursor_watermark, cursor_watermark_quality,
         created_at, updated_at)
      VALUES ($1, $2, $3::date, $4, $5,
              $6, $7, $8,
-             $9, $9)`,
+             $9, $10,
+             $11, $11)`,
     [
       customerId,
       seed.period,
@@ -191,6 +220,8 @@ async function seedPeriodicState(
       seed.lastEventAt ?? null,
       seed.lastEventReceivedAt ?? null,
       seed.lastReadyAt ?? null,
+      seed.cursorWatermark ?? null,
+      seed.cursorWatermarkQuality ?? null,
       (seed.updatedAt ?? MOCK_NOW).toISOString(),
     ],
   );
@@ -245,9 +276,10 @@ async function getStoryJob(pool: Pool, customerId: string, storyId: string) {
     status: string;
     generation: number;
     dry_run: boolean;
+    attempts: number;
     last_generated_at: Date | null;
   }>(
-    `SELECT status, generation, dry_run, last_generated_at
+    `SELECT status, generation, dry_run, attempts, last_generated_at
        FROM story_analysis_job
       WHERE customer_id = $1 AND story_id = $2::bigint
         AND lang = $3 AND model_name = $4 AND model = $5`,
@@ -272,6 +304,36 @@ async function getPeriodicState(
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4`,
     [customerId, period, bucketDate, tz],
+  );
+  return rows[0] ?? null;
+}
+
+async function getPeriodicJob(
+  pool: Pool,
+  customerId: string,
+  period: string,
+  bucketDate: string,
+  tz: string,
+) {
+  const { rows } = await pool.query<{
+    status: string;
+    generation: number;
+    dry_run: boolean;
+  }>(
+    `SELECT status, generation, dry_run
+       FROM periodic_report_job
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7`,
+    [
+      customerId,
+      period,
+      bucketDate,
+      tz,
+      DEFAULT_LANG,
+      DEFAULT_MODEL_NAME,
+      DEFAULT_MODEL,
+    ],
   );
   return rows[0] ?? null;
 }
@@ -550,6 +612,178 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     );
     expect(state?.status).toBe("ready");
     expect(state?.last_ready_at?.toISOString()).toBe(mockNow.toISOString());
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 6b — DAILY with strict watermark (shortened 1h settle) → ready
+  // -------------------------------------------------------------------------
+  it("scenario 6b: DAILY bucket end was 1h+1min ago and a strict cursor watermark covers the bucket → ready with shortened-settle log", async () => {
+    const customerId = "00000000-0000-0000-0000-000000000206";
+    await seedCustomer(authPool, customerId, "s6b");
+
+    const tz = "Asia/Seoul";
+    // DAILY 2026-05-20 KST closes at 2026-05-21 00:00 KST =
+    // 2026-05-20 15:00 UTC. Pin mockNow to 16:01 UTC so the bucket end
+    // was 1h+1min ago — the shortened (1h) settle has elapsed but the
+    // baseline (3h) settle has not.
+    const mockNow = new Date("2026-05-20T16:01:00.000Z");
+    clockSeam.setClock(mockNow);
+    const bucketDate = "2026-05-20";
+    const bucketEnd = new Date("2026-05-20T15:00:00.000Z");
+    // Watermark just past the bucket end satisfies the
+    // `cursor_watermark >= bucket_end` predicate.
+    const watermark = new Date(bucketEnd.getTime() + 1_000);
+    await seedPeriodicState(authPool, customerId, {
+      period: "DAILY",
+      bucketDate,
+      tz,
+      status: "pending",
+      updatedAt: hoursBefore(mockNow, 2),
+      lastEventAt: hoursBefore(mockNow, 2),
+      cursorWatermark: watermark,
+      cursorWatermarkQuality: "strict",
+    });
+
+    const infoCapture = captureConsole("info");
+    try {
+      await runAnalysisJobTickOnce(authPool);
+    } finally {
+      infoCapture.restore();
+    }
+
+    const state = await getPeriodicState(
+      authPool,
+      customerId,
+      "DAILY",
+      bucketDate,
+      tz,
+    );
+    expect(state?.status).toBe("ready");
+    expect(state?.last_ready_at?.toISOString()).toBe(mockNow.toISOString());
+
+    const shortenedLogs = infoCapture.calls
+      .map((call) => {
+        try {
+          return JSON.parse(String(call[0]));
+        } catch {
+          return null;
+        }
+      })
+      .filter(
+        (
+          payload,
+        ): payload is {
+          level: string;
+          event: string;
+          customer_id: string;
+          period: string;
+          bucket_date: string;
+          tz: string;
+          cursor_watermark: string;
+          bucket_end_at: string;
+        } =>
+          payload !== null &&
+          payload.event === "analysis.daily_settle_shortened" &&
+          payload.customer_id === customerId,
+      );
+    expect(shortenedLogs).toHaveLength(1);
+    const log = shortenedLogs[0];
+    expect(log.level).toBe("info");
+    expect(log.period).toBe("DAILY");
+    expect(log.bucket_date).toBe(bucketDate);
+    expect(log.tz).toBe(tz);
+    expect(new Date(log.cursor_watermark).toISOString()).toBe(
+      watermark.toISOString(),
+    );
+    expect(new Date(log.bucket_end_at).toISOString()).toBe(
+      bucketEnd.toISOString(),
+    );
+
+    // Phase 0 dispatcher INSERTs the job row directly in its terminal
+    // state — no queued→done transition.
+    const job = await getPeriodicJob(
+      authPool,
+      customerId,
+      "DAILY",
+      bucketDate,
+      tz,
+    );
+    expect(job?.status).toBe("done");
+    expect(job?.dry_run).toBe(true);
+    expect(job?.generation).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 6c — DAILY not-yet-settled (negative case) → stays pending
+  // -------------------------------------------------------------------------
+  it("scenario 6c: DAILY bucket end 30min ago with soft watermark → stays pending (neither shortened nor baseline settle elapsed)", async () => {
+    const customerId = "00000000-0000-0000-0000-000000000306";
+    await seedCustomer(authPool, customerId, "s6c");
+
+    const tz = "Asia/Seoul";
+    // Same bucket as 6b. Pin mockNow to 15:30 UTC so the bucket end was
+    // only 30 minutes ago — neither the 1h shortened nor the 3h baseline
+    // settle has elapsed. With a soft watermark the shortened branch is
+    // ineligible regardless.
+    const mockNow = new Date("2026-05-20T15:30:00.000Z");
+    clockSeam.setClock(mockNow);
+    const bucketDate = "2026-05-20";
+    const bucketEnd = new Date("2026-05-20T15:00:00.000Z");
+    const watermark = new Date(bucketEnd.getTime() + 1_000);
+    await seedPeriodicState(authPool, customerId, {
+      period: "DAILY",
+      bucketDate,
+      tz,
+      status: "pending",
+      // 60-min-old `updated_at` clears the 30-min quiet window so the
+      // quiet gate alone wouldn't hold the row in pending.
+      updatedAt: minutesBefore(mockNow, 60),
+      lastEventAt: minutesBefore(mockNow, 60),
+      cursorWatermark: watermark,
+      cursorWatermarkQuality: "soft",
+    });
+
+    const infoCapture = captureConsole("info");
+    try {
+      await runAnalysisJobTickOnce(authPool);
+    } finally {
+      infoCapture.restore();
+    }
+
+    const state = await getPeriodicState(
+      authPool,
+      customerId,
+      "DAILY",
+      bucketDate,
+      tz,
+    );
+    expect(state?.status).toBe("pending");
+    expect(state?.last_ready_at).toBeNull();
+
+    const shortenedLogs = infoCapture.calls
+      .map((call) => {
+        try {
+          return JSON.parse(String(call[0]));
+        } catch {
+          return null;
+        }
+      })
+      .filter(
+        (payload): payload is { event: string; customer_id: string } =>
+          payload !== null &&
+          payload.event === "analysis.daily_settle_shortened" &&
+          payload.customer_id === customerId,
+      );
+    expect(shortenedLogs).toHaveLength(0);
+
+    const job = await getPeriodicJob(
+      authPool,
+      customerId,
+      "DAILY",
+      bucketDate,
+      tz,
+    );
+    expect(job).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -848,5 +1082,155 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     expect(second.storyStatesPatched).toBe(0);
     expect(second.periodicStatesSeeded).toBe(0);
     expect(second.periodicStatesPatched).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 12 — Generation cap on dirty re-queue (sub-case b)
+  // -------------------------------------------------------------------------
+  it("scenario 12: dirty re-queue at MAX_GENERATION does not bump the job and emits a warn log; state still cycles dirty → ready each tick", async () => {
+    const customerId = "00000000-0000-0000-0000-000000000112";
+    await seedCustomer(authPool, customerId, "s12");
+    clockSeam.setClock(MOCK_NOW);
+
+    const storyId = "1212";
+    await seedStoryState(authPool, customerId, storyId, {
+      status: "ready",
+      firstMemberAt: hoursBefore(MOCK_NOW, 24),
+      lastMemberAt: hoursBefore(MOCK_NOW, 12),
+      lastReadyAt: minutesBefore(MOCK_NOW, 15),
+    });
+    await seedStoryJob(authPool, customerId, storyId, {
+      status: "done",
+      generation: MAX_GENERATION,
+      dryRun: false,
+      lastGeneratedAt: minutesBefore(MOCK_NOW, 15),
+    });
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const arrival = MOCK_NOW;
+      const client = await authPool.connect();
+      try {
+        await recordStoryMemberArrival(client, customerId, storyId, arrival);
+      } finally {
+        client.release();
+      }
+      expect((await getStoryState(authPool, customerId, storyId))?.status).toBe(
+        "dirty",
+      );
+
+      const warnCapture = captureConsole("warn");
+      try {
+        await runAnalysisJobTickOnce(authPool);
+      } finally {
+        warnCapture.restore();
+      }
+
+      const job = await getStoryJob(authPool, customerId, storyId);
+      expect(job?.generation).toBe(MAX_GENERATION);
+      expect(job?.status).toBe("done");
+      expect(job?.dry_run).toBe(false);
+
+      const capLogs = warnCapture.calls
+        .map((call) => {
+          try {
+            return JSON.parse(String(call[0]));
+          } catch {
+            return null;
+          }
+        })
+        .filter(
+          (
+            payload,
+          ): payload is {
+            level: string;
+            event: string;
+            customer_id: string;
+            story_id: string;
+            max_generation: number;
+          } =>
+            payload !== null &&
+            payload.event === "analysis.story_max_generation_reached" &&
+            payload.customer_id === customerId &&
+            payload.story_id === storyId,
+        );
+      expect(capLogs).toHaveLength(1);
+      expect(capLogs[0].level).toBe("warn");
+      expect(capLogs[0].max_generation).toBe(MAX_GENERATION);
+
+      const state = await getStoryState(authPool, customerId, storyId);
+      expect(state?.status).toBe("ready");
+    }
+  });
+
+  // Companion: sub-case (a) regression — a parallel fixture seeded at
+  // MAX_GENERATION - 1 bumps to MAX_GENERATION on its first cycle with
+  // no `story_max_generation_reached` log. Without this, scenario 12
+  // cannot distinguish "cap fires correctly" from "every cycle silently
+  // fails to bump".
+  it("scenario 12 companion: dirty re-queue below MAX_GENERATION bumps the job to MAX_GENERATION (sub-case a regression)", async () => {
+    const customerId = "00000000-0000-0000-0000-000000000212";
+    await seedCustomer(authPool, customerId, "s12-a");
+    clockSeam.setClock(MOCK_NOW);
+
+    const storyId = "1213";
+    await seedStoryState(authPool, customerId, storyId, {
+      status: "ready",
+      firstMemberAt: hoursBefore(MOCK_NOW, 24),
+      lastMemberAt: hoursBefore(MOCK_NOW, 12),
+      lastReadyAt: minutesBefore(MOCK_NOW, 15),
+    });
+    await seedStoryJob(authPool, customerId, storyId, {
+      status: "done",
+      generation: MAX_GENERATION - 1,
+      dryRun: false,
+      lastGeneratedAt: minutesBefore(MOCK_NOW, 15),
+      // Seed a nonzero retry count so the test catches a regression
+      // where the dirty-bump branch stops clearing `attempts`.
+      attempts: 3,
+    });
+
+    const arrival = MOCK_NOW;
+    const client = await authPool.connect();
+    try {
+      await recordStoryMemberArrival(client, customerId, storyId, arrival);
+    } finally {
+      client.release();
+    }
+
+    const warnCapture = captureConsole("warn");
+    try {
+      await runAnalysisJobTickOnce(authPool);
+    } finally {
+      warnCapture.restore();
+    }
+
+    // Same as scenario 3: the bump leaves the job at `status='queued',
+    // dry_run=FALSE, attempts=0`. The LLM dispatch pass swallows the
+    // customer-pool failure in the test env, so the job stays queued at
+    // the bumped generation.
+    const job = await getStoryJob(authPool, customerId, storyId);
+    expect(job?.generation).toBe(MAX_GENERATION);
+    expect(job?.status).toBe("queued");
+    expect(job?.dry_run).toBe(false);
+    expect(job?.attempts).toBe(0);
+
+    const capLogs = warnCapture.calls
+      .map((call) => {
+        try {
+          return JSON.parse(String(call[0]));
+        } catch {
+          return null;
+        }
+      })
+      .filter(
+        (payload): payload is { event: string; customer_id: string } =>
+          payload !== null &&
+          payload.event === "analysis.story_max_generation_reached" &&
+          payload.customer_id === customerId,
+      );
+    expect(capLogs).toHaveLength(0);
+
+    const state = await getStoryState(authPool, customerId, storyId);
+    expect(state?.status).toBe("ready");
   });
 });
