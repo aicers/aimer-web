@@ -1,11 +1,15 @@
-// RFC 0002 Phase 0 (#294) — regenerate API stub tests.
+// RFC 0002 Phase 1 (#296) — story regenerate API tests (Phase 0
+// public-shape contract preserved, Phase 1 DB side-effects added).
 //
-// Locks in the public-shape contract: 401 unauthenticated, 403
-// non-member / missing permission, 400 invalid_param for tz on story,
-// 202 happy-path.
+// Locks in: 401 unauthenticated, 403 non-member / missing permission,
+// 400 invalid_param for tz on story, 404 missing state row, 409
+// archived / no surviving version, 202 happy-path returning state_pk
+// + variant + generation.
 
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
 
 const mockAssertAuthorized = vi.fn();
 const mockClientQuery = vi.fn();
@@ -13,6 +17,7 @@ const mockConnect = vi.fn(() => ({
   query: mockClientQuery,
   release: vi.fn(),
 }));
+const mockCustomerPoolQuery = vi.fn();
 
 const SELF = "00000000-0000-0000-0000-000000000099";
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";
@@ -58,6 +63,10 @@ vi.mock("@/lib/db/client", () => ({
   getAuthPool: () => ({ connect: mockConnect }),
 }));
 
+vi.mock("@/lib/db/customer-runtime-pool", () => ({
+  getCustomerRuntimePool: () => ({ query: mockCustomerPoolQuery }),
+}));
+
 function storyRequest(query = ""): NextRequest {
   return new NextRequest(
     new URL(
@@ -76,13 +85,23 @@ function reportRequest(query = ""): NextRequest {
   );
 }
 
-describe("story regenerate stub", () => {
+describe("story regenerate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     authMode.current = "authed";
     bridgeOverride.current = null;
     mockAssertAuthorized.mockResolvedValue(new Set(["analyses:configure"]));
+    // Default happy-path DB chain: state row exists & ready, story
+    // version survives, upsert returns generation=1 as a fresh insert.
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ status: "ready" }] }) // state row
+      .mockResolvedValueOnce({
+        rows: [{ generation: 1, inserted: true }],
+      }); // upsert RETURNING
+    mockCustomerPoolQuery.mockResolvedValueOnce({
+      rows: [{ story_version: "v1" }],
+    });
   });
 
   it("returns 202 on the happy path", async () => {
@@ -91,8 +110,50 @@ describe("story regenerate stub", () => {
     expect(res.status).toBe(202);
     const body = await res.json();
     expect(body.accepted).toBe(true);
-    expect(body.story_id).toBe("12345");
-    expect(body.customer_id).toBe(CUSTOMER_ID);
+    expect(body.state_pk).toEqual({
+      customer_id: CUSTOMER_ID,
+      story_id: "12345",
+    });
+    expect(body.variant).toEqual({
+      lang: "ENGLISH",
+      model_name: "openai",
+      model: "gpt-4o",
+    });
+    expect(body.generation).toBe(1);
+  });
+
+  it("returns 404 when the state row is missing", async () => {
+    mockClientQuery.mockReset().mockResolvedValueOnce({ rows: [] });
+    mockCustomerPoolQuery.mockReset();
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("story_not_found");
+  });
+
+  it("returns 409 when the state row is archived", async () => {
+    mockClientQuery
+      .mockReset()
+      .mockResolvedValueOnce({ rows: [{ status: "archived" }] });
+    mockCustomerPoolQuery.mockReset();
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("source_unavailable");
+  });
+
+  it("returns 409 when no story_version survives", async () => {
+    mockClientQuery
+      .mockReset()
+      .mockResolvedValueOnce({ rows: [{ status: "ready" }] });
+    mockCustomerPoolQuery.mockReset().mockResolvedValueOnce({ rows: [] });
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest());
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("source_unavailable");
   });
 
   it("returns 401 when the request is unauthenticated", async () => {
@@ -129,6 +190,23 @@ describe("story regenerate stub", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("invalid_param");
+  });
+
+  it("rejects an unknown lang with 400 invalid_param", async () => {
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest("?lang=FRENCH"));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("invalid_param");
+    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("accepts KOREAN as a valid lang override", async () => {
+    const { POST } = await import("../story/[storyId]/regenerate/route");
+    const res = await POST(storyRequest("?lang=KOREAN"));
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.variant.lang).toBe("KOREAN");
   });
 
   it("returns 400 on an invalid story id", async () => {

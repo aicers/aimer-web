@@ -1,43 +1,48 @@
-// RFC 0002 Phase 0 (#294) — story regenerate API stub.
+// RFC 0002 Phase 1 (#296) — story regenerate endpoint.
 //
 // `POST /api/customers/{customer_id}/analysis/story/{story_id}/regenerate`
 //
-// Accepts optional `?lang=…&model_name=…&model=…`. Rejects `tz` with
-// `400 invalid_param` — story analysis is timezone-independent
-// (RFC 0002 §"Customer-level timezone"; issue #294 scope).
+// Optional `?lang=…&model_name=…&model=…`. Rejects `tz` with `400
+// invalid_param` (story analysis is timezone-independent).
 //
-// **Phase 0 DB side effects: none.** The stub validates auth +
-// customer membership + permission + tz-rejection and returns 202
-// with a placeholder body. Real force-regenerate semantics
-// (`force_requested_at`/`force_requested_by`, `generation++`,
-// first-time variant insert) are Phase 1 (#296) concerns — there is
-// no existing job to bump in Phase 0, so a stub insert would not
-// exercise the real path and would add cleanup load to PR-6's
-// dry-run purge.
+// Source-availability precheck (before any job-row write):
+//   - State row does not exist → `404 story_not_found`.
+//   - State row is `archived`, or no `story_version` survives in
+//     customer DB → `409 source_unavailable`.
 //
-// Permission gate: `analyses:configure` (Analyst role only, existing
-// seed). Unauthenticated → 401, non-member or missing perm → 403.
+// Two branches per RFC §"Force regenerate":
+//   - Existing row for `(lang, model_name, model)` → UPDATE generation+1,
+//     status='queued', attempts=0, last_error=NULL, dry_run=FALSE, force
+//     timestamps refreshed. UNCONDITIONAL on prior status — including
+//     `processing`. The in-flight worker is defensive via captured
+//     generation.
+//   - No row → INSERT generation=1, status='queued', force timestamps
+//     set, dry_run=FALSE.
 //
-// Bridge-session policy: force-regenerate is a write action (Phase 1
-// will enqueue a real job row; the stub locks the auth contract for
-// that). Bridge sessions are AICE-side ingest/process flows, not
-// analyst UI actions, so this endpoint is blocked in bridge sessions
-// via `operationKind: "write"`. The bridge scope is still passed so a
-// bridge session whose customer_id matches the path can be rejected
-// uniformly with the cross-customer case (`bridge_write_blocked` →
-// 403) and so future relaxations stay scoped.
+// Returns 202 with `{state_pk: {customer_id, story_id}, variant: {lang,
+// model_name, model}, generation}`.
 
 import type { NextRequest } from "next/server";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
+import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
+const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
+
+// Aimer's `Language` GraphQL enum is closed; sending anything else
+// would persist a bad job row that fails at the LLM call far from the
+// caller. The worker casts the column value back to this enum at
+// dispatch time, so the API boundary is the right place to enforce it.
+const ALLOWED_LANGS = new Set(["KOREAN", "ENGLISH"]);
+
 function extractCustomerId(req: NextRequest): string | null {
-  // Pathname: /api/customers/{customerId}/analysis/story/{storyId}/regenerate
   const segments = req.nextUrl.pathname.split("/");
   const idx = segments.indexOf("customers");
   if (idx === -1 || idx + 1 >= segments.length) return null;
@@ -77,15 +82,23 @@ export const POST = withAuth(
       return Response.json(errorBody("invalid_story_id"), { status: 400 });
     }
 
-    // Story analysis output is timezone-independent (RFC 0002). Reject
-    // tz here so a client that mistakenly sends it does not silently
-    // succeed and start expecting tz to be honored in Phase 1.
     if (req.nextUrl.searchParams.has("tz")) {
       return Response.json(
         errorBody("invalid_param", "tz is not supported on story regenerate"),
         { status: 400 },
       );
     }
+
+    const lang = req.nextUrl.searchParams.get("lang") ?? DEFAULT_LANG;
+    if (!ALLOWED_LANGS.has(lang)) {
+      return Response.json(
+        errorBody("invalid_param", "lang must be one of KOREAN, ENGLISH"),
+        { status: 400 },
+      );
+    }
+    const modelName =
+      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
+    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
 
     const pool = getAuthPool();
     const client = await pool.connect();
@@ -106,6 +119,77 @@ export const POST = withAuth(
             : null,
         },
       );
+
+      // Source-availability precheck. The state row is the source-of-
+      // truth handle into the analysis pipeline; force-regenerate
+      // cannot resurrect an archived narrative or one without a
+      // surviving story_version.
+      const stateRow = await client.query<{ status: string }>(
+        `SELECT status FROM story_analysis_state
+          WHERE customer_id = $1 AND story_id = $2::bigint`,
+        [customerId, storyId],
+      );
+      if (stateRow.rows.length === 0) {
+        return Response.json(errorBody("story_not_found"), { status: 404 });
+      }
+      if (stateRow.rows[0].status === "archived") {
+        return Response.json(errorBody("source_unavailable"), { status: 409 });
+      }
+
+      // Confirm at least one `story_version` survives in the customer
+      // DB. The state row can outlive every version when an archive
+      // races with the regenerate request.
+      const customerPool = getCustomerRuntimePool(customerId);
+      const versionRows = await customerPool.query<{ story_version: string }>(
+        `SELECT story_version FROM story
+          WHERE story_id = $1::bigint
+          LIMIT 1`,
+        [storyId],
+      );
+      if (versionRows.rows.length === 0) {
+        return Response.json(errorBody("source_unavailable"), { status: 409 });
+      }
+
+      // UPSERT the job row. The UPDATE branch's WHERE clause is the PK,
+      // so a missing variant row triggers the INSERT branch.
+      const upsertRes = await client.query<{
+        generation: number;
+        inserted: boolean;
+      }>(
+        `INSERT INTO story_analysis_job
+           (customer_id, story_id, lang, model_name, model,
+            status, generation, dry_run,
+            force_requested_at, force_requested_by,
+            attempts, last_error)
+         VALUES ($1, $2::bigint, $3, $4, $5,
+                 'queued', 1, FALSE,
+                 NOW(), $6::uuid,
+                 0, NULL)
+         ON CONFLICT (customer_id, story_id, lang, model_name, model)
+         DO UPDATE SET
+           generation         = story_analysis_job.generation + 1,
+           status             = 'queued',
+           dry_run            = FALSE,
+           force_requested_at = NOW(),
+           force_requested_by = EXCLUDED.force_requested_by,
+           attempts           = 0,
+           last_error         = NULL,
+           processing_started_at = NULL,
+           updated_at         = NOW()
+         RETURNING generation, (xmax = 0) AS inserted`,
+        [customerId, storyId, lang, modelName, model, auth.accountId],
+      );
+      const { generation } = upsertRes.rows[0];
+
+      return Response.json(
+        {
+          accepted: true,
+          state_pk: { customer_id: customerId, story_id: storyId },
+          variant: { lang, model_name: modelName, model },
+          generation,
+        },
+        { status: 202 },
+      );
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(errorBody(err.message), {
@@ -116,24 +200,6 @@ export const POST = withAuth(
     } finally {
       client.release();
     }
-
-    // Placeholder body — the public shape (URL + status codes + error
-    // codes) is what Phase 0 locks in. The {variant, generation} fields
-    // become real in Phase 1.
-    const url = req.nextUrl;
-    return Response.json(
-      {
-        accepted: true,
-        story_id: storyId,
-        customer_id: customerId,
-        variant: {
-          lang: url.searchParams.get("lang"),
-          model_name: url.searchParams.get("model_name"),
-          model: url.searchParams.get("model"),
-        },
-      },
-      { status: 202 },
-    );
   },
   { ctx: "general" },
 );

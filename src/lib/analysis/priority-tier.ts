@@ -47,6 +47,60 @@ export function computePriorityTier(
   return MATRIX[s][l];
 }
 
+// RFC 0002 Phase 1 (#296) — likelihood-floor signals applied at the
+// matrix-lookup site (NOT persisted; the on-disk `likelihood_score`
+// always holds the raw LLM value so calibration data and the floor
+// policy stay revisable without rewriting history).
+//
+// Signal sources are locked at the caller (story-worker):
+//   - `memberCount` = COUNT(*) over `story_member` rows for the
+//      canonical (story_id, story_version). The `story` schema has no
+//      precomputed count column.
+//   - `knownIocHit` = FALSE for Phase 1. The floor is wired but always
+//      receives `false`; the producer-side signal lands as a follow-up
+//      once the upstream column / JSON path is defined.
+export interface LikelihoodSignals {
+  knownIocHit: boolean;
+  memberCount: number;
+}
+
+function resolveFloorInt(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+const MEMBER_COUNT_FLOOR_N = resolveFloorInt(
+  process.env.ANALYSIS_LIKELIHOOD_MEMBER_COUNT_FLOOR_N,
+  5,
+);
+
+const FLOOR_KNOWN_IOC = 0.95;
+const FLOOR_MEMBER_COUNT = 0.7;
+
+/**
+ * Apply RFC 0002 §"Priority tiering — likelihood floors" to the raw
+ * LLM likelihood before it feeds `computePriorityTier`. Never lowers
+ * the score; only raises it to the configured floor when a signal is
+ * present. Multiple signals stack via `max` semantics, not addition.
+ */
+export function applyLikelihoodFloors(
+  rawLikelihood: number,
+  signals: LikelihoodSignals,
+): number {
+  let floored = rawLikelihood;
+  if (signals.knownIocHit && floored < FLOOR_KNOWN_IOC) {
+    floored = FLOOR_KNOWN_IOC;
+  }
+  if (
+    signals.memberCount >= MEMBER_COUNT_FLOOR_N &&
+    floored < FLOOR_MEMBER_COUNT
+  ) {
+    floored = FLOOR_MEMBER_COUNT;
+  }
+  return floored;
+}
+
 const TIER_RANK: Record<PriorityTier, number> = {
   LOW: 0,
   MEDIUM: 1,

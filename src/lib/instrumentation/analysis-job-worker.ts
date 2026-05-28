@@ -47,6 +47,11 @@ import {
   DEFAULT_STORY_MAX_WAIT_HOURS,
   LIVE_BUCKET_DATE,
 } from "../analysis/state";
+import {
+  recoverStuckStoryJobs,
+  seedRealStoryJobs,
+  tickStoryJobsOnce,
+} from "../analysis/story-worker";
 import { getAuthPool } from "../db/client";
 import { getCurrentTimestamp } from "./time";
 
@@ -117,19 +122,11 @@ async function tickStoryStates(
   client: PoolClient,
   nowIso: string,
 ): Promise<void> {
-  // Row-claiming pickup. Both pending and ready/dirty batches use
-  // `FOR UPDATE SKIP LOCKED` so multiple worker replicas cannot pick
-  // the same state row in the same tick. The surrounding BEGIN/COMMIT
-  // (see `runAnalysisJobTickOnce`) holds the row lock for the whole
-  // tick; the second replica skips locked rows entirely. Matches the
-  // RFC 0002 §"Worker structure" requirement and the redaction-job-
-  // worker pattern (`src/lib/instrumentation/redaction-job-worker.ts`).
-
-  // 1. Flip ready-eligible pending rows. The readiness rule is pushed
-  //    down into SQL so non-ready pending rows do not occupy a slot in
-  //    the LIMIT batch — otherwise the first N pending rows that are
-  //    not yet ready would block every tick from inspecting any pending
-  //    row beyond position N (round-2 starvation review).
+  // Phase 1 (#296) — real LLM seeding. Pending → ready promotion stays
+  // here (the rule is RFC 0002 §"Story readiness", independent of the
+  // dry-run vs real distinction). The "ensure a job row exists for the
+  // default variant" pass moves to `seedRealStoryJobs` so it can write
+  // `dry_run=FALSE` rows that the LLM-calling tick picks up.
   const { rows: pending } = await client.query<StoryStateRow>(
     `SELECT customer_id::text  AS customer_id,
             story_id::text     AS story_id,
@@ -166,106 +163,10 @@ async function tickStoryStates(
     );
   }
 
-  // 2. For every actionable state row, ensure a queued job exists for
-  //    the default variant; immediately mark it done with dry_run=TRUE.
-  //    Two filters in addition to `FOR UPDATE SKIP LOCKED`:
-  //
-  //    (a) Filter ready rows to those still missing the default-variant
-  //        job. Without this, a ready row that already has its dry-run
-  //        job is reselected forever and blocks slots behind it from
-  //        ever receiving their first job (round-2 starvation review).
-  //    (b) Always include dirty rows — the dispatcher bumps generation
-  //        and flips them back to ready, so they drop out next tick.
-  //
-  //    `FOR UPDATE SKIP LOCKED` is the multi-replica guard: without it,
-  //    two replicas could each read the same dirty row and each issue
-  //    `UPDATE story_analysis_job SET generation = generation + 1`,
-  //    double-incrementing the generation for one source change.
-  const { rows: actionable } = await client.query<StoryStateRow>(
-    `SELECT s.customer_id::text AS customer_id,
-            s.story_id::text    AS story_id,
-            s.status,
-            s.first_member_at,
-            s.last_member_at
-       FROM story_analysis_state s
-      WHERE s.status = 'dirty'
-         OR (s.status = 'ready'
-             AND NOT EXISTS (
-               SELECT 1 FROM story_analysis_job j
-                WHERE j.customer_id = s.customer_id
-                  AND j.story_id    = s.story_id
-                  AND j.lang        = $2
-                  AND j.model_name  = $3
-                  AND j.model       = $4
-             ))
-      ORDER BY s.customer_id, s.story_id
-      LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
-  );
-  for (const row of actionable) {
-    await dispatchStoryDryRunJob(client, row, nowIso);
-  }
-}
-
-async function dispatchStoryDryRunJob(
-  client: PoolClient,
-  row: StoryStateRow,
-  nowIso: string,
-): Promise<void> {
-  // Ready: ensure a job exists. Dirty: bump generation on the existing
-  // job. Splitting the two cases avoids an ON-CONFLICT WHERE clause
-  // that under-fires when EXCLUDED.generation is always 1.
-  if (row.status === "dirty") {
-    await client.query(
-      `UPDATE story_analysis_job
-          SET generation = generation + 1,
-              status = 'done',
-              dry_run = TRUE,
-              processing_started_at = $6::timestamptz,
-              last_generated_at = $6::timestamptz,
-              last_error = NULL,
-              updated_at = $6::timestamptz
-        WHERE customer_id = $1 AND story_id = $2::bigint
-          AND lang = $3 AND model_name = $4 AND model = $5`,
-      [
-        row.customer_id,
-        row.story_id,
-        DEFAULT_LANG,
-        DEFAULT_MODEL_NAME,
-        DEFAULT_MODEL,
-        nowIso,
-      ],
-    );
-    await client.query(
-      `UPDATE story_analysis_state
-          SET status = 'ready',
-              last_ready_at = $3::timestamptz,
-              updated_at = $3::timestamptz
-        WHERE customer_id = $1 AND story_id = $2::bigint AND status = 'dirty'`,
-      [row.customer_id, row.story_id, nowIso],
-    );
-    return;
-  }
-  await client.query(
-    `INSERT INTO story_analysis_job
-       (customer_id, story_id, lang, model_name, model,
-        status, generation, dry_run,
-        processing_started_at, last_generated_at)
-     VALUES ($1, $2::bigint, $3, $4, $5,
-             'done', 1, TRUE,
-             $6::timestamptz, $6::timestamptz)
-     ON CONFLICT (customer_id, story_id, lang, model_name, model)
-     DO NOTHING`,
-    [
-      row.customer_id,
-      row.story_id,
-      DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
-      nowIso,
-    ],
-  );
+  // 2. Seed real (non-dry-run) `queued` jobs for every actionable
+  //    state row. See `seedRealStoryJobs` for the same NOT-EXISTS /
+  //    SKIP-LOCKED rules previously inlined here.
+  await seedRealStoryJobs(client, BATCH_SIZE);
 }
 
 // ---------------------------------------------------------------------------
@@ -541,10 +442,13 @@ async function dispatchPeriodicDryRunJob(
 // ---------------------------------------------------------------------------
 
 /**
- * Drain `queued` + `dry_run=TRUE` job rows to `done`. Phase 0 inserts
- * job rows directly as `status='done', dry_run=TRUE`, so under normal
- * operation no queued dry-run rows ever exist. Two paths can still
- * produce them:
+ * Phase 1 (#296): legacy Phase 0 drain. The Phase 1 migration deletes
+ * leftover `dry_run=TRUE` rows; this drain remains as a belt-and-
+ * braces sweep for stale rows from rolling deploys or fixtures.
+ *
+ * Phase 0 inserts job rows directly as `status='done', dry_run=TRUE`,
+ * so under normal operation no queued dry-run rows ever exist. Two
+ * paths can still produce them:
  *
  *   (a) Boot-time recovery flips orphaned `processing` rows back to
  *       `queued` (matches the redaction-worker pattern so the Phase 1
@@ -632,6 +536,10 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // at the start of the tick and a job row inserted at the end share
   // exactly one timestamp).
   const nowIso = getCurrentTimestamp().toISOString();
+  // Seeding pass (state → job rows) runs inside a single auth-DB tx.
+  // The LLM-dispatch pass runs OUTSIDE that tx — each job's
+  // `processing` marker is its own short tx, so a slow aimer call does
+  // not hold any seeding rows locked.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -645,6 +553,14 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   } finally {
     client.release();
   }
+  // Story LLM dispatch — picks `queued` real jobs, runs `analyzeStory`,
+  // and writes `story_analysis_result`. Per-job advisory locks keep
+  // multiple replicas from double-running the same (customer, story).
+  await tickStoryJobsOnce(pool, BATCH_SIZE);
+  // Watchdog: flip any `processing` jobs stuck past the timeout back
+  // to `queued`. The pickup-time result-row probe avoids double LLM
+  // cost when the previous attempt crashed after step 1.
+  await recoverStuckStoryJobs(pool);
 }
 
 const WORKER_SLOT = Symbol.for("aimer.analysis.jobWorker");

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyLikelihoodFloors,
   computePriorityTier,
   maxTier,
   type PriorityTier,
@@ -91,5 +92,46 @@ describe("tierRank / maxTier — semantic ordering, not lexicographic", () => {
 
   it("maxTier throws on empty input", () => {
     expect(() => maxTier()).toThrow();
+  });
+});
+
+describe("applyLikelihoodFloors — Phase 1 likelihood signals", () => {
+  it("returns the raw value when no signals fire", () => {
+    expect(
+      applyLikelihoodFloors(0.3, { knownIocHit: false, memberCount: 1 }),
+    ).toBe(0.3);
+  });
+
+  it("raises likelihood to >= 0.95 when knownIocHit fires", () => {
+    expect(
+      applyLikelihoodFloors(0.1, { knownIocHit: true, memberCount: 0 }),
+    ).toBe(0.95);
+  });
+
+  it("never lowers an already-high likelihood", () => {
+    expect(
+      applyLikelihoodFloors(0.99, { knownIocHit: true, memberCount: 10 }),
+    ).toBe(0.99);
+  });
+
+  it("raises to >= 0.7 when memberCount meets the floor (default N=5)", () => {
+    expect(
+      applyLikelihoodFloors(0.2, { knownIocHit: false, memberCount: 5 }),
+    ).toBe(0.7);
+    expect(
+      applyLikelihoodFloors(0.2, { knownIocHit: false, memberCount: 100 }),
+    ).toBe(0.7);
+  });
+
+  it("does not raise when memberCount is below the floor", () => {
+    expect(
+      applyLikelihoodFloors(0.2, { knownIocHit: false, memberCount: 4 }),
+    ).toBe(0.2);
+  });
+
+  it("knownIocHit dominates memberCount when both fire", () => {
+    expect(
+      applyLikelihoodFloors(0.1, { knownIocHit: true, memberCount: 50 }),
+    ).toBe(0.95);
   });
 });

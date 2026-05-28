@@ -1,0 +1,17 @@
+mutation AnalyzeStory(
+  $members: String!
+  $name: String!
+  $model: String!
+  $lang: Language
+) {
+  analyzeStory(members: $members, name: $name, model: $model, lang: $lang) {
+    severityScore
+    likelihoodScore
+    severityFactors
+    likelihoodFactors
+    ttpTags
+    analysis
+    promptVersion
+    modelActualVersion
+  }
+}
