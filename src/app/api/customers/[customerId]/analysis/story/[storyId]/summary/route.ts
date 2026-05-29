@@ -20,7 +20,6 @@
 
 import type { NextRequest } from "next/server";
 import { type AuthorizeResult, authorize } from "@/lib/auth/authorization";
-import { HttpError } from "@/lib/auth/errors";
 import { withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
@@ -83,13 +82,6 @@ export const GET = withAuth(
             : null,
         },
       );
-    } catch (err) {
-      if (err instanceof HttpError) {
-        return Response.json(errorBody(err.message), {
-          status: err.statusCode,
-        });
-      }
-      throw err;
     } finally {
       client.release();
     }
