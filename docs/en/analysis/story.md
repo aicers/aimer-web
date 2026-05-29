@@ -77,9 +77,10 @@ The header section shows three score-related fields:
 - **Likelihood score** — `0.000`–`1.000`, three decimal places. Answers
   "how likely is this actually malicious rather than noise". The stored
   value is the raw LLM estimate; floors (e.g. five-or-more members
-  raises effective likelihood to `≥ 0.7` before the matrix lookup) are
-  applied at tier derivation only, so calibration data and the floor
-  policy stay revisable without rewriting history.
+  raises effective likelihood to `≥ 0.7` before the matrix lookup; a
+  `known_ioc_hit` on the story raises it to `≥ 0.95`) are applied at
+  tier derivation only, so calibration data and the floor policy stay
+  revisable without rewriting history.
 
 ### Tier matrix
 
