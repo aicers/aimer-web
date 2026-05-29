@@ -362,8 +362,13 @@ test.describe("Members page — member removal", () => {
       managerPage.getByText("Action completed successfully."),
     ).toBeVisible();
 
-    // The removed member should no longer appear
-    await expect(managerPage.getByText(testData.user.displayName)).toBeHidden();
+    // The removed member should no longer appear in the table. Scope the
+    // assertion to table rows so it is not confused by the confirmation
+    // dialog's description, which embeds the same display name and may
+    // still be present during its close animation.
+    await expect(
+      managerPage.locator("tr").filter({ hasText: testData.user.displayName }),
+    ).toHaveCount(0);
   });
 });
 
