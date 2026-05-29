@@ -512,6 +512,10 @@ async function loadCanonicalMembers(
   storyId: string,
 ): Promise<CanonicalMembers | null> {
   // Canonical version = latest by `story.received_at` per #294 decision 1.
+  // The `story_version DESC` tie-break matches the shared convention
+  // documented at reconcile.ts:569: received_at defaults to NOW() and is
+  // transaction-stable, so versions ingested in one tx tie on received_at
+  // and must resolve deterministically to the highest story_version.
   const storyRow = await customerPool.query<{
     story_version: string;
     source_aice_id: string;
@@ -520,7 +524,7 @@ async function loadCanonicalMembers(
     `SELECT story_version, source_aice_id, known_ioc_hit
        FROM story
       WHERE story_id = $1::bigint
-      ORDER BY received_at DESC
+      ORDER BY received_at DESC, story_version DESC
       LIMIT 1`,
     [storyId],
   );
@@ -1205,4 +1209,5 @@ export const __testables = {
   classifyAimerError,
   checkRedactionPolicyVersion,
   jobStoryLockId2,
+  loadCanonicalMembers,
 };
