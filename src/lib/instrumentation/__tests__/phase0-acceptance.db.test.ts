@@ -101,6 +101,24 @@ function captureConsole(method: "info" | "warn"): {
   };
 }
 
+// Decode each captured `console.*(JSON.stringify(...))` call back into a
+// structured payload, skipping non-JSON entries. Each call site keeps its
+// own `.filter(predicate)` to spell out the event and fields it asserts on.
+function parseStructuredLogs(calls: unknown[][]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const call of calls) {
+    try {
+      const parsed = JSON.parse(String(call[0]));
+      if (parsed !== null && typeof parsed === "object") {
+        out.push(parsed as Record<string, unknown>);
+      }
+    } catch {
+      // structured-log assertions ignore non-JSON console output
+    }
+  }
+  return out;
+}
+
 async function seedCustomer(
   pool: Pool,
   id: string,
@@ -338,7 +356,7 @@ async function getPeriodicJob(
   return rows[0] ?? null;
 }
 
-describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
+describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
   let authDbName: string;
   let authPool: Pool;
   let customerDbName: string;
@@ -661,31 +679,22 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     expect(state?.status).toBe("ready");
     expect(state?.last_ready_at?.toISOString()).toBe(mockNow.toISOString());
 
-    const shortenedLogs = infoCapture.calls
-      .map((call) => {
-        try {
-          return JSON.parse(String(call[0]));
-        } catch {
-          return null;
-        }
-      })
-      .filter(
-        (
-          payload,
-        ): payload is {
-          level: string;
-          event: string;
-          customer_id: string;
-          period: string;
-          bucket_date: string;
-          tz: string;
-          cursor_watermark: string;
-          bucket_end_at: string;
-        } =>
-          payload !== null &&
-          payload.event === "analysis.daily_settle_shortened" &&
-          payload.customer_id === customerId,
-      );
+    const shortenedLogs = parseStructuredLogs(infoCapture.calls).filter(
+      (
+        payload,
+      ): payload is {
+        level: string;
+        event: string;
+        customer_id: string;
+        period: string;
+        bucket_date: string;
+        tz: string;
+        cursor_watermark: string;
+        bucket_end_at: string;
+      } =>
+        payload.event === "analysis.daily_settle_shortened" &&
+        payload.customer_id === customerId,
+    );
     expect(shortenedLogs).toHaveLength(1);
     const log = shortenedLogs[0];
     expect(log.level).toBe("info");
@@ -760,20 +769,11 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     expect(state?.status).toBe("pending");
     expect(state?.last_ready_at).toBeNull();
 
-    const shortenedLogs = infoCapture.calls
-      .map((call) => {
-        try {
-          return JSON.parse(String(call[0]));
-        } catch {
-          return null;
-        }
-      })
-      .filter(
-        (payload): payload is { event: string; customer_id: string } =>
-          payload !== null &&
-          payload.event === "analysis.daily_settle_shortened" &&
-          payload.customer_id === customerId,
-      );
+    const shortenedLogs = parseStructuredLogs(infoCapture.calls).filter(
+      (payload): payload is { event: string; customer_id: string } =>
+        payload.event === "analysis.daily_settle_shortened" &&
+        payload.customer_id === customerId,
+    );
     expect(shortenedLogs).toHaveLength(0);
 
     const job = await getPeriodicJob(
@@ -1130,29 +1130,20 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
       expect(job?.status).toBe("done");
       expect(job?.dry_run).toBe(false);
 
-      const capLogs = warnCapture.calls
-        .map((call) => {
-          try {
-            return JSON.parse(String(call[0]));
-          } catch {
-            return null;
-          }
-        })
-        .filter(
-          (
-            payload,
-          ): payload is {
-            level: string;
-            event: string;
-            customer_id: string;
-            story_id: string;
-            max_generation: number;
-          } =>
-            payload !== null &&
-            payload.event === "analysis.story_max_generation_reached" &&
-            payload.customer_id === customerId &&
-            payload.story_id === storyId,
-        );
+      const capLogs = parseStructuredLogs(warnCapture.calls).filter(
+        (
+          payload,
+        ): payload is {
+          level: string;
+          event: string;
+          customer_id: string;
+          story_id: string;
+          max_generation: number;
+        } =>
+          payload.event === "analysis.story_max_generation_reached" &&
+          payload.customer_id === customerId &&
+          payload.story_id === storyId,
+      );
       expect(capLogs).toHaveLength(1);
       expect(capLogs[0].level).toBe("warn");
       expect(capLogs[0].max_generation).toBe(MAX_GENERATION);
@@ -1214,20 +1205,11 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite (issue #326)", () => {
     expect(job?.dry_run).toBe(false);
     expect(job?.attempts).toBe(0);
 
-    const capLogs = warnCapture.calls
-      .map((call) => {
-        try {
-          return JSON.parse(String(call[0]));
-        } catch {
-          return null;
-        }
-      })
-      .filter(
-        (payload): payload is { event: string; customer_id: string } =>
-          payload !== null &&
-          payload.event === "analysis.story_max_generation_reached" &&
-          payload.customer_id === customerId,
-      );
+    const capLogs = parseStructuredLogs(warnCapture.calls).filter(
+      (payload): payload is { event: string; customer_id: string } =>
+        payload.event === "analysis.story_max_generation_reached" &&
+        payload.customer_id === customerId,
+    );
     expect(capLogs).toHaveLength(0);
 
     const state = await getStoryState(authPool, customerId, storyId);
