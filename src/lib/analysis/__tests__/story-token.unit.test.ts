@@ -2,14 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import type { RedactionMap } from "@/lib/redaction";
 import { buildRangeSet } from "../../redaction/ranges";
 import type { RangeSet } from "../../redaction/types";
 import { buildStoryTokenMap, scanStoryAnalysisForLeaks } from "../story-token";
+import { restoreStoryAnalysisTokens } from "../story-token-restore";
 
 const EMPTY_RANGES: RangeSet = buildRangeSet([]);
 
 describe("buildStoryTokenMap", () => {
-  it("rewrites event-scope tokens to story-scope with the member index", () => {
+  it("rewrites event-scope tokens to 1-based story-scope tokens", () => {
+    // The member index is 1-based end to end (RFC 0002 #344): the first
+    // member's tokens carry `E1`, not `E0`, so the embedded `E{i}` equals
+    // aimer's `StoryMemberInput.ordinal`.
     const out = buildStoryTokenMap([
       {
         aiceId: "aice-1",
@@ -23,20 +28,22 @@ describe("buildStoryTokenMap", () => {
       },
     ]);
     expect(out.rewrittenMembers[0].event).toEqual({
-      ip: "<<REDACTED_IP_E0_001>>",
-    });
-    expect(out.rewrittenMembers[1].event).toEqual({
       ip: "<<REDACTED_IP_E1_001>>",
-      mac: "<<REDACTED_MAC_E1_007>>",
     });
+    expect(out.rewrittenMembers[0].index).toBe(1);
+    expect(out.rewrittenMembers[1].event).toEqual({
+      ip: "<<REDACTED_IP_E2_001>>",
+      mac: "<<REDACTED_MAC_E2_007>>",
+    });
+    expect(out.rewrittenMembers[1].index).toBe(2);
     expect(out.refs).toEqual([
-      { index: 0, aiceId: "aice-1", eventKey: "1001" },
-      { index: 1, aiceId: "aice-2", eventKey: "2002" },
+      { index: 1, aiceId: "aice-1", eventKey: "1001" },
+      { index: 2, aiceId: "aice-2", eventKey: "2002" },
     ]);
     expect(Array.from(out.allowedTokens).sort()).toEqual([
-      "<<REDACTED_IP_E0_001>>",
       "<<REDACTED_IP_E1_001>>",
-      "<<REDACTED_MAC_E1_007>>",
+      "<<REDACTED_IP_E2_001>>",
+      "<<REDACTED_MAC_E2_007>>",
     ]);
   });
 
@@ -45,6 +52,32 @@ describe("buildStoryTokenMap", () => {
     expect(out.rewrittenMembers).toEqual([]);
     expect(out.refs).toEqual([]);
     expect(out.allowedTokens.size).toBe(0);
+  });
+
+  it("round-trips 1-based ordinals through build and restore", () => {
+    // The ordinal baked into the token (`E{i}`), the `refs[].index`, and
+    // the restore lookup key must all agree on the 1-based namespace so
+    // the analyst UI resolves the right per-member redaction map.
+    const out = buildStoryTokenMap([
+      { aiceId: "a1", eventKey: "1", event: { ip: "<<REDACTED_IP_001>>" } },
+      { aiceId: "a2", eventKey: "2", event: { ip: "<<REDACTED_IP_001>>" } },
+    ]);
+    expect(out.refs.map((r) => r.index)).toEqual([1, 2]);
+
+    // `mapsByIndex` is keyed by `refs[].index` (1-based), exactly how
+    // `story-result-page-loader.ts` builds it.
+    const mkMap = (value: string): RedactionMap => ({
+      "<<REDACTED_IP_001>>": { value, kind: "ip" },
+    });
+    const mapsByIndex = new Map<number, RedactionMap>([
+      [1, mkMap("10.0.0.1")],
+      [2, mkMap("10.0.0.2")],
+    ]);
+    const text =
+      "Source <<REDACTED_IP_E1_001>> talked to <<REDACTED_IP_E2_001>>.";
+    expect(restoreStoryAnalysisTokens(text, mapsByIndex)).toBe(
+      "Source 10.0.0.1 talked to 10.0.0.2.",
+    );
   });
 });
 

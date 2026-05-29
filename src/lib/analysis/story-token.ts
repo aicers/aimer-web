@@ -12,7 +12,9 @@
 //   - `buildStoryTokenMap(members)` rewrites every event-scope token
 //     in each member's JSON to a story-scope token
 //     `<<REDACTED_<KIND>_E{i}_NNN>>`, where `{i}` is the member's
-//     position in the canonical, deterministic order. Returns the
+//     1-based position in the canonical, deterministic order (so the
+//     embedded `E{i}` equals aimer's `StoryMemberInput.ordinal`).
+//     Returns the
 //     rewritten members and a `refs` array carrying enough information
 //     to detect hallucinations and to drive event-scope restore on the
 //     rendering side.
@@ -76,7 +78,13 @@ export interface StoryMemberInput {
 }
 
 export interface StoryMemberRef {
-  /** Member position in the deterministic input order, 0-indexed. */
+  /**
+   * Member position in the deterministic input order, 1-based. This is
+   * the `{i}` embedded in the member's `<<REDACTED_*_E{i}_*>>` tokens
+   * and equals the member's `StoryMemberInput.ordinal` sent to aimer
+   * (aimer's contract is a contiguous `1..N` ordinal namespace that
+   * must agree with the in-payload `E{i}` tokens — RFC 0002 #344).
+   */
   index: number;
   aiceId: string;
   eventKey: string;
@@ -124,19 +132,28 @@ export function buildStoryTokenMap(
 ): BuildStoryTokenMapResult {
   const refs: StoryMemberRef[] = [];
   const allowedTokens = new Set<string>();
-  const rewrittenMembers = members.map((member, index) => {
-    refs.push({ index, aiceId: member.aiceId, eventKey: member.eventKey });
+  const rewrittenMembers = members.map((member, arrayIndex) => {
+    // 1-based ordinal: the `E{i}` token namespace and aimer's
+    // `StoryMemberInput.ordinal` are a contiguous `1..N` sequence that
+    // MUST agree (RFC 0002 #344). The array position is 0-based, so the
+    // ordinal is `arrayIndex + 1`.
+    const ordinal = arrayIndex + 1;
+    refs.push({
+      index: ordinal,
+      aiceId: member.aiceId,
+      eventKey: member.eventKey,
+    });
     const json = JSON.stringify(member.event);
     const rewritten = json.replace(
       EVENT_TOKEN_RE,
       (_match, kind: string, nnn: string) => {
-        const token = `<<REDACTED_${kind}_E${index}_${nnn}>>`;
+        const token = `<<REDACTED_${kind}_E${ordinal}_${nnn}>>`;
         allowedTokens.add(token);
         return token;
       },
     );
     return {
-      index,
+      index: ordinal,
       aiceId: member.aiceId,
       eventKey: member.eventKey,
       event: JSON.parse(rewritten) as unknown,

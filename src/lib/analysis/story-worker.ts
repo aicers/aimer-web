@@ -32,7 +32,11 @@ import type { Pool, PoolClient } from "pg";
 import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
-import { AnalyzeStoryDocument } from "@/lib/graphql/__generated__/analyze-story";
+import {
+  AnalyzeStoryDocument,
+  type StoryMemberInput,
+  type StoryMetadataInput,
+} from "@/lib/graphql/__generated__/analyze-story";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
@@ -127,8 +131,17 @@ interface StoryMemberRow {
   story_version: string;
   member_event_key: string;
   source_aice_id: string;
+  role: string;
   event: unknown;
   redaction_policy_version: string;
+  /**
+   * Per-member event timestamp, resolved via a deduped LEFT JOIN to
+   * `baseline_event` (RFC 0002 #344). NULL when no baseline_event row
+   * matches the member's `(source_aice_id, event_key)` — treated as a
+   * hard job failure (`member_event_time_unresolved`) rather than a
+   * silent drop.
+   */
+  event_time: Date | null;
 }
 
 interface AuditEmissionBase {
@@ -302,6 +315,19 @@ export async function processStoryJob(
     return;
   }
 
+  // Per-member event-time precondition (RFC 0002 #344). `event_time` is
+  // resolved via the deduped `baseline_event` LEFT JOIN in
+  // `loadCanonicalMembers`; a member whose timestamp does not resolve
+  // would otherwise be sent to aimer with no `eventTime`. aimer requires
+  // a non-null `eventTime` per member, and silently dropping the member
+  // (an INNER JOIN) would feed aimer a truncated story. Fail loudly
+  // instead — same precondition class as the redaction-policy checks
+  // above (pre-LLM, attempts unchanged).
+  if (canonical.members.some((m) => m.event_time == null)) {
+    await failJob(opts.authPool, job, "member_event_time_unresolved");
+    return;
+  }
+
   // Token rewrite + LLM call.
   const { rewrittenMembers, refs, allowedTokens } = buildStoryTokenMap(
     canonical.members.map((m) => ({
@@ -310,10 +336,52 @@ export async function processStoryJob(
       event: m.event,
     })),
   );
-  const inputHash = createHash("sha256")
-    .update(JSON.stringify(rewrittenMembers))
-    .digest("hex");
   const force = job.force_requested_at !== null;
+
+  // Build the structured aimer payload. `rewrittenMembers` preserves the
+  // canonical order of `canonical.members`, so member metadata (role,
+  // event_time) is read positionally. The member `ordinal` is the
+  // 1-based `rm.index` baked into the `E{i}` tokens by
+  // `buildStoryTokenMap`, so the declared ordinal agrees with the tokens
+  // actually embedded in `event` (RFC 0002 #344). aimer's
+  // `validate_story_inputs` requires contiguous `1..N` ordinals,
+  // `memberCount === members.length`, an exact `roleDistribution` match,
+  // and `firstSeenAt <= lastSeenAt` — all satisfied below.
+  const storyMembers: StoryMemberInput[] = rewrittenMembers.map((rm, i) => ({
+    ordinal: rm.index,
+    role: canonical.members[i].role,
+    eventTime: toIsoTimestamp(canonical.members[i].event_time as Date),
+    event: JSON.stringify(rm.event),
+  }));
+  const roleCounts = new Map<string, number>();
+  for (const m of canonical.members) {
+    roleCounts.set(m.role, (roleCounts.get(m.role) ?? 0) + 1);
+  }
+  const storyMetadata: StoryMetadataInput = {
+    storyId: job.story_id,
+    firstSeenAt: toIsoTimestamp(canonical.timeWindowStart),
+    lastSeenAt: toIsoTimestamp(canonical.timeWindowEnd),
+    memberCount: storyMembers.length,
+    roleDistribution: Array.from(roleCounts, ([role, count]) => ({
+      role,
+      count,
+    })),
+  };
+
+  // `input_hash` is the sha256 of the canonical LLM input — "members +
+  // metadata + refs" per RFC 0002 (the `input_hash` column comment and
+  // §"input_event_refs"). It must hash the structured payload aimer
+  // actually receives, not just `rewrittenMembers`: `members[].role`,
+  // `members[].eventTime`, and the whole `storyMetadata` object are part
+  // of the canonical input but absent from `rewrittenMembers`, so hashing
+  // the latter alone would collide two runs that differ only in
+  // role/event-time/metadata and defeat drift attribution. Each component
+  // is built in deterministic order (members follow the canonical member
+  // order; metadata fields and `refs` are positional), so the bundle is
+  // stable across runs with identical input.
+  const inputHash = createHash("sha256")
+    .update(JSON.stringify({ members: storyMembers, storyMetadata, refs }))
+    .digest("hex");
 
   void auditLog({
     ...auditBase,
@@ -333,7 +401,10 @@ export async function processStoryJob(
   let aimerResponse: AnalyzeStoryAimerResponse;
   try {
     aimerResponse = await callLlm({
-      membersJson: JSON.stringify(rewrittenMembers),
+      customerId: job.customer_id,
+      storyId: job.story_id,
+      members: storyMembers,
+      storyMetadata,
       modelName: job.model_name,
       model: job.model,
       lang: job.lang,
@@ -504,6 +575,8 @@ interface CanonicalMembers {
   storyVersion: string;
   sourceAiceId: string;
   knownIocHit: boolean;
+  timeWindowStart: Date;
+  timeWindowEnd: Date;
   members: StoryMemberRow[];
 }
 
@@ -520,8 +593,11 @@ async function loadCanonicalMembers(
     story_version: string;
     source_aice_id: string;
     known_ioc_hit: boolean;
+    time_window_start: Date;
+    time_window_end: Date;
   }>(
-    `SELECT story_version, source_aice_id, known_ioc_hit
+    `SELECT story_version, source_aice_id, known_ioc_hit,
+            time_window_start, time_window_end
        FROM story
       WHERE story_id = $1::bigint
       ORDER BY received_at DESC, story_version DESC
@@ -529,19 +605,71 @@ async function loadCanonicalMembers(
     [storyId],
   );
   if (storyRow.rows.length === 0) return null;
-  const { story_version, source_aice_id, known_ioc_hit } = storyRow.rows[0];
+  const {
+    story_version,
+    source_aice_id,
+    known_ioc_hit,
+    time_window_start,
+    time_window_end,
+  } = storyRow.rows[0];
 
+  // Member rows for the canonical version, with `role` (for the
+  // structured payload + roleDistribution) and a per-member `event_time`
+  // resolved from `baseline_event` (RFC 0002 #344, option (a)).
+  //
+  // `baseline_event`'s PK is `(baseline_version, event_key)`, so a
+  // rebaselined event survives as multiple rows
+  // (`migrations/customer/0002_phase2_tables.sql:18-26`). We therefore
+  // dedupe to one row per `(source_aice_id, event_key)` — latest by
+  // `received_at` — in the `latest_baseline` CTE BEFORE joining. Deduping
+  // over the joined result instead would risk collapsing members shared
+  // across co-occurring stories and dropping them.
+  //
+  // The dedupe set is scoped twice over: to this story's `source_aice_id`
+  // AND to the canonical-version member `event_key`s (materialized in the
+  // `member_rows` CTE). Without the `event_key` scope, every analysis would
+  // `DISTINCT ON`-sort the entire historical baseline for the source just
+  // to resolve a handful of member timestamps; the `(source_aice_id,
+  // event_key)` index can only bound the scan once both columns are
+  // constrained.
+  //
+  // A LEFT JOIN keeps every `story_member` row even when no
+  // `baseline_event` matches; the caller fails the job loudly
+  // (`member_event_time_unresolved`) on any NULL `event_time` rather than
+  // silently shrinking the member set (an INNER JOIN would do exactly
+  // that, feeding aimer a self-consistent-but-truncated story).
   const memberRows = await customerPool.query<StoryMemberRow>(
-    `SELECT story_id::text          AS story_id,
-            story_version,
-            member_event_key::text  AS member_event_key,
-            $2::text                AS source_aice_id,
-            event,
-            redaction_policy_version
-       FROM story_member
-      WHERE story_id = $1::bigint
-        AND story_version = $3
-      ORDER BY member_event_key`,
+    `WITH member_rows AS (
+       SELECT sm.story_id,
+              sm.story_version,
+              sm.member_event_key,
+              sm.role,
+              sm.event,
+              sm.redaction_policy_version
+         FROM story_member sm
+        WHERE sm.story_id = $1::bigint
+          AND sm.story_version = $3
+     ),
+     latest_baseline AS (
+       SELECT DISTINCT ON (source_aice_id, event_key)
+              source_aice_id, event_key, event_time
+         FROM baseline_event
+        WHERE source_aice_id = $2
+          AND event_key IN (SELECT member_event_key FROM member_rows)
+        ORDER BY source_aice_id, event_key, received_at DESC
+     )
+     SELECT mr.story_id::text          AS story_id,
+            mr.story_version,
+            mr.member_event_key::text  AS member_event_key,
+            $2::text                   AS source_aice_id,
+            mr.role,
+            mr.event,
+            mr.redaction_policy_version,
+            lb.event_time              AS event_time
+       FROM member_rows mr
+       LEFT JOIN latest_baseline lb
+         ON lb.event_key = mr.member_event_key
+      ORDER BY mr.member_event_key`,
     [storyId, source_aice_id, story_version],
   );
 
@@ -549,6 +677,8 @@ async function loadCanonicalMembers(
     storyVersion: story_version,
     sourceAiceId: source_aice_id,
     knownIocHit: known_ioc_hit,
+    timeWindowStart: time_window_start,
+    timeWindowEnd: time_window_end,
     members: memberRows.rows,
   };
 }
@@ -600,8 +730,21 @@ export interface AnalyzeStoryAimerResponse {
   modelActualVersion: string;
 }
 
+/**
+ * Normalise a TIMESTAMPTZ column value (pg returns `Date`) to the ISO
+ * 8601 string aimer's `DateTime` scalar expects. Strings are passed
+ * through unchanged (defensive — some pg type configs / test fixtures
+ * may hand back a pre-formatted string).
+ */
+function toIsoTimestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
 async function callAnalyzeStory(args: {
-  membersJson: string;
+  customerId: string;
+  storyId: string;
+  members: StoryMemberInput[];
+  storyMetadata: StoryMetadataInput;
   modelName: string;
   model: string;
   lang: string;
@@ -613,7 +756,10 @@ async function callAnalyzeStory(args: {
   const result = await graphqlRequest(
     AnalyzeStoryDocument,
     {
-      members: args.membersJson,
+      customerId: args.customerId,
+      storyId: args.storyId,
+      members: args.members,
+      storyMetadata: args.storyMetadata,
       name: args.modelName,
       model: args.model,
       lang: args.lang as "KOREAN" | "ENGLISH",

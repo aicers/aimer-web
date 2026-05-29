@@ -39,6 +39,7 @@ import {
   type DocumentNode,
   type FieldNode,
   type GraphQLEnumType,
+  type GraphQLInputObjectType,
   type GraphQLNamedType,
   type GraphQLObjectType,
   GraphQLObjectType as GraphQLObjectTypeClass,
@@ -46,6 +47,7 @@ import {
   type GraphQLSchema,
   type GraphQLType,
   isEnumType,
+  isInputObjectType,
   isListType,
   isNonNullType,
   isObjectType,
@@ -112,8 +114,10 @@ function renderEnum(enumType: GraphQLEnumType): string {
 interface RenderedType {
   /** TS expression including null wrappers if the GraphQL type is nullable. */
   tsType: string;
-  /** Nested object types this rendering depended on. Used to emit interfaces. */
+  /** Nested OUTPUT object types this rendering depended on (response side). */
   nestedObjects: GraphQLObjectType[];
+  /** Nested INPUT object types this rendering depended on (variable side). */
+  nestedInputObjects: GraphQLInputObjectType[];
 }
 
 /**
@@ -142,19 +146,43 @@ function renderInner(type: GraphQLType, nullable: boolean): RenderedType {
     return {
       tsType: `Array<${item.tsType}>${suffix}`,
       nestedObjects: item.nestedObjects,
+      nestedInputObjects: item.nestedInputObjects,
     };
   }
   if (isScalarType(type)) {
-    return { tsType: `${renderScalar(type.name)}${suffix}`, nestedObjects: [] };
+    return {
+      tsType: `${renderScalar(type.name)}${suffix}`,
+      nestedObjects: [],
+      nestedInputObjects: [],
+    };
   }
   if (isEnumType(type)) {
-    return { tsType: `${renderEnum(type)}${suffix}`, nestedObjects: [] };
+    return {
+      tsType: `${renderEnum(type)}${suffix}`,
+      nestedObjects: [],
+      nestedInputObjects: [],
+    };
   }
   if (isObjectType(type)) {
-    return { tsType: `${type.name}${suffix}`, nestedObjects: [type] };
+    return {
+      tsType: `${type.name}${suffix}`,
+      nestedObjects: [type],
+      nestedInputObjects: [],
+    };
   }
-  // Interfaces / unions / input objects aren't reached by current
-  // operations; explicit failure is preferable to silent `unknown`.
+  if (isInputObjectType(type)) {
+    // Variable types can reference input objects (e.g.
+    // `members: [StoryMemberInput!]!`). Render by NAME — the driver
+    // emits an interface declaration for each referenced input object,
+    // recursing into nested input objects.
+    return {
+      tsType: `${type.name}${suffix}`,
+      nestedObjects: [],
+      nestedInputObjects: [type],
+    };
+  }
+  // Interfaces / unions aren't reached by current operations; explicit
+  // failure is preferable to silent `unknown`.
   throw new Error(
     `codegen: unsupported GraphQL type kind for "${(type as GraphQLNamedType).name ?? "(anonymous)"}"`,
   );
@@ -198,9 +226,14 @@ function renderVariablesInterface(
   schema: GraphQLSchema,
   opName: string,
   variableDefs: readonly VariableDefinitionNode[],
-): { def: InterfaceDef; nestedObjects: GraphQLObjectType[] } {
+): {
+  def: InterfaceDef;
+  nestedObjects: GraphQLObjectType[];
+  nestedInputObjects: GraphQLInputObjectType[];
+} {
   const fields: InterfaceDef["fields"] = [];
   const nested: GraphQLObjectType[] = [];
+  const nestedInput: GraphQLInputObjectType[] = [];
   for (const v of variableDefs) {
     const rendered = renderTypeNode(schema, v.type);
     // A nullable GraphQL variable can be omitted entirely from the
@@ -214,10 +247,39 @@ function renderVariablesInterface(
       optional,
     });
     nested.push(...rendered.nestedObjects);
+    nestedInput.push(...rendered.nestedInputObjects);
   }
   return {
     def: { name: `${opName}Variables`, fields },
     nestedObjects: nested,
+    nestedInputObjects: nestedInput,
+  };
+}
+
+/**
+ * Emit a TS interface for a GraphQL input object. Each field is typed
+ * from the SDL; a NULLABLE input field is emitted as `key?: T | null`
+ * (it may be omitted from the input object), mirroring the
+ * variable-omission rule. Nested input objects are returned so the
+ * driver can emit their interfaces too.
+ */
+function renderInputObjectInterface(inputType: GraphQLInputObjectType): {
+  def: InterfaceDef;
+  nestedInputObjects: GraphQLInputObjectType[];
+} {
+  const fields: InterfaceDef["fields"] = [];
+  const nestedInput: GraphQLInputObjectType[] = [];
+  const inputFields = inputType.getFields();
+  for (const fieldName of Object.keys(inputFields)) {
+    const field = inputFields[fieldName];
+    const rendered = renderType(field.type as GraphQLType);
+    const optional = !isNonNullType(field.type);
+    fields.push({ name: fieldName, tsType: rendered.tsType, optional });
+    nestedInput.push(...rendered.nestedInputObjects);
+  }
+  return {
+    def: { name: inputType.name, fields },
+    nestedInputObjects: nestedInput,
   };
 }
 
@@ -294,7 +356,7 @@ function escapeBacktickString(source: string): string {
     .replace(/\${/g, "\\${");
 }
 
-function emitOperationModule(
+export function emitOperationModule(
   schema: GraphQLSchema,
   op: OperationDefinitionNode,
   source: string,
@@ -308,6 +370,23 @@ function emitOperationModule(
     opName,
     op.variableDefinitions ?? [],
   );
+
+  // Input-object interfaces referenced (transitively) by the operation's
+  // variables. A BFS over `nestedInputObjects` emits one interface per
+  // referenced input type and recurses into nested input objects (e.g.
+  // `StoryMetadataInput.roleDistribution: [StoryRoleCountInput!]!`).
+  const inputDefs: InterfaceDef[] = [];
+  const seenInput = new Set<string>();
+  const inputQueue: GraphQLInputObjectType[] = [...vars.nestedInputObjects];
+  while (inputQueue.length > 0) {
+    const item = inputQueue.shift();
+    if (!item) break;
+    if (seenInput.has(item.name)) continue;
+    seenInput.add(item.name);
+    const rendered = renderInputObjectInterface(item);
+    inputDefs.push(rendered.def);
+    inputQueue.push(...rendered.nestedInputObjects);
+  }
 
   // Response interface: walk the operation's selection set against
   // the schema's root type for this operation kind.
@@ -361,6 +440,7 @@ function emitOperationModule(
 
   // Render the module.
   const interfaces = [
+    ...inputDefs.map(emitInterface),
     emitInterface(vars.def),
     ...nestedDefs.map(emitInterface),
     emitInterface(response.def),
@@ -533,4 +613,13 @@ function main(): void {
   process.exit(2);
 }
 
-main();
+// Only run the CLI when invoked directly (`tsx scripts/graphql-codegen.ts
+// write|check`). Guarding this lets unit tests import `emitOperationModule`
+// without triggering a filesystem write or a `process.exit`.
+const entryPath = process.argv[1] ?? "";
+if (
+  entryPath.endsWith("graphql-codegen.ts") ||
+  entryPath.endsWith("graphql-codegen.js")
+) {
+  main();
+}

@@ -40,61 +40,6 @@ type ChatChoice {
 
 scalar DateTime
 
-"""
-Round-11 `StoryAnalysisResult` wire shape. Exposed only under
-auth-mtls; the BFF (aimer-web) supplies pre-redacted story member
-events with story-scope tokens (`<<REDACTED_*_E{i}_*>>`) and persists
-the result on its own side, so aimer never caches a story analysis.
-
-Scores carry the `[0.0, 1.0]` shape per RFC 0002 §"LLM contract" —
-aimer-side clamped before reply. Both factor arrays are ordered most
-impactful first; the sentinel `["insufficient evidence"]` indicates
-genuinely thin input.
-"""
-type StoryAnalysisResult {
-	"""
-	Severity score from 0.0 to 1.0 ("if real, how bad").
-	"""
-	severityScore: Float!
-	"""
-	Likelihood score from 0.0 to 1.0 ("how likely this is a real threat").
-	"""
-	likelihoodScore: Float!
-	"""
-	Short noun phrases articulating the severity score (1-5 items).
-	Ordered most impactful first. The sentinel
-	`["insufficient evidence"]` indicates thin input.
-	"""
-	severityFactors: [String!]!
-	"""
-	Short noun phrases articulating the likelihood score (1-5 items).
-	Ordered most impactful first. The sentinel
-	`["insufficient evidence"]` indicates thin input.
-	"""
-	likelihoodFactors: [String!]!
-	"""
-	MITRE ATT&CK technique IDs (e.g., `T1078`, `T1110.001`). May be empty
-	when no clear mapping applies.
-	"""
-	ttpTags: [String!]!
-	"""
-	Markdown-formatted analysis narrative. Stored by aimer-web as
-	`story_analysis_result.analysis_text`.
-	"""
-	analysis: String!
-	"""
-	Prompt template version that produced this result (aimer-side
-	`STORY_PROMPT` revision). Stored on the result row as `prompt_version`.
-	"""
-	promptVersion: String!
-	"""
-	Model version actually selected by the aimer LLM router for this
-	request. May differ from the input `model` when an alias is resolved.
-	Stored on the result row as `model_actual_version`.
-	"""
-	modelActualVersion: String!
-}
-
 type GenerateResponse {
 	model: String!
 	createdAt: String!
@@ -137,27 +82,6 @@ type Mutation {
 	"""
 	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
 	"""
-	Analyzes a multi-event story using an LLM and returns the
-	round-11 `StoryAnalysisResult`.
-
-	Stateless under `auth-mtls`: the BFF (aimer-web) supplies the
-	already-redacted member events with story-scope token namespacing
-	(`<<REDACTED_*_E{i}_*>>`) and persists the result on its own side.
-	aimer caches nothing here.
-
-	The `members` payload is a JSON-encoded list of redacted member
-	events in the canonical order; aimer treats it as opaque LLM input
-	and does not parse it.
-
-	# Errors
-
-	Returns an error if:
-	- Input validation fails (empty `members` or `model`)
-	- The requested LLM server `name` is not registered
-	- LLM analysis fails or response parsing fails
-	"""
-	analyzeStory(members: String!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
-	"""
 	Generates a report for a given customer.
 	
 	- The `customer_id` parameter specifies the customer ID for which to generate the report.
@@ -188,6 +112,37 @@ type Mutation {
 	- LLM response parsing fails
 	"""
 	generateReport(customerId: ID!, name: String!, model: String!, reportType: ReportType!, date: String!, lang: Language, force: Boolean): ReportResult!
+	"""
+	Analyzes a multi-event security story using an LLM and returns the
+	story-level threat hypothesis.
+	
+	Stateless under `auth-mtls`: aimer stores nothing for this mutation.
+	`customerId` and `storyId` are accepted for observability and prompt
+	context only — aimer performs no lookup or storage keyed by them.
+	
+	PII redaction is the caller's responsibility. aimer-web owns the
+	per-event redaction map; `members[].event` and `storyMetadata` strings
+	are forwarded to the LLM unchanged. Placeholder tokens of the form
+	`<<REDACTED_TYPE_E{i}_NNN>>` are preserved verbatim in the analysis
+	output.
+	
+	Exactly one LLM call is issued per invocation (no two-stage formatter
+	pass). The response always includes `promptVersion` and
+	`modelActualVersion`.
+	
+	# Errors
+	
+	Returns an error if:
+	- Input validation fails (empty `members`, ordinal multiset not
+	contiguous `1..N`, `memberCount` mismatch, role-frequency mismatch,
+	duplicate role keys, `storyMetadata.storyId` mismatch,
+	`firstSeenAt > lastSeenAt`, empty `event` / `role` / `model` /
+	`name`)
+	- The requested LLM server `name` is not registered
+	- LLM analysis fails (transport error, provider error envelope,
+	structured-output parse failure, factor/TTP shape violation)
+	"""
+	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
 }
 
 type OllamaChatMessage {
@@ -312,6 +267,129 @@ enum ReportType {
 	DAILY
 	WEEKLY
 	MONTHLY
+}
+
+"""
+Wire-shape response for `analyzeStory`.
+
+Six fields are sourced directly from the LLM JSON output (severity /
+likelihood scores, factor arrays, TTP tags, analysis markdown); two
+(`promptVersion`, `modelActualVersion`) are appended server-side so
+downstream consumers can pin both the prompt template and the model
+snapshot that produced the analysis.
+"""
+type StoryAnalysisResult {
+	"""
+	Severity score from 0.0 to 1.0 ("if real, how bad").
+	"""
+	severityScore: Float!
+	"""
+	Likelihood score from 0.0 to 1.0 ("how likely this is a real threat").
+	"""
+	likelihoodScore: Float!
+	"""
+	Short noun phrases articulating the severity score (1-5 items).
+	The sentinel `["insufficient evidence"]` indicates thin input.
+	"""
+	severityFactors: [String!]!
+	"""
+	Short noun phrases articulating the likelihood score (1-5 items).
+	The sentinel `["insufficient evidence"]` indicates thin input.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	MITRE ATT&CK technique IDs (e.g., `T1078`, `T1110.001`). May be empty.
+	"""
+	ttpTags: [String!]!
+	"""
+	Markdown narrative reconstructing the attacker hypothesis across the
+	story. May contain `<<REDACTED_*_E{i}_*>>` tokens preserved verbatim
+	from the input.
+	"""
+	analysis: String!
+	"""
+	Identifier of the prompt template that produced this response. Bumped
+	whenever `STORY_PROMPT` or `STORY_JSON_SCHEMA` changes shape.
+	"""
+	promptVersion: String!
+	"""
+	Provider-reported model snapshot for the call. Falls back to the
+	requested `model` argument when the provider does not report one.
+	"""
+	modelActualVersion: String!
+}
+
+"""
+One member of the story (a single event positioned at an ordinal).
+"""
+input StoryMemberInput {
+	"""
+	Ordinal that matches the `E{i}` token namespace embedded in `event`.
+	Ordinals across `members` must form a contiguous `1..members.len()`
+	sequence (each value appears exactly once).
+	"""
+	ordinal: Int!
+	"""
+	Role of the member in the story narrative (free-form string driven by
+	aimer-web; aimer does not enumerate roles). Non-empty.
+	"""
+	role: String!
+	"""
+	Event timestamp (UTC).
+	"""
+	eventTime: DateTime!
+	"""
+	Pre-redacted event payload. May contain `<<REDACTED_TYPE_E{i}_NNN>>`
+	tokens that aimer forwards verbatim.
+	"""
+	event: String!
+}
+
+"""
+Story-wide context describing the window the members were drawn from.
+"""
+input StoryMetadataInput {
+	"""
+	Story ID, included for prompt context and provider-side observability.
+	Must equal the top-level `storyId` mutation argument.
+	"""
+	storyId: ID!
+	"""
+	Earliest member event time across the story window (UTC).
+	Must be `<= lastSeenAt`.
+	"""
+	firstSeenAt: DateTime!
+	"""
+	Latest member event time across the story window (UTC).
+	Must be `>= firstSeenAt`.
+	"""
+	lastSeenAt: DateTime!
+	"""
+	Total number of members in the story. Must equal `members.len()`.
+	"""
+	memberCount: Int!
+	"""
+	Per-role member counts. Per-role frequency must match the actual
+	`members[].role` distribution (not only the sum).
+	"""
+	roleDistribution: [StoryRoleCountInput!]!
+}
+
+"""
+Per-role member count, supplied by the BFF alongside the story metadata.
+
+Frequencies in `roleDistribution` must match the per-role frequencies of
+the actual `members[*].role`; see `validate_role_distribution`.
+"""
+input StoryRoleCountInput {
+	"""
+	Non-empty role label.
+	"""
+	role: String!
+	"""
+	Number of members with this role (>= 0).
+	"""
+	count: Int!
 }
 
 scalar TimestampIso8601

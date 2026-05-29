@@ -51,8 +51,9 @@ The worker pipeline runs the following stages without operator action:
 
 Retryable failures (5xx, transport, mTLS error) re-queue with
 exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx,
-hallucination detected, mixed or missing redaction policy versions)
-mark the job `failed` immediately.
+hallucination detected, mixed or missing redaction policy versions, or a
+member whose event time cannot be resolved) mark the job `failed`
+immediately.
 
 Automatic dirty re-queues are bounded by `ANALYSIS_MAX_GENERATION`
 (default `50`): once a story's current generation is at the cap, the

@@ -103,6 +103,8 @@ function goodMembersQuery(
           story_version: "v1",
           source_aice_id: "aice-1",
           known_ioc_hit: knownIocHit,
+          time_window_start: new Date("2026-05-01T00:00:00.000Z"),
+          time_window_end: new Date("2026-05-01T02:00:00.000Z"),
         },
       ],
     },
@@ -113,16 +115,20 @@ function goodMembersQuery(
           story_version: "v1",
           member_event_key: "1001",
           source_aice_id: "aice-1",
+          role: "primary",
           event: { ip: "<<REDACTED_IP_001>>" },
           redaction_policy_version: "engine:1.0|ranges:abc",
+          event_time: new Date("2026-05-01T00:30:00.000Z"),
         },
         {
           story_id: "12345",
           story_version: "v1",
           member_event_key: "1002",
           source_aice_id: "aice-1",
+          role: "context",
           event: { ip: "<<REDACTED_IP_002>>" },
           redaction_policy_version: "engine:1.0|ranges:abc",
+          event_time: new Date("2026-05-01T01:30:00.000Z"),
         },
       ],
     },
@@ -136,7 +142,7 @@ function goodAimerResponse() {
     severityFactors: ["lateral movement signals", "privileged account use"],
     likelihoodFactors: ["multiple correlated events"],
     ttpTags: ["T1078"],
-    analysis: "Suspicious lateral movement involving <<REDACTED_IP_E0_001>>.",
+    analysis: "Suspicious lateral movement involving <<REDACTED_IP_E1_001>>.",
     promptVersion: "story-v3",
     modelActualVersion: "gpt-4o-2024-08-06",
   };
@@ -178,8 +184,23 @@ describe("processStoryJob — happy path", () => {
         { rows: [] }, // COMMIT
       ],
     });
-    const llmCalls: Array<{ membersJson: string }> = [];
-    const callAnalyzeStory = async (args: { membersJson: string }) => {
+    interface LlmArgs {
+      members: Array<{
+        ordinal: number;
+        role: string;
+        eventTime: string;
+        event: string;
+      }>;
+      storyMetadata: {
+        storyId: string;
+        firstSeenAt: string;
+        lastSeenAt: string;
+        memberCount: number;
+        roleDistribution: Array<{ role: string; count: number }>;
+      };
+    }
+    const llmCalls: LlmArgs[] = [];
+    const callAnalyzeStory = async (args: LlmArgs) => {
       llmCalls.push(args);
       return goodAimerResponse();
     };
@@ -192,10 +213,26 @@ describe("processStoryJob — happy path", () => {
     });
 
     expect(llmCalls).toHaveLength(1);
+    const sent = llmCalls[0];
+    // Structured members with 1-based ordinals that match the embedded
+    // `E{i}` tokens (RFC 0002 #344).
+    expect(sent.members.map((m) => m.ordinal)).toEqual([1, 2]);
     // Tokens must be rewritten to story-scope before the LLM sees them.
-    expect(llmCalls[0].membersJson).toContain("<<REDACTED_IP_E0_001>>");
-    expect(llmCalls[0].membersJson).toContain("<<REDACTED_IP_E1_002>>");
-    expect(llmCalls[0].membersJson).not.toMatch(/<<REDACTED_IP_001>>/);
+    expect(sent.members[0].event).toContain("<<REDACTED_IP_E1_001>>");
+    expect(sent.members[1].event).toContain("<<REDACTED_IP_E2_002>>");
+    expect(sent.members[0].event).not.toMatch(/<<REDACTED_IP_001>>/);
+    // Per-member metadata + structured storyMetadata satisfy aimer's
+    // `validate_story_inputs` invariants.
+    expect(sent.members.map((m) => m.role)).toEqual(["primary", "context"]);
+    expect(sent.members[0].eventTime).toBe("2026-05-01T00:30:00.000Z");
+    expect(sent.storyMetadata.storyId).toBe("12345");
+    expect(sent.storyMetadata.memberCount).toBe(2);
+    expect(sent.storyMetadata.firstSeenAt).toBe("2026-05-01T00:00:00.000Z");
+    expect(sent.storyMetadata.lastSeenAt).toBe("2026-05-01T02:00:00.000Z");
+    expect(sent.storyMetadata.roleDistribution).toEqual([
+      { role: "primary", count: 1 },
+      { role: "context", count: 1 },
+    ]);
 
     // Finalize must target the captured generation, not a re-queue.
     const finalize = authPool.__calls.find((c) =>
@@ -212,6 +249,60 @@ describe("processStoryJob — happy path", () => {
     // 2 members the floor doesn't fire (default N=5).
     const tierParam = insertCall?.params?.[13];
     expect(tierParam).toBe("MEDIUM");
+  });
+});
+
+describe("processStoryJob — input_hash canonical bundle (#344)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // RFC 0002 defines `input_hash` as the sha256 of the canonical LLM
+  // input — "members + metadata + refs". A member's `event_time` is part
+  // of that input (it becomes `members[].eventTime`) but does NOT appear
+  // in `rewrittenMembers` (which holds only token-rewritten event bodies).
+  // Hashing `rewrittenMembers` alone would collide two runs that differ
+  // only in event-time/role/metadata and defeat drift attribution, so the
+  // hash must cover the structured payload. This locks that in: a run
+  // whose only change is a member `event_time` must produce a different
+  // `input_hash`.
+  async function runAndCaptureInputHash(secondEventTime: string) {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // UPDATE → done (finalize)
+      ],
+    });
+    const members = goodMembersQuery();
+    // Override only the second member's event_time. The event bodies (and
+    // thus `rewrittenMembers`) are untouched.
+    (members[1] as { rows: Array<{ event_time: Date }> }).rows[1].event_time =
+      new Date(secondEventTime);
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...members],
+      clientQueryPlan: [
+        { rows: [] }, // BEGIN
+        { rows: [] }, // INSERT result
+        { rows: [] }, // UPDATE supersede
+        { rows: [] }, // COMMIT
+      ],
+    });
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: (async () => goodAimerResponse()) as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    return insertCall?.params?.[16] as string;
+  }
+
+  it("changes input_hash when only a member event_time differs", async () => {
+    const hashA = await runAndCaptureInputHash("2026-05-01T01:30:00.000Z");
+    const hashB = await runAndCaptureInputHash("2026-05-01T01:45:00.000Z");
+    expect(hashA).toBeTruthy();
+    expect(hashB).toBeTruthy();
+    expect(hashA).not.toBe(hashB);
   });
 });
 
@@ -467,6 +558,71 @@ describe("processStoryJob — redaction-policy precondition", () => {
     );
     expect(failCall?.params?.[6]).toBe(0); // attempts unchanged
     expect(failCall?.params?.[7]).toBe("mismatched_redaction_policy_version");
+  });
+});
+
+describe("processStoryJob — event-time precondition", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("fails with member_event_time_unresolved when a member has no event_time", async () => {
+    // RFC 0002 #344: `event_time` comes from a deduped LEFT JOIN to
+    // baseline_event. A NULL means the member's timestamp could not be
+    // resolved; the worker must fail loudly (not silently drop the
+    // member or send aimer a NULL eventTime). The redaction-policy
+    // check passes first (valid version), so we reach the event-time
+    // guard.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe
+        {
+          rows: [
+            {
+              story_version: "v1",
+              source_aice_id: "aice-1",
+              known_ioc_hit: false,
+              time_window_start: new Date("2026-05-01T00:00:00.000Z"),
+              time_window_end: new Date("2026-05-01T02:00:00.000Z"),
+            },
+          ],
+        },
+        {
+          rows: [
+            {
+              story_id: "12345",
+              story_version: "v1",
+              member_event_key: "1001",
+              source_aice_id: "aice-1",
+              role: "primary",
+              event: { ip: "<<REDACTED_IP_001>>" },
+              redaction_policy_version: "engine:1.0|ranges:abc",
+              event_time: null, // unresolved — baseline_event had no match
+            },
+          ],
+        },
+      ],
+    });
+    const callAnalyzeStory = vi.fn();
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+    });
+
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    // No result INSERT attempted.
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(0); // attempts unchanged (pre-LLM)
+    expect(failCall?.params?.[7]).toBe("member_event_time_unresolved");
   });
 });
 
