@@ -1066,7 +1066,7 @@ base.describe.serial("Manual screenshots", () => {
                  '["T1110.001","T1078"]'::jsonb,
                  $7,
                  $8, 'engine:0.0.0|ranges:none', $9)
-         ON CONFLICT (aice_id, event_key, lang, model_name, model)
+         ON CONFLICT (aice_id, event_key, lang, model_name, model, generation)
          DO UPDATE SET
            severity_score   = EXCLUDED.severity_score,
            likelihood_score = EXCLUDED.likelihood_score,
