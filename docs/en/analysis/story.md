@@ -19,9 +19,7 @@ within a customer. Opening a story-scoped URL without the customer
 segment would resolve to the wrong story when the tab's selected
 customer differs from the story's owner.
 
-<!-- Screenshot pending: a UI capture of the story analysis page
-(priority badge, factor chips, TTP chips) will be added in the
-follow-up PR that extends `e2e/capture-manual-screenshots.spec.ts`. -->
+![Story analysis page for a HIGH-tier story, showing the priority badge, severity and likelihood scores, factor chips, MITRE ATT&CK technique chips, and the Regenerate button](../../assets/story-detail-high.en.png)
 
 ## How a story enters analysis
 
@@ -116,9 +114,7 @@ expands inline without navigating away. Tiers `MEDIUM` and above keep
 the chip rows always visible because operators triaging those rows
 generally want the rationale on screen by default.
 
-<!-- Screenshot pending: #331 — story-detail-low.{en,ko}.png will be
-captured by `e2e/capture-manual-screenshots.spec.ts` and replace this
-placeholder. -->
+![LOW-tier story analysis page, with the severity and likelihood factor rows collapsed behind Show severity factors / Show likelihood factors disclosures](../../assets/story-detail-low.en.png)
 
 
 ## MITRE ATT&CK techniques
@@ -167,8 +163,7 @@ never reach this view.
 Operators with `analyses:configure` can rerun the analysis manually via
 the **Regenerate** button at the bottom of the page.
 
-<!-- Screenshot pending: the regenerate confirmation modal will be
-captured in the follow-up PR. -->
+![Regenerate confirmation modal, warning that a fresh LLM call is issued and the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/story-regenerate-modal.en.png)
 
 The confirmation modal explicitly mentions that a fresh LLM call is
 issued and the latest generation is superseded once the new result
@@ -224,6 +219,3 @@ customer gets `404 story_not_found` rather than `403`, so the badge
 probe cannot enumerate story ids across customers. Members without
 `analyses:read` get a precise `403 Forbidden`, and bridge sessions
 that the endpoint rejects outright get `403 bridge_not_allowed`.
-
-<!-- Screenshot pending: the aice-web-next deep-link badge will be
-captured in the follow-up PR. -->

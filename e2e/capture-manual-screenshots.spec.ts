@@ -1,5 +1,5 @@
 /**
- * Capture all 25 manual screenshots in a single session.
+ * Capture all manual screenshots in a single session.
  *
  * Run:
  *   pnpm playwright test e2e/capture-manual-screenshots.spec.ts
@@ -31,6 +31,11 @@ import type { BrowserContext, Page } from "@playwright/test";
 import { test as base, expect } from "@playwright/test";
 import { injectAuthCookies } from "./fixtures/auth";
 import {
+  customerOwnerUrl,
+  dropAnalysisCustomerDb,
+  provisionAnalysisCustomerDb,
+} from "./fixtures/customer-db";
+import {
   cleanupTestData,
   closePool,
   getTestPool,
@@ -38,6 +43,11 @@ import {
   type TestData,
 } from "./fixtures/db";
 import { loadEnv } from "./fixtures/env";
+import {
+  STORY_FIXTURE_HIGH,
+  STORY_FIXTURE_LOW,
+  seedStoryAnalysisFixture,
+} from "./fixtures/story-analysis.seed";
 
 loadEnv();
 
@@ -1017,136 +1027,6 @@ base.describe.serial("Manual screenshots", () => {
   const ANALYSIS_LIKELIHOOD = 0.71;
   const ANALYSIS_TIER = "CRITICAL";
 
-  function customerOwnerUrl(customerId: string): string {
-    const tpl =
-      process.env.CUSTOMER_DATABASE_OWNER_URL ??
-      "postgres://aimer_customer_owner:changeme@localhost:5432/template1";
-    const dbName = `customer_${customerId.replace(/-/g, "")}`;
-    return tpl.replace(/\/[^/?]+(\?|$)/, `/${dbName}$1`);
-  }
-
-  async function provisionAnalysisCustomerDb(
-    customerId: string,
-  ): Promise<void> {
-    const dbName = `customer_${customerId.replace(/-/g, "")}`;
-    const adminUrl =
-      process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL ?? "";
-    if (!adminUrl) {
-      throw new Error(
-        "DATABASE_ADMIN_URL or DATABASE_URL must be set to provision the " +
-          "analysis-result capture customer DB",
-      );
-    }
-    const { Pool } = await import("pg");
-    const adminPool = new Pool({ connectionString: adminUrl });
-    try {
-      const exists = await adminPool.query<{ datname: string }>(
-        "SELECT datname FROM pg_database WHERE datname = $1",
-        [dbName],
-      );
-      if (exists.rows.length === 0) {
-        await adminPool.query(
-          `CREATE DATABASE ${dbName} OWNER aimer_customer_owner`,
-        );
-      }
-    } finally {
-      await adminPool.end();
-    }
-
-    const ownerUrl = customerOwnerUrl(customerId);
-    const ownerPool = new Pool({ connectionString: ownerUrl });
-    try {
-      // Mirror provisionCustomerDb's role-grant step so the runtime
-      // `aimer_customer` connection (used by the page's loader) can
-      // reach the schema. Idempotent — re-running the capture is safe.
-      await ownerPool.query("GRANT USAGE ON SCHEMA public TO aimer_customer");
-      await ownerPool.query(
-        `GRANT CONNECT ON DATABASE ${dbName} TO aimer_customer`,
-      );
-    } finally {
-      await ownerPool.end();
-    }
-
-    // Run the customer migration set on a fresh pool. All customer
-    // migrations are plain SQL files (no DML/TS migrations exist for
-    // this DB), so a small inlined runner is sufficient — Playwright
-    // bundles this spec as CJS and cannot dynamically import the
-    // TypeScript `src/lib/db/migrate.ts` source at runtime.
-    const migrationOwnerPool = new Pool({ connectionString: ownerUrl });
-    try {
-      await runCustomerMigrations(
-        migrationOwnerPool,
-        resolve(process.cwd(), "migrations", "customer"),
-      );
-    } finally {
-      await migrationOwnerPool.end();
-    }
-  }
-
-  async function runCustomerMigrations(
-    pool: import("pg").Pool,
-    dir: string,
-  ): Promise<void> {
-    const { readdir, readFile } = await import("node:fs/promises");
-    const { createHash } = await import("node:crypto");
-
-    const client = await pool.connect();
-    try {
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS _migrations (
-          version    TEXT PRIMARY KEY,
-          name       TEXT NOT NULL,
-          checksum   TEXT NOT NULL,
-          applied_at TIMESTAMPTZ DEFAULT NOW()
-        )
-      `);
-
-      const applied = new Map<string, string>();
-      const rows = await client.query<{ version: string; checksum: string }>(
-        "SELECT version, checksum FROM _migrations",
-      );
-      for (const row of rows.rows) applied.set(row.version, row.checksum);
-
-      const entries = (await readdir(dir))
-        .filter((f) => /^\d{4}[a-z]?_.*\.sql$/.test(f))
-        .sort();
-
-      for (const file of entries) {
-        const match = file.match(/^(\d{4}[a-z]?)_(.+)\.sql$/);
-        if (!match) continue;
-        const [, version, name] = match;
-        const content = await readFile(resolve(dir, file), "utf-8");
-        const checksum = createHash("sha256").update(content).digest("hex");
-        if (applied.has(version)) continue;
-
-        const noTx = content.includes("-- no-transaction");
-        if (noTx) {
-          await client.query(content);
-        } else {
-          await client.query("BEGIN");
-          try {
-            await client.query(content);
-            await client.query(
-              "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
-              [version, name, checksum],
-            );
-            await client.query("COMMIT");
-            continue;
-          } catch (err) {
-            await client.query("ROLLBACK");
-            throw err;
-          }
-        }
-        await client.query(
-          "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
-          [version, name, checksum],
-        );
-      }
-    } finally {
-      client.release();
-    }
-  }
-
   async function seedAnalysisRow(customerId: string): Promise<void> {
     const ownerUrl = customerOwnerUrl(customerId);
     const { Pool } = await import("pg");
@@ -1215,26 +1095,6 @@ base.describe.serial("Manual screenshots", () => {
     }
   }
 
-  async function dropAnalysisCustomerDb(customerId: string): Promise<void> {
-    const dbName = `customer_${customerId.replace(/-/g, "")}`;
-    const adminUrl =
-      process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL ?? "";
-    if (!adminUrl) return;
-    const { Pool } = await import("pg");
-    const adminPool = new Pool({ connectionString: adminUrl });
-    try {
-      await adminPool.query(
-        `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-         WHERE datname = $1 AND pid <> pg_backend_pid()`,
-        [dbName],
-      );
-      await adminPool.query(`DROP DATABASE IF EXISTS ${dbName}`);
-    } finally {
-      await adminPool.end();
-    }
-  }
-
   for (const locale of LOCALES) {
     base(`analysis-result.${locale}.png`, async () => {
       // Provision + seed are idempotent and re-running cleans up after
@@ -1259,6 +1119,102 @@ base.describe.serial("Manual screenshots", () => {
       await mgrPage.screenshot({
         path: resolve(ASSETS, `analysis-result.${locale}.png`),
         fullPage: true,
+      });
+    });
+  }
+
+  // =========================================================================
+  // Story analysis page (issue #331) — RFC 0002 Phase 1. Three capture
+  // targets, each driven from the deterministic synthetic seed in
+  // `fixtures/story-analysis.seed.ts`:
+  //   - story-detail-high      — HIGH tier; factor rows render inline,
+  //                              TTP chip row populated (most expressive
+  //                              layout).
+  //   - story-detail-low       — LOW tier; factor rows collapse behind a
+  //                              <details> disclosure (#333 item 1),
+  //                              captured collapsed.
+  //   - story-regenerate-modal — the confirmation modal opened from the
+  //                              HIGH-tier page.
+  // These reuse the per-customer DB provisioned for the analysis-result
+  // captures above; the `analysis-result cleanup` test below drops it,
+  // which also removes the seeded story_analysis_result rows. The auth-DB
+  // story_analysis_state rows are cleaned up by cleanupTestData (FK
+  // ON DELETE CASCADE) in afterAll.
+  // =========================================================================
+
+  async function ensureStoryFixtures(): Promise<void> {
+    // Idempotent: provision is a no-op if the DB exists, and the seed
+    // upserts. Run per-test so a single-shot `--grep` rerun of any one
+    // story capture works standalone, mirroring the analysis-result
+    // captures above.
+    await provisionAnalysisCustomerDb(testData.customer.id);
+    await seedStoryAnalysisFixture({
+      authPool: getTestPool(),
+      customerId: testData.customer.id,
+      tiers: [STORY_FIXTURE_HIGH, STORY_FIXTURE_LOW],
+    });
+  }
+
+  function storyUrl(locale: Locale, storyId: string): string {
+    return (
+      `/${locale}/customers/${testData.customer.id}` +
+      `/analysis/story/${storyId}`
+    );
+  }
+
+  for (const locale of LOCALES) {
+    base(`story-detail-high.${locale}.png`, async () => {
+      await ensureStoryFixtures();
+      await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_HIGH.storyId));
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="priority-tier-badge"]'),
+      ).toBeVisible();
+
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `story-detail-high.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`story-detail-low.${locale}.png`, async () => {
+      await ensureStoryFixtures();
+      await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_LOW.storyId));
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="priority-tier-badge"]'),
+      ).toBeVisible();
+      // LOW tier collapses the factor rows behind a <details> element;
+      // capture it collapsed (the default render) so the screenshot
+      // documents the disclosure introduced by #333 item 1.
+      await expect(
+        mgrPage.locator('[data-testid="severity-factors-details"]'),
+      ).toBeVisible();
+
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `story-detail-low.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`story-regenerate-modal.${locale}.png`, async () => {
+      await ensureStoryFixtures();
+      await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_HIGH.storyId));
+      await settle(mgrPage);
+      await mgrPage.locator('[data-testid="regenerate-button"]').click();
+      await expect(
+        mgrPage.locator('[data-testid="regenerate-modal"]'),
+      ).toBeVisible();
+
+      // Viewport (not fullPage) capture so the fixed-overlay modal sits
+      // centered against the dimmed backdrop rather than stretched over
+      // the whole scrollable page.
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `story-regenerate-modal.${locale}.png`),
       });
     });
   }
