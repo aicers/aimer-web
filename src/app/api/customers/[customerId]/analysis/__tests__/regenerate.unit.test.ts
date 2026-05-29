@@ -326,13 +326,21 @@ describe("story regenerate", () => {
   });
 });
 
-describe("report regenerate stub", () => {
+describe("report regenerate (Phase 2 #297)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     authMode.current = "authed";
     bridgeOverride.current = null;
-    mockAssertAuthorized.mockResolvedValue(new Set(["reports:create"]));
+    mockAuthorize.mockResolvedValue({
+      authorized: true,
+      permissions: new Set(["reports:create"]),
+    });
+    // Default happy-path DB chain (tz supplied → no customers lookup):
+    // state row ready, then upsert RETURNING generation=1.
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ status: "ready" }] })
+      .mockResolvedValueOnce({ rows: [{ generation: 1, inserted: true }] });
   });
 
   it("returns 401 when the request is unauthenticated", async () => {
@@ -340,19 +348,34 @@ describe("report regenerate stub", () => {
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
-    const res = await POST(reportRequest());
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
     expect(res.status).toBe(401);
-    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+    expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when the caller is not a member of customer_id", async () => {
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+  it("returns 404 report_state_not_found when the caller is not a member", async () => {
+    mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
-    const res = await POST(reportRequest());
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("report_state_not_found");
+  });
+
+  it("returns 403 Forbidden when the caller is a member lacking reports:create", async () => {
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      permissions: new Set(["reports:read"]),
+    });
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
     expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toBe("Forbidden");
   });
 
   it("returns 202 on the happy path with optional tz/lang/model", async () => {
@@ -365,19 +388,96 @@ describe("report regenerate stub", () => {
     expect(res.status).toBe(202);
     const body = await res.json();
     expect(body.accepted).toBe(true);
-    expect(body.period).toBe("DAILY");
-    expect(body.bucket_date).toBe("2026-05-27");
-    expect(body.variant.tz).toBe("Asia/Tokyo");
+    expect(body.state_pk).toEqual({
+      customer_id: CUSTOMER_ID,
+      period: "DAILY",
+      bucket_date: "2026-05-27",
+      tz: "Asia/Tokyo",
+    });
+    expect(body.variant).toEqual({
+      tz: "Asia/Tokyo",
+      lang: "ENGLISH",
+      model_name: "openai",
+      model: "gpt-4o",
+    });
+    expect(body.generation).toBe(1);
   });
 
-  it("returns 403 when the caller lacks reports:create", async () => {
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+  it("defaults tz to the customer's current timezone when not supplied", async () => {
+    mockClientQuery
+      .mockReset()
+      .mockResolvedValueOnce({ rows: [{ timezone: "Asia/Seoul" }] }) // customers
+      .mockResolvedValueOnce({ rows: [{ status: "ready" }] }) // state row
+      .mockResolvedValueOnce({ rows: [{ generation: 1, inserted: true }] });
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
     const res = await POST(reportRequest());
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(202);
+    const body = await res.json();
+    expect(body.variant.tz).toBe("Asia/Seoul");
+  });
+
+  it("returns 404 report_state_not_found when the state row is missing", async () => {
+    mockClientQuery.mockReset().mockResolvedValueOnce({ rows: [] });
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toBe("report_state_not_found");
+  });
+
+  it("returns 409 source_unavailable when the state row is archived", async () => {
+    mockClientQuery
+      .mockReset()
+      .mockResolvedValueOnce({ rows: [{ status: "archived" }] });
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("source_unavailable");
+  });
+
+  // round-14 item 4: WEEKLY/MONTHLY are rejected AFTER auth/permission.
+  it.each([
+    "WEEKLY",
+    "MONTHLY",
+  ])("returns 400 period_not_yet_supported for %s (after auth passes)", async (period) => {
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/${period}/2026-05-27/regenerate?tz=Asia/Tokyo`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("period_not_yet_supported");
+    expect(mockAuthorize).toHaveBeenCalled();
+  });
+
+  it("a denied caller sees its denial code before the period rejection", async () => {
+    // Non-member requesting WEEKLY must get 404 (existence-hiding), not
+    // the period rejection — auth is evaluated first.
+    mockAuthorize.mockResolvedValue({ authorized: false });
+    const { POST } = await import(
+      "../report/[period]/[bucketDate]/regenerate/route"
+    );
+    const req = new NextRequest(
+      new URL(
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/WEEKLY/2026-05-27/regenerate?tz=Asia/Tokyo`,
+      ),
+      { method: "POST" },
+    );
+    const res = await POST(req);
+    expect(res.status).toBe(404);
   });
 
   it("returns 400 on an unknown period", async () => {
@@ -408,10 +508,6 @@ describe("report regenerate stub", () => {
     expect(res.status).toBe(400);
   });
 
-  // Round-24 review item 2: the regex-only shape check let values like
-  // `2026-02-31` or `2026-99-99` pass to authorization and 202, locking
-  // a surprising contract before Phase 1 casts the path segment to a
-  // SQL `date`. The validator must reject impossible calendar dates.
   it.each([
     "2026-99-99",
     "2026-02-31",
@@ -432,14 +528,9 @@ describe("report regenerate stub", () => {
     );
     const res = await POST(req);
     expect(res.status).toBe(400);
-    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+    expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
-  // Round-25 review item 1: LIVE rows are pinned to the synthetic bucket
-  // date `1970-01-01` (issue #294 decision 4; see `LIVE_BUCKET_DATE`).
-  // The stub must reject any other LIVE bucket_date before authorization
-  // so Phase 1 doesn't inherit a contract where LIVE accepts variant
-  // keys the worker/reconcile will never produce.
   it.each([
     "2026-05-27",
     "1970-01-02",
@@ -459,7 +550,7 @@ describe("report regenerate stub", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("invalid_report_path");
-    expect(mockAssertAuthorized).not.toHaveBeenCalled();
+    expect(mockAuthorize).not.toHaveBeenCalled();
   });
 
   it("accepts period=LIVE with bucket_date=1970-01-01", async () => {
@@ -468,15 +559,15 @@ describe("report regenerate stub", () => {
     );
     const req = new NextRequest(
       new URL(
-        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/LIVE/1970-01-01/regenerate`,
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/LIVE/1970-01-01/regenerate?tz=Asia/Tokyo`,
       ),
       { method: "POST" },
     );
     const res = await POST(req);
     expect(res.status).toBe(202);
     const body = await res.json();
-    expect(body.period).toBe("LIVE");
-    expect(body.bucket_date).toBe("1970-01-01");
+    expect(body.state_pk.period).toBe("LIVE");
+    expect(body.state_pk.bucket_date).toBe("1970-01-01");
   });
 
   it("accepts a real leap-year date (2024-02-29)", async () => {
@@ -485,7 +576,7 @@ describe("report regenerate stub", () => {
     );
     const req = new NextRequest(
       new URL(
-        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/DAILY/2024-02-29/regenerate`,
+        `http://localhost:3000/api/customers/${CUSTOMER_ID}/analysis/report/DAILY/2024-02-29/regenerate?tz=Asia/Tokyo`,
       ),
       { method: "POST" },
     );
@@ -493,13 +584,13 @@ describe("report regenerate stub", () => {
     expect(res.status).toBe(202);
   });
 
-  it("authorizes as a write op with no bridge scope for an ordinary session", async () => {
+  it("authorizes as a write op (reports:create) with no bridge scope", async () => {
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
-    const res = await POST(reportRequest());
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
     expect(res.status).toBe(202);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
+    expect(mockAuthorize).toHaveBeenCalledWith(
       expect.anything(),
       "general",
       SELF,
@@ -512,59 +603,34 @@ describe("report regenerate stub", () => {
     );
   });
 
-  it("rejects bridge sessions (writes are blocked in bridge sessions)", async () => {
+  it("rejects bridge sessions with the bridge reason at 403", async () => {
     bridgeOverride.current = {
       bridgeAiceId: BRIDGE_AICE_ID,
       bridgeCustomerIds: [CUSTOMER_ID],
     };
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    mockAuthorize.mockResolvedValue({
+      authorized: false,
+      reason: "bridge_write_blocked",
+    });
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
-    const res = await POST(reportRequest());
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
     expect(res.status).toBe(403);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
-      expect.anything(),
-      "general",
-      SELF,
-      "reports:create",
-      expect.objectContaining({
-        customerId: CUSTOMER_ID,
-        operationKind: "write",
-        bridgeScope: {
-          aiceId: BRIDGE_AICE_ID,
-          customerIds: [CUSTOMER_ID],
-        },
-      }),
-    );
+    const body = await res.json();
+    expect(body.error).toBe("bridge_write_blocked");
   });
 
-  it("rejects bridge sessions targeting a customer outside bridge scope", async () => {
+  it("rejects bridge sessions outside scope with existence-hiding 404", async () => {
     bridgeOverride.current = {
       bridgeAiceId: BRIDGE_AICE_ID,
       bridgeCustomerIds: [OTHER_CUSTOMER_ID],
     };
-    const { HttpError } = await import("@/lib/auth/errors");
-    mockAssertAuthorized.mockRejectedValue(new HttpError("Forbidden", 403));
+    mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
-    const res = await POST(reportRequest());
-    expect(res.status).toBe(403);
-    expect(mockAssertAuthorized).toHaveBeenCalledWith(
-      expect.anything(),
-      "general",
-      SELF,
-      "reports:create",
-      expect.objectContaining({
-        customerId: CUSTOMER_ID,
-        operationKind: "write",
-        bridgeScope: {
-          aiceId: BRIDGE_AICE_ID,
-          customerIds: [OTHER_CUSTOMER_ID],
-        },
-      }),
-    );
+    const res = await POST(reportRequest("?tz=Asia/Tokyo"));
+    expect(res.status).toBe(404);
   });
 });
