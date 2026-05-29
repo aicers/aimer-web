@@ -252,6 +252,60 @@ describe("processStoryJob — happy path", () => {
   });
 });
 
+describe("processStoryJob — input_hash canonical bundle (#344)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // RFC 0002 defines `input_hash` as the sha256 of the canonical LLM
+  // input — "members + metadata + refs". A member's `event_time` is part
+  // of that input (it becomes `members[].eventTime`) but does NOT appear
+  // in `rewrittenMembers` (which holds only token-rewritten event bodies).
+  // Hashing `rewrittenMembers` alone would collide two runs that differ
+  // only in event-time/role/metadata and defeat drift attribution, so the
+  // hash must cover the structured payload. This locks that in: a run
+  // whose only change is a member `event_time` must produce a different
+  // `input_hash`.
+  async function runAndCaptureInputHash(secondEventTime: string) {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // UPDATE → done (finalize)
+      ],
+    });
+    const members = goodMembersQuery();
+    // Override only the second member's event_time. The event bodies (and
+    // thus `rewrittenMembers`) are untouched.
+    (members[1] as { rows: Array<{ event_time: Date }> }).rows[1].event_time =
+      new Date(secondEventTime);
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...members],
+      clientQueryPlan: [
+        { rows: [] }, // BEGIN
+        { rows: [] }, // INSERT result
+        { rows: [] }, // UPDATE supersede
+        { rows: [] }, // COMMIT
+      ],
+    });
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: (async () => goodAimerResponse()) as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    return insertCall?.params?.[16] as string;
+  }
+
+  it("changes input_hash when only a member event_time differs", async () => {
+    const hashA = await runAndCaptureInputHash("2026-05-01T01:30:00.000Z");
+    const hashB = await runAndCaptureInputHash("2026-05-01T01:45:00.000Z");
+    expect(hashA).toBeTruthy();
+    expect(hashB).toBeTruthy();
+    expect(hashA).not.toBe(hashB);
+  });
+});
+
 describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
   beforeEach(() => vi.clearAllMocks());
 

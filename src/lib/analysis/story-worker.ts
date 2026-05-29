@@ -336,9 +336,6 @@ export async function processStoryJob(
       event: m.event,
     })),
   );
-  const inputHash = createHash("sha256")
-    .update(JSON.stringify(rewrittenMembers))
-    .digest("hex");
   const force = job.force_requested_at !== null;
 
   // Build the structured aimer payload. `rewrittenMembers` preserves the
@@ -370,6 +367,21 @@ export async function processStoryJob(
       count,
     })),
   };
+
+  // `input_hash` is the sha256 of the canonical LLM input — "members +
+  // metadata + refs" per RFC 0002 (the `input_hash` column comment and
+  // §"input_event_refs"). It must hash the structured payload aimer
+  // actually receives, not just `rewrittenMembers`: `members[].role`,
+  // `members[].eventTime`, and the whole `storyMetadata` object are part
+  // of the canonical input but absent from `rewrittenMembers`, so hashing
+  // the latter alone would collide two runs that differ only in
+  // role/event-time/metadata and defeat drift attribution. Each component
+  // is built in deterministic order (members follow the canonical member
+  // order; metadata fields and `refs` are positional), so the bundle is
+  // stable across runs with identical input.
+  const inputHash = createHash("sha256")
+    .update(JSON.stringify({ members: storyMembers, storyMetadata, refs }))
+    .digest("hex");
 
   void auditLog({
     ...auditBase,
