@@ -95,15 +95,35 @@ export interface ReportTokenRef {
   tokens: ReportTokenMapping[];
 }
 
+/** One leaf's text fields fed to the report prompt. */
+export interface ReportLeafText {
+  /** The leaf's analysis narrative. */
+  analysis: string;
+  /** Leaf severity factors (RFC 0002 round-11 pass-through). */
+  severityFactors?: ReadonlyArray<string>;
+  /** Leaf likelihood factors (RFC 0002 round-11 pass-through). */
+  likelihoodFactors?: ReadonlyArray<string>;
+}
+
+/** A leaf's factor arrays after report-scope rewrite. */
+export interface RewrittenLeafFactors {
+  severityFactors: string[];
+  likelihoodFactors: string[];
+}
+
 export interface BuildReportTokenMapResult {
   /** Story leaf narratives, rewritten to report scope, in input order. */
   rewrittenStoryTexts: string[];
   /** Event leaf narratives, rewritten to report scope, in input order. */
   rewrittenEventTexts: string[];
+  /** Story leaf factors, rewritten to report scope, in input order. */
+  rewrittenStoryFactors: RewrittenLeafFactors[];
+  /** Event leaf factors, rewritten to report scope, in input order. */
+  rewrittenEventFactors: RewrittenLeafFactors[];
   /**
    * Per-leaf references, in combined order (all story leaves first, then
-   * all event leaves). `refs[k]` describes `rewrittenStoryTexts[k]` for
-   * `k < storyTexts.length`; the remainder describe the event leaves.
+   * all event leaves). `refs[k]` describes story leaf `k` for
+   * `k < storyLeaves.length`; the remainder describe the event leaves.
    */
   refs: ReportTokenRef[];
   /**
@@ -114,30 +134,41 @@ export interface BuildReportTokenMapResult {
   allowedTokens: Set<string>;
 }
 
-function rewriteLeaf(
-  text: string,
+/**
+ * Rewrite every text field of one leaf (analysis first, then factor
+ * arrays) through a SHARED per-leaf token map, so a redacted entity that
+ * appears in both the narrative and a factor folds to the same report
+ * token. Processing the analysis first keeps its token numbering stable
+ * for the display-time replay, which only re-reads `analysis` — factors
+ * are not stored in the narrative sections, so any factor-only token
+ * never needs to be re-derived on display.
+ */
+function rewriteLeafFields(
+  texts: ReadonlyArray<string>,
   leafIndex: number,
   kind: ReportLeafKind,
   re: RegExp,
   allowedTokens: Set<string>,
-): { rewritten: string; ref: ReportTokenRef } {
+): { rewritten: string[]; ref: ReportTokenRef } {
   // Dedupe identical source tokens to one report token per leaf so a
-  // redacted entity that recurs in the narrative maps consistently.
+  // redacted entity that recurs maps consistently across all fields.
   const seen = new Map<string, string>();
   const tokens: ReportTokenMapping[] = [];
   let seq = 0;
-  re.lastIndex = 0;
-  const rewritten = text.replace(re, (full: string, kindMatch: string) => {
-    const existing = seen.get(full);
-    if (existing) return existing;
-    seq += 1;
-    const reportToken = `<<REDACTED_${kindMatch}_R${leafIndex}_${String(
-      seq,
-    ).padStart(3, "0")}>>`;
-    seen.set(full, reportToken);
-    tokens.push({ reportToken, sourceToken: full });
-    allowedTokens.add(reportToken);
-    return reportToken;
+  const rewritten = texts.map((text) => {
+    re.lastIndex = 0;
+    return text.replace(re, (full: string, kindMatch: string) => {
+      const existing = seen.get(full);
+      if (existing) return existing;
+      seq += 1;
+      const reportToken = `<<REDACTED_${kindMatch}_R${leafIndex}_${String(
+        seq,
+      ).padStart(3, "0")}>>`;
+      seen.set(full, reportToken);
+      tokens.push({ reportToken, sourceToken: full });
+      allowedTokens.add(reportToken);
+      return reportToken;
+    });
   });
   return { rewritten, ref: { index: leafIndex, kind, tokens } };
 }
@@ -148,50 +179,92 @@ function rewriteLeaf(
  * tokens". Pure / synchronous; does no I/O.
  *
  * `{j}` is the leaf's 1-based position in the combined order
- * (`storyTexts` first, then `eventTexts`), so report tokens from
+ * (`storyLeaves` first, then `eventLeaves`), so report tokens from
  * different leaves never collide even when their source token numbers
- * match. Caller responsibilities:
+ * match. Each leaf's analysis AND its factor arrays are folded into the
+ * one per-leaf namespace, so a stray scope token in a factor (factors are
+ * normally pure noun phrases, but the rewrite is defensive — RFC 0002
+ * round-11) never reaches the prompt in story/event scope. Caller
+ * responsibilities:
  *   - Pass leaves in the deterministic selection order; the `{j}` baked
  *     into each token IS that order.
  *   - Persist `refs` so renderers can reverse the chain when restoring
  *     tokens for the analyst UI.
  */
 export function buildReportTokenMap(
-  storyTexts: ReadonlyArray<string>,
-  eventTexts: ReadonlyArray<string>,
+  storyLeaves: ReadonlyArray<ReportLeafText>,
+  eventLeaves: ReadonlyArray<ReportLeafText>,
 ): BuildReportTokenMapResult {
   const allowedTokens = new Set<string>();
   const refs: ReportTokenRef[] = [];
   const rewrittenStoryTexts: string[] = [];
   const rewrittenEventTexts: string[] = [];
+  const rewrittenStoryFactors: RewrittenLeafFactors[] = [];
+  const rewrittenEventFactors: RewrittenLeafFactors[] = [];
+
+  const rewriteOne = (
+    leaf: ReportLeafText,
+    leafIndex: number,
+    kind: ReportLeafKind,
+    re: RegExp,
+  ): {
+    analysis: string;
+    factors: RewrittenLeafFactors;
+    ref: ReportTokenRef;
+  } => {
+    const sev = leaf.severityFactors ?? [];
+    const lik = leaf.likelihoodFactors ?? [];
+    const { rewritten, ref } = rewriteLeafFields(
+      [leaf.analysis, ...sev, ...lik],
+      leafIndex,
+      kind,
+      re,
+      allowedTokens,
+    );
+    return {
+      analysis: rewritten[0],
+      factors: {
+        severityFactors: rewritten.slice(1, 1 + sev.length),
+        likelihoodFactors: rewritten.slice(1 + sev.length),
+      },
+      ref,
+    };
+  };
 
   let leafIndex = 0;
-  for (const text of storyTexts) {
+  for (const leaf of storyLeaves) {
     leafIndex += 1;
-    const { rewritten, ref } = rewriteLeaf(
-      text,
+    const { analysis, factors, ref } = rewriteOne(
+      leaf,
       leafIndex,
       "story",
       STORY_SCOPE_TOKEN_RE,
-      allowedTokens,
     );
-    rewrittenStoryTexts.push(rewritten);
+    rewrittenStoryTexts.push(analysis);
+    rewrittenStoryFactors.push(factors);
     refs.push(ref);
   }
-  for (const text of eventTexts) {
+  for (const leaf of eventLeaves) {
     leafIndex += 1;
-    const { rewritten, ref } = rewriteLeaf(
-      text,
+    const { analysis, factors, ref } = rewriteOne(
+      leaf,
       leafIndex,
       "event",
       EVENT_SCOPE_TOKEN_RE,
-      allowedTokens,
     );
-    rewrittenEventTexts.push(rewritten);
+    rewrittenEventTexts.push(analysis);
+    rewrittenEventFactors.push(factors);
     refs.push(ref);
   }
 
-  return { rewrittenStoryTexts, rewrittenEventTexts, refs, allowedTokens };
+  return {
+    rewrittenStoryTexts,
+    rewrittenEventTexts,
+    rewrittenStoryFactors,
+    rewrittenEventFactors,
+    refs,
+    allowedTokens,
+  };
 }
 
 export type ReportLeakKind =

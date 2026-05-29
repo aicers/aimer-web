@@ -16,11 +16,14 @@ describe("buildReportTokenMap", () => {
     const out = buildReportTokenMap(
       [
         // story leaf 0 — story-scope tokens across two members.
-        "Member <<REDACTED_IP_E1_001>> reached <<REDACTED_IP_E2_001>>.",
+        {
+          analysis:
+            "Member <<REDACTED_IP_E1_001>> reached <<REDACTED_IP_E2_001>>.",
+        },
       ],
       [
         // event leaf 0 — bare event-scope tokens.
-        "Host <<REDACTED_IP_001>> mailed <<REDACTED_EMAIL_004>>.",
+        { analysis: "Host <<REDACTED_IP_001>> mailed <<REDACTED_EMAIL_004>>." },
       ],
     );
 
@@ -70,7 +73,7 @@ describe("buildReportTokenMap", () => {
 
   it("maps a recurring source token to one stable report token per leaf", () => {
     const out = buildReportTokenMap(
-      ["<<REDACTED_IP_E1_009>> twice: <<REDACTED_IP_E1_009>>"],
+      [{ analysis: "<<REDACTED_IP_E1_009>> twice: <<REDACTED_IP_E1_009>>" }],
       [],
     );
     expect(out.rewrittenStoryTexts[0]).toBe(
@@ -81,8 +84,8 @@ describe("buildReportTokenMap", () => {
 
   it("keeps identical source-token numbers distinct across leaves", () => {
     const out = buildReportTokenMap(
-      ["<<REDACTED_IP_E1_001>>"],
-      ["<<REDACTED_IP_001>>"],
+      [{ analysis: "<<REDACTED_IP_E1_001>>" }],
+      [{ analysis: "<<REDACTED_IP_001>>" }],
     );
     // Different plaintext entities — must not collapse to one token.
     expect(out.rewrittenStoryTexts[0]).toBe("<<REDACTED_IP_R1_001>>");
@@ -90,17 +93,75 @@ describe("buildReportTokenMap", () => {
   });
 
   it("handles leaves with no tokens (baseline-style narrative)", () => {
-    const out = buildReportTokenMap(["No redacted entities here."], []);
+    const out = buildReportTokenMap(
+      [{ analysis: "No redacted entities here." }],
+      [],
+    );
     expect(out.rewrittenStoryTexts[0]).toBe("No redacted entities here.");
     expect(out.refs[0].tokens).toEqual([]);
     expect(out.allowedTokens.size).toBe(0);
+  });
+
+  it("rewrites factor fields through the same per-leaf token map", () => {
+    const out = buildReportTokenMap(
+      [
+        {
+          // A scope token shared between the narrative and a factor folds
+          // to the SAME report token; a factor-only token mints a fresh one.
+          analysis: "Host <<REDACTED_IP_E1_001>> beaconed out.",
+          severityFactors: ["lateral movement from <<REDACTED_IP_E1_001>>"],
+          likelihoodFactors: ["exfil to <<REDACTED_IP_E2_007>>"],
+        },
+      ],
+      [],
+    );
+    expect(out.rewrittenStoryTexts[0]).toBe(
+      "Host <<REDACTED_IP_R1_001>> beaconed out.",
+    );
+    expect(out.rewrittenStoryFactors[0].severityFactors).toEqual([
+      "lateral movement from <<REDACTED_IP_R1_001>>",
+    ]);
+    expect(out.rewrittenStoryFactors[0].likelihoodFactors).toEqual([
+      "exfil to <<REDACTED_IP_R1_002>>",
+    ]);
+    // No lower-scope (E{i}) token survives in any field sent to the prompt.
+    const allFields = [
+      out.rewrittenStoryTexts[0],
+      ...out.rewrittenStoryFactors[0].severityFactors,
+      ...out.rewrittenStoryFactors[0].likelihoodFactors,
+    ].join(" ");
+    expect(allFields).not.toMatch(/_E\d+_/);
+  });
+
+  it("rewrites event-leaf factors and keeps the analysis numbering stable", () => {
+    const out = buildReportTokenMap(
+      [],
+      [
+        {
+          analysis: "Bare <<REDACTED_IP_001>> seen.",
+          severityFactors: [
+            "from <<REDACTED_IP_001>>",
+            "to <<REDACTED_MAC_002>>",
+          ],
+        },
+      ],
+    );
+    // Event leaf is j=1 here (no story leaves precede it).
+    expect(out.rewrittenEventTexts[0]).toBe(
+      "Bare <<REDACTED_IP_R1_001>> seen.",
+    );
+    expect(out.rewrittenEventFactors[0].severityFactors).toEqual([
+      "from <<REDACTED_IP_R1_001>>",
+      "to <<REDACTED_MAC_R1_002>>",
+    ]);
+    expect(out.rewrittenEventFactors[0].likelihoodFactors).toEqual([]);
   });
 });
 
 describe("scanReportAnalysisForLeaks", () => {
   const built = buildReportTokenMap(
-    ["<<REDACTED_IP_E1_001>>"],
-    ["<<REDACTED_EMAIL_004>>"],
+    [{ analysis: "<<REDACTED_IP_E1_001>>" }],
+    [{ analysis: "<<REDACTED_EMAIL_004>>" }],
   );
 
   it("passes a narrative that only echoes allowed report tokens", () => {

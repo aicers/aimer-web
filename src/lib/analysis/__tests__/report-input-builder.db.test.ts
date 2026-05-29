@@ -32,6 +32,9 @@ const TZ = "Asia/Seoul";
 // DAILY bucket 2026-05-26 in Asia/Seoul → [2026-05-25T15:00Z, 2026-05-26T15:00Z).
 const BUCKET = "2026-05-26";
 const IN_WINDOW = "2026-05-26T02:00:00Z"; // 11:00 KST, inside the day
+// 01:00 KST on 2026-05-27 — past the bucket's [.., 2026-05-26T15:00Z) end,
+// and outside the prior day too. Used to prove dedupe-before-window.
+const OUT_OF_WINDOW = "2026-05-26T16:00:00Z";
 const EN = { tz: TZ, lang: "ENGLISH", modelName: "openai", model: "gpt-4o" };
 
 async function seedStory(
@@ -234,6 +237,28 @@ describe.skipIf(!hasPostgres)(
         "2026-05-26T03:00:00Z",
       );
 
+      // baseline_event 6002 — the canonical (latest received_at) row is
+      // OUT of the bucket window, while an older duplicate is in-window.
+      // Dedupe-before-window must anchor on the canonical out-of-window
+      // event_time and exclude 6002 entirely (round-14 item 2 / #297
+      // review round 1, item 1).
+      await seedBaselineEvent(
+        customerPool,
+        "vA",
+        "6002",
+        IN_WINDOW, // older duplicate, in-window
+        "exfil",
+        IN_WINDOW,
+      );
+      await seedBaselineEvent(
+        customerPool,
+        "vB",
+        "6002",
+        OUT_OF_WINDOW, // canonical (latest received_at), out-of-window
+        "exfil",
+        "2026-05-26T03:00:00Z",
+      );
+
       // Event result for 6001 (EN) → eligible top event.
       await seedEventResult(
         customerPool,
@@ -241,6 +266,15 @@ describe.skipIf(!hasPostgres)(
         EN,
         "MEDIUM",
         "event 6001 EN",
+      );
+      // Event result for 6002 (EN) → would be eligible if the older
+      // in-window duplicate were (wrongly) chosen as canonical.
+      await seedEventResult(
+        customerPool,
+        "6002",
+        EN,
+        "CRITICAL",
+        "event 6002 EN",
       );
       // Event result for 5001 (EN) → excluded because covered by story 7001.
       await seedEventResult(customerPool, "5001", EN, "HIGH", "event 5001 EN");
@@ -298,12 +332,33 @@ describe.skipIf(!hasPostgres)(
         nowIso: "2026-05-27T00:00:00Z",
       });
       // Two distinct events (5001 recon, 6001 malware), each rebaselined
-      // twice — total must be 2, not 4.
+      // twice — total must be 2, not 4. Event 6002's canonical row is
+      // out-of-window, so it must not be counted (no "exfil" bucket).
       expect(res.aimerInputs.baselineAggregates.totalCount).toBe(2);
       const dist = res.aimerInputs.baselineAggregates.categoryDistribution;
       const byCat = Object.fromEntries(dist.map((d) => [d.category, d.count]));
       expect(byCat.recon).toBe(1);
       expect(byCat.malware).toBe(1);
+      expect(byCat.exfil).toBeUndefined();
+    });
+
+    it("excludes an event whose canonical baseline row is out-of-window", async () => {
+      // Event 6002 has an older in-window duplicate but a newer canonical
+      // row that falls outside the bucket. Dedupe-before-window must anchor
+      // on the canonical event_time and drop 6002 from Top events — even
+      // though its leaf is CRITICAL and would otherwise sort first.
+      const res = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "DAILY",
+        bucketDate: BUCKET,
+        variant: EN,
+        nowIso: "2026-05-27T00:00:00Z",
+      });
+      const keys = res.eventRefs.map((r) => r.event_key);
+      expect(keys).toContain("6001");
+      expect(keys).not.toContain("6002");
     });
 
     it("a KOREAN report ignores ENGLISH leaves (variant isolation)", async () => {

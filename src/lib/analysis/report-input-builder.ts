@@ -304,11 +304,16 @@ async function selectTopEvents(
   const coveredAice = args.covered.map((c) => c.aice_id);
   const coveredKey = args.covered.map((c) => c.event_key);
   const { rows } = await customerPool.query<EventLeafRow>(
+    // Dedupe baseline_event to one canonical row per (source_aice_id,
+    // event_key) FIRST (no window predicate inside the CTE), THEN apply
+    // the bucket-window predicate to the canonical row's event_time. The
+    // issue locks this order (round-14 item 2): filtering before the
+    // dedupe could select an older in-window duplicate even when the
+    // canonical latest row's event_time is outside the bucket.
     `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
               source_aice_id, event_key, event_time
          FROM baseline_event
-        WHERE event_time >= $4::timestamptz AND event_time < $5::timestamptz
         ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
      )
      SELECT e.aice_id,
@@ -323,6 +328,7 @@ async function selectTopEvents(
          ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
       WHERE e.lang = $1 AND e.model_name = $2 AND e.model = $3
         AND e.superseded_at IS NULL
+        AND lb.event_time >= $4::timestamptz AND lb.event_time < $5::timestamptz
         AND NOT EXISTS (
           SELECT 1
             FROM unnest($6::text[], $7::numeric[]) AS c(a, k)
@@ -352,11 +358,12 @@ async function categoryCounts(
   end: Date,
 ): Promise<CategoryCount[]> {
   // Dedupe to one canonical baseline_event row per (source_aice_id,
-  // event_key) BEFORE counting, so a rebaseline that re-emits the same
-  // event under a new baseline_version does not inflate the totals
-  // (RFC 0002 round-14 item 2). event_time is stable per event_key
-  // across rebaselines, so filtering it inside the dedupe is safe and
-  // bounds the scan.
+  // event_key) BEFORE applying the bucket-window predicate, so a
+  // rebaseline that re-emits the same event under a new baseline_version
+  // does not inflate the totals AND the window test runs against the
+  // canonical row's event_time (RFC 0002 round-14 item 2). Filtering
+  // event_time inside the dedupe is unsafe: an older in-window duplicate
+  // could be counted even when the canonical latest row is out-of-window.
   const { rows } = await customerPool.query<{
     category: string | null;
     count: number;
@@ -364,11 +371,11 @@ async function categoryCounts(
     `SELECT lb.category, COUNT(*)::int AS count
        FROM (
          SELECT DISTINCT ON (source_aice_id, event_key)
-                source_aice_id, event_key, category
+                source_aice_id, event_key, category, event_time
            FROM baseline_event
-          WHERE event_time >= $1::timestamptz AND event_time < $2::timestamptz
           ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
        ) lb
+      WHERE lb.event_time >= $1::timestamptz AND lb.event_time < $2::timestamptz
       GROUP BY lb.category`,
     [start, end],
   );
@@ -495,11 +502,29 @@ export async function buildPeriodicReportInput(
   const redaction = resolveRedactionPolicy(leafPolicyVersions);
 
   // --- Token rewrite to report scope ----------------------------------
-  const { rewrittenStoryTexts, rewrittenEventTexts, refs, allowedTokens } =
-    buildReportTokenMap(
-      stories.map((s) => s.analysis_text),
-      events.map((e) => e.analysis_text),
-    );
+  // Feed each leaf's analysis AND its factor arrays through the per-leaf
+  // token map so a scope token that defensively appears in a factor is
+  // folded to report scope too, not passed through to the prompt raw
+  // (#297 review round 1, item 2).
+  const {
+    rewrittenStoryTexts,
+    rewrittenEventTexts,
+    rewrittenStoryFactors,
+    rewrittenEventFactors,
+    refs,
+    allowedTokens,
+  } = buildReportTokenMap(
+    stories.map((s) => ({
+      analysis: s.analysis_text,
+      severityFactors: s.severity_factors,
+      likelihoodFactors: s.likelihood_factors,
+    })),
+    events.map((e) => ({
+      analysis: e.analysis_text,
+      severityFactors: e.severity_factors,
+      likelihoodFactors: e.likelihood_factors,
+    })),
+  );
   void allowedTokens; // the scan re-derives from refs at hallucination time
 
   // --- Aggregations ----------------------------------------------------
@@ -534,8 +559,8 @@ export async function buildPeriodicReportInput(
     analysis: rewrittenStoryTexts[i],
     severityScore: s.severity_score,
     likelihoodScore: s.likelihood_score,
-    severityFactors: s.severity_factors,
-    likelihoodFactors: s.likelihood_factors,
+    severityFactors: rewrittenStoryFactors[i].severityFactors,
+    likelihoodFactors: rewrittenStoryFactors[i].likelihoodFactors,
     ttpTags: s.ttp_tags,
     priorityTier: s.priority_tier,
   }));
@@ -545,8 +570,8 @@ export async function buildPeriodicReportInput(
     analysis: rewrittenEventTexts[i],
     severityScore: e.severity_score,
     likelihoodScore: e.likelihood_score,
-    severityFactors: e.severity_factors,
-    likelihoodFactors: e.likelihood_factors,
+    severityFactors: rewrittenEventFactors[i].severityFactors,
+    likelihoodFactors: rewrittenEventFactors[i].likelihoodFactors,
     ttpTags: e.ttp_tags,
     priorityTier: e.priority_tier,
   }));

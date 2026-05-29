@@ -141,6 +141,9 @@ export async function loadReportResultPage(
     model_actual_version: string;
     prompt_version: string;
     generation: number;
+    lang: string;
+    model_name: string;
+    model: string;
     priority_tier: PriorityTier;
     aggregate_severity_score: number;
     aggregate_likelihood_score: number;
@@ -152,6 +155,7 @@ export async function loadReportResultPage(
     requested_at: Date;
   }>(
     `SELECT model_actual_version, prompt_version, generation,
+            lang, model_name, model,
             priority_tier, aggregate_severity_score, aggregate_likelihood_score,
             aggregate_ttp_tags, sections_jsonb,
             input_story_refs, input_event_refs,
@@ -190,6 +194,7 @@ export async function loadReportResultPage(
     input.customerId,
     storyRefs,
     eventRefs,
+    { lang: row.lang, modelName: row.model_name, model: row.model },
   );
 
   const restoreSection = (s: string) =>
@@ -244,11 +249,18 @@ async function buildReportTokenPlaintext(
   customerId: string,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
+  variant: { lang: string; modelName: string; model: string },
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (storyRefs.length === 0 && eventRefs.length === 0) return out;
 
-  // Fetch story leaf narratives + their member refs at pinned generation.
+  // Fetch story leaf narratives + their member refs at the pinned
+  // generation AND the report variant. `generation` is variant-scoped
+  // (the PK includes lang/model_name/model), so an English and a Korean
+  // leaf can both be generation 1 for the same story/event; without the
+  // variant predicates a LIMIT 1 could replay the wrong variant's text and
+  // either mis-restore or leave report tokens visible (#297 review round
+  // 1, item 3).
   const storyTexts: string[] = [];
   const storyMemberRefs: Array<
     Array<{ index: number; aiceId: string; eventKey: string }>
@@ -258,8 +270,16 @@ async function buildReportTokenPlaintext(
       `SELECT analysis_text, input_event_refs
          FROM story_analysis_result
         WHERE customer_id = $1 AND story_id = $2::bigint AND generation = $3
+          AND lang = $4 AND model_name = $5 AND model = $6
         LIMIT 1`,
-      [customerId, ref.story_id, ref.generation],
+      [
+        customerId,
+        ref.story_id,
+        ref.generation,
+        variant.lang,
+        variant.modelName,
+        variant.model,
+      ],
     );
     storyTexts.push(rows[0]?.analysis_text ?? "");
     storyMemberRefs.push(
@@ -267,21 +287,35 @@ async function buildReportTokenPlaintext(
     );
   }
 
-  // Fetch event leaf narratives at pinned generation.
+  // Fetch event leaf narratives at the pinned generation AND variant.
   const eventTexts: string[] = [];
   for (const ref of eventRefs) {
     const { rows } = await customerPool.query(
       `SELECT analysis_text
          FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
+          AND lang = $4 AND model_name = $5 AND model = $6
         LIMIT 1`,
-      [ref.aice_id, ref.event_key, ref.generation],
+      [
+        ref.aice_id,
+        ref.event_key,
+        ref.generation,
+        variant.lang,
+        variant.modelName,
+        variant.model,
+      ],
     );
     eventTexts.push(rows[0]?.analysis_text ?? "");
   }
 
   // Replay the rewrite to recover the report→source token map per leaf.
-  const { refs } = buildReportTokenMap(storyTexts, eventTexts);
+  // Only the analysis narratives are replayed (factors are not stored in
+  // the report sections), which is exactly what was processed first at
+  // build time, so the analysis token numbering matches.
+  const { refs } = buildReportTokenMap(
+    storyTexts.map((analysis) => ({ analysis })),
+    eventTexts.map((analysis) => ({ analysis })),
+  );
 
   // Decrypt every referenced event redaction map once, keyed by
   // (aice_id, event_key).
