@@ -607,8 +607,15 @@ async function loadCanonicalMembers(
   // dedupe to one row per `(source_aice_id, event_key)` — latest by
   // `received_at` — in the `latest_baseline` CTE BEFORE joining. Deduping
   // over the joined result instead would risk collapsing members shared
-  // across co-occurring stories and dropping them. The dedupe set is
-  // scoped to this story's `source_aice_id` to keep it small.
+  // across co-occurring stories and dropping them.
+  //
+  // The dedupe set is scoped twice over: to this story's `source_aice_id`
+  // AND to the canonical-version member `event_key`s (materialized in the
+  // `member_rows` CTE). Without the `event_key` scope, every analysis would
+  // `DISTINCT ON`-sort the entire historical baseline for the source just
+  // to resolve a handful of member timestamps; the `(source_aice_id,
+  // event_key)` index can only bound the scan once both columns are
+  // constrained.
   //
   // A LEFT JOIN keeps every `story_member` row even when no
   // `baseline_event` matches; the caller fails the job loudly
@@ -616,27 +623,37 @@ async function loadCanonicalMembers(
   // silently shrinking the member set (an INNER JOIN would do exactly
   // that, feeding aimer a self-consistent-but-truncated story).
   const memberRows = await customerPool.query<StoryMemberRow>(
-    `WITH latest_baseline AS (
+    `WITH member_rows AS (
+       SELECT sm.story_id,
+              sm.story_version,
+              sm.member_event_key,
+              sm.role,
+              sm.event,
+              sm.redaction_policy_version
+         FROM story_member sm
+        WHERE sm.story_id = $1::bigint
+          AND sm.story_version = $3
+     ),
+     latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
               source_aice_id, event_key, event_time
          FROM baseline_event
         WHERE source_aice_id = $2
+          AND event_key IN (SELECT member_event_key FROM member_rows)
         ORDER BY source_aice_id, event_key, received_at DESC
      )
-     SELECT sm.story_id::text          AS story_id,
-            sm.story_version,
-            sm.member_event_key::text  AS member_event_key,
+     SELECT mr.story_id::text          AS story_id,
+            mr.story_version,
+            mr.member_event_key::text  AS member_event_key,
             $2::text                   AS source_aice_id,
-            sm.role,
-            sm.event,
-            sm.redaction_policy_version,
+            mr.role,
+            mr.event,
+            mr.redaction_policy_version,
             lb.event_time              AS event_time
-       FROM story_member sm
+       FROM member_rows mr
        LEFT JOIN latest_baseline lb
-         ON lb.event_key = sm.member_event_key
-      WHERE sm.story_id = $1::bigint
-        AND sm.story_version = $3
-      ORDER BY sm.member_event_key`,
+         ON lb.event_key = mr.member_event_key
+      ORDER BY mr.member_event_key`,
     [storyId, source_aice_id, story_version],
   );
 
