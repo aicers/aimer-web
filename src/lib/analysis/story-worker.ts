@@ -137,9 +137,11 @@ interface StoryMemberRow {
   /**
    * Per-member event timestamp, resolved via a deduped LEFT JOIN to
    * `baseline_event` (RFC 0002 #344). NULL when no baseline_event row
-   * matches the member's `(source_aice_id, event_key)` — treated as a
-   * hard job failure (`member_event_time_unresolved`) rather than a
-   * silent drop.
+   * matches the member's `(source_aice_id, event_key)`. A NULL is treated
+   * as a retryable precondition miss (`member_event_time_unresolved`,
+   * #352) rather than a silent drop: the job is re-queued with backoff so
+   * a lagging baseline self-heals, becoming a terminal failure only after
+   * `MAX_ATTEMPTS`.
    */
   event_time: Date | null;
 }
@@ -320,11 +322,42 @@ export async function processStoryJob(
   // `loadCanonicalMembers`; a member whose timestamp does not resolve
   // would otherwise be sent to aimer with no `eventTime`. aimer requires
   // a non-null `eventTime` per member, and silently dropping the member
-  // (an INNER JOIN) would feed aimer a truncated story. Fail loudly
-  // instead — same precondition class as the redaction-policy checks
-  // above (pre-LLM, attempts unchanged).
+  // (an INNER JOIN) would feed aimer a truncated story.
+  //
+  // Unlike the redaction-policy checks above, a NULL `event_time` is not
+  // necessarily a terminal data-integrity defect: `baseline_event` and
+  // `story_member` are ingested through separate phase2 endpoints with no
+  // ordering guarantee, so a story job can run (after the readiness idle
+  // window) before its referenced baseline rows have landed (#352). Route
+  // this through `requeueWithBackoff` so a lagging baseline self-heals:
+  // each transient miss consumes one attempt and is re-picked by the
+  // backoff predicate in `pickQueuedStoryJobs`. Only after `MAX_ATTEMPTS`
+  // does it become terminal `failed` — which then genuinely matches the
+  // option-(c) data-integrity case (#344). This is still a pre-LLM
+  // precondition (before the token map / aimer call).
   if (canonical.members.some((m) => m.event_time == null)) {
-    await failJob(opts.authPool, job, "member_event_time_unresolved");
+    const nextAttempts = job.attempts + 1;
+    await requeueWithBackoff(
+      opts.authPool,
+      job,
+      "member_event_time_unresolved",
+    );
+    // Branch the log on the cap to match what `requeueWithBackoff` wrote:
+    // it re-queues only while `nextAttempts < MAX_ATTEMPTS`, and writes a
+    // terminal `failed` at the cap.
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event:
+          nextAttempts < MAX_ATTEMPTS
+            ? "analysis.member_event_time_unresolved_requeued"
+            : "analysis.member_event_time_unresolved_exhausted",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        generation: job.generation,
+        attempts: nextAttempts,
+      }),
+    );
     return;
   }
 
@@ -634,10 +667,12 @@ async function loadCanonicalMembers(
   // constrained.
   //
   // A LEFT JOIN keeps every `story_member` row even when no
-  // `baseline_event` matches; the caller fails the job loudly
-  // (`member_event_time_unresolved`) on any NULL `event_time` rather than
-  // silently shrinking the member set (an INNER JOIN would do exactly
-  // that, feeding aimer a self-consistent-but-truncated story).
+  // `baseline_event` matches; the caller re-queues the job with backoff
+  // (`member_event_time_unresolved`, #352) on any NULL `event_time` —
+  // letting a lagging baseline self-heal before turning terminal at
+  // `MAX_ATTEMPTS` — rather than silently shrinking the member set (an
+  // INNER JOIN would do exactly that, feeding aimer a
+  // self-consistent-but-truncated story).
   const memberRows = await customerPool.query<StoryMemberRow>(
     `WITH member_rows AS (
        SELECT sm.story_id,

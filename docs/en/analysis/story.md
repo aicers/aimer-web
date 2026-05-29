@@ -51,9 +51,16 @@ The worker pipeline runs the following stages without operator action:
 
 Retryable failures (5xx, transport, mTLS error) re-queue with
 exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx,
-hallucination detected, mixed or missing redaction policy versions, or a
-member whose event time cannot be resolved) mark the job `failed`
-immediately.
+hallucination detected, mixed or missing redaction policy versions) mark
+the job `failed` immediately.
+
+A member whose event time cannot be resolved is also retryable:
+`baseline_event` and `story_member` ingest through separate Phase 2
+endpoints with no ordering guarantee, so a story job can run before its
+referenced baseline rows have landed. Such a job re-queues with the same
+backoff so a lagging baseline self-heals, becoming a terminal `failed`
+only after `ANALYSIS_MAX_ATTEMPTS` — which then reflects a genuine
+data-integrity defect.
 
 Automatic dirty re-queues are bounded by `ANALYSIS_MAX_GENERATION`
 (default `50`): once a story's current generation is at the cap, the

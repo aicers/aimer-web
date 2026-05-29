@@ -561,51 +561,56 @@ describe("processStoryJob — redaction-policy precondition", () => {
   });
 });
 
+function nullEventTimeMembersQuery(): Array<unknown> {
+  return [
+    {
+      rows: [
+        {
+          story_version: "v1",
+          source_aice_id: "aice-1",
+          known_ioc_hit: false,
+          time_window_start: new Date("2026-05-01T00:00:00.000Z"),
+          time_window_end: new Date("2026-05-01T02:00:00.000Z"),
+        },
+      ],
+    },
+    {
+      rows: [
+        {
+          story_id: "12345",
+          story_version: "v1",
+          member_event_key: "1001",
+          source_aice_id: "aice-1",
+          role: "primary",
+          event: { ip: "<<REDACTED_IP_001>>" },
+          redaction_policy_version: "engine:1.0|ranges:abc",
+          event_time: null, // unresolved — baseline_event had no match
+        },
+      ],
+    },
+  ];
+}
+
 describe("processStoryJob — event-time precondition", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("fails with member_event_time_unresolved when a member has no event_time", async () => {
+  it("re-queues with attempts++ on a first unresolved event_time (#352)", async () => {
     // RFC 0002 #344: `event_time` comes from a deduped LEFT JOIN to
     // baseline_event. A NULL means the member's timestamp could not be
-    // resolved; the worker must fail loudly (not silently drop the
-    // member or send aimer a NULL eventTime). The redaction-policy
-    // check passes first (valid version), so we reach the event-time
-    // guard.
+    // resolved. Because baseline_event and story_member are ingested
+    // through separate phase2 endpoints with no ordering guarantee
+    // (#352), a first NULL is a retryable precondition miss — the job is
+    // re-queued with backoff so a lagging baseline can self-heal, not
+    // failed permanently. The redaction-policy check passes first (valid
+    // version), so we reach the event-time guard.
     const authPool = makePool({
       queryPlan: [
         { rows: [], rowCount: 1 }, // processing
-        { rows: [], rowCount: 1 }, // failJob
+        { rows: [], rowCount: 1 }, // requeue
       ],
     });
     const customerPool = makePool({
-      queryPlan: [
-        { rows: [] }, // probe
-        {
-          rows: [
-            {
-              story_version: "v1",
-              source_aice_id: "aice-1",
-              known_ioc_hit: false,
-              time_window_start: new Date("2026-05-01T00:00:00.000Z"),
-              time_window_end: new Date("2026-05-01T02:00:00.000Z"),
-            },
-          ],
-        },
-        {
-          rows: [
-            {
-              story_id: "12345",
-              story_version: "v1",
-              member_event_key: "1001",
-              source_aice_id: "aice-1",
-              role: "primary",
-              event: { ip: "<<REDACTED_IP_001>>" },
-              redaction_policy_version: "engine:1.0|ranges:abc",
-              event_time: null, // unresolved — baseline_event had no match
-            },
-          ],
-        },
-      ],
+      queryPlan: [{ rows: [] }, ...nullEventTimeMembersQuery()],
     });
     const callAnalyzeStory = vi.fn();
 
@@ -618,11 +623,57 @@ describe("processStoryJob — event-time precondition", () => {
     expect(callAnalyzeStory).not.toHaveBeenCalled();
     // No result INSERT attempted.
     expect(customerPool.connect).not.toHaveBeenCalled();
+    // Re-queued, not failed.
+    const requeue = authPool.__calls.find((c) =>
+      c.sql.includes("SET status = 'queued'"),
+    );
+    expect(requeue).toBeDefined();
+    expect(requeue?.params?.[6]).toBe(1); // attempts = 0 + 1
+    expect(requeue?.params?.[7]).toBe("member_event_time_unresolved");
     const failCall = authPool.__calls.find((c) =>
       c.sql.includes("status = 'failed'"),
     );
-    expect(failCall?.params?.[6]).toBe(0); // attempts unchanged (pre-LLM)
+    expect(failCall).toBeUndefined();
+  });
+
+  it("flips to failed (no requeue) when the cap is reached (#352)", async () => {
+    // A persistently unresolvable event_time still fails loudly and
+    // terminally once attempts reach MAX_ATTEMPTS — preserving #344's
+    // option-(c) data-integrity escalation signal.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failed (cap)
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...nullEventTimeMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn();
+
+    // Job already at attempts=4; next miss brings it to 5 (default MAX).
+    await processStoryJob(
+      { ...baseJob(), attempts: 4 },
+      {
+        authPool: authPool as never,
+        callAnalyzeStory: callAnalyzeStory as never,
+        resolveCustomerPool: () => customerPool as never,
+      },
+    );
+
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall).toBeDefined();
+    expect(failCall?.params?.[6]).toBe(5); // attempts at the cap
     expect(failCall?.params?.[7]).toBe("member_event_time_unresolved");
+    // No re-queue was issued.
+    const requeue = authPool.__calls.find((c) =>
+      c.sql.includes("SET status = 'queued'"),
+    );
+    expect(requeue).toBeUndefined();
   });
 });
 
