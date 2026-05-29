@@ -91,7 +91,7 @@ export function StoryRegenerateButton({ customerId, storyId }: Props) {
             <p className="mb-4 text-sm text-muted-foreground">
               This issues a fresh LLM call against the canonical story members
               and overwrites the latest generation when the new result lands.
-              The previous result row is preserved with a
+              The previous result row is preserved with a{" "}
               <code>superseded_at</code> stamp.
             </p>
             <div className="flex justify-end gap-2">

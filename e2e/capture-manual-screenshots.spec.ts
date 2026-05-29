@@ -1165,10 +1165,24 @@ base.describe.serial("Manual screenshots", () => {
   for (const locale of LOCALES) {
     base(`story-detail-high.${locale}.png`, async () => {
       await ensureStoryFixtures();
+      // The dashboard shell is `h-screen` with the page body in an inner
+      // `overflow-y-auto` <main>, so the document never grows past the
+      // viewport and `fullPage` cannot reach below-the-fold content. The
+      // HIGH page (inline factor rows + analysis body + Regenerate
+      // button) runs taller than 720 px, so bump the viewport height for
+      // this capture — width stays 1280 so layout flow is unchanged. Same
+      // per-shot override pattern as the JWK-thumbprint capture (slot 4).
+      await mgrPage.setViewportSize({ width: 1280, height: 1120 });
       await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_HIGH.storyId));
       await settle(mgrPage);
       await expect(
         mgrPage.locator('[data-testid="priority-tier-badge"]'),
+      ).toBeVisible();
+      // Assert the Regenerate button is in-frame — the issue requires it
+      // visible in the HIGH capture, and the taller viewport is what
+      // brings it above the fold.
+      await expect(
+        mgrPage.locator('[data-testid="regenerate-button"]'),
       ).toBeVisible();
 
       await mgrPage.screenshot({
@@ -1181,6 +1195,12 @@ base.describe.serial("Manual screenshots", () => {
   for (const locale of LOCALES) {
     base(`story-detail-low.${locale}.png`, async () => {
       await ensureStoryFixtures();
+      // Same viewport bump as the HIGH capture: `fullPage` is a no-op on
+      // the fixed-height dashboard shell, so a 720 px viewport would clip
+      // the analysis body and Regenerate button. The collapsed factor
+      // rows sit near the top and would survive either way, but a taller
+      // viewport keeps the asset from showing a half-cut analysis box.
+      await mgrPage.setViewportSize({ width: 1280, height: 1120 });
       await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_LOW.storyId));
       await settle(mgrPage);
       await expect(
@@ -1203,6 +1223,10 @@ base.describe.serial("Manual screenshots", () => {
   for (const locale of LOCALES) {
     base(`story-regenerate-modal.${locale}.png`, async () => {
       await ensureStoryFixtures();
+      // Reset to the standard viewport (the detail captures above bump
+      // the height) so the fixed-overlay modal is centered against a
+      // 1280×720 backdrop rather than a taller one.
+      await mgrPage.setViewportSize(VIEWPORT);
       await mgrPage.goto(storyUrl(locale, STORY_FIXTURE_HIGH.storyId));
       await settle(mgrPage);
       await mgrPage.locator('[data-testid="regenerate-button"]').click();
