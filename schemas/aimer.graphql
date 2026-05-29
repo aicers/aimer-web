@@ -95,6 +95,76 @@ type StoryAnalysisResult {
 	modelActualVersion: String!
 }
 
+"""
+A single story member event for `analyzeStory`. Supplied by the BFF
+(aimer-web) already redacted with story-scope tokens
+(`<<REDACTED_*_E{i}_*>>`); aimer forwards the payload to the LLM
+unchanged.
+"""
+input StoryMemberInput {
+	"""
+	1-based position in the canonical member order. The ordinals form a
+	contiguous `1..N` multiset and match the `E{i}` token namespace
+	embedded in `event`.
+	"""
+	ordinal: Int!
+	"""
+	Member role within the story (e.g. `primary` or `context`). Non-empty.
+	"""
+	role: String!
+	"""
+	Per-member event timestamp (UTC).
+	"""
+	eventTime: DateTime!
+	"""
+	Pre-redacted member event payload as a JSON-encoded string. Non-empty.
+	"""
+	event: String!
+}
+
+"""
+Story-level metadata for `analyzeStory`. aimer validates these values
+against the `members` list (`memberCount`, `roleDistribution`) and the
+window ordering (`firstSeenAt <= lastSeenAt`).
+"""
+input StoryMetadataInput {
+	"""
+	Must equal the top-level `storyId`.
+	"""
+	storyId: ID!
+	"""
+	Earliest member event time. Must be `<= lastSeenAt`.
+	"""
+	firstSeenAt: DateTime!
+	"""
+	Latest member event time. Must be `>= firstSeenAt`.
+	"""
+	lastSeenAt: DateTime!
+	"""
+	Number of members; must equal the `members` list length.
+	"""
+	memberCount: Int!
+	"""
+	Per-role frequency; must match the observed `members[].role`
+	distribution exactly.
+	"""
+	roleDistribution: [StoryRoleCountInput!]!
+}
+
+"""
+A single `(role, count)` entry in `StoryMetadataInput.roleDistribution`.
+"""
+input StoryRoleCountInput {
+	"""
+	Role label, matching a `StoryMemberInput.role` value.
+	"""
+	role: String!
+	"""
+	Occurrence count for `role`. `>= 0`.
+	"""
+	count: Int!
+}
+
 type GenerateResponse {
 	model: String!
 	createdAt: String!
@@ -145,18 +215,21 @@ type Mutation {
 	(`<<REDACTED_*_E{i}_*>>`) and persists the result on its own side.
 	aimer caches nothing here.
 
-	The `members` payload is a JSON-encoded list of redacted member
-	events in the canonical order; aimer treats it as opaque LLM input
-	and does not parse it.
+	`members` is a structured list of redacted member events in the
+	canonical order; `storyMetadata` carries the story-level window and
+	role distribution. aimer validates the structured inputs (contiguous
+	`1..N` ordinals, `memberCount`/`roleDistribution` agreement,
+	`firstSeenAt <= lastSeenAt`) before forwarding to the LLM.
 
 	# Errors
 
 	Returns an error if:
-	- Input validation fails (empty `members` or `model`)
+	- Input validation fails (empty `members` or `model`, or a
+	  `storyMetadata`/`members` mismatch)
 	- The requested LLM server `name` is not registered
 	- LLM analysis fails or response parsing fails
 	"""
-	analyzeStory(members: String!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
+	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
 	"""
 	Generates a report for a given customer.
 	

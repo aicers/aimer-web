@@ -8,8 +8,31 @@
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { type DocumentNode, parse } from "graphql";
 
+export interface StoryMemberInput {
+  ordinal: number;
+  role: string;
+  eventTime: string;
+  event: string;
+}
+
+export interface StoryMetadataInput {
+  storyId: string;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  memberCount: number;
+  roleDistribution: Array<StoryRoleCountInput>;
+}
+
+export interface StoryRoleCountInput {
+  role: string;
+  count: number;
+}
+
 export interface AnalyzeStoryVariables {
-  members: string;
+  customerId: string;
+  storyId: string;
+  members: Array<StoryMemberInput>;
+  storyMetadata: StoryMetadataInput;
   name: string;
   model: string;
   lang?: "KOREAN" | "ENGLISH" | null;
@@ -31,12 +54,23 @@ export interface AnalyzeStoryResponse {
 }
 
 export const ANALYZE_STORY_SOURCE = `mutation AnalyzeStory(
-  $members: String!
+  $customerId: ID!
+  $storyId: ID!
+  $members: [StoryMemberInput!]!
+  $storyMetadata: StoryMetadataInput!
   $name: String!
   $model: String!
   $lang: Language
 ) {
-  analyzeStory(members: $members, name: $name, model: $model, lang: $lang) {
+  analyzeStory(
+    customerId: $customerId
+    storyId: $storyId
+    members: $members
+    storyMetadata: $storyMetadata
+    name: $name
+    model: $model
+    lang: $lang
+  ) {
     severityScore
     likelihoodScore
     severityFactors

@@ -3,9 +3,11 @@
 //
 // The story analysis worker rewrites every `<<REDACTED_KIND_NNN>>`
 // token in each member's event JSON to `<<REDACTED_KIND_E{i}_NNN>>`
-// (see `story-token.ts`), where `{i}` is the member's position in
-// `input_event_refs`. The LLM is asked to preserve those tokens
-// verbatim in its output.
+// (see `story-token.ts`), where `{i}` is the member's 1-based position,
+// stored as `input_event_refs[].index`. The LLM is asked to preserve
+// those tokens verbatim in its output. (The lookup below is index-base
+// agnostic — it resolves whatever `{i}` it parses against the keyed
+// map — so it works regardless of the base the worker emitted.)
 //
 // To render the analysis text back to plaintext for an analyst, RFC
 // 0002 §"Token namespacing for multi-event LLM inputs" specifies:
