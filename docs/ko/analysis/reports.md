@@ -183,7 +183,10 @@ GET /api/customers/{customerId}/analysis/report/{period}/{bucketDate}/summary
 집계 점수, `score_kind: "aggregate"`, 그리고 이 페이지로의 `link`를 담은
 콘텐츠 없는 페이로드를 반환합니다. `link`는 period를 **대문자**로 담아 따라갈
 때 대소문자 무시 리다이렉트 없이 페이지 라우트에 도달하며, 고객 범위이므로
-여는 탭이 선택한 고객과 무관하게 올바른 리포트로 해석됩니다. 배지 자체
+여는 탭이 선택한 고객과 무관하게 올바른 리포트로 해석됩니다. 요약을
+비기본 변형(`?tz=&lang=&model_name=&model=`)으로 요청한 경우, `link`는 동일한
+쿼리 파라미터를 함께 전달하여 따라갈 때 기본 변형이 아닌 해당 변형을
+엽니다. 배지 자체
 (섹션 콘텐츠 없이 우선순위 등급과 집계 점수만 표시)는 aice-web-next가
 렌더링합니다. 해당 스크린샷은 aice-web-next 매뉴얼을 참고하세요.
 

@@ -212,7 +212,10 @@ content-free payload with `priority_tier`, the two aggregate scores,
 the period as **uppercase** so following it lands on the page route
 without a case-insensitive redirect, and is customer-scoped so it
 resolves to the right report regardless of which customer the opening
-tab has selected. The badge itself (priority tier and aggregate scores
+tab has selected. When the summary was requested for a non-default
+variant (`?tz=&lang=&model_name=&model=`), the `link` forwards those
+same query params so following it opens that variant rather than the
+default. The badge itself (priority tier and aggregate scores
 only, no section content) is rendered by aice-web-next; see the
 aice-web-next manual for its screenshot.
 
