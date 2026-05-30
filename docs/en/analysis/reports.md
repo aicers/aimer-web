@@ -222,8 +222,11 @@ decide whether to surface a deep-link badge for a period:
 GET /api/customers/{customerId}/analysis/report/{period}/{bucketDate}/summary
 ```
 
-The endpoint returns either `{exists: false}` (no report yet) or a
-content-free payload with `priority_tier`, the two aggregate scores,
+The endpoint returns either `{exists: false}` — no report yet, **or** the
+report's parent state row is missing or archived (for example after a
+timezone change, which archives the old-timezone state), so the badge is
+never deep-linked to a report whose page would `404` — or a content-free
+payload with `priority_tier`, the two aggregate scores,
 `score_kind: "aggregate"`, and a `link` to this page. The `link` carries
 the period as **uppercase** so following it lands on the page route
 without a case-insensitive redirect, and is customer-scoped so it

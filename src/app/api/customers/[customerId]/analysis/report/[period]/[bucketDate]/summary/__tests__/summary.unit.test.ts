@@ -1,8 +1,9 @@
 // RFC 0002 Phase 2 (#297) — periodic report summary API tests.
 //
 // Locks: 401 unauthenticated, 404 non-member (existence-hiding), 403
-// member-without-reports:read, exists:false when no row, exists:true
-// with score_kind="aggregate" and an UPPERCASE customer-scoped link,
+// member-without-reports:read, exists:false when no row, exists:false for
+// an archived/missing parent state (dead-link guard, round-9 item 2),
+// exists:true with score_kind="aggregate" and an UPPERCASE customer-scoped link,
 // and the path-case lock (lowercase period → 404/invalid path is a UI
 // concern; here the API only emits the uppercase link).
 
@@ -79,6 +80,11 @@ describe("periodic report summary endpoint", () => {
       authorized: true,
       permissions: new Set(["reports:read"]),
     });
+    // Parent state defaults to a live `ready` row so the dead-link guard
+    // (round-9 item 2) passes; the archived/missing cases override per-test.
+    // The auth client serves this for the state probe (and any test that also
+    // queues a tz lookup via mockResolvedValueOnce consumes that first).
+    mockClientQuery.mockResolvedValue({ rows: [{ status: "ready" }] });
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -199,5 +205,29 @@ describe("periodic report summary endpoint", () => {
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.error).toBe("invalid_report_path");
+  });
+
+  it("returns {exists: false} when the parent state is archived (dead-link guard)", async () => {
+    // A timezone change archived the old-tz state but can leave its
+    // periodic_report_result row non-superseded. The summary must not
+    // advertise a link the detail page would 404 (round-9 item 2).
+    mockClientQuery.mockResolvedValueOnce({ rows: [{ status: "archived" }] });
+    const { GET } = await import("../route");
+    const res = await GET(summaryRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ exists: false });
+    // The customer-DB result lookup is skipped entirely for a dead parent.
+    expect(mockCustomerQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns {exists: false} when the parent state is missing", async () => {
+    mockClientQuery.mockResolvedValueOnce({ rows: [] });
+    const { GET } = await import("../route");
+    const res = await GET(summaryRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ exists: false });
+    expect(mockCustomerQuery).not.toHaveBeenCalled();
   });
 });

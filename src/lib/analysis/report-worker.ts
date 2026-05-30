@@ -1051,9 +1051,15 @@ export async function seedRealReportJobs(
 /**
  * RFC 0002 §"LIVE re-queue" — re-queue done LIVE variant jobs whose
  * per-variant `next_due_at` cadence has elapsed. Gated by
- * `state.status <> 'archived'` (round-14 item 5): the "regardless of
- * state row status" clause covers `pending|ready|dirty`, not archived
- * (old-tz) rows. Resets the retry budget on the bumped generation.
+ * `state.status NOT IN ('archived', 'dirty')`: archived (old-tz) rows
+ * must never re-queue (round-14 item 5), and `dirty` rows are excluded
+ * because `seedRealReportJobs`' dirty branch — which runs later in the
+ * same tick — already bumps every variant under a dirty state regardless
+ * of cadence. Letting both paths fire would burn two automatic
+ * generations for one invalidation, hit `ANALYSIS_MAX_GENERATION` a cycle
+ * early, and leave a gap where the skipped generation never produced a
+ * result (#297 review round 9, item 1). The gate therefore covers
+ * `pending|ready`. Resets the retry budget on the bumped generation.
  *
  * Capped at `ANALYSIS_MAX_GENERATION` like the dirty auto-requeue path in
  * `seedRealReportJobs`: the issue locks "Force is allowed past
@@ -1084,7 +1090,7 @@ export async function requeueLiveReportJobs(
       WHERE j.period = 'LIVE'
         AND j.status = 'done'
         AND j.dry_run = FALSE
-        AND s.status <> 'archived'
+        AND s.status NOT IN ('archived', 'dirty')
         AND j.next_due_at IS NOT NULL
         AND j.next_due_at <= $1::timestamptz
         AND j.generation >= $2::int`,
@@ -1124,7 +1130,7 @@ export async function requeueLiveReportJobs(
         AND j.period = 'LIVE'
         AND j.status = 'done'
         AND j.dry_run = FALSE
-        AND s.status <> 'archived'
+        AND s.status NOT IN ('archived', 'dirty')
         AND j.next_due_at IS NOT NULL
         AND j.next_due_at <= $1::timestamptz
         AND j.generation < $2::int`,

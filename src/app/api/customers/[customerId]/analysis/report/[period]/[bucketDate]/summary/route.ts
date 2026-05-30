@@ -4,7 +4,9 @@
 //
 // Returns the latest non-superseded `periodic_report_result` row for the
 // customer's default `(tz, lang, model_name, model)` variant, or
-// `{exists: false}` when no result exists yet.
+// `{exists: false}` when no result exists yet — or when the parent
+// `periodic_report_state` is missing or archived, so the summary never
+// advertises a deep link the detail page would 404 (round-9 item 2).
 //
 // `score_kind`: `"aggregate"` for periodic-report summaries (scores were
 // derived by aimer-web from included leaf rows + baseline drift). The
@@ -79,6 +81,8 @@ export const GET = withAuth(
     const client = await pool.connect();
     let authResult: AuthorizeResult;
     let tz: string;
+    let stateExists: boolean;
+    let stateArchived: boolean;
     try {
       authResult = await authorize(
         client,
@@ -120,8 +124,29 @@ export const GET = withAuth(
         );
         tz = tzRow.rows[0]?.timezone ?? "UTC";
       }
+      // Probe the auth-side parent state for the requested tz on the same
+      // connection. A missing or archived state means the detail page /
+      // result-page loader would 404 (round-9 item 2): never hand out a deep
+      // link the viewer cannot open. A customer timezone change archives the
+      // old-tz state but can leave its `periodic_report_result` row
+      // non-superseded, so a `?tz=<old tz>` summary would otherwise advertise
+      // a dead link.
+      const stateRow = await client.query<{ status: string }>(
+        `SELECT status FROM periodic_report_state
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4`,
+        [customerId, parts.period, parts.bucketDate, tz],
+      );
+      stateExists = stateRow.rows.length > 0;
+      stateArchived = stateRow.rows[0]?.status === "archived";
     } finally {
       client.release();
+    }
+
+    // Mirror the result-not-yet contract: report nothing to link to when the
+    // parent state is gone or archived.
+    if (!stateExists || stateArchived) {
+      return Response.json({ exists: false });
     }
 
     const lang = req.nextUrl.searchParams.get("lang") ?? DEFAULT_LANG;

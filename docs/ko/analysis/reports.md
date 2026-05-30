@@ -193,7 +193,9 @@ aice-web-next 대시보드 카드는 주기에 대한 딥링크 배지를 노출
 GET /api/customers/{customerId}/analysis/report/{period}/{bucketDate}/summary
 ```
 
-엔드포인트는 `{exists: false}`(아직 리포트 없음) 또는 `priority_tier`, 두
+엔드포인트는 `{exists: false}`(아직 리포트가 없거나, 리포트의 상위 상태 행이
+없거나 — 예: 시간대 변경으로 기존 시간대 상태가 아카이브된 경우 — 페이지가
+`404`가 되어 배지를 죽은 딥링크로 노출하지 않는 경우) 또는 `priority_tier`, 두
 집계 점수, `score_kind: "aggregate"`, 그리고 이 페이지로의 `link`를 담은
 콘텐츠 없는 페이로드를 반환합니다. `link`는 period를 **대문자**로 담아 따라갈
 때 대소문자 무시 리다이렉트 없이 페이지 라우트에 도달하며, 고객 범위이므로

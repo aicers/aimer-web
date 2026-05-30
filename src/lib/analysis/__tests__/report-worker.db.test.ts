@@ -6,6 +6,7 @@
 //   - post-LLM crash recovery via the pickup-time result-row probe
 //     (no second LLM call)
 //   - LIVE next_due_at re-queue skips archived parent state (round-14 5)
+//   - dirty LIVE row past next_due_at bumped once per tick, not twice (r9 1)
 //   - runtime pickup skips a queued job archived after queueing (r2 2)
 
 import { join } from "node:path";
@@ -841,6 +842,61 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
         WHERE customer_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, DIRTY_BUCKET, TZ],
+    );
+    expect(stateRows[0].status).toBe("ready");
+  });
+
+  it("dirty LIVE row past next_due_at is bumped once across a full tick, not twice", async () => {
+    // A dirty LIVE state whose done job's cadence has also elapsed used to be
+    // bumped twice in one tick: once by `requeueLiveReportJobs` (cadence) and
+    // again by `seedRealReportJobs`' dirty branch. That burned two automatic
+    // generations for one invalidation, could hit ANALYSIS_MAX_GENERATION a
+    // cycle early, and skipped a generation that never produced a result
+    // (#297 review round 9, item 1). The cadence path now excludes dirty
+    // parents, so the two automatic signals coalesce into a single bump.
+    await seedState(authPool, "LIVE", LIVE_BUCKET, "dirty");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run, last_generated_at, next_due_at)
+       VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 3, FALSE,
+               NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'done', generation = 3,
+                     next_due_at = NOW() - INTERVAL '1 hour'`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ],
+    );
+
+    // Run the two automatic steps in the exact order tickPeriodicStates does.
+    const now = new Date().toISOString();
+    const client = await authPool.connect();
+    try {
+      await requeueLiveReportJobs(client, now);
+      await seedRealReportJobs(client, 10, now);
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await authPool.query<{
+      status: string;
+      generation: number;
+    }>(
+      `SELECT status, generation FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'LIVE'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ],
+    );
+    // Exactly one automatic generation consumed: 3 → 4 (not 3 → 5).
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].generation).toBe(4);
+
+    // The dirty state is settled back to ready by the seed step.
+    const { rows: stateRows } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'LIVE'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
     expect(stateRows[0].status).toBe("ready");
   });
