@@ -26,8 +26,12 @@ vi.mock("server-only", () => ({}));
 // story-worker unit tests) to avoid real audit-DB I/O.
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn(async () => {}) }));
 
-const { processReportJob, requeueLiveReportJobs, tickReportJobsOnce } =
-  await import("../report-worker");
+const {
+  processReportJob,
+  requeueLiveReportJobs,
+  tickReportJobsOnce,
+  MAX_GENERATION,
+} = await import("../report-worker");
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -620,5 +624,46 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // Archived parent ⇒ NOT re-queued: still done, generation unchanged.
     expect(rows[0].status).toBe("done");
     expect(rows[0].generation).toBe(3);
+  });
+
+  it("LIVE next_due_at re-queue does not auto-bump a job at MAX_GENERATION", async () => {
+    // The issue locks "Force is allowed past ANALYSIS_MAX_GENERATION
+    // (auto-requeue is not)". The LIVE cadence re-queue is an automatic
+    // path, so a done LIVE job already at the cap whose next_due_at has
+    // elapsed must stay done — only an operator force-regenerate may push
+    // it past the cap.
+    await seedState(authPool, "LIVE", LIVE_BUCKET, "ready");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run, last_generated_at, next_due_at)
+       VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', $4, FALSE,
+               NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'done', generation = $4,
+                     next_due_at = NOW() - INTERVAL '1 hour'`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ, MAX_GENERATION],
+    );
+
+    const client = await authPool.connect();
+    try {
+      await requeueLiveReportJobs(client, new Date().toISOString());
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await authPool.query<{
+      status: string;
+      generation: number;
+    }>(
+      `SELECT status, generation FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'LIVE'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ],
+    );
+    // At the cap ⇒ NOT auto-re-queued: still done, generation unchanged.
+    expect(rows[0].status).toBe("done");
+    expect(rows[0].generation).toBe(MAX_GENERATION);
   });
 });

@@ -40,7 +40,10 @@ Two report periods are produced today:
   rows use a synthetic bucket date (`1970-01-01`); the report is
   regenerated on a fixed cadence (`ANALYSIS_LIVE_REFRESH_MINUTES`,
   default 60 minutes) as long as the period's source data is not
-  archived. Each refresh bumps the report generation.
+  archived. Each refresh bumps the report generation, up to the
+  automatic generation cap (`ANALYSIS_MAX_GENERATION`, default 50);
+  once a LIVE report reaches the cap the cadence stops bumping it, and
+  only a force regenerate (below) can produce a newer generation.
 - **DAILY** — one report per calendar day in the customer's timezone.
   A DAILY bucket becomes eligible once the day has closed and the
   settle window has elapsed (shortened when a strict cursor watermark

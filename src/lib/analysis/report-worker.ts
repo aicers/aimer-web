@@ -1026,11 +1026,55 @@ export async function seedRealReportJobs(
  * `state.status <> 'archived'` (round-14 item 5): the "regardless of
  * state row status" clause covers `pending|ready|dirty`, not archived
  * (old-tz) rows. Resets the retry budget on the bumped generation.
+ *
+ * Capped at `ANALYSIS_MAX_GENERATION` like the dirty auto-requeue path in
+ * `seedRealReportJobs`: the issue locks "Force is allowed past
+ * `ANALYSIS_MAX_GENERATION` (auto-requeue is not)", and the cadence
+ * re-queue is an automatic path. A LIVE variant that has reached the cap
+ * stays `done` until an operator force-regenerate (which may push past the
+ * cap) bumps it; the cap hit is logged for parity with the dirty path.
  */
 export async function requeueLiveReportJobs(
   authClient: PoolClient,
   nowIso: string = getCurrentTimestamp().toISOString(),
 ): Promise<void> {
+  // Surface due-but-capped LIVE variants before the bump UPDATE skips them,
+  // mirroring the `analysis.report_max_generation_reached` signal that the
+  // dirty auto-requeue path emits.
+  const { rows: capped } = await authClient.query<{
+    customer_id: string;
+    period: string;
+    bucket_date: string;
+    tz: string;
+  }>(
+    `SELECT j.customer_id::text AS customer_id, j.period,
+            j.bucket_date::text AS bucket_date, j.tz
+       FROM periodic_report_job j
+       JOIN periodic_report_state s
+         ON j.customer_id = s.customer_id AND j.period = s.period
+        AND j.bucket_date = s.bucket_date AND j.tz = s.tz
+      WHERE j.period = 'LIVE'
+        AND j.status = 'done'
+        AND j.dry_run = FALSE
+        AND s.status <> 'archived'
+        AND j.next_due_at IS NOT NULL
+        AND j.next_due_at <= $1::timestamptz
+        AND j.generation >= $2::int`,
+    [nowIso, MAX_GENERATION],
+  );
+  for (const row of capped) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.report_max_generation_reached",
+        customer_id: row.customer_id,
+        period: row.period,
+        bucket_date: row.bucket_date,
+        tz: row.tz,
+        max_generation: MAX_GENERATION,
+      }),
+    );
+  }
   await authClient.query(
     `UPDATE periodic_report_job j
         SET status = 'queued',
@@ -1047,8 +1091,9 @@ export async function requeueLiveReportJobs(
         AND j.dry_run = FALSE
         AND s.status <> 'archived'
         AND j.next_due_at IS NOT NULL
-        AND j.next_due_at <= $1::timestamptz`,
-    [nowIso],
+        AND j.next_due_at <= $1::timestamptz
+        AND j.generation < $2::int`,
+    [nowIso, MAX_GENERATION],
   );
 }
 
