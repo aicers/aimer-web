@@ -29,7 +29,7 @@ import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import {
   PeriodicReportDocument,
-  type PeriodicReportInput,
+  type PeriodicReportInputs,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
@@ -132,15 +132,22 @@ interface JobPickup {
   cursor_watermark_quality: string | null;
 }
 
+// aimer's `PeriodicSecurityReportResult`: a single JSON-encoded `sections`
+// string (executive summary, story highlights, notable events, baseline
+// observations, period outlook) plus the prompt / model snapshot markers.
+// The legacy 5-narrative-field shape was a vendored fiction no aimer build
+// exposed (#360).
 interface ReportAimerResponse {
-  executiveSummary: string;
-  storyHighlights: string;
-  baselineDrift: string;
-  notableEvents: string;
-  recommendations: string;
+  sections: string;
   promptVersion: string;
   modelActualVersion: string;
 }
+
+// Shape the worker persists to `periodic_report_result.sections_jsonb`,
+// parsed from aimer's JSON `sections` string. The keys are the prompt's
+// structured-output sections; the page loader reads them back by name and
+// tolerates absent keys, so the worker stores the parsed object verbatim.
+type ReportSectionsJson = Record<string, unknown>;
 
 interface AuditEmissionBase {
   actorId: string;
@@ -148,6 +155,37 @@ interface AuditEmissionBase {
   targetType: string;
   customerId: string;
   aiceId: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// aimer `sections` JSON parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse aimer's JSON-encoded `sections` payload into a section object.
+ * Throws on a non-JSON body or a non-object top level (array / scalar) — the
+ * caller treats either as a fatal `report_sections_parse_failed`.
+ */
+function parseReportSections(raw: string): ReportSectionsJson {
+  const parsed: unknown = JSON.parse(raw);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("sections payload is not a JSON object");
+  }
+  return parsed as ReportSectionsJson;
+}
+
+/**
+ * Collect every string leaf in the parsed sections payload (depth-first) so
+ * the hallucination scan covers all rendered narrative regardless of the
+ * prompt's section key names or nesting.
+ */
+function collectSectionStrings(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(collectSectionStrings);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value).flatMap(collectSectionStrings);
+  }
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -421,18 +459,42 @@ export async function processReportJob(
     return;
   }
 
-  // Hallucination scan across every rendered section.
+  // Parse aimer's JSON `sections` payload. A malformed body is a fatal
+  // (non-retryable) defect in the provider response — aimer guarantees a
+  // JSON object or raises its own error envelope — so fail loudly rather
+  // than persist an uninterpretable blob.
+  let parsedSections: ReportSectionsJson;
+  try {
+    parsedSections = parseReportSections(aimerResponse.sections);
+  } catch (err) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        code: "report_sections_parse_failed",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    await failJob(
+      opts.authPool,
+      job,
+      "report_sections_parse_failed",
+      claimMarker,
+      { attempts: job.attempts + 1 },
+    );
+    return;
+  }
+
+  // Hallucination scan across every rendered section. The section keys are
+  // prompt-defined, so scan every string value in the parsed payload rather
+  // than a fixed field list.
   const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
     opts.authPool,
     job.customer_id,
   );
-  const reportText = [
-    aimerResponse.executiveSummary,
-    aimerResponse.storyHighlights,
-    aimerResponse.baselineDrift,
-    aimerResponse.notableEvents,
-    aimerResponse.recommendations,
-  ].join("\n\n");
+  const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,
     built.tokenRefs,
@@ -454,13 +516,9 @@ export async function processReportJob(
     return;
   }
 
-  const sections = {
-    executive_summary: aimerResponse.executiveSummary,
-    story_highlights: aimerResponse.storyHighlights,
-    baseline_drift: aimerResponse.baselineDrift,
-    notable_events: aimerResponse.notableEvents,
-    recommendations: aimerResponse.recommendations,
-  };
+  // Persist aimer's structured sections verbatim (already redaction-scanned
+  // above); the page loader restores tokens and reads sections by name.
+  const sections = parsedSections;
   const inputWatermark =
     job.cursor_watermark_quality === "strict" ? job.cursor_watermark : null;
 
@@ -537,7 +595,7 @@ async function callGenerateReport(args: {
   modelName: string;
   model: string;
   lang: string;
-  inputs: PeriodicReportInput;
+  inputs: PeriodicReportInputs;
 }): Promise<ReportAimerResponse> {
   const result = await graphqlRequest(
     PeriodicReportDocument,
@@ -583,7 +641,7 @@ async function writeResultRow(
     job: JobPickup;
     built: Awaited<ReturnType<typeof buildPeriodicReportInput>>;
     aimerResponse: ReportAimerResponse;
-    sections: Record<string, string>;
+    sections: ReportSectionsJson;
     redactionPolicyVersion: string;
     inputWatermark: Date | null;
     requestedBy: string | null;

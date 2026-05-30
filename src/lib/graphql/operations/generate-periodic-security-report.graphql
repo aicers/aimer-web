@@ -1,12 +1,12 @@
 mutation PeriodicReport(
   $customerId: ID!
-  $period: PeriodType!
+  $period: Period!
   $date: String!
   $timezone: String!
   $name: String!
   $model: String!
   $lang: Language
-  $inputs: PeriodicReportInput!
+  $inputs: PeriodicReportInputs!
 ) {
   generatePeriodicSecurityReport(
     customerId: $customerId
@@ -18,11 +18,7 @@ mutation PeriodicReport(
     lang: $lang
     inputs: $inputs
   ) {
-    executiveSummary
-    storyHighlights
-    baselineDrift
-    notableEvents
-    recommendations
+    sections
     promptVersion
     modelActualVersion
   }

@@ -331,19 +331,23 @@ describe.skipIf(!hasPostgres)(
         variant: EN,
         nowIso: "2026-05-27T00:00:00Z",
       });
-      // Two distinct events (5001 recon, 6001 malware), each rebaselined
-      // twice — total must be 2, not 4. Event 6002's canonical row is
-      // out-of-window, so it must not be counted (no "exfil" bucket).
-      expect(res.aimerInputs.baselineAggregates.totalCount).toBe(2);
-      const dist = res.aimerInputs.baselineAggregates.categoryDistribution;
-      const byCat = Object.fromEntries(dist.map((d) => [d.category, d.count]));
-      expect(byCat.recon).toBe(1);
-      expect(byCat.malware).toBe(1);
-      expect(byCat.exfil).toBeUndefined();
-      // categoryDistribution is deterministically ordered (null last, then
-      // by category name) so the canonical input bundle and its order-
-      // sensitive input_hash are stable across plans/runs (#297 round 4 2).
-      expect(dist.map((d) => d.category)).toEqual(["malware", "recon"]);
+      const agg = res.aimerInputs.baselineAggregates;
+      // Two distinct events (5001, 6001), each rebaselined twice — the
+      // deduped window total must be 2, not 4. Event 6002's canonical row is
+      // out-of-window, so it is excluded.
+      expect(agg.totals.events).toBe(2);
+      // Both baseline events share source_aice_id 'aice-1' → exactly one
+      // sensor with count 2; ordering is deterministic so the order-
+      // sensitive input_hash is stable across plans/runs (#297 round 4 2).
+      expect(agg.topSensors).toEqual([{ key: "aice-1", count: 2 }]);
+      // Two canonical stories (7001, 7002) overlap the bucket window.
+      expect(agg.totals.stories).toBe(2);
+      // Techniques aggregated from the cited leaves: story 7001 (T1078) and
+      // event 6001 (T1110), count desc then ID asc.
+      expect(agg.topTechniques).toEqual([
+        { key: "T1078", count: 1 },
+        { key: "T1110", count: 1 },
+      ]);
     });
 
     it("excludes an event whose canonical baseline row is out-of-window", async () => {

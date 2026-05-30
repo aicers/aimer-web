@@ -43,12 +43,18 @@ const CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e1";
 const TZ = "Asia/Seoul";
 const LIVE_BUCKET = "1970-01-01";
 
+// aimer returns a single JSON-encoded `sections` string (#360). The keys
+// are the prompt's structured-output sections; the worker stores the parsed
+// object verbatim and scans every string value for residual tokens / PII.
+const AIMER_SECTIONS = {
+  executive_summary: "Quiet period.",
+  story_highlights: "No notable stories.",
+  baseline_observations: "Baseline stable.",
+  notable_events: "None.",
+  period_outlook: "Maintain monitoring.",
+};
 const AIMER_RESPONSE = {
-  executiveSummary: "Quiet period.",
-  storyHighlights: "No notable stories.",
-  baselineDrift: "Baseline stable.",
-  notableEvents: "None.",
-  recommendations: "Maintain monitoring.",
+  sections: JSON.stringify(AIMER_SECTIONS),
   promptVersion: "periodic-1",
   modelActualVersion: "gpt-4o-2026",
 };
@@ -345,8 +351,12 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       ...opts(),
       callGenerateReport: async () => ({
         ...AIMER_RESPONSE,
-        // Plaintext email PII the LLM should never have been able to emit.
-        executiveSummary: "Contact analyst@example.com about this.",
+        // Plaintext email PII the LLM should never have been able to emit,
+        // buried in one section of the JSON payload.
+        sections: JSON.stringify({
+          ...AIMER_SECTIONS,
+          executive_summary: "Contact analyst@example.com about this.",
+        }),
       }),
     });
 
