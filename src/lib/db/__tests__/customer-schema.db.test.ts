@@ -37,7 +37,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
     // 0003_redaction_foundation, 0004_retention_sweeper_support,
     // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants,
-    // 0007_analysis_result_tables (RFC 0002 Phase 0, #294)
+    // 0007_analysis_result_tables (RFC 0002 Phase 0, #294),
+    // 0008_event_analysis_result_generation (RFC 0002 Phase 2, #297)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -47,6 +48,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0005",
       "0006",
       "0007",
+      "0008",
     ]);
   });
 
@@ -329,17 +331,20 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     expect(tables).not.toContain("policy_run");
   });
 
-  it("enforces UPSERT-on-PK on event_analysis_result", async () => {
-    // First write establishes the row.
+  it("stamps generation + superseded_at on event_analysis_result re-analysis", async () => {
+    // RFC 0002 #297 round-14 item 1: re-analysis no longer UPSERTs on
+    // the PK. The PK carries `generation`, so force=true stamps
+    // `superseded_at` on the prior generation and INSERTs generation+1.
+    // First analysis writes generation 1, superseded_at NULL.
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model,
+         (aice_id, event_key, lang, model_name, model, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o', 1,
                0.5, 0.4,
                '["s1"]'::jsonb, '["l1"]'::jsonb, '["T1078"]'::jsonb,
                'LOW',
@@ -347,65 +352,77 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
                gen_random_uuid())`,
     );
 
-    // ON CONFLICT DO UPDATE on the PK replaces analysis_text for
-    // force=true re-analysis on the same model combination.
+    // Re-analysis: supersede the prior generation, then INSERT gen 2.
+    await pool.query(
+      `UPDATE event_analysis_result SET superseded_at = NOW()
+        WHERE aice_id = 'aice-r1' AND event_key = 1
+          AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'
+          AND generation < 2 AND superseded_at IS NULL`,
+    );
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model,
+         (aice_id, event_key, lang, model_name, model, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o', 2,
                0.9, 0.85,
                '["s2"]'::jsonb, '["l2"]'::jsonb, '["T1110"]'::jsonb,
                'CRITICAL',
                'second', 'engine:1.0.0|ranges:empty',
-               gen_random_uuid())
-       ON CONFLICT (aice_id, event_key, lang, model_name, model)
-       DO UPDATE SET analysis_text = EXCLUDED.analysis_text,
-                     severity_score = EXCLUDED.severity_score,
-                     likelihood_score = EXCLUDED.likelihood_score,
-                     severity_factors = EXCLUDED.severity_factors,
-                     likelihood_factors = EXCLUDED.likelihood_factors,
-                     ttp_tags = EXCLUDED.ttp_tags,
-                     priority_tier = EXCLUDED.priority_tier,
-                     requested_at = NOW()`,
+               gen_random_uuid())`,
     );
 
+    // The latest non-superseded row for the variant is generation 2.
     const { rows } = await pool.query<{
+      generation: number;
       analysis_text: string;
-      severity_score: number;
-      likelihood_score: number;
       priority_tier: string;
       severity_factors: string[];
       likelihood_factors: string[];
       ttp_tags: string[];
     }>(
-      `SELECT analysis_text, severity_score, likelihood_score, priority_tier,
+      `SELECT generation, analysis_text, priority_tier,
               severity_factors, likelihood_factors, ttp_tags
          FROM event_analysis_result
        WHERE aice_id = 'aice-r1' AND event_key = 1
-         AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+         AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'
+         AND superseded_at IS NULL
+       ORDER BY generation DESC
+       LIMIT 1`,
     );
     expect(rows).toHaveLength(1);
+    expect(rows[0].generation).toBe(2);
     expect(rows[0].analysis_text).toBe("second");
     expect(rows[0].priority_tier).toBe("CRITICAL");
     expect(rows[0].severity_factors).toEqual(["s2"]);
     expect(rows[0].likelihood_factors).toEqual(["l2"]);
     expect(rows[0].ttp_tags).toEqual(["T1110"]);
 
-    // A different model produces a new row, not an overwrite.
+    // Both generations are durable: the gen-1 row remains, stamped
+    // superseded, so periodic-report citations to it still resolve.
+    const { rows: gens } = await pool.query<{ c: number; live: number }>(
+      `SELECT COUNT(*)::int AS c,
+              COUNT(*) FILTER (WHERE superseded_at IS NULL)::int AS live
+         FROM event_analysis_result
+       WHERE aice_id = 'aice-r1' AND event_key = 1
+         AND lang = 'ENGLISH' AND model_name = 'openai' AND model = 'gpt-4o'`,
+    );
+    expect(gens[0].c).toBe(2);
+    expect(gens[0].live).toBe(1);
+
+    // A different model produces an independent generation-1 row.
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model,
+         (aice_id, event_key, lang, model_name, model, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5', 1,
                0.1, 0.1,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
                'LOW',
@@ -416,7 +433,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       `SELECT COUNT(*)::int AS c FROM event_analysis_result
        WHERE aice_id = 'aice-r1' AND event_key = 1`,
     );
-    expect(count[0].c).toBe(2);
+    expect(count[0].c).toBe(3);
   });
 
   it("event_analysis_result round-11 columns: NOT NULL DEFAULT '[]' jsonb arrays", async () => {

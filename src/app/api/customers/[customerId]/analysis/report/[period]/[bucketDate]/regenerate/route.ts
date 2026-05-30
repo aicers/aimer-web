@@ -1,60 +1,50 @@
-// RFC 0002 Phase 0 (#294) — periodic report regenerate API stub.
+// RFC 0002 Phase 2 (#297) — periodic report regenerate endpoint.
 //
 // `POST /api/customers/{customer_id}/analysis/report/{period}/{bucket_date}/regenerate`
 //
-// Accepts optional `?tz=…&lang=…&model_name=…&model=…` per RFC 0002
-// §"Force regenerate". Phase 0 DB side effects: none (see the story
-// regenerate stub header for rationale).
+// Optional `?tz=…&lang=…&model_name=…&model=…`. Unlike the story
+// endpoint, `tz` IS accepted (periodic reports are timezone-keyed);
+// it defaults to the customer's current `customers.timezone`.
 //
-// Permission gate: `reports:create` (Analyst role only, existing
-// seed). Unauthenticated → 401, non-member or missing perm → 403.
+// Order of checks (round-14 item 4 / round-15 S3): path validation →
+// origin/CSRF → authorize (401 / non-member 404 / member-without-perm
+// 403 / bridge 403) → Phase 2 period rejection (WEEKLY/MONTHLY →
+// 400 period_not_yet_supported) → source-availability precheck
+// (missing state row → 404 report_state_not_found; archived → 409
+// source_unavailable) → UPSERT job row.
 //
-// Bridge-session policy: force-regenerate is a write action (Phase 2
-// will enqueue a real job row; the stub locks the auth contract for
-// that). Bridge sessions are AICE-side ingest/process flows, not
-// analyst UI actions, so this endpoint is blocked in bridge sessions
-// via `operationKind: "write"`. The bridge scope is still passed so a
-// bridge session whose customer_id matches the path can be rejected
-// uniformly with the cross-customer case (`bridge_write_blocked` →
-// 403) and so future relaxations stay scoped.
+// Two branches per RFC §"Force regenerate":
+//   - Existing row for `(tz, lang, model_name, model)` → UPDATE
+//     generation+1, status='queued', attempts=0, last_error=NULL,
+//     dry_run=FALSE, force timestamps refreshed. UNCONDITIONAL on prior
+//     status — the in-flight worker is defensive via captured generation.
+//   - No row → INSERT generation=1, status='queued', force timestamps set.
+//
+// Returns 202 with `{state_pk: {customer_id, period, bucket_date, tz},
+// variant: {tz, lang, model_name, model}, generation}`.
 
 import type { NextRequest } from "next/server";
-import { assertAuthorized } from "@/lib/auth/authorization";
+import {
+  isValidBucketDate,
+  LIVE_BUCKET_DATE,
+} from "@/lib/analysis/report-bucket-date";
+import { authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Path-shape set stays all four periods (#298 lifts the rejection). The
+// Phase 2 real handler rejects WEEKLY/MONTHLY *after* auth so denied
+// callers still see their denial code first.
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const BUCKET_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-// Synthetic bucket date for LIVE rows (issue #294 decision 4). Kept in
-// sync with `LIVE_BUCKET_DATE` in `src/lib/analysis/state.ts` and
-// migration 0029. Duplicated here instead of imported so this route
-// stays free of the server-only graph that `state.ts` pulls in (the
-// unit-test mocks the auth/db modules but not the analysis-state
-// module).
-const LIVE_BUCKET_DATE = "1970-01-01";
+const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
 
-// Validates an ISO calendar date `YYYY-MM-DD`. Rejects shape mismatches
-// AND impossible calendar dates (`2026-99-99`, `2026-02-31`, ...). The
-// regex alone would let nonsense values pass to authorization and 202,
-// pinning a surprising contract before Phase 1 casts this path segment
-// to a real SQL `date` — see #294 round-24 review item 2.
-function isValidBucketDate(value: string): boolean {
-  const m = BUCKET_DATE_RE.exec(value);
-  if (!m) return false;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const d = new Date(Date.UTC(year, month - 1, day));
-  return (
-    d.getUTCFullYear() === year &&
-    d.getUTCMonth() === month - 1 &&
-    d.getUTCDate() === day
-  );
-}
+const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
+const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
+const ALLOWED_LANGS = new Set(["KOREAN", "ENGLISH"]);
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
@@ -73,11 +63,7 @@ function extractReportPathParts(
   const period = segments[idx + 1];
   const bucketDate = segments[idx + 2];
   if (!PERIODS.has(period) || !isValidBucketDate(bucketDate)) return null;
-  // LIVE rows are pinned to the synthetic bucket date `1970-01-01` (issue
-  // #294 decision 4; see `LIVE_BUCKET_DATE` and migration 0029). Anything
-  // else for LIVE is a variant key the worker/reconcile will never
-  // produce — reject before authorization so Phase 1 doesn't inherit a
-  // surprising contract (round-25 review item 1).
+  // LIVE rows are pinned to the synthetic bucket date `1970-01-01`.
   if (period === "LIVE" && bucketDate !== LIVE_BUCKET_DATE) return null;
   return { period, bucketDate };
 }
@@ -106,10 +92,21 @@ export const POST = withAuth(
       return Response.json(errorBody("invalid_report_path"), { status: 400 });
     }
 
+    const lang = req.nextUrl.searchParams.get("lang") ?? DEFAULT_LANG;
+    if (!ALLOWED_LANGS.has(lang)) {
+      return Response.json(
+        errorBody("invalid_param", "lang must be one of KOREAN, ENGLISH"),
+        { status: 400 },
+      );
+    }
+    const modelName =
+      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
+    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+
     const pool = getAuthPool();
     const client = await pool.connect();
     try {
-      await assertAuthorized(
+      const authResult = await authorize(
         client,
         "general",
         auth.accountId,
@@ -125,6 +122,111 @@ export const POST = withAuth(
             : null,
         },
       );
+      if (!authResult.authorized) {
+        // Bridge denials leak only session-type — keep their 403.
+        if (authResult.reason) {
+          return Response.json(errorBody(authResult.reason), { status: 403 });
+        }
+        // Non-member: existence-hiding 404 (round-15 S3).
+        if (authResult.permissions === undefined) {
+          return Response.json(errorBody("report_state_not_found"), {
+            status: 404,
+          });
+        }
+        // Member without the required permission — precise 403.
+        return Response.json(errorBody("Forbidden"), { status: 403 });
+      }
+
+      // Phase 2 boundary (round-14 item 4): WEEKLY/MONTHLY are not yet
+      // processed. Rejected only after the caller has cleared auth, so a
+      // denied caller sees its denial code (401/404/403), not this.
+      if (!PHASE2_PERIODS.has(parts.period)) {
+        return Response.json(errorBody("period_not_yet_supported"), {
+          status: 400,
+        });
+      }
+
+      // Default tz = the customer's current timezone snapshot.
+      const tzParam = req.nextUrl.searchParams.get("tz");
+      let tz = tzParam ?? null;
+      if (!tz) {
+        const tzRow = await client.query<{ timezone: string }>(
+          `SELECT timezone FROM customers WHERE id = $1`,
+          [customerId],
+        );
+        tz = tzRow.rows[0]?.timezone ?? "UTC";
+      }
+
+      // Source-availability precheck. Force-regenerate is not a seeding
+      // path — it creates a variant job only when the state row exists.
+      const stateRow = await client.query<{ status: string }>(
+        `SELECT status FROM periodic_report_state
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4`,
+        [customerId, parts.period, parts.bucketDate, tz],
+      );
+      if (stateRow.rows.length === 0) {
+        return Response.json(errorBody("report_state_not_found"), {
+          status: 404,
+        });
+      }
+      if (stateRow.rows[0].status === "archived") {
+        return Response.json(errorBody("source_unavailable"), { status: 409 });
+      }
+
+      // UPSERT the job row keyed on the full variant PK.
+      const upsertRes = await client.query<{
+        generation: number;
+        inserted: boolean;
+      }>(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz, lang, model_name, model,
+            status, generation, dry_run,
+            force_requested_at, force_requested_by,
+            attempts, last_error)
+         VALUES ($1, $2, $3::date, $4, $5, $6, $7,
+                 'queued', 1, FALSE,
+                 NOW(), $8::uuid,
+                 0, NULL)
+         ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+         DO UPDATE SET
+           generation         = periodic_report_job.generation + 1,
+           status             = 'queued',
+           dry_run            = FALSE,
+           force_requested_at = NOW(),
+           force_requested_by = EXCLUDED.force_requested_by,
+           attempts           = 0,
+           last_error         = NULL,
+           processing_started_at = NULL,
+           updated_at         = NOW()
+         RETURNING generation, (xmax = 0) AS inserted`,
+        [
+          customerId,
+          parts.period,
+          parts.bucketDate,
+          tz,
+          lang,
+          modelName,
+          model,
+          auth.accountId,
+        ],
+      );
+      const { generation } = upsertRes.rows[0];
+
+      return Response.json(
+        {
+          accepted: true,
+          state_pk: {
+            customer_id: customerId,
+            period: parts.period,
+            bucket_date: parts.bucketDate,
+            tz,
+          },
+          variant: { tz, lang, model_name: modelName, model },
+          generation,
+        },
+        { status: 202 },
+      );
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(errorBody(err.message), {
@@ -135,23 +237,6 @@ export const POST = withAuth(
     } finally {
       client.release();
     }
-
-    const url = req.nextUrl;
-    return Response.json(
-      {
-        accepted: true,
-        customer_id: customerId,
-        period: parts.period,
-        bucket_date: parts.bucketDate,
-        variant: {
-          tz: url.searchParams.get("tz"),
-          lang: url.searchParams.get("lang"),
-          model_name: url.searchParams.get("model_name"),
-          model: url.searchParams.get("model"),
-        },
-      },
-      { status: 202 },
-    );
   },
   { ctx: "general" },
 );

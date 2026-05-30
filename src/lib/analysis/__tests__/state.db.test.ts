@@ -565,15 +565,18 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.last_event_at?.toISOString()).toBe(eventTime.toISOString());
   });
 
-  it("worker dispatches a dry-run job for the LIVE periodic state row", async () => {
+  it("worker seeds a real queued job for the LIVE periodic state row", async () => {
+    // Phase 2 (#297): LIVE/DAILY now get real (non-dry-run) jobs. The
+    // LLM dispatch in the same tick attempts the job but cannot resolve a
+    // customer pool in this auth-only test env, so it stays `queued`.
     await runAnalysisJobTickOnce(pool);
     const { rows } = await pool.query<{ status: string; dry_run: boolean }>(
       `SELECT status, dry_run FROM periodic_report_job
         WHERE customer_id = $1 AND period = 'LIVE'`,
       [CUSTOMER_B],
     );
-    expect(rows[0]?.status).toBe("done");
-    expect(rows[0]?.dry_run).toBe(true);
+    expect(rows[0]?.status).toBe("queued");
+    expect(rows[0]?.dry_run).toBe(false);
   });
 
   it("worker tick does not let non-ready pending rows starve later ready-eligible pending rows (round-2 starvation regression)", async () => {
@@ -858,15 +861,24 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // so it must remain pending.
     expect(settled.get("DAILY|2099-12-31")).toBe("pending");
 
-    const { rows: jobRows } = await pool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count
+    // Phase 2 (#297): only DAILY is processed (real queued job); WEEKLY/
+    // MONTHLY become ready but are NOT job-seeded until #298 lifts the
+    // period filter. So exactly one DAILY job exists and zero WEEKLY/
+    // MONTHLY jobs.
+    const { rows: jobRows } = await pool.query<{
+      period: string;
+      status: string;
+      dry_run: boolean;
+    }>(
+      `SELECT period, status, dry_run
          FROM periodic_report_job
         WHERE customer_id = $1
           AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
       [customer],
     );
-    // One dry-run job per settled historical bucket (3 total).
-    expect(Number(jobRows[0].count)).toBe(3);
+    expect(jobRows).toHaveLength(1);
+    expect(jobRows[0].period).toBe("DAILY");
+    expect(jobRows[0].dry_run).toBe(false);
   });
 
   it("worker holds a pending bucket with recent ingest activity in pending until the quiet window elapses (round-7 review item 1)", async () => {
@@ -1088,6 +1100,32 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // source-time-aligned `baselineTouched` flag computed in the
     // customer DB post-commit. Passing it directly here simulates the
     // hook for the unit-level test.
+    //
+    // The LIVE ready→dirty flip only fires when an analyzed (done /
+    // processing) job exists for the variant (state.ts). Phase 2 (#297)
+    // changed the LIVE worker to leave a real *queued* job rather than a
+    // dry-run *done* one, so seed a done job here rather than leaning on
+    // the dispatch tick from an earlier test in the file.
+    await pool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz,
+          lang, model_name, model,
+          status, generation, dry_run,
+          processing_started_at, last_generated_at)
+       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
+               COALESCE($2, 'ENGLISH'),
+               COALESCE($3, 'openai'),
+               COALESCE($4, 'gpt-4o'),
+               'done', 1, FALSE, NOW(), NOW())
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'done'`,
+      [
+        CUSTOMER_B,
+        process.env.ANALYSIS_DEFAULT_LANG ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
+        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
+      ],
+    );
     const client = await pool.connect();
     try {
       await dirtyPeriodicStatesOverlapping(

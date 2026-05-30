@@ -41,6 +41,31 @@ export function isSupportedLang(value: string): value is SupportedLang {
 
 const SCHEMA_VERSION_DEFAULT = "0.0-stub";
 
+// Advisory-lock namespace for the event-analysis generation sequence.
+// Paired with `eventVariantLockKey` so the (read MAX → supersede →
+// insert) section is serialized per event variant (#297 review round 1,
+// item 4).
+const EVENT_GENERATION_LOCK_NAMESPACE = 0x2978;
+
+/**
+ * Stable positive int4 advisory-lock key derived from an event variant,
+ * so concurrent analyzes of the *same* `(aice_id, event_key, lang,
+ * model_name, model)` serialize while different variants run freely.
+ */
+function eventVariantLockKey(
+  aiceId: string,
+  eventKey: string,
+  lang: string,
+  modelName: string,
+  model: string,
+): number {
+  const digest = createHash("sha256")
+    .update([aiceId, eventKey, lang, modelName, model].join("\0"))
+    .digest();
+  // Fold the first 4 bytes into a signed int4 (advisory-lock arg range).
+  return digest.readInt32BE(0);
+}
+
 export const AUTHORIZATION_FAILED_MESSAGE = "not authorized";
 
 export type CustomerLookup =
@@ -548,6 +573,7 @@ export async function runAnalyzeFlow(
       `SELECT requested_at FROM event_analysis_result r
        WHERE r.aice_id = $1 AND r.event_key = $2::numeric
          AND r.lang = $3 AND r.model_name = $4 AND r.model = $5
+         AND r.superseded_at IS NULL
          AND EXISTS (
            SELECT 1 FROM detection_events d
            WHERE d.aice_id = $1 AND d.event_key = $2::numeric
@@ -771,47 +797,101 @@ export async function runAnalyzeFlow(
   });
 
   try {
-    await customerPool.query(
-      `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model,
-          severity_score, likelihood_score,
-          severity_factors, likelihood_factors, ttp_tags,
-          priority_tier,
-          analysis_text, redaction_policy_version, requested_by)
-       VALUES ($1, $2::numeric, $3, $4, $5,
-               $6, $7,
-               $8::jsonb, $9::jsonb, $10::jsonb,
-               $11,
-               $12, $13, $14::uuid)
-       ON CONFLICT (aice_id, event_key, lang, model_name, model)
-       DO UPDATE SET
-         severity_score = EXCLUDED.severity_score,
-         likelihood_score = EXCLUDED.likelihood_score,
-         severity_factors = EXCLUDED.severity_factors,
-         likelihood_factors = EXCLUDED.likelihood_factors,
-         ttp_tags = EXCLUDED.ttp_tags,
-         priority_tier = EXCLUDED.priority_tier,
-         analysis_text = EXCLUDED.analysis_text,
-         redaction_policy_version = EXCLUDED.redaction_policy_version,
-         requested_by = EXCLUDED.requested_by,
-         requested_at = NOW()`,
-      [
-        params.aiceId,
-        params.eventKey,
-        langForStorage,
-        params.modelName,
-        params.model,
-        aimerResponse.severityScore,
-        aimerResponse.likelihoodScore,
-        JSON.stringify(severityFilter.kept),
-        JSON.stringify(likelihoodFilter.kept),
-        JSON.stringify(ttpResult.valid),
-        priorityTier,
-        scan.scanned,
-        analysisPolicyVersion,
-        params.accountId,
-      ],
-    );
+    // RFC 0002 #297 round-14 item 1: re-analysis no longer overwrites.
+    // Stamp `superseded_at` on the prior latest generation and INSERT a
+    // fresh `generation = N+1` row, so periodic-report citations
+    // (`input_event_refs[].generation`) always point at a durable row.
+    // Wrapped in a single customer-DB tx so the supersede + insert are
+    // atomic and a concurrent reader never sees two live rows.
+    const writeClient = await customerPool.connect();
+    try {
+      await writeClient.query("BEGIN");
+      // Serialize the read-MAX/supersede/insert sequence per event variant.
+      // Without this, two concurrent analyzes for the same
+      // (aice_id, event_key, lang, model_name, model) both read the same
+      // MAX(generation), both compute N+1, and the second loses the INSERT
+      // race on the extended PK — a user-visible failure the prior UPSERT
+      // path did not have (#297 review round 1, item 4). The lock is
+      // transaction-scoped, so it releases on COMMIT/ROLLBACK below.
+      await writeClient.query("SELECT pg_advisory_xact_lock($1, $2)", [
+        EVENT_GENERATION_LOCK_NAMESPACE,
+        eventVariantLockKey(
+          params.aiceId,
+          params.eventKey,
+          langForStorage,
+          params.modelName,
+          params.model,
+        ),
+      ]);
+      const { rows: genRows } = await writeClient.query<{
+        next_generation: number;
+      }>(
+        `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
+           FROM event_analysis_result
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5`,
+        [
+          params.aiceId,
+          params.eventKey,
+          langForStorage,
+          params.modelName,
+          params.model,
+        ],
+      );
+      const nextGeneration = genRows[0]?.next_generation ?? 1;
+      await writeClient.query(
+        `UPDATE event_analysis_result
+            SET superseded_at = NOW()
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5
+            AND generation < $6
+            AND superseded_at IS NULL`,
+        [
+          params.aiceId,
+          params.eventKey,
+          langForStorage,
+          params.modelName,
+          params.model,
+          nextGeneration,
+        ],
+      );
+      await writeClient.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model, generation,
+            severity_score, likelihood_score,
+            severity_factors, likelihood_factors, ttp_tags,
+            priority_tier,
+            analysis_text, redaction_policy_version, requested_by)
+         VALUES ($1, $2::numeric, $3, $4, $5, $6,
+                 $7, $8,
+                 $9::jsonb, $10::jsonb, $11::jsonb,
+                 $12,
+                 $13, $14, $15::uuid)`,
+        [
+          params.aiceId,
+          params.eventKey,
+          langForStorage,
+          params.modelName,
+          params.model,
+          nextGeneration,
+          aimerResponse.severityScore,
+          aimerResponse.likelihoodScore,
+          JSON.stringify(severityFilter.kept),
+          JSON.stringify(likelihoodFilter.kept),
+          JSON.stringify(ttpResult.valid),
+          priorityTier,
+          scan.scanned,
+          analysisPolicyVersion,
+          params.accountId,
+        ],
+      );
+      await writeClient.query("COMMIT");
+    } catch (err) {
+      await writeClient.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      writeClient.release();
+    }
   } catch (err) {
     return {
       kind: "error",

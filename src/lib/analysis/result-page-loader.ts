@@ -145,7 +145,10 @@ export async function loadAnalysisResultPage(
        AND event_key = $2::numeric
        AND lang = $3
        AND model_name = $4
-       AND model = $5`,
+       AND model = $5
+       AND superseded_at IS NULL
+     ORDER BY generation DESC
+     LIMIT 1`,
     [input.aiceId, input.eventKey, input.lang, input.modelName, input.model],
   );
   if (resultRow.rows.length === 0) return { kind: "not_found" };

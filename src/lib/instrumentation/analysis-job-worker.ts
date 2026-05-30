@@ -39,6 +39,12 @@ import "server-only";
 
 import type { Pool, PoolClient } from "pg";
 import {
+  recoverStuckReportJobs,
+  requeueLiveReportJobs,
+  seedRealReportJobs,
+  tickReportJobsOnce,
+} from "../analysis/report-worker";
+import {
   DEFAULT_REPORT_IDLE_QUIET_MINUTES,
   DEFAULT_REPORT_SETTLE_HOURS_DAILY,
   DEFAULT_REPORT_SETTLE_HOURS_DAILY_WITH_WATERMARK,
@@ -92,14 +98,6 @@ function resolveDailySettleHoursWithWatermark(): number {
     DEFAULT_REPORT_SETTLE_HOURS_DAILY_WITH_WATERMARK,
   );
 }
-
-// Default variant — matches the RFC 0002 §"Force regenerate" defaults
-// (`ANALYSIS_DEFAULT_LANG` / `_MODEL_NAME` / `_MODEL`). Phase 1 wires
-// the real defaults from environment; Phase 0 keeps a deterministic
-// stand-in so test fixtures are predictable.
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 function resolveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
@@ -171,16 +169,8 @@ async function tickStoryStates(
 }
 
 // ---------------------------------------------------------------------------
-// State worker — periodic report (LIVE only in Phase 0)
+// State worker — periodic report (LIVE + DAILY real jobs in Phase 2)
 // ---------------------------------------------------------------------------
-
-interface PeriodicStateRow {
-  customer_id: string;
-  period: "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
-  bucket_date: string;
-  tz: string;
-  status: "pending" | "ready" | "dirty";
-}
 
 async function tickPeriodicStates(
   client: PoolClient,
@@ -333,109 +323,21 @@ async function tickPeriodicStates(
     }
   }
 
-  // FOR UPDATE SKIP LOCKED here mirrors the story tick — two replicas
-  // racing on the same dirty periodic state row would otherwise both
-  // increment `periodic_report_job.generation`.
+  // Phase 2 (#297) — LIVE re-queue + real-job seeding for LIVE/DAILY.
   //
-  // Filter ready rows to those missing the default-variant job for the
-  // same reason as the story side: a ready row that already has its
-  // dry-run job would otherwise be reselected forever and block slots
-  // behind it from ever receiving a first job.
-  const { rows: actionable } = await client.query<PeriodicStateRow>(
-    `SELECT s.customer_id::text AS customer_id,
-            s.period,
-            s.bucket_date::text AS bucket_date,
-            s.tz,
-            s.status
-       FROM periodic_report_state s
-      WHERE s.status = 'dirty'
-         OR (s.status = 'ready'
-             AND NOT EXISTS (
-               SELECT 1 FROM periodic_report_job j
-                WHERE j.customer_id  = s.customer_id
-                  AND j.period       = s.period
-                  AND j.bucket_date  = s.bucket_date
-                  AND j.tz           = s.tz
-                  AND j.lang         = $2
-                  AND j.model_name   = $3
-                  AND j.model        = $4
-             ))
-      ORDER BY s.customer_id, s.period, s.bucket_date, s.tz
-      LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
-    [BATCH_SIZE, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
-  );
-  for (const row of actionable) {
-    await dispatchPeriodicDryRunJob(client, row, nowIso);
-  }
-}
-
-async function dispatchPeriodicDryRunJob(
-  client: PoolClient,
-  row: PeriodicStateRow,
-  nowIso: string,
-): Promise<void> {
-  if (row.status === "dirty") {
-    await client.query(
-      `UPDATE periodic_report_job
-          SET generation = generation + 1,
-              status = 'done',
-              dry_run = TRUE,
-              processing_started_at = $8::timestamptz,
-              last_generated_at = $8::timestamptz,
-              last_error = NULL,
-              updated_at = $8::timestamptz
-        WHERE customer_id = $1
-          AND period = $2 AND bucket_date = $3::date AND tz = $4
-          AND lang = $5 AND model_name = $6 AND model = $7`,
-      [
-        row.customer_id,
-        row.period,
-        row.bucket_date,
-        row.tz,
-        DEFAULT_LANG,
-        DEFAULT_MODEL_NAME,
-        DEFAULT_MODEL,
-        nowIso,
-      ],
-    );
-    await client.query(
-      `UPDATE periodic_report_state
-          SET status = 'ready',
-              last_ready_at = $5::timestamptz,
-              updated_at = $5::timestamptz
-        WHERE customer_id = $1
-          AND period = $2
-          AND bucket_date = $3::date
-          AND tz = $4
-          AND status = 'dirty'`,
-      [row.customer_id, row.period, row.bucket_date, row.tz, nowIso],
-    );
-    return;
-  }
-  await client.query(
-    `INSERT INTO periodic_report_job
-       (customer_id, period, bucket_date, tz,
-        lang, model_name, model,
-        status, generation, dry_run,
-        processing_started_at, last_generated_at)
-     VALUES ($1, $2, $3::date, $4,
-             $5, $6, $7,
-             'done', 1, TRUE,
-             $8::timestamptz, $8::timestamptz)
-     ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
-     DO NOTHING`,
-    [
-      row.customer_id,
-      row.period,
-      row.bucket_date,
-      row.tz,
-      DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
-      nowIso,
-    ],
-  );
+  //   1. `requeueLiveReportJobs` bumps `done` LIVE variant jobs whose
+  //      per-variant `next_due_at` cadence has elapsed back to `queued`
+  //      (gated by `state.status <> 'archived'`, round-14 item 5).
+  //   2. `seedRealReportJobs` ensures a real (non-dry-run) `queued` job
+  //      exists for every `ready`/`dirty` LIVE/DAILY state row.
+  //
+  // WEEKLY/MONTHLY are intentionally NOT seeded here (round-14 item 4):
+  // their state rows keep being seeded/dirtied by the Phase 0
+  // reconcile/ingest path, but no job rows are processed until #298
+  // lifts the period filter. The pending→ready promotions above still
+  // run for them so the dirty signal stays durable.
+  await requeueLiveReportJobs(client, nowIso);
+  await seedRealReportJobs(client, BATCH_SIZE, nowIso);
 }
 
 // ---------------------------------------------------------------------------
@@ -558,10 +460,16 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // and writes `story_analysis_result`. Per-job advisory locks keep
   // multiple replicas from double-running the same (customer, story).
   await tickStoryJobsOnce(pool, BATCH_SIZE);
+  // Periodic report LLM dispatch (#297) — picks `queued` LIVE/DAILY
+  // jobs, runs `generatePeriodicSecurityReport`, and writes
+  // `periodic_report_result`. Same advisory-lock + commit-ordering
+  // discipline as the story dispatch.
+  await tickReportJobsOnce(pool, BATCH_SIZE);
   // Watchdog: flip any `processing` jobs stuck past the timeout back
   // to `queued`. The pickup-time result-row probe avoids double LLM
   // cost when the previous attempt crashed after step 1.
   await recoverStuckStoryJobs(pool);
+  await recoverStuckReportJobs(pool);
 }
 
 const WORKER_SLOT = Symbol.for("aimer.analysis.jobWorker");

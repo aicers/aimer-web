@@ -55,6 +55,7 @@ const {
   dirtyPeriodicStatesOverlapping,
   recordBaselineActivity,
   recordStoryMemberArrival,
+  LIVE_BUCKET_DATE,
 } = await import("@/lib/analysis/state");
 const { applyWindowReplaceStoryHook } = await import(
   "@/lib/analysis/ingest-hooks"
@@ -708,8 +709,10 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
       bucketEnd.toISOString(),
     );
 
-    // Phase 0 dispatcher INSERTs the job row directly in its terminal
-    // state — no queued→done transition.
+    // Phase 2 (#297): the tick seeds a real (non-dry-run) queued job for
+    // the newly-ready DAILY bucket. The LLM dispatch pass attempts to
+    // process it but fails to resolve a customer pool in this test env
+    // (no CUSTOMER_DATABASE_URL), so the job stays queued at generation 1.
     const job = await getPeriodicJob(
       authPool,
       customerId,
@@ -717,8 +720,8 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
       bucketDate,
       tz,
     );
-    expect(job?.status).toBe("done");
-    expect(job?.dry_run).toBe(true);
+    expect(job?.status).toBe("queued");
+    expect(job?.dry_run).toBe(false);
     expect(job?.generation).toBe(1);
   });
 
@@ -854,6 +857,64 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
       tz,
     );
     expect(state?.status).toBe("ready");
+  });
+
+  // -------------------------------------------------------------------------
+  // Scenario 9 — LIVE next_due_at cadence re-queue (#297)
+  // -------------------------------------------------------------------------
+  it("scenario 9: a done LIVE variant whose next_due_at elapsed is re-queued (generation++) on the next tick", async () => {
+    const customerId = "00000000-0000-0000-0000-000000000109";
+    await seedCustomer(authPool, customerId, "s9");
+    const mockNow = new Date("2026-05-20T12:00:00.000Z");
+    clockSeam.setClock(mockNow);
+
+    const tz = "Asia/Seoul";
+    // LIVE rows use the synthetic bucket date and a non-archived state.
+    await seedPeriodicState(authPool, customerId, {
+      period: "LIVE",
+      bucketDate: LIVE_BUCKET_DATE,
+      tz,
+      status: "ready",
+      lastReadyAt: hoursBefore(mockNow, 2),
+      updatedAt: hoursBefore(mockNow, 2),
+    });
+    // A real (non-dry-run) LIVE job at `done` whose cadence elapsed:
+    // next_due_at is 1 minute in the past.
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run,
+          last_generated_at, next_due_at)
+       VALUES ($1, 'LIVE', $2::date, $3, $4, $5, $6,
+               'done', 1, FALSE,
+               $7::timestamptz, $8::timestamptz)`,
+      [
+        customerId,
+        LIVE_BUCKET_DATE,
+        tz,
+        DEFAULT_LANG,
+        DEFAULT_MODEL_NAME,
+        DEFAULT_MODEL,
+        hoursBefore(mockNow, 1).toISOString(),
+        minutesBefore(mockNow, 1).toISOString(),
+      ],
+    );
+
+    await runAnalysisJobTickOnce(authPool);
+
+    // The cadence re-queue bumps the job to generation 2, status queued.
+    // The LLM dispatch pass attempts it but cannot resolve a customer
+    // pool in this env, so it stays queued.
+    const job = await getPeriodicJob(
+      authPool,
+      customerId,
+      "LIVE",
+      LIVE_BUCKET_DATE,
+      tz,
+    );
+    expect(job?.status).toBe("queued");
+    expect(job?.dry_run).toBe(false);
+    expect(job?.generation).toBe(2);
   });
 
   // -------------------------------------------------------------------------

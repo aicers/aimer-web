@@ -60,33 +60,28 @@ function pushStub(stub: QueryStub) {
 }
 
 function makePool() {
+  // Single shared `query` spy backs both `pool.query(...)` and the
+  // client returned by `pool.connect()`. The RFC 0002 #297 write path
+  // moved the `event_analysis_result` INSERT inside a `connect()`-backed
+  // transaction (supersede prior generation + INSERT next), so capturing
+  // those args requires the connect-client to record onto the same spy
+  // `captureInsertParams` inspects.
+  const query = vi.fn(async (sql: string) => {
+    // Find the first matching stub (FIFO per matcher predicate).
+    const idx = queryQueue.findIndex((s) => s.match(sql));
+    if (idx === -1) {
+      // Default: empty result. Keeps tests focused on the queries
+      // they care about without forcing them to enumerate every
+      // pool.query call (advisory locks, etc.).
+      return { rows: [], rowCount: 0 };
+    }
+    const [stub] = queryQueue.splice(idx, 1);
+    if (stub.throws) throw stub.throws;
+    return { rows: stub.rows ?? [], rowCount: stub.rowCount ?? 0 };
+  });
   return {
-    query: vi.fn(async (sql: string) => {
-      // Find the first matching stub (FIFO per matcher predicate).
-      const idx = queryQueue.findIndex((s) => s.match(sql));
-      if (idx === -1) {
-        // Default: empty result. Keeps tests focused on the queries
-        // they care about without forcing them to enumerate every
-        // pool.query call (advisory locks, etc.).
-        return { rows: [], rowCount: 0 };
-      }
-      const [stub] = queryQueue.splice(idx, 1);
-      if (stub.throws) throw stub.throws;
-      return { rows: stub.rows ?? [], rowCount: stub.rowCount ?? 0 };
-    }),
-    connect: vi.fn(async () => {
-      const client = {
-        query: vi.fn(async (sql: string) => {
-          const idx = queryQueue.findIndex((s) => s.match(sql));
-          if (idx === -1) return { rows: [], rowCount: 0 };
-          const [stub] = queryQueue.splice(idx, 1);
-          if (stub.throws) throw stub.throws;
-          return { rows: stub.rows ?? [], rowCount: stub.rowCount ?? 0 };
-        }),
-        release: vi.fn(),
-      };
-      return client;
-    }),
+    query,
+    connect: vi.fn(async () => ({ query, release: vi.fn() })),
   };
 }
 
@@ -1178,8 +1173,10 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
     // Position-dependent on the route's bound parameters; severity_factors
     // is the 8th bound parameter and likelihood_factors the 9th.
     if (params) {
-      const sev = JSON.parse(params[7] as string);
-      const lik = JSON.parse(params[8] as string);
+      // `generation` is bound at position 6, so factor arrays shift to
+      // params[8] (severity) / params[9] (likelihood).
+      const sev = JSON.parse(params[8] as string);
+      const lik = JSON.parse(params[9] as string);
       expect(sev).toEqual(["broad blast radius", "lateral movement"]);
       expect(lik).toEqual(["clean POST", "unusual UA"]);
     }
@@ -1284,7 +1281,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
 
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[7] as string)).toEqual(seven.slice(0, 5));
+      expect(JSON.parse(params[8] as string)).toEqual(seven.slice(0, 5));
     }
     const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
       (c) => (c.details as Record<string, unknown>).axis === "severity",
@@ -1317,7 +1314,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
     // UPSERT writes the sentinel — every input item was filtered out.
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[7] as string)).toEqual([
+      expect(JSON.parse(params[8] as string)).toEqual([
         "insufficient evidence",
       ]);
     }
@@ -1376,7 +1373,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
 
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[9] as string)).toEqual(["T1078", "T1110"]);
+      expect(JSON.parse(params[10] as string)).toEqual(["T1078", "T1110"]);
     }
 
     const ttpRows = auditCallsByAction("ai_analysis.ttp_tag_dropped");

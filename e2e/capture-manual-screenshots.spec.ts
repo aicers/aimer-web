@@ -44,6 +44,11 @@ import {
 } from "./fixtures/db";
 import { loadEnv } from "./fixtures/env";
 import {
+  REPORT_BUCKET_DATE,
+  REPORT_PERIOD,
+  seedReportAnalysisFixture,
+} from "./fixtures/report-analysis.seed";
+import {
   STORY_FIXTURE_HIGH,
   STORY_FIXTURE_LOW,
   seedStoryAnalysisFixture,
@@ -1061,7 +1066,7 @@ base.describe.serial("Manual screenshots", () => {
                  '["T1110.001","T1078"]'::jsonb,
                  $7,
                  $8, 'engine:0.0.0|ranges:none', $9)
-         ON CONFLICT (aice_id, event_key, lang, model_name, model)
+         ON CONFLICT (aice_id, event_key, lang, model_name, model, generation)
          DO UPDATE SET
            severity_score   = EXCLUDED.severity_score,
            likelihood_score = EXCLUDED.likelihood_score,
@@ -1239,6 +1244,77 @@ base.describe.serial("Manual screenshots", () => {
       // the whole scrollable page.
       await mgrPage.screenshot({
         path: resolve(ASSETS, `story-regenerate-modal.${locale}.png`),
+      });
+    });
+  }
+
+  // =========================================================================
+  // Periodic report page (issue #297) — RFC 0002 Phase 2. Capture targets
+  // driven from the deterministic seed in `fixtures/report-analysis.seed`:
+  //   - report-detail          — DAILY report; priority badge, aggregate
+  //                              scores, TTP chips, and the five narrative
+  //                              sections.
+  //   - report-regenerate-modal — the confirmation modal opened from the
+  //                              detail page.
+  //   - report-summary-badge   — the aice-web-next deep-link badge. That
+  //                              badge is an aice-web-next component, not an
+  //                              aimer-web page, so its asset is produced by
+  //                              the aice-web-next capture pipeline rather
+  //                              than here; the manual page references it as
+  //                              a cross-repo deliverable.
+  // Reuses the per-customer DB provisioned for the analysis-result
+  // captures; the `analysis-result cleanup` test drops it.
+  // =========================================================================
+
+  async function ensureReportFixtures(): Promise<void> {
+    await provisionAnalysisCustomerDb(testData.customer.id);
+    await seedReportAnalysisFixture({
+      authPool: getTestPool(),
+      customerId: testData.customer.id,
+    });
+  }
+
+  function reportUrl(locale: Locale): string {
+    return (
+      `/${locale}/customers/${testData.customer.id}` +
+      `/analysis/reports/${REPORT_PERIOD}/${REPORT_BUCKET_DATE}`
+    );
+  }
+
+  for (const locale of LOCALES) {
+    base(`report-detail.${locale}.png`, async () => {
+      await ensureReportFixtures();
+      // The five sections + metadata grid run well past 720 px on the
+      // fixed-height dashboard shell, so bump the viewport height for the
+      // capture (same per-shot override pattern as the story captures).
+      await mgrPage.setViewportSize({ width: 1280, height: 1600 });
+      await mgrPage.goto(reportUrl(locale));
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="priority-tier-badge"]'),
+      ).toBeVisible();
+      await expect(
+        mgrPage.locator('[data-testid="section-executive_summary"]'),
+      ).toBeVisible();
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `report-detail.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`report-regenerate-modal.${locale}.png`, async () => {
+      await ensureReportFixtures();
+      await mgrPage.setViewportSize(VIEWPORT);
+      await mgrPage.goto(reportUrl(locale));
+      await settle(mgrPage);
+      await mgrPage.locator('[data-testid="regenerate-button"]').click();
+      await expect(
+        mgrPage.locator('[data-testid="regenerate-modal"]'),
+      ).toBeVisible();
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `report-regenerate-modal.${locale}.png`),
       });
     });
   }
