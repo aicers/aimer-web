@@ -123,6 +123,15 @@ describe("report detail page", () => {
     expect(mockLoad).not.toHaveBeenCalled();
   });
 
+  it("404s an impossible calendar date before hitting the loader", async () => {
+    // Shape-valid (YYYY-MM-DD) but not a real day; must 404 here rather
+    // than reach the loader's `$3::date` cast and 500 (#297 round 5, item 2).
+    await expect(renderPage("DAILY", "2026-02-31")).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+
   it("404s WEEKLY/MONTHLY (not produced in Phase 2)", async () => {
     await expect(renderPage("WEEKLY", "2026-05-26")).rejects.toThrow(
       "NEXT_NOT_FOUND",

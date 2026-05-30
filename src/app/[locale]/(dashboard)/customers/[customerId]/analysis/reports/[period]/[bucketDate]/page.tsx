@@ -1,6 +1,10 @@
 import { forbidden, notFound } from "next/navigation";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
+  isValidBucketDate,
+  LIVE_BUCKET_DATE,
+} from "@/lib/analysis/report-bucket-date";
+import {
   loadReportResultPage,
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
@@ -27,8 +31,6 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 // validation share one case convention.
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
-const BUCKET_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const LIVE_BUCKET_DATE = "1970-01-01";
 
 export default async function ReportDetailPage({
   params,
@@ -38,7 +40,10 @@ export default async function ReportDetailPage({
   const sp = (await searchParams) ?? {};
 
   if (!PERIODS.has(period)) notFound();
-  if (!BUCKET_DATE_RE.test(bucketDate)) notFound();
+  // Calendar-valid check (not just the YYYY-MM-DD shape) so an impossible
+  // date like 2026-02-31 is a 404 here rather than a 500 from the loader's
+  // `$3::date` cast (#297 review round 5, item 2).
+  if (!isValidBucketDate(bucketDate)) notFound();
   if (period === "LIVE" && bucketDate !== LIVE_BUCKET_DATE) notFound();
   // WEEKLY/MONTHLY are not produced in Phase 2 — no report to show yet.
   if (!PHASE2_PERIODS.has(period)) notFound();

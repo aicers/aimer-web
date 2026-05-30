@@ -22,6 +22,10 @@
 // same variant the summary described instead of coercing to the default.
 
 import type { NextRequest } from "next/server";
+import {
+  isValidBucketDate,
+  LIVE_BUCKET_DATE,
+} from "@/lib/analysis/report-bucket-date";
 import { type AuthorizeResult, authorize } from "@/lib/auth/authorization";
 import { withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
@@ -30,27 +34,10 @@ import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const BUCKET_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
-const LIVE_BUCKET_DATE = "1970-01-01";
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
 const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
-
-function isValidBucketDate(value: string): boolean {
-  const m = BUCKET_DATE_RE.exec(value);
-  if (!m) return false;
-  const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const d = new Date(Date.UTC(year, month - 1, day));
-  return (
-    d.getUTCFullYear() === year &&
-    d.getUTCMonth() === month - 1 &&
-    d.getUTCDate() === day
-  );
-}
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");

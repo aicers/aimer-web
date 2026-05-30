@@ -219,7 +219,7 @@ export async function processReportJob(
     job.customer_id,
   );
 
-  const claim = await opts.authPool.query(
+  const claim = await opts.authPool.query<{ processing_started_at: string }>(
     `UPDATE periodic_report_job
         SET status = 'processing',
             processing_started_at = NOW(),
@@ -237,7 +237,8 @@ export async function processReportJob(
              AND s.bucket_date = periodic_report_job.bucket_date
              AND s.tz          = periodic_report_job.tz
              AND s.status <> 'archived'
-        )`,
+        )
+      RETURNING processing_started_at::text AS processing_started_at`,
     [
       job.customer_id,
       job.period,
@@ -265,6 +266,16 @@ export async function processReportJob(
     return;
   }
 
+  // Claim marker — the exact `processing_started_at` this claim stamped,
+  // carried (as text to preserve sub-millisecond precision the JS Date
+  // parser would truncate) into every subsequent state transition. A
+  // watchdog requeue (`recoverStuckReportJobs`) clears this column and a
+  // re-claim stamps a fresh value, so a timed-out first attempt that
+  // returns late finds its marker no longer current and its
+  // finalize/fail/requeue match zero rows — it cannot trample the later
+  // attempt's `done`/`processing` state (#297 review round 5, item 1).
+  const claimMarker = claim.rows[0].processing_started_at;
+
   // Result-row probe — a row at the captured PK means step 1 already
   // landed before a crash; skip the LLM call and finalize only.
   const existing = await customerPool.query<{ priority_tier: string }>(
@@ -285,7 +296,7 @@ export async function processReportJob(
     ],
   );
   if (existing.rows.length > 0) {
-    await finalizeJob(opts.authPool, job);
+    await finalizeJob(opts.authPool, job, claimMarker);
     return;
   }
 
@@ -320,11 +331,21 @@ export async function processReportJob(
   // Redaction-policy precondition across the consumed leaves. A
   // baseline-only report (zero leaves) stamps the reserved sentinel.
   if (built.redaction.kind === "missing") {
-    await failJob(opts.authPool, job, "missing_redaction_policy_version");
+    await failJob(
+      opts.authPool,
+      job,
+      "missing_redaction_policy_version",
+      claimMarker,
+    );
     return;
   }
   if (built.redaction.kind === "mismatched") {
-    await failJob(opts.authPool, job, "mismatched_redaction_policy_version");
+    await failJob(
+      opts.authPool,
+      job,
+      "mismatched_redaction_policy_version",
+      claimMarker,
+    );
     return;
   }
   const redactionPolicyVersion =
@@ -337,7 +358,7 @@ export async function processReportJob(
   // filter and the claim re-check close the pickup→claim window; this
   // closes claim→call (#297 review round 4, item 3).
   if (await parentStateArchived(opts.authPool, job)) {
-    await releaseArchivedJob(opts.authPool, job);
+    await releaseArchivedJob(opts.authPool, job, claimMarker);
     return;
   }
 
@@ -386,12 +407,17 @@ export async function processReportJob(
       },
     });
     if (!classification.retryable) {
-      await failJob(opts.authPool, job, classification.code, {
+      await failJob(opts.authPool, job, classification.code, claimMarker, {
         attempts: job.attempts + 1,
       });
       return;
     }
-    await requeueWithBackoff(opts.authPool, job, classification.code);
+    await requeueWithBackoff(
+      opts.authPool,
+      job,
+      classification.code,
+      claimMarker,
+    );
     return;
   }
 
@@ -422,7 +448,7 @@ export async function processReportJob(
         leaks: leakScan.leaks.slice(0, 20),
       },
     });
-    await failJob(opts.authPool, job, "hallucination_detected", {
+    await failJob(opts.authPool, job, "hallucination_detected", claimMarker, {
       attempts: job.attempts + 1,
     });
     return;
@@ -447,7 +473,7 @@ export async function processReportJob(
   // rather than persisting a result for a terminal state (#297 review
   // round 4, item 3).
   if (await parentStateArchived(opts.authPool, job)) {
-    await releaseArchivedJob(opts.authPool, job);
+    await releaseArchivedJob(opts.authPool, job, claimMarker);
     return;
   }
 
@@ -476,8 +502,8 @@ export async function processReportJob(
     throw err;
   }
 
-  // Step 2 — auth-DB finalize keyed by the captured generation.
-  await finalizeJob(opts.authPool, job);
+  // Step 2 — auth-DB finalize keyed by the captured generation and claim.
+  await finalizeJob(opts.authPool, job, claimMarker);
 
   void auditLog({
     ...auditBase,
@@ -661,6 +687,7 @@ async function parentStateArchived(
 async function releaseArchivedJob(
   authPool: Pool,
   job: JobPickup,
+  claimMarker: string,
 ): Promise<void> {
   await authPool.query(
     `UPDATE periodic_report_job
@@ -671,7 +698,8 @@ async function releaseArchivedJob(
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
-        AND status = 'processing'`,
+        AND status = 'processing'
+        AND processing_started_at::text = $9`,
     [
       job.customer_id,
       job.period,
@@ -681,11 +709,16 @@ async function releaseArchivedJob(
       job.model_name,
       job.model,
       job.generation,
+      claimMarker,
     ],
   );
 }
 
-async function finalizeJob(authPool: Pool, job: JobPickup): Promise<void> {
+async function finalizeJob(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string,
+): Promise<void> {
   await authPool.query(
     `UPDATE periodic_report_job
         SET status = 'done',
@@ -700,7 +733,8 @@ async function finalizeJob(authPool: Pool, job: JobPickup): Promise<void> {
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $9
-        AND status = 'processing'`,
+        AND status = 'processing'
+        AND processing_started_at::text = $10`,
     [
       job.customer_id,
       job.period,
@@ -711,6 +745,7 @@ async function finalizeJob(authPool: Pool, job: JobPickup): Promise<void> {
       job.model,
       LIVE_REFRESH_MINUTES,
       job.generation,
+      claimMarker,
     ],
   );
 }
@@ -719,6 +754,7 @@ async function failJob(
   authPool: Pool,
   job: JobPickup,
   reason: string,
+  claimMarker: string,
   opts: { attempts?: number } = {},
 ): Promise<void> {
   const nextAttempts = opts.attempts ?? job.attempts;
@@ -731,7 +767,9 @@ async function failJob(
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
-        AND generation = $10`,
+        AND generation = $10
+        AND status = 'processing'
+        AND processing_started_at::text = $11`,
     [
       job.customer_id,
       job.period,
@@ -743,6 +781,7 @@ async function failJob(
       nextAttempts,
       reason,
       job.generation,
+      claimMarker,
     ],
   );
 }
@@ -751,6 +790,7 @@ async function requeueWithBackoff(
   authPool: Pool,
   job: JobPickup,
   reason: string,
+  claimMarker: string,
 ): Promise<void> {
   const nextAttempts = job.attempts + 1;
   const terminal = nextAttempts >= MAX_ATTEMPTS;
@@ -764,7 +804,9 @@ async function requeueWithBackoff(
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
-        AND generation = $10`,
+        AND generation = $10
+        AND status = 'processing'
+        AND processing_started_at::text = $11`,
     [
       job.customer_id,
       job.period,
@@ -776,6 +818,7 @@ async function requeueWithBackoff(
       nextAttempts,
       reason,
       job.generation,
+      claimMarker,
     ],
   );
 }
@@ -828,6 +871,11 @@ export async function tickReportJobsOnce(
   return picks.length;
 }
 
+// Watchdog: return rows stuck in `processing` past the timeout to
+// `queued` and clear their `processing_started_at`. Clearing the column
+// is what neutralizes the timed-out attempt: its captured `claimMarker`
+// no longer matches any row, so if it returns late its
+// finalize/fail/requeue match zero rows (#297 review round 5, item 1).
 export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
   await authPool.query(
     `UPDATE periodic_report_job

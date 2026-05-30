@@ -19,7 +19,10 @@ directly via the customer-scoped URL:
 id appears in the path because a `(period, bucket_date)` pair is not
 globally unique — bucket date `2026-05-26` exists for every customer.
 A lowercase period in the URL returns `404` rather than redirecting, so
-the UI route and the API path validation share one case convention.
+the UI route and the API path validation share one case convention. A
+`{bucketDate}` that is shaped like a date but names an impossible
+calendar day (for example `2026-02-31`) also returns `404`, matching the
+API endpoints — it is rejected before any database lookup.
 
 Access is existence-hiding and matches the summary and regenerate
 endpoints: a caller who is not a member of the customer — or a request

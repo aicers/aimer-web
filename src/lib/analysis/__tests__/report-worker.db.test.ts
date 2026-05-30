@@ -464,6 +464,52 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].generation).toBe(2);
   });
 
+  it("stale timed-out attempt cannot fail a later re-claimed attempt (claim marker)", async () => {
+    // Worker A claims generation 1, then the watchdog times it out and a
+    // second worker re-claims the same generation (modeled here by
+    // overwriting `processing_started_at` mid-call while keeping the row
+    // `processing`). Worker A then returns on a fatal path. Its `failJob`
+    // must NO-OP because the captured claim marker no longer matches —
+    // the later attempt's `processing` state is preserved, not flipped to
+    // `failed` (#297 review round 5, item 1).
+    aimerCalls = 0;
+    await seedState(authPool, "DAILY", "2026-06-04", "ready");
+    await seedQueuedJob(authPool, "DAILY", "2026-06-04");
+
+    await processReportJob(makeJob({ bucket_date: "2026-06-04" }), {
+      ...opts(),
+      callGenerateReport: async () => {
+        // Simulate watchdog requeue + re-claim by another worker: the row
+        // stays `processing` but under a different claim marker.
+        await authPool.query(
+          `UPDATE periodic_report_job
+              SET processing_started_at = TIMESTAMPTZ '2020-01-01 00:00:00+00'
+            WHERE customer_id = $1 AND period = 'DAILY'
+              AND bucket_date = '2026-06-04' AND tz = $2`,
+          [CUSTOMER_ID, TZ],
+        );
+        throw fakeClientError(400);
+      },
+    });
+
+    // failJob matched zero rows: the row is still `processing` under the
+    // newer claim marker, with no error stamped by the stale attempt.
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+      processing_started_at: string;
+    }>(
+      `SELECT status, last_error, processing_started_at::text AS processing_started_at
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-06-04' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(job[0].status).toBe("processing");
+    expect(job[0].last_error).toBeNull();
+    expect(job[0].processing_started_at).toContain("2020-01-01");
+  });
+
   it("suppresses the result write when the parent archives during the LLM call", async () => {
     // The tz-change trigger archives the parent state after the claim and
     // the pre-call re-check pass, while the LLM call is in flight. The
