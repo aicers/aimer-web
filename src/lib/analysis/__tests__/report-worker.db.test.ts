@@ -29,6 +29,7 @@ vi.mock("@/lib/audit", () => ({ auditLog: vi.fn(async () => {}) }));
 const {
   processReportJob,
   requeueLiveReportJobs,
+  seedRealReportJobs,
   tickReportJobsOnce,
   MAX_GENERATION,
 } = await import("../report-worker");
@@ -665,5 +666,106 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // At the cap ⇒ NOT auto-re-queued: still done, generation unchanged.
     expect(rows[0].status).toBe("done");
     expect(rows[0].generation).toBe(MAX_GENERATION);
+  });
+
+  it("LIVE cadence re-queue clears stale force metadata from a prior force", async () => {
+    // After an operator force-regenerates once, the force_requested_* columns
+    // are sticky on the single per-variant row. The cadence-driven bump is an
+    // automatic generation and must not inherit the prior operator's force
+    // attribution (#297 review round 7, item 1).
+    const OPERATOR = "00000000-0000-0000-0000-0000000000a1";
+    await seedState(authPool, "LIVE", LIVE_BUCKET, "ready");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run, last_generated_at, next_due_at,
+          force_requested_at, force_requested_by)
+       VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 2, FALSE,
+               NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour',
+               NOW() - INTERVAL '2 hours', $4::uuid)
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'done', generation = 2,
+                     next_due_at = NOW() - INTERVAL '1 hour',
+                     force_requested_at = NOW() - INTERVAL '2 hours',
+                     force_requested_by = $4::uuid`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ, OPERATOR],
+    );
+
+    const client = await authPool.connect();
+    try {
+      await requeueLiveReportJobs(client, new Date().toISOString());
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await authPool.query<{
+      status: string;
+      generation: number;
+      force_requested_at: Date | null;
+      force_requested_by: string | null;
+    }>(
+      `SELECT status, generation, force_requested_at,
+              force_requested_by::text AS force_requested_by
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'LIVE'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, LIVE_BUCKET, TZ],
+    );
+    // Re-queued (generation bumped) but the force attribution is cleared so
+    // the next generation is classified as automatic.
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].generation).toBe(3);
+    expect(rows[0].force_requested_at).toBeNull();
+    expect(rows[0].force_requested_by).toBeNull();
+  });
+
+  it("dirty auto-requeue clears stale force metadata from a prior force", async () => {
+    // Source-driven (dirty) requeue path: same sticky-column hazard as the
+    // LIVE cadence path. A dirty state with an existing done job carrying
+    // prior force metadata must bump generation and reset the force columns
+    // (#297 review round 7, item 1).
+    const OPERATOR = "00000000-0000-0000-0000-0000000000a2";
+    const DIRTY_BUCKET = "2026-05-27";
+    await seedState(authPool, "DAILY", DIRTY_BUCKET, "dirty");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run,
+          force_requested_at, force_requested_by)
+       VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 2, FALSE,
+               NOW() - INTERVAL '2 hours', $4::uuid)
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'done', generation = 2,
+                     force_requested_at = NOW() - INTERVAL '2 hours',
+                     force_requested_by = $4::uuid`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ, OPERATOR],
+    );
+
+    const client = await authPool.connect();
+    try {
+      await seedRealReportJobs(client, 10, new Date().toISOString());
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await authPool.query<{
+      status: string;
+      generation: number;
+      force_requested_at: Date | null;
+      force_requested_by: string | null;
+    }>(
+      `SELECT status, generation, force_requested_at,
+              force_requested_by::text AS force_requested_by
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].generation).toBe(3);
+    expect(rows[0].force_requested_at).toBeNull();
+    expect(rows[0].force_requested_by).toBeNull();
   });
 });

@@ -980,6 +980,14 @@ export async function seedRealReportJobs(
         );
       } else {
         await authClient.query(
+          // Clear the force metadata so a source-driven (dirty) requeue is
+          // never misclassified as an operator force. The columns are
+          // sticky on the single per-variant row; without this reset a
+          // later automatic generation would inherit a prior operator's
+          // force_requested_by and be stamped force=true (#297 review
+          // round 7, item 1). Force-queued generations set these afresh in
+          // the regenerate endpoint, and their retries (requeueWithBackoff)
+          // leave them intact.
           `UPDATE periodic_report_job
               SET generation = generation + 1,
                   status = 'queued',
@@ -987,6 +995,8 @@ export async function seedRealReportJobs(
                   last_error = NULL,
                   processing_started_at = NULL,
                   dry_run = FALSE,
+                  force_requested_at = NULL,
+                  force_requested_by = NULL,
                   updated_at = $8::timestamptz
             WHERE customer_id = $1 AND period = $2
               AND bucket_date = $3::date AND tz = $4
@@ -1076,12 +1086,19 @@ export async function requeueLiveReportJobs(
     );
   }
   await authClient.query(
+    // Clear the force metadata: a cadence-driven LIVE bump is an automatic
+    // generation and must not inherit a prior operator force from the
+    // sticky per-variant columns (#297 review round 7, item 1). The
+    // regenerate endpoint re-sets them for a genuine force; retries via
+    // requeueWithBackoff preserve them.
     `UPDATE periodic_report_job j
         SET status = 'queued',
             generation = generation + 1,
             attempts = 0,
             last_error = NULL,
             processing_started_at = NULL,
+            force_requested_at = NULL,
+            force_requested_by = NULL,
             updated_at = $1::timestamptz
        FROM periodic_report_state s
       WHERE j.customer_id = s.customer_id AND j.period = s.period
