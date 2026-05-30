@@ -2156,3 +2156,125 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     }
   });
 });
+
+// Issue #358 — story readiness windows (idle / max-wait) are env-tunable.
+// The worker reads `ANALYSIS_STORY_IDLE_MINUTES` /
+// `ANALYSIS_STORY_MAX_WAIT_HOURS` at tick time and falls back to the
+// 15-min / 6-hr constants via `resolveInt` (whose `> 0` floor rejects 0 /
+// non-finite / negative overrides).
+describe.skipIf(!hasPostgres)(
+  "story readiness env overrides (issue #358)",
+  () => {
+    let dbName: string;
+    let pool: Pool;
+    const CUSTOMER = "00000000-0000-0000-0000-0000000000d8";
+
+    async function seedPendingStory(storyId: string, idleMinutes: number) {
+      // Insert a pending row whose first/last_member_at are `idleMinutes`
+      // ago — under the 15-min default it is NOT yet readiness-eligible.
+      await pool.query(
+        `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at)
+       VALUES ($1, $2::bigint, 'pending',
+               NOW() - ($3 || ' minutes')::interval,
+               NOW() - ($3 || ' minutes')::interval)
+       ON CONFLICT (customer_id, story_id) DO UPDATE
+         SET status = 'pending',
+             first_member_at = EXCLUDED.first_member_at,
+             last_member_at = EXCLUDED.last_member_at`,
+        [CUSTOMER, storyId, idleMinutes],
+      );
+    }
+
+    async function getStatus(storyId: string): Promise<string | null> {
+      const { rows } = await pool.query<{ status: string }>(
+        `SELECT status FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = $2::bigint`,
+        [CUSTOMER, storyId],
+      );
+      return rows[0]?.status ?? null;
+    }
+
+    function resetIdleEnv(): void {
+      delete process.env.ANALYSIS_STORY_IDLE_MINUTES;
+      delete process.env.ANALYSIS_STORY_MAX_WAIT_HOURS;
+    }
+
+    beforeAll(async () => {
+      const db = await createTestDatabase("analysis_story_readiness");
+      dbName = db.dbName;
+      pool = db.pool;
+      await runMigrations(pool, AUTH_MIGRATIONS_DIR, LOCK_ID);
+      await pool.query(
+        `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-d8', 'D8')
+       ON CONFLICT (id) DO NOTHING`,
+        [CUSTOMER],
+      );
+    });
+
+    afterAll(async () => {
+      await dropTestDatabase(dbName, pool);
+      await closeAdminPool();
+    });
+
+    it("ANALYSIS_STORY_IDLE_MINUTES override shortens the idle readiness window", async () => {
+      // 5 min idle: not ready under the 15-min default, but ready once the
+      // idle window is overridden down to 2 min.
+      await seedPendingStory("3580001", 5);
+      await runAnalysisJobTickOnce(pool);
+      expect(await getStatus("3580001")).toBe("pending");
+
+      process.env.ANALYSIS_STORY_IDLE_MINUTES = "2";
+      try {
+        await runAnalysisJobTickOnce(pool);
+        expect(await getStatus("3580001")).toBe("ready");
+      } finally {
+        resetIdleEnv();
+      }
+    });
+
+    it("ANALYSIS_STORY_MAX_WAIT_HOURS override shortens the max-wait window", async () => {
+      // A story that is still receiving members (last_member_at recent)
+      // only becomes ready via the max-wait ceiling on first_member_at.
+      // Backdate first_member_at 2h and keep last_member_at recent so the
+      // idle window never fires; a 1h max-wait override promotes it.
+      await pool.query(
+        `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, first_member_at, last_member_at)
+       VALUES ($1, 3580002, 'pending',
+               NOW() - INTERVAL '2 hours', NOW())
+       ON CONFLICT (customer_id, story_id) DO UPDATE
+         SET status = 'pending',
+             first_member_at = EXCLUDED.first_member_at,
+             last_member_at = EXCLUDED.last_member_at`,
+        [CUSTOMER],
+      );
+      await runAnalysisJobTickOnce(pool);
+      expect(await getStatus("3580002")).toBe("pending");
+
+      process.env.ANALYSIS_STORY_MAX_WAIT_HOURS = "1";
+      try {
+        await runAnalysisJobTickOnce(pool);
+        expect(await getStatus("3580002")).toBe("ready");
+      } finally {
+        resetIdleEnv();
+      }
+    });
+
+    it("0 / non-finite / negative overrides fall back to the defaults", async () => {
+      // 5-min idle row stays pending under each invalid override because
+      // `resolveInt` rejects them and restores the 15-min default.
+      for (const bad of ["0", "-3", "not-a-number"]) {
+        await seedPendingStory("3580003", 5);
+        process.env.ANALYSIS_STORY_IDLE_MINUTES = bad;
+        try {
+          await runAnalysisJobTickOnce(pool);
+          expect(await getStatus("3580003")).toBe("pending");
+        } finally {
+          resetIdleEnv();
+        }
+      }
+    });
+  },
+);
