@@ -43,14 +43,17 @@ const CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e1";
 const TZ = "Asia/Seoul";
 const LIVE_BUCKET = "1970-01-01";
 
-// aimer returns a single JSON-encoded `sections` string (#360). The keys
-// are the prompt's structured-output sections; the worker stores the parsed
-// object verbatim and scans every string value for residual tokens / PII.
+// aimer returns a single JSON-encoded `sections` string (#360), matching its
+// PERIODIC_SECURITY_REPORT output schema: `executive_summary` / `period_outlook`
+// are strings, while `story_highlights` / `notable_events` /
+// `baseline_observations` are arrays of Markdown strings. The worker stores the
+// parsed object verbatim and recursively scans every string value (incl. array
+// entries) for residual tokens / PII.
 const AIMER_SECTIONS = {
   executive_summary: "Quiet period.",
-  story_highlights: "No notable stories.",
-  baseline_observations: "Baseline stable.",
-  notable_events: "None.",
+  story_highlights: ["No notable stories."],
+  notable_events: [],
+  baseline_observations: ["Baseline stable."],
   period_outlook: "Maintain monitoring.",
 };
 const AIMER_RESPONSE = {

@@ -737,11 +737,16 @@ export async function buildPeriodicReportInput(
     ttpTags: s.ttp_tags,
   }));
   const eventAnalyses: EventAnalysisInput[] = events.map((e, i) => ({
-    // `eventRef` is opaque/reference-only on aimer's side; the event_key
-    // (NUMERIC event identity) is the natural per-event reference. The
-    // (aice_id, event_key) pair survives locally in `eventRefs` for the
-    // inverse token rewrite and provenance.
-    eventRef: e.event_key,
+    // `eventRef` is opaque/reference-only on aimer's side, but it must still
+    // uniquely identify the event: `event_key` is only unique within an
+    // `aice_id` (RFC 0001 §"member_event_key"; RFC 0002's dedup key is
+    // `(aice_id, event_key)`), so a bare key collides across AICE sources
+    // that share a numeric event key in one report window. Encode the same
+    // `${aice_id}:${event_key}` composite the codebase already uses as the
+    // event-identity key (report token restore, dedup) so the narrative's
+    // event references stay unambiguous and check cleanly against
+    // `input_event_refs`.
+    eventRef: `${e.aice_id}:${e.event_key}`,
     eventTime: e.event_time.toISOString(),
     sections: rewrittenEventTexts[i],
     severityScore: e.severity_score,

@@ -32,12 +32,19 @@ const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/;
 const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/;
 
+// Display-ready report sections, keyed by aimer's real
+// `PERIODIC_SECURITY_REPORT` output schema (schemas/aimer.graphql @ 014d294):
+// `executive_summary` / `period_outlook` are single Markdown strings, while
+// `story_highlights` / `notable_events` / `baseline_observations` are arrays
+// of Markdown strings (one entry per surfaced leaf / observation). The loader
+// joins each array into a single block for display; the persisted
+// `sections_jsonb` keeps aimer's original array structure verbatim.
 export interface ReportSections {
   executive_summary: string;
   story_highlights: string;
-  baseline_drift: string;
   notable_events: string;
-  recommendations: string;
+  baseline_observations: string;
+  period_outlook: string;
 }
 
 export type ReportResultPageOutcome =
@@ -234,14 +241,30 @@ export async function loadReportResultPage(
     { lang: row.lang, modelName: row.model_name, model: row.model },
   );
 
-  const restoreSection = (s: string) =>
-    restoreReportAnalysisTokens(s ?? "", plaintextByReportToken);
+  const restoreOne = (s: unknown) =>
+    restoreReportAnalysisTokens(
+      typeof s === "string" ? s : "",
+      plaintextByReportToken,
+    );
+  // aimer emits `story_highlights` / `notable_events` /
+  // `baseline_observations` as arrays of Markdown strings; restore each entry
+  // and join into one display block. `executive_summary` / `period_outlook`
+  // are plain strings. Tolerate either shape so a legacy row still renders.
+  const restoreSection = (v: unknown) =>
+    Array.isArray(v)
+      ? v
+          .map(restoreOne)
+          .filter((s) => s.length > 0)
+          .join("\n\n")
+      : restoreOne(v);
   const sections: ReportSections = {
     executive_summary: restoreSection(row.sections_jsonb?.executive_summary),
     story_highlights: restoreSection(row.sections_jsonb?.story_highlights),
-    baseline_drift: restoreSection(row.sections_jsonb?.baseline_drift),
     notable_events: restoreSection(row.sections_jsonb?.notable_events),
-    recommendations: restoreSection(row.sections_jsonb?.recommendations),
+    baseline_observations: restoreSection(
+      row.sections_jsonb?.baseline_observations,
+    ),
+    period_outlook: restoreSection(row.sections_jsonb?.period_outlook),
   };
 
   return {

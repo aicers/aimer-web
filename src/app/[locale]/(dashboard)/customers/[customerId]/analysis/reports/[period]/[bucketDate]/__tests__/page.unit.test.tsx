@@ -55,9 +55,9 @@ function okFixture(): ReportResultPageOutcome {
       sections: {
         executive_summary: "A busy day.",
         story_highlights: "Top story.",
-        baseline_drift: "Malware up 30%.",
         notable_events: "One notable event.",
-        recommendations: "Patch promptly.",
+        baseline_observations: "Malware up 30%.",
+        period_outlook: "Watch the SSO endpoint tomorrow.",
       },
       topStoryCount: 1,
       topEventCount: 1,
@@ -98,9 +98,9 @@ describe("report detail page", () => {
     expect(screen.getByTestId("section-executive_summary").textContent).toBe(
       "A busy day.",
     );
-    expect(screen.getByTestId("section-baseline_drift").textContent).toBe(
-      "Malware up 30%.",
-    );
+    expect(
+      screen.getByTestId("section-baseline_observations").textContent,
+    ).toBe("Malware up 30%.");
   });
 
   it("shows the pending banner when the report is still generating", async () => {
