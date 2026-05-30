@@ -768,4 +768,80 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(rows[0].force_requested_at).toBeNull();
     expect(rows[0].force_requested_by).toBeNull();
   });
+
+  it("dirty auto-requeue bumps an existing non-default variant job", async () => {
+    // A force-created non-default variant (Korean, here) must also be
+    // re-queued when its bucket's source data changes. Bumping only the
+    // default English job left the Korean periodic_report_result serving a
+    // stale generation indefinitely (#297 review round 8, item 1).
+    const OPERATOR = "00000000-0000-0000-0000-0000000000a3";
+    const DIRTY_BUCKET = "2026-06-09";
+    await seedState(authPool, "DAILY", DIRTY_BUCKET, "dirty");
+    // Default English job in `done` (created by the normal worker path).
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run)
+       VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, FALSE)`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ],
+    );
+    // Operator-forced Korean variant in `done`, carrying force metadata.
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run,
+          force_requested_at, force_requested_by)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'done', 2, FALSE,
+               NOW() - INTERVAL '2 hours', $4::uuid)`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ, OPERATOR],
+    );
+
+    const client = await authPool.connect();
+    try {
+      await seedRealReportJobs(client, 10, new Date().toISOString());
+    } finally {
+      client.release();
+    }
+
+    const { rows } = await authPool.query<{
+      lang: string;
+      status: string;
+      generation: number;
+      force_requested_at: Date | null;
+      force_requested_by: string | null;
+    }>(
+      `SELECT lang, status, generation, force_requested_at,
+              force_requested_by::text AS force_requested_by
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3
+        ORDER BY lang`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ],
+    );
+    const byLang = new Map(rows.map((r) => [r.lang, r]));
+
+    // Default English variant re-queued (generation 1 → 2).
+    const english = byLang.get("ENGLISH");
+    expect(english?.status).toBe("queued");
+    expect(english?.generation).toBe(2);
+
+    // Non-default Korean variant ALSO re-queued (generation 2 → 3), with the
+    // stale force metadata cleared so the next generation is automatic.
+    const korean = byLang.get("KOREAN");
+    expect(korean?.status).toBe("queued");
+    expect(korean?.generation).toBe(3);
+    expect(korean?.force_requested_at).toBeNull();
+    expect(korean?.force_requested_by).toBeNull();
+
+    // The parent state returns to `ready`.
+    const { rows: stateRows } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, DIRTY_BUCKET, TZ],
+    );
+    expect(stateRows[0].status).toBe("ready");
+  });
 });

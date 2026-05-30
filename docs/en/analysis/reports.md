@@ -65,9 +65,13 @@ The worker pipeline runs without operator action:
 1. The state worker tracks per-`(customer, period, bucket_date, tz)`
    readiness and seeds a real `periodic_report_job` row for the default
    `(tz, language, provider, model)` variant against every `ready` or
-   `dirty` LIVE/DAILY state row. LIVE variants are also re-queued when
-   their per-variant `next_due_at` cadence elapses (skipping archived,
-   timezone-superseded rows).
+   `dirty` LIVE/DAILY state row. When a state turns `dirty` (new in-window
+   source data), the re-queue bumps **every** existing variant job under
+   it — not only the default — so a force-created Korean or alternate-model
+   report is refreshed too rather than left serving a stale generation.
+   LIVE variants are also re-queued when their per-variant `next_due_at`
+   cadence elapses (skipping archived, timezone-superseded rows). Every
+   automatic bump (dirty or cadence) honors `ANALYSIS_MAX_GENERATION`.
 2. The dispatcher picks `queued` jobs with `FOR UPDATE SKIP LOCKED`,
    advisory-locked per `(customer_id, period, bucket_date, tz)`, with the
    same exponential-backoff predicate as story analysis.

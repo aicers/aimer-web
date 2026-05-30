@@ -894,11 +894,15 @@ export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
 /**
  * Seed a real (non-dry-run) job row for every `ready`/`dirty`
  * LIVE/DAILY state row that lacks one for the default variant. Mirrors
- * `seedRealStoryJobs`: a `dirty` row bumps an existing job's generation
- * (capped at `ANALYSIS_MAX_GENERATION`) or seeds a fresh generation-1
- * job when none exists, then returns the state to `ready`. Archived
- * rows are never enqueued (#294 decision 1); WEEKLY/MONTHLY are skipped
- * (round-14 item 4) until #298.
+ * `seedRealStoryJobs`. A `dirty` row bumps the generation of *every*
+ * existing variant job underneath it — not just the default — because
+ * RFC 0002's dirty rule re-queues all variant jobs under the state, and
+ * force-created non-default variants (Korean / alternate model) are
+ * equally invalidated when their bucket's source data changes (#297
+ * review round 8, item 1). Each bump is capped at `ANALYSIS_MAX_GENERATION`
+ * and a fresh generation-1 default job is seeded when none exists; the
+ * state then returns to `ready`. Archived rows are never enqueued (#294
+ * decision 1); WEEKLY/MONTHLY are skipped (round-14 item 4) until #298.
  */
 export async function seedRealReportJobs(
   authClient: PoolClient,
@@ -946,27 +950,23 @@ export async function seedRealReportJobs(
       WORKER_MODEL,
     ];
     if (row.status === "dirty") {
-      const { rows: existing } = await authClient.query<{
-        generation: number;
+      const stateKey = [row.customer_id, row.period, row.bucket_date, row.tz];
+      // Surface every existing variant already at the cap (parity with the
+      // LIVE cadence path's pre-bump warn). An at-cap variant cannot
+      // auto-bump on a dirty signal; only an operator force may push past
+      // the cap.
+      const { rows: capped } = await authClient.query<{
+        lang: string;
+        model_name: string;
+        model: string;
       }>(
-        `SELECT generation FROM periodic_report_job
+        `SELECT lang, model_name, model FROM periodic_report_job
           WHERE customer_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
-            AND lang = $5 AND model_name = $6 AND model = $7`,
-        keyParams,
+            AND generation >= $5`,
+        [...stateKey, MAX_GENERATION],
       );
-      if (existing.length === 0) {
-        await authClient.query(
-          `INSERT INTO periodic_report_job
-             (customer_id, period, bucket_date, tz, lang, model_name, model,
-              status, generation, dry_run, created_at, updated_at)
-           VALUES ($1, $2, $3::date, $4, $5, $6, $7,
-                   'queued', 1, FALSE, $8::timestamptz, $8::timestamptz)
-           ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
-           DO NOTHING`,
-          [...keyParams, nowIso],
-        );
-      } else if (existing[0].generation >= MAX_GENERATION) {
+      for (const variant of capped) {
         console.warn(
           JSON.stringify({
             level: "warn",
@@ -975,36 +975,54 @@ export async function seedRealReportJobs(
             period: row.period,
             bucket_date: row.bucket_date,
             tz: row.tz,
+            lang: variant.lang,
+            model_name: variant.model_name,
+            model: variant.model,
             max_generation: MAX_GENERATION,
           }),
         );
-      } else {
-        await authClient.query(
-          // Clear the force metadata so a source-driven (dirty) requeue is
-          // never misclassified as an operator force. The columns are
-          // sticky on the single per-variant row; without this reset a
-          // later automatic generation would inherit a prior operator's
-          // force_requested_by and be stamped force=true (#297 review
-          // round 7, item 1). Force-queued generations set these afresh in
-          // the regenerate endpoint, and their retries (requeueWithBackoff)
-          // leave them intact.
-          `UPDATE periodic_report_job
-              SET generation = generation + 1,
-                  status = 'queued',
-                  attempts = 0,
-                  last_error = NULL,
-                  processing_started_at = NULL,
-                  dry_run = FALSE,
-                  force_requested_at = NULL,
-                  force_requested_by = NULL,
-                  updated_at = $8::timestamptz
-            WHERE customer_id = $1 AND period = $2
-              AND bucket_date = $3::date AND tz = $4
-              AND lang = $5 AND model_name = $6 AND model = $7
-              AND generation < $9`,
-          [...keyParams, nowIso, MAX_GENERATION],
-        );
       }
+      // Bump every existing variant job under the dirty state, not just the
+      // default one. A force-created non-default variant (e.g. Korean or an
+      // alternate model, now reachable via regenerate/summary/detail page)
+      // is also invalidated when its bucket's source data changes; bumping
+      // only the default left those variants' `periodic_report_result` rows
+      // serving a stale generation indefinitely (#297 review round 8,
+      // item 1). Clearing the force metadata keeps a source-driven bump
+      // classified automatic (round 7, item 1); each row's cap is honored
+      // via `generation < MAX_GENERATION`, so a capped variant is skipped
+      // here (and was warned above).
+      await authClient.query(
+        `UPDATE periodic_report_job
+            SET generation = generation + 1,
+                status = 'queued',
+                attempts = 0,
+                last_error = NULL,
+                processing_started_at = NULL,
+                dry_run = FALSE,
+                force_requested_at = NULL,
+                force_requested_by = NULL,
+                updated_at = $5::timestamptz
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4
+            AND generation < $6`,
+        [...stateKey, nowIso, MAX_GENERATION],
+      );
+      // Seed the default variant when the bucket has no default job yet
+      // (parity with the `ready` seeding branch — the system invariant is
+      // that every LIVE/DAILY state carries a default-variant job). ON
+      // CONFLICT DO NOTHING leaves a default job that was just bumped above
+      // — or one already at the cap — untouched.
+      await authClient.query(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz, lang, model_name, model,
+            status, generation, dry_run, created_at, updated_at)
+         VALUES ($1, $2, $3::date, $4, $5, $6, $7,
+                 'queued', 1, FALSE, $8::timestamptz, $8::timestamptz)
+         ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+         DO NOTHING`,
+        [...keyParams, nowIso],
+      );
       await authClient.query(
         `UPDATE periodic_report_state
             SET status = 'ready',
@@ -1013,7 +1031,7 @@ export async function seedRealReportJobs(
           WHERE customer_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND status = 'dirty'`,
-        [row.customer_id, row.period, row.bucket_date, row.tz, nowIso],
+        [...stateKey, nowIso],
       );
       continue;
     }

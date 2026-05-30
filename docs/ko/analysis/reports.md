@@ -60,8 +60,12 @@ LLM 호출을 수행합니다. **Regenerate** 버튼은 주기 외 강제 갱신
 1. 상태 워커는 `(customer, period, bucket_date, tz)`별 준비 상태를 추적하고,
    `ready` 또는 `dirty`인 모든 LIVE/DAILY 상태 행에 대해 기본
    `(tz, 언어, 제공자, 모델)` 변형의 실제 `periodic_report_job` 행을
-   시드합니다. LIVE 변형은 변형별 `next_due_at` 주기가 경과하면 재큐됩니다
-   (시간대 교체로 아카이브된 행은 제외).
+   시드합니다. 상태가 `dirty`로 바뀌면(윈도 내 신규 소스 데이터) 기본
+   변형뿐 아니라 그 아래 **모든** 기존 변형 작업의 세대를 올리므로, 강제
+   생성된 한국어·대체 모델 리포트도 오래된 세대를 계속 제공하지 않고 함께
+   갱신됩니다. LIVE 변형은 변형별 `next_due_at` 주기가 경과하면 재큐됩니다
+   (시간대 교체로 아카이브된 행은 제외). 모든 자동 증가(dirty 또는 주기)는
+   `ANALYSIS_MAX_GENERATION` 상한을 따릅니다.
 2. 디스패처는 `FOR UPDATE SKIP LOCKED`로 `queued` 작업을 집어 들며,
    `(customer_id, period, bucket_date, tz)`별 어드바이저리 락을 사용하고,
    스토리 분석과 동일한 지수 백오프 술어를 적용합니다.
