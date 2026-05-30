@@ -297,7 +297,7 @@ CREATE TABLE periodic_report_result (
   aggregate_likelihood_score DOUBLE PRECISION NOT NULL,   -- informational; max over included likelihoods + baseline drift likelihood (NOT a priority_tier input)
   aggregate_ttp_tags       JSONB        NOT NULL DEFAULT '[]',    -- union of included leaf ttp_tags, deduplicated and sorted; see §"MITRE ATT&CK TTP tagging"
   priority_tier            TEXT         NOT NULL,         -- derived as max(included leaf priority_tiers, matrix(baseline_drift_severity, baseline_drift_likelihood)); see §"Priority tiering"
-  sections_jsonb           JSONB        NOT NULL,         -- {executive_summary, story_highlights, baseline_drift, notable_events, recommendations}
+  sections_jsonb           JSONB        NOT NULL,         -- aimer's PERIODIC_SECURITY_REPORT shape: {executive_summary (string), story_highlights (array), notable_events (array), baseline_observations (array), period_outlook (string)}; array sections joined for display, see §"Verification gate"
   input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
   input_story_refs         JSONB        NOT NULL,         -- ordered [{story_id}, ...] for citation backlinks
   input_hash               TEXT         NOT NULL,         -- sha256 over the canonical input bundle (refs included)
