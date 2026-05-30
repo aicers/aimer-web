@@ -133,6 +133,43 @@ describe("buildReportTokenMap", () => {
     expect(allFields).not.toMatch(/_E\d+_/);
   });
 
+  it("recovers a factor-only token only when factors are replayed (loader demap invariant)", () => {
+    // Build the way the worker does: analysis + factors. The factor-only
+    // entity mints R1_002.
+    const buildLeaf = {
+      analysis: "Host <<REDACTED_IP_E1_001>> beaconed out.",
+      likelihoodFactors: ["exfil to <<REDACTED_IP_E2_007>>"],
+    };
+    const full = buildReportTokenMap([buildLeaf], []);
+    const fullTokens = full.refs[0].tokens.map((t) => t.reportToken);
+    expect(fullTokens).toContain("<<REDACTED_IP_R1_002>>");
+
+    // The display loader used to replay over `analysis` only. That replay
+    // never mints the factor-only token, so if aimer quoted the factor the
+    // report-scope token would be left undecoded on the page (#297 review
+    // round 2, item 1). Replaying the same analysis+factor bundle restores
+    // identical numbering.
+    const analysisOnly = buildReportTokenMap(
+      [{ analysis: buildLeaf.analysis }],
+      [],
+    );
+    expect(analysisOnly.refs[0].tokens.map((t) => t.reportToken)).not.toContain(
+      "<<REDACTED_IP_R1_002>>",
+    );
+
+    const replay = buildReportTokenMap(
+      [
+        {
+          analysis: buildLeaf.analysis,
+          severityFactors: [],
+          likelihoodFactors: buildLeaf.likelihoodFactors,
+        },
+      ],
+      [],
+    );
+    expect(replay.refs[0].tokens).toEqual(full.refs[0].tokens);
+  });
+
   it("rewrites event-leaf factors and keeps the analysis numbering stable", () => {
     const out = buildReportTokenMap(
       [],

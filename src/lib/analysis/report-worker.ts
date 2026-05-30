@@ -176,6 +176,12 @@ async function pickQueuedReportJobs(
       WHERE j.status = 'queued'
         AND j.dry_run = FALSE
         AND j.period IN ('LIVE', 'DAILY')
+        -- Skip jobs whose parent state archived after queueing (e.g. a
+        -- timezone change archives the old-tz state without deleting its
+        -- jobs). A terminal archived state must never reach the LLM /
+        -- result write (#297 review round 2, item 2). The claim step
+        -- re-checks this to close the pickup→claim archive window.
+        AND s.status <> 'archived'
         AND (
           j.attempts = 0
           OR j.updated_at
@@ -223,7 +229,15 @@ export async function processReportJob(
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
         AND status = 'queued'
-        AND attempts = $9`,
+        AND attempts = $9
+        AND EXISTS (
+          SELECT 1 FROM periodic_report_state s
+           WHERE s.customer_id = periodic_report_job.customer_id
+             AND s.period      = periodic_report_job.period
+             AND s.bucket_date = periodic_report_job.bucket_date
+             AND s.tz          = periodic_report_job.tz
+             AND s.status <> 'archived'
+        )`,
     [
       job.customer_id,
       job.period,

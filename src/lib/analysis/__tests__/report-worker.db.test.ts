@@ -6,6 +6,7 @@
 //   - post-LLM crash recovery via the pickup-time result-row probe
 //     (no second LLM call)
 //   - LIVE next_due_at re-queue skips archived parent state (round-14 5)
+//   - runtime pickup skips a queued job archived after queueing (r2 2)
 
 import { join } from "node:path";
 import { ClientError } from "graphql-request";
@@ -25,9 +26,8 @@ vi.mock("server-only", () => ({}));
 // story-worker unit tests) to avoid real audit-DB I/O.
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn(async () => {}) }));
 
-const { processReportJob, requeueLiveReportJobs } = await import(
-  "../report-worker"
-);
+const { processReportJob, requeueLiveReportJobs, tickReportJobsOnce } =
+  await import("../report-worker");
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -462,6 +462,45 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     );
     expect(job[0].status).toBe("queued");
     expect(job[0].generation).toBe(2);
+  });
+
+  it("pickup skips a queued job whose parent state archived after queueing", async () => {
+    // A timezone change archives the old-tz state without deleting its
+    // queued jobs. The runtime pickup path must not call the LLM or write
+    // a result for a terminal archived parent (#297 review round 2,
+    // item 2).
+    aimerCalls = 0;
+    // Park any jobs left queued by earlier cases so this tick only sees
+    // the archived-parent job under test.
+    await authPool.query(
+      `UPDATE periodic_report_job SET status = 'done' WHERE status = 'queued'`,
+    );
+    await seedState(authPool, "DAILY", "2026-06-04", "ready");
+    await seedQueuedJob(authPool, "DAILY", "2026-06-04");
+    // Archive the parent after the job is already queued.
+    await seedState(authPool, "DAILY", "2026-06-04", "archived");
+
+    const picked = await tickReportJobsOnce(authPool, 10, opts());
+
+    expect(picked).toBe(0);
+    expect(aimerCalls).toBe(0);
+
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-06-04' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(result).toHaveLength(0);
+
+    // The job is left untouched (still queued) — not finalized.
+    const { rows: job } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-06-04' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(job[0].status).toBe("queued");
   });
 
   it("LIVE next_due_at re-queue skips an archived parent state row", async () => {

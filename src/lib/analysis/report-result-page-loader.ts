@@ -5,9 +5,10 @@
 // `periodic_report_result` and the customer's default
 // `(tz, lang, model_name, model)` variant. Report-scope
 // `<<REDACTED_*_R{j}_*>>` tokens are restored to plaintext by replaying
-// `buildReportTokenMap` over the cited leaf narratives (pinned by
-// generation in `input_story_refs` / `input_event_refs`), then resolving
-// each leaf's source token through the relevant event redaction map.
+// `buildReportTokenMap` over the cited leaf narratives AND their factor
+// arrays (pinned by generation in `input_story_refs` / `input_event_refs`,
+// in the same field order the builder used), then resolving each leaf's
+// source token through the relevant event redaction map.
 
 import "server-only";
 
@@ -261,13 +262,18 @@ async function buildReportTokenPlaintext(
   // variant predicates a LIMIT 1 could replay the wrong variant's text and
   // either mis-restore or leave report tokens visible (#297 review round
   // 1, item 3).
-  const storyTexts: string[] = [];
+  const storyLeaves: Array<{
+    analysis: string;
+    severityFactors: string[];
+    likelihoodFactors: string[];
+  }> = [];
   const storyMemberRefs: Array<
     Array<{ index: number; aiceId: string; eventKey: string }>
   > = [];
   for (const ref of storyRefs) {
     const { rows } = await customerPool.query(
-      `SELECT analysis_text, input_event_refs
+      `SELECT analysis_text, severity_factors, likelihood_factors,
+              input_event_refs
          FROM story_analysis_result
         WHERE customer_id = $1 AND story_id = $2::bigint AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
@@ -281,17 +287,30 @@ async function buildReportTokenPlaintext(
         variant.model,
       ],
     );
-    storyTexts.push(rows[0]?.analysis_text ?? "");
+    storyLeaves.push({
+      analysis: rows[0]?.analysis_text ?? "",
+      severityFactors: Array.isArray(rows[0]?.severity_factors)
+        ? rows[0].severity_factors
+        : [],
+      likelihoodFactors: Array.isArray(rows[0]?.likelihood_factors)
+        ? rows[0].likelihood_factors
+        : [],
+    });
     storyMemberRefs.push(
       Array.isArray(rows[0]?.input_event_refs) ? rows[0].input_event_refs : [],
     );
   }
 
-  // Fetch event leaf narratives at the pinned generation AND variant.
-  const eventTexts: string[] = [];
+  // Fetch event leaf narratives + factors at the pinned generation AND
+  // variant.
+  const eventLeaves: Array<{
+    analysis: string;
+    severityFactors: string[];
+    likelihoodFactors: string[];
+  }> = [];
   for (const ref of eventRefs) {
     const { rows } = await customerPool.query(
-      `SELECT analysis_text
+      `SELECT analysis_text, severity_factors, likelihood_factors
          FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
@@ -305,17 +324,27 @@ async function buildReportTokenPlaintext(
         variant.model,
       ],
     );
-    eventTexts.push(rows[0]?.analysis_text ?? "");
+    eventLeaves.push({
+      analysis: rows[0]?.analysis_text ?? "",
+      severityFactors: Array.isArray(rows[0]?.severity_factors)
+        ? rows[0].severity_factors
+        : [],
+      likelihoodFactors: Array.isArray(rows[0]?.likelihood_factors)
+        ? rows[0].likelihood_factors
+        : [],
+    });
   }
 
   // Replay the rewrite to recover the report→source token map per leaf.
-  // Only the analysis narratives are replayed (factors are not stored in
-  // the report sections), which is exactly what was processed first at
-  // build time, so the analysis token numbering matches.
-  const { refs } = buildReportTokenMap(
-    storyTexts.map((analysis) => ({ analysis })),
-    eventTexts.map((analysis) => ({ analysis })),
-  );
+  // The analysis AND the factor arrays are replayed in the SAME order the
+  // builder fed them (analysis first, then severity, then likelihood —
+  // see `report-input-builder.ts` and `rewriteLeafFields`), so the
+  // per-leaf `R{j}_SEQ` numbering matches exactly. Factors must be
+  // replayed too: aimer is allowed to quote a leaf factor verbatim, so a
+  // factor-only report token can land in the stored sections and would be
+  // left undecoded if only the narratives were replayed (#297 review
+  // round 2, item 1).
+  const { refs } = buildReportTokenMap(storyLeaves, eventLeaves);
 
   // Decrypt every referenced event redaction map once, keyed by
   // (aice_id, event_key).

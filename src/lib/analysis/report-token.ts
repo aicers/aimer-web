@@ -135,13 +135,15 @@ export interface BuildReportTokenMapResult {
 }
 
 /**
- * Rewrite every text field of one leaf (analysis first, then factor
- * arrays) through a SHARED per-leaf token map, so a redacted entity that
- * appears in both the narrative and a factor folds to the same report
- * token. Processing the analysis first keeps its token numbering stable
- * for the display-time replay, which only re-reads `analysis` — factors
- * are not stored in the narrative sections, so any factor-only token
- * never needs to be re-derived on display.
+ * Rewrite every text field of one leaf (analysis first, then severity
+ * factors, then likelihood factors) through a SHARED per-leaf token map,
+ * so a redacted entity that appears in both the narrative and a factor
+ * folds to the same report token. The field order is part of the
+ * contract: the display loader replays the same `[analysis, ...sev,
+ * ...lik]` bundle in the same order to recover identical `R{j}_SEQ`
+ * numbering — including factor-only tokens, which can surface in the
+ * stored report when aimer quotes a leaf factor verbatim (#297 review
+ * round 2, item 1).
  */
 function rewriteLeafFields(
   texts: ReadonlyArray<string>,
