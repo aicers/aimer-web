@@ -33,14 +33,14 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import type {
-  PeriodicEventAnalysisInput,
-  PeriodicReportInput,
-  PeriodicStoryAnalysisInput,
+  BaselineCountInput,
+  EventAnalysisInput,
+  PeriodicReportInputs,
+  StoryAnalysisInput,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
 import {
   type BaselineDrift,
   type CategoryCount,
-  compareCategoryNullLast,
   computeBaselineDrift,
 } from "./baseline-drift";
 import {
@@ -92,7 +92,7 @@ export interface EventRef {
 
 export interface PeriodicReportBuildResult {
   /** Structured bundle passed verbatim to aimer. */
-  aimerInputs: PeriodicReportInput;
+  aimerInputs: PeriodicReportInputs;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
   /** Per-leaf report-scope token demap (persist-with-row, drives display). */
@@ -122,6 +122,9 @@ interface StoryLeafRow {
   analysis_text: string;
   redaction_policy_version: string;
   source_aice_id: string;
+  /** Canonical story window bounds → aimer's `timeRangeStart`/`timeRangeEnd`. */
+  time_window_start: Date;
+  time_window_end: Date;
 }
 
 interface EventLeafRow {
@@ -136,11 +139,31 @@ interface EventLeafRow {
   likelihood_factors: string[];
   analysis_text: string;
   redaction_policy_version: string;
+  /** Deduped baseline `event_time` → aimer's `eventTime`. */
+  event_time: Date;
 }
 
 const TIER_RANK_SQL = `(CASE priority_tier
     WHEN 'CRITICAL' THEN 3 WHEN 'HIGH' THEN 2
     WHEN 'MEDIUM' THEN 1 ELSE 0 END)`;
+
+// Cap on the `topTechniques` / `topSensors` baseline-aggregate lists sent
+// to aimer. The prompt renders these as a leaderboard, so a small bound
+// keeps the payload compact and deterministic.
+const TOP_AGGREGATE_K = 10;
+
+// Dedupe `baseline_event` to one canonical row per (source_aice_id,
+// event_key) — latest received baseline wins — BEFORE any window
+// predicate. Shared verbatim by every window aggregate so the window test
+// always runs against the canonical row's `event_time` (RFC 0002 round-14
+// item 2): filtering inside the dedupe could pick an older in-window
+// duplicate even when the canonical latest row is out-of-window.
+const LATEST_BASELINE_CTE = `WITH latest_baseline AS (
+       SELECT DISTINCT ON (source_aice_id, event_key)
+              source_aice_id, event_key, event_time, category, primary_asset
+         FROM baseline_event
+        ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
+     )`;
 
 interface Windows {
   curStart: Date;
@@ -239,7 +262,8 @@ async function selectTopStories(
             r.priority_tier,
             r.ttp_tags, r.severity_factors, r.likelihood_factors,
             r.analysis_text, r.redaction_policy_version,
-            cs.source_aice_id
+            cs.source_aice_id,
+            cs.time_window_start, cs.time_window_end
        FROM story_analysis_result r
        JOIN canonical_story cs ON cs.story_id = r.story_id
       WHERE r.customer_id = $2
@@ -323,7 +347,8 @@ async function selectTopEvents(
             e.severity_score, e.likelihood_score,
             e.priority_tier,
             e.ttp_tags, e.severity_factors, e.likelihood_factors,
-            e.analysis_text, e.redaction_policy_version
+            e.analysis_text, e.redaction_policy_version,
+            lb.event_time
        FROM event_analysis_result e
        JOIN latest_baseline lb
          ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
@@ -358,29 +383,127 @@ async function categoryCounts(
   start: Date,
   end: Date,
 ): Promise<CategoryCount[]> {
-  // Dedupe to one canonical baseline_event row per (source_aice_id,
-  // event_key) BEFORE applying the bucket-window predicate, so a
-  // rebaseline that re-emits the same event under a new baseline_version
-  // does not inflate the totals AND the window test runs against the
-  // canonical row's event_time (RFC 0002 round-14 item 2). Filtering
-  // event_time inside the dedupe is unsafe: an older in-window duplicate
-  // could be counted even when the canonical latest row is out-of-window.
+  // Category distribution over the deduped baseline window. Used only for
+  // the internal drift signal now (aimer's `BaselineAggregatesInput` no
+  // longer carries a per-category distribution); the dedupe-before-window
+  // contract is preserved via the shared CTE.
   const { rows } = await customerPool.query<{
     category: string | null;
     count: number;
   }>(
-    `SELECT lb.category, COUNT(*)::int AS count
-       FROM (
-         SELECT DISTINCT ON (source_aice_id, event_key)
-                source_aice_id, event_key, category, event_time
-           FROM baseline_event
-          ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
-       ) lb
+    `${LATEST_BASELINE_CTE}
+     SELECT lb.category, COUNT(*)::int AS count
+       FROM latest_baseline lb
       WHERE lb.event_time >= $1::timestamptz AND lb.event_time < $2::timestamptz
       GROUP BY lb.category`,
     [start, end],
   );
   return rows.map((r) => ({ category: r.category, count: r.count }));
+}
+
+/**
+ * Period-level baseline totals for aimer's `BaselineTotalsInput`: the
+ * deduped `baseline_event` count and the distinct host (`primary_asset`)
+ * count inside the bucket window. `stories` is sourced separately from the
+ * `story` table (see `storyCountInWindow`).
+ */
+async function windowBaselineTotals(
+  customerPool: Pool,
+  start: Date,
+  end: Date,
+): Promise<{ events: number; hosts: number }> {
+  const { rows } = await customerPool.query<{
+    events: number;
+    hosts: number;
+  }>(
+    `${LATEST_BASELINE_CTE}
+     SELECT COUNT(*)::int AS events,
+            COUNT(DISTINCT lb.primary_asset)::int AS hosts
+       FROM latest_baseline lb
+      WHERE lb.event_time >= $1::timestamptz AND lb.event_time < $2::timestamptz`,
+    [start, end],
+  );
+  const r = rows[0];
+  return { events: r?.events ?? 0, hosts: r?.hosts ?? 0 };
+}
+
+/**
+ * Top sensors (`source_aice_id`) by deduped baseline-event count inside the
+ * bucket window → aimer's `BaselineAggregatesInput.topSensors`. Ordered by
+ * count desc then key asc so the payload — and the order-sensitive
+ * `input_hash` over it — is stable across plans/runs.
+ */
+async function topSensors(
+  customerPool: Pool,
+  start: Date,
+  end: Date,
+  limit: number,
+): Promise<BaselineCountInput[]> {
+  const { rows } = await customerPool.query<{
+    key: string;
+    count: number;
+  }>(
+    `${LATEST_BASELINE_CTE}
+     SELECT lb.source_aice_id AS key, COUNT(*)::int AS count
+       FROM latest_baseline lb
+      WHERE lb.event_time >= $1::timestamptz AND lb.event_time < $2::timestamptz
+      GROUP BY lb.source_aice_id
+      ORDER BY COUNT(*) DESC, lb.source_aice_id ASC
+      LIMIT $3`,
+    [start, end, limit],
+  );
+  return rows.map((r) => ({ key: r.key, count: r.count }));
+}
+
+/**
+ * Count of canonical stories whose time window overlaps the bucket window →
+ * aimer's `BaselineTotalsInput.stories`. Mirrors `selectTopStories`'
+ * canonical-version pin and overlap predicate, but unfiltered by variant or
+ * freshness — it is a period-level count of all stories in the window, not
+ * only the cited Top-stories.
+ */
+async function storyCountInWindow(
+  customerPool: Pool,
+  start: Date,
+  end: Date,
+): Promise<number> {
+  const { rows } = await customerPool.query<{ stories: number }>(
+    `WITH canonical_story AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, time_window_start, time_window_end
+         FROM story
+        ORDER BY story_id, received_at DESC, story_version DESC
+     )
+     SELECT COUNT(*)::int AS stories
+       FROM canonical_story cs
+      WHERE cs.time_window_start < $2::timestamptz
+        AND cs.time_window_end   > $1::timestamptz`,
+    [start, end],
+  );
+  return rows[0]?.stories ?? 0;
+}
+
+/**
+ * Top techniques (MITRE technique IDs) by occurrence across the cited story
+ * and event leaves → aimer's `BaselineAggregatesInput.topTechniques`.
+ * `baseline_event` carries no technique tags, so the leaf `ttp_tags` are the
+ * only in-window technique source. Ordered by count desc then ID asc for a
+ * stable payload.
+ */
+function topTechniques(
+  ttpTagLists: ReadonlyArray<ReadonlyArray<string>>,
+  limit: number,
+): BaselineCountInput[] {
+  const counts = new Map<string, number>();
+  for (const tags of ttpTagLists) {
+    for (const tag of tags) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, limit)
+    .map(([key, count]) => ({ key, count }));
 }
 
 function resolveRedactionPolicy(versions: string[]): RedactionPolicyResult {
@@ -442,7 +565,7 @@ function computeInputHash(args: {
   variant: ReportVariant;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
-  aimerInputs: PeriodicReportInput;
+  aimerInputs: PeriodicReportInputs;
 }): string {
   const storyRefs = [...args.storyRefs].sort(
     (a, b) =>
@@ -516,7 +639,26 @@ export async function buildPeriodicReportInput(
     windows.prevEnd,
   );
   const drift = computeBaselineDrift(currentCounts, previousCounts);
-  const totalCount = currentCounts.reduce((acc, c) => acc + c.count, 0);
+
+  // Period-level baseline totals for aimer's `BaselineTotalsInput` +
+  // `topSensors`. `events`/`hosts` come from the deduped baseline window;
+  // `stories` from the canonical story set overlapping the window.
+  const baselineTotals = await windowBaselineTotals(
+    args.customerPool,
+    windows.curStart,
+    windows.curEnd,
+  );
+  const storyTotal = await storyCountInWindow(
+    args.customerPool,
+    windows.curStart,
+    windows.curEnd,
+  );
+  const sensors = await topSensors(
+    args.customerPool,
+    windows.curStart,
+    windows.curEnd,
+    TOP_AGGREGATE_K,
+  );
 
   // --- Redaction policy precondition (consumed leaves only) -----------
   const leafPolicyVersions = [
@@ -578,47 +720,60 @@ export async function buildPeriodicReportInput(
   );
 
   // --- Structured aimer inputs ----------------------------------------
-  const storyAnalyses: PeriodicStoryAnalysisInput[] = stories.map((s, i) => ({
+  // Mapped to aimer's real SDL shape (schemas/aimer.graphql @ 014d294):
+  // `StoryAnalysisInput` / `EventAnalysisInput` carry a single JSON/markdown
+  // `sections` narrative (the report-scope-rewritten leaf analysis) plus the
+  // leaf's nullable scores, factor arrays, and TTP tags — no `priorityTier`
+  // (kept internal for aggregation, not part of the wire shape).
+  const storyAnalyses: StoryAnalysisInput[] = stories.map((s, i) => ({
     storyId: s.story_id,
-    analysis: rewrittenStoryTexts[i],
+    timeRangeStart: s.time_window_start.toISOString(),
+    timeRangeEnd: s.time_window_end.toISOString(),
+    sections: rewrittenStoryTexts[i],
     severityScore: s.severity_score,
     likelihoodScore: s.likelihood_score,
     severityFactors: rewrittenStoryFactors[i].severityFactors,
     likelihoodFactors: rewrittenStoryFactors[i].likelihoodFactors,
     ttpTags: s.ttp_tags,
-    priorityTier: s.priority_tier,
   }));
-  const eventAnalyses: PeriodicEventAnalysisInput[] = events.map((e, i) => ({
-    aiceId: e.aice_id,
-    eventKey: e.event_key,
-    analysis: rewrittenEventTexts[i],
+  const eventAnalyses: EventAnalysisInput[] = events.map((e, i) => ({
+    // `eventRef` is opaque/reference-only on aimer's side, but it must still
+    // uniquely identify the event: `event_key` is only unique within an
+    // `aice_id` (RFC 0001 §"member_event_key"; RFC 0002's dedup key is
+    // `(aice_id, event_key)`), so a bare key collides across AICE sources
+    // that share a numeric event key in one report window. Encode the same
+    // `${aice_id}:${event_key}` composite the codebase already uses as the
+    // event-identity key (report token restore, dedup) so the narrative's
+    // event references stay unambiguous and check cleanly against
+    // `input_event_refs`.
+    eventRef: `${e.aice_id}:${e.event_key}`,
+    eventTime: e.event_time.toISOString(),
+    sections: rewrittenEventTexts[i],
     severityScore: e.severity_score,
     likelihoodScore: e.likelihood_score,
     severityFactors: rewrittenEventFactors[i].severityFactors,
     likelihoodFactors: rewrittenEventFactors[i].likelihoodFactors,
     ttpTags: e.ttp_tags,
-    priorityTier: e.priority_tier,
   }));
 
-  const aimerInputs: PeriodicReportInput = {
+  const aimerInputs: PeriodicReportInputs = {
     storyAnalyses,
     eventAnalyses,
     baselineAggregates: {
-      totalCount,
-      // `categoryCounts` GROUPs without an ORDER BY, so Postgres may return
-      // the rows in any order across plans/runs. Sort with the same
-      // null-last comparator as `categoryDeltas` so the canonical aimer
-      // payload — and the order-sensitive `input_hash` over it — is stable
-      // (#297 review round 4, item 2).
-      categoryDistribution: currentCounts
-        .map((c) => ({ category: c.category, count: c.count }))
-        .sort((a, b) => compareCategoryNullLast(a.category, b.category)),
-      categoryDeltas: drift.categoryDeltas.map((d) => ({
-        category: d.category,
-        delta: d.delta,
-      })),
-      driftSeverity: drift.severity,
-      driftLikelihood: drift.likelihood,
+      windowStart: windows.curStart.toISOString(),
+      windowEnd: windows.curEnd.toISOString(),
+      totals: {
+        events: baselineTotals.events,
+        stories: storyTotal,
+        hosts: baselineTotals.hosts,
+      },
+      // Techniques aggregated from the cited leaves (baseline_event has no
+      // TTP tags); sensors from the deduped baseline window.
+      topTechniques: topTechniques(
+        [...stories.map((s) => s.ttp_tags), ...events.map((e) => e.ttp_tags)],
+        TOP_AGGREGATE_K,
+      ),
+      topSensors: sensors,
     },
     aggregateTtpTags,
   };

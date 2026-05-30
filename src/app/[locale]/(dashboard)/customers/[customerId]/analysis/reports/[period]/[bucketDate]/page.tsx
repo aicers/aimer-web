@@ -151,19 +151,19 @@ export default async function ReportDetailPage({
         testid="section-story_highlights"
       />
       <ReportSection
-        title="Baseline drift"
-        body={data.sections.baseline_drift}
-        testid="section-baseline_drift"
-      />
-      <ReportSection
         title="Notable events"
         body={data.sections.notable_events}
         testid="section-notable_events"
       />
       <ReportSection
-        title="Recommendations"
-        body={data.sections.recommendations}
-        testid="section-recommendations"
+        title="Baseline observations"
+        body={data.sections.baseline_observations}
+        testid="section-baseline_observations"
+      />
+      <ReportSection
+        title="Period outlook"
+        body={data.sections.period_outlook}
+        testid="section-period_outlook"
       />
 
       <section className="mt-8">

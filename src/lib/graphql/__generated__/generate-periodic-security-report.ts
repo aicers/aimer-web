@@ -8,71 +8,68 @@
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { type DocumentNode, parse } from "graphql";
 
-export interface PeriodicReportInput {
-  storyAnalyses: Array<PeriodicStoryAnalysisInput>;
-  eventAnalyses: Array<PeriodicEventAnalysisInput>;
-  baselineAggregates: PeriodicBaselineAggregatesInput;
+export interface PeriodicReportInputs {
+  storyAnalyses: Array<StoryAnalysisInput>;
+  eventAnalyses: Array<EventAnalysisInput>;
+  baselineAggregates: BaselineAggregatesInput;
   aggregateTtpTags: Array<string>;
 }
 
-export interface PeriodicStoryAnalysisInput {
+export interface StoryAnalysisInput {
   storyId: string;
-  analysis: string;
-  severityScore: number;
-  likelihoodScore: number;
+  timeRangeStart: string;
+  timeRangeEnd: string;
+  sections: string;
+  severityScore?: number | null;
+  likelihoodScore?: number | null;
   severityFactors: Array<string>;
   likelihoodFactors: Array<string>;
   ttpTags: Array<string>;
-  priorityTier: string;
 }
 
-export interface PeriodicEventAnalysisInput {
-  aiceId: string;
-  eventKey: string;
-  analysis: string;
-  severityScore: number;
-  likelihoodScore: number;
+export interface EventAnalysisInput {
+  eventRef: string;
+  eventTime: string;
+  sections: string;
+  severityScore?: number | null;
+  likelihoodScore?: number | null;
   severityFactors: Array<string>;
   likelihoodFactors: Array<string>;
   ttpTags: Array<string>;
-  priorityTier: string;
 }
 
-export interface PeriodicBaselineAggregatesInput {
-  totalCount: number;
-  categoryDistribution: Array<PeriodicCategoryCountInput>;
-  categoryDeltas: Array<PeriodicCategoryDeltaInput>;
-  driftSeverity: number;
-  driftLikelihood: number;
+export interface BaselineAggregatesInput {
+  windowStart: string;
+  windowEnd: string;
+  totals: BaselineTotalsInput;
+  topTechniques: Array<BaselineCountInput>;
+  topSensors: Array<BaselineCountInput>;
 }
 
-export interface PeriodicCategoryCountInput {
-  category?: string | null;
+export interface BaselineTotalsInput {
+  events: number;
+  stories: number;
+  hosts: number;
+}
+
+export interface BaselineCountInput {
+  key: string;
   count: number;
-}
-
-export interface PeriodicCategoryDeltaInput {
-  category?: string | null;
-  delta: number;
 }
 
 export interface PeriodicReportVariables {
   customerId: string;
-  period: "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
+  period: "LIVE" | "DAILY";
   date: string;
   timezone: string;
   name: string;
   model: string;
   lang?: "KOREAN" | "ENGLISH" | null;
-  inputs: PeriodicReportInput;
+  inputs: PeriodicReportInputs;
 }
 
 export interface PeriodicSecurityReportResult {
-  executiveSummary: string;
-  storyHighlights: string;
-  baselineDrift: string;
-  notableEvents: string;
-  recommendations: string;
+  sections: string;
   promptVersion: string;
   modelActualVersion: string;
 }
@@ -83,13 +80,13 @@ export interface PeriodicReportResponse {
 
 export const PERIODIC_REPORT_SOURCE = `mutation PeriodicReport(
   $customerId: ID!
-  $period: PeriodType!
+  $period: Period!
   $date: String!
   $timezone: String!
   $name: String!
   $model: String!
   $lang: Language
-  $inputs: PeriodicReportInput!
+  $inputs: PeriodicReportInputs!
 ) {
   generatePeriodicSecurityReport(
     customerId: $customerId
@@ -101,11 +98,7 @@ export const PERIODIC_REPORT_SOURCE = `mutation PeriodicReport(
     lang: $lang
     inputs: $inputs
   ) {
-    executiveSummary
-    storyHighlights
-    baselineDrift
-    notableEvents
-    recommendations
+    sections
     promptVersion
     modelActualVersion
   }

@@ -30,7 +30,7 @@ for a report that does not exist — returns `404`, while a member without
 the `reports:read` permission, or a rejected bridge session, returns a
 real `403` (a permission notice, not a normal page).
 
-![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, baseline drift, notable events, and recommendations sections](../../assets/report-detail.en.png)
+![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections](../../assets/report-detail.en.png)
 
 ## LIVE vs DAILY cadence
 
@@ -132,8 +132,10 @@ the prior calendar day for DAILY):
   high-confidence signal.
 
 When the previous period had no events (first bucket), both drift
-signals are `0.0`. The LLM renders these statistics as the report's
-**Baseline drift** section.
+signals are `0.0`. This drift signal feeds the priority tier and the
+aggregate scores above; the LLM narrates any drift it can see in the
+window's counts and ranks in the report's **Baseline observations**
+section.
 
 ## MITRE ATT&CK techniques
 
@@ -155,15 +157,20 @@ report-scope tokens restored to plaintext:
   section the day-over-day near-duplicate check watches: two consecutive
   days that read as paraphrases of each other signal a dull prompt or an
   input-builder bug.
-- **Story highlights** — the top-K analysed stories woven into prose,
+- **Story highlights** — the top-K analysed stories, one highlight each,
   with the strongest leaf factors quoted where precise.
-- **Baseline drift** — a reading of the statistical drift described
-  above.
 - **Notable events** — single events not already covered by the story
-  highlights.
-- **Recommendations** — actionable next steps for the period.
+  highlights, one highlight each.
+- **Baseline observations** — short factual readings of the window's
+  baseline aggregates (counts and ranks) and any drift visible against
+  the top techniques and sensors.
+- **Period outlook** — a short forward-looking note in the period's
+  tone: for LIVE, what to watch in the next window; for DAILY, what
+  tomorrow's operator should re-check.
 
-Tokens that cannot be restored (decrypt failure, a superseded leaf,
+Story highlights, notable events, and baseline observations are each a
+list of entries; the page joins them into one block per section. Tokens
+that cannot be restored (decrypt failure, a superseded leaf,
 out-of-range index) are passed through unchanged so the page still
 renders; hallucinated decodes are blocked at write time and never reach
 this view.

@@ -107,6 +107,7 @@ async function seedBaselineEvent(
   eventTime: string,
   category: string | null,
   receivedAt: string,
+  aiceId = "aice-1",
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO baseline_event
@@ -115,8 +116,8 @@ async function seedBaselineEvent(
         scoring_weights_snapshot, source_aice_id, received_at)
      VALUES ($1, $2::numeric, $3::timestamptz, 'k', $4, 0.5,
              '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
-             '{}'::jsonb, 'aice-1', $5::timestamptz)`,
-    [baselineVersion, eventKey, eventTime, category, receivedAt],
+             '{}'::jsonb, $6, $5::timestamptz)`,
+    [baselineVersion, eventKey, eventTime, category, receivedAt, aiceId],
   );
 }
 
@@ -126,6 +127,7 @@ async function seedEventResult(
   variant: { lang: string; modelName: string; model: string },
   tier: string,
   analysis: string,
+  aiceId = "aice-1",
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO event_analysis_result
@@ -133,11 +135,19 @@ async function seedEventResult(
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
         priority_tier, analysis_text, redaction_policy_version, requested_by)
-     VALUES ('aice-1', $1::numeric, $2, $3, $4, 1,
+     VALUES ($7, $1::numeric, $2, $3, $4, 1,
              0.6, 0.6,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
              $5, $6, 'policy-A', gen_random_uuid())`,
-    [eventKey, variant.lang, variant.modelName, variant.model, tier, analysis],
+    [
+      eventKey,
+      variant.lang,
+      variant.modelName,
+      variant.model,
+      tier,
+      analysis,
+      aiceId,
+    ],
   );
 }
 
@@ -331,19 +341,23 @@ describe.skipIf(!hasPostgres)(
         variant: EN,
         nowIso: "2026-05-27T00:00:00Z",
       });
-      // Two distinct events (5001 recon, 6001 malware), each rebaselined
-      // twice — total must be 2, not 4. Event 6002's canonical row is
-      // out-of-window, so it must not be counted (no "exfil" bucket).
-      expect(res.aimerInputs.baselineAggregates.totalCount).toBe(2);
-      const dist = res.aimerInputs.baselineAggregates.categoryDistribution;
-      const byCat = Object.fromEntries(dist.map((d) => [d.category, d.count]));
-      expect(byCat.recon).toBe(1);
-      expect(byCat.malware).toBe(1);
-      expect(byCat.exfil).toBeUndefined();
-      // categoryDistribution is deterministically ordered (null last, then
-      // by category name) so the canonical input bundle and its order-
-      // sensitive input_hash are stable across plans/runs (#297 round 4 2).
-      expect(dist.map((d) => d.category)).toEqual(["malware", "recon"]);
+      const agg = res.aimerInputs.baselineAggregates;
+      // Two distinct events (5001, 6001), each rebaselined twice — the
+      // deduped window total must be 2, not 4. Event 6002's canonical row is
+      // out-of-window, so it is excluded.
+      expect(agg.totals.events).toBe(2);
+      // Both baseline events share source_aice_id 'aice-1' → exactly one
+      // sensor with count 2; ordering is deterministic so the order-
+      // sensitive input_hash is stable across plans/runs (#297 round 4 2).
+      expect(agg.topSensors).toEqual([{ key: "aice-1", count: 2 }]);
+      // Two canonical stories (7001, 7002) overlap the bucket window.
+      expect(agg.totals.stories).toBe(2);
+      // Techniques aggregated from the cited leaves: story 7001 (T1078) and
+      // event 6001 (T1110), count desc then ID asc.
+      expect(agg.topTechniques).toEqual([
+        { key: "T1078", count: 1 },
+        { key: "T1110", count: 1 },
+      ]);
     });
 
     it("excludes an event whose canonical baseline row is out-of-window", async () => {
@@ -384,6 +398,51 @@ describe.skipIf(!hasPostgres)(
       // exists and is not story-covered (no KR story), so it is selected.
       expect(res.storyRefs).toEqual([]);
       expect(res.eventRefs.map((r) => r.event_key)).toEqual(["6001"]);
+    });
+
+    // Appended last so the same-key events seeded here cannot bleed into the
+    // exact-match `eventRefs` assertions above (tests run in definition order
+    // against the shared DB).
+    it("emits a distinct aice_id:event_key composite eventRef per AICE source sharing a key", async () => {
+      // Same numeric event_key 7777 from two different AICE sources, both
+      // in-window and not story-covered. A bare event_key would make their
+      // wire references collide; the composite must keep them distinct so
+      // aimer's narrative can be checked against `input_event_refs`.
+      for (const aice of ["aice-1", "aice-2"]) {
+        await seedBaselineEvent(
+          customerPool,
+          `v-${aice}`,
+          "7777",
+          IN_WINDOW,
+          "malware",
+          IN_WINDOW,
+          aice,
+        );
+        await seedEventResult(
+          customerPool,
+          "7777",
+          EN,
+          "HIGH",
+          `event 7777 ${aice}`,
+          aice,
+        );
+      }
+
+      const res = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "DAILY",
+        bucketDate: BUCKET,
+        variant: EN,
+        nowIso: "2026-05-27T00:00:00Z",
+      });
+
+      const refs = res.aimerInputs.eventAnalyses.map((e) => e.eventRef);
+      expect(refs).toContain("aice-1:7777");
+      expect(refs).toContain("aice-2:7777");
+      // No two leaves share a wire reference, even when they share a key.
+      expect(new Set(refs).size).toBe(refs.length);
     });
   },
 );

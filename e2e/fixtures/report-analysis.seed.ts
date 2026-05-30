@@ -34,29 +34,36 @@ const REPORT_PROMPT_VERSION = "aimer-periodic-v1";
 const REPORT_REQUESTED_AT = "2026-05-27T03:00:00Z";
 const REPORT_REDACTION_POLICY = "engine:0.0.0|ranges:none";
 
+// Keyed by aimer's real PERIODIC_SECURITY_REPORT output schema (#360):
+// `executive_summary` / `period_outlook` are strings; `story_highlights` /
+// `notable_events` / `baseline_observations` are arrays of Markdown strings.
 const REPORT_SECTIONS = {
   executive_summary:
     "Activity this period was dominated by a credential-stuffing burst " +
     "against the SSO endpoint that reached an initial foothold, set " +
     "against a 31% rise in reconnaissance-category events versus the " +
     "prior day.",
-  story_highlights:
+  story_highlights: [
     "The highest-priority narrative was an account-takeover attempt: 412 " +
-    "failed authentications in 60 seconds preceded a single success on a " +
-    "privileged service account, after which the session pivoted toward " +
-    "a domain controller (T1078, T1110.001).",
-  baseline_drift:
-    "Reconnaissance events rose from 120 to 157 (+31%), clearing the " +
-    "noise threshold and contributing a high-confidence drift-likelihood " +
-    "signal. Malware-category volume was flat.",
-  notable_events:
+      "failed authentications in 60 seconds preceded a single success on a " +
+      "privileged service account, after which the session pivoted toward " +
+      "a domain controller (T1078, T1110.001).",
+  ],
+  notable_events: [
     "A single outbound C2 beacon to a newly-registered domain stood out " +
-    "from the rest of the fleet (T1071.001); it was not part of any " +
-    "correlated story this period.",
-  recommendations:
-    "Revoke the affected service account's active sessions and force a " +
-    "credential reset; review domain-controller authentication logs for " +
-    "the source host; and confirm the C2 destination is sinkholed.",
+      "from the rest of the fleet (T1071.001); it was not part of any " +
+      "correlated story this period.",
+  ],
+  baseline_observations: [
+    "Reconnaissance events rose from 120 to 157 (+31%), clearing the " +
+      "noise threshold; this was the dominant shift against the prior " +
+      "window. Malware-category volume was flat.",
+    "Top sensors by event count were unchanged from the prior day.",
+  ],
+  period_outlook:
+    "Tomorrow's operator should re-check the SSO endpoint for renewed " +
+    "credential-stuffing and confirm the flagged service account's " +
+    "sessions stay revoked.",
 };
 
 /**

@@ -32,6 +32,65 @@ type AnalysisResult {
 	analysis: String!
 }
 
+"""
+Period-level baseline aggregates supplied by aimer-web.
+"""
+input BaselineAggregatesInput {
+	"""
+	Baseline window start (UTC, inclusive).
+	"""
+	windowStart: DateTime!
+	"""
+	Baseline window end (UTC, exclusive).
+	"""
+	windowEnd: DateTime!
+	"""
+	Period-level totals.
+	"""
+	totals: BaselineTotalsInput!
+	"""
+	Top techniques observed in the window (MITRE technique IDs).
+	"""
+	topTechniques: [BaselineCountInput!]!
+	"""
+	Top sensors observed in the window.
+	"""
+	topSensors: [BaselineCountInput!]!
+}
+
+"""
+A `(key, count)` pair used by `top_techniques` / `top_sensors`.
+"""
+input BaselineCountInput {
+	"""
+	Identifier (MITRE technique ID for `top_techniques`, sensor name for
+	`top_sensors`).
+	"""
+	key: String!
+	"""
+	Observation count for the key.
+	"""
+	count: Int!
+}
+
+"""
+Period-level baseline counts.
+"""
+input BaselineTotalsInput {
+	"""
+	Total event count covered by the baseline window.
+	"""
+	events: Int!
+	"""
+	Total story count covered by the baseline window.
+	"""
+	stories: Int!
+	"""
+	Distinct host count covered by the baseline window.
+	"""
+	hosts: Int!
+}
+
 type ChatChoice {
 	message: OpenAiChatMessage!
 	index: Int!
@@ -39,6 +98,47 @@ type ChatChoice {
 }
 
 scalar DateTime
+
+"""
+One already-analyzed single-event leaf included in the periodic-report
+bundle. `sections` and factor arrays follow the same shape as
+`StoryAnalysisInput`.
+"""
+input EventAnalysisInput {
+	"""
+	Reference identifier for the event (opaque, reference only).
+	"""
+	eventRef: ID!
+	"""
+	Event timestamp (UTC).
+	"""
+	eventTime: DateTime!
+	"""
+	JSON-encoded leaf event-analysis sections (report-scope redaction
+	tokens applied upstream).
+	"""
+	sections: String!
+	"""
+	Leaf severity score from 0.0 to 1.0, when available.
+	"""
+	severityScore: Float
+	"""
+	Leaf likelihood score from 0.0 to 1.0, when available.
+	"""
+	likelihoodScore: Float
+	"""
+	Leaf severity factors preserved verbatim from the event analysis.
+	"""
+	severityFactors: [String!]!
+	"""
+	Leaf likelihood factors preserved verbatim from the event analysis.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	Leaf MITRE ATT&CK technique IDs preserved verbatim.
+	"""
+	ttpTags: [String!]!
+}
 
 type GenerateResponse {
 	model: String!
@@ -81,6 +181,34 @@ type Mutation {
 	- LLM analysis fails
 	"""
 	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
+	"""
+	Generates a periodic (LIVE / DAILY) security report by synthesizing
+	already-analyzed story leaves, single-event leaves, and baseline
+	aggregates into a narrative `sections` JSON.
+	
+	Stateless under `auth-mtls`: aimer stores nothing, performs no
+	caching, and does not require an `auth.kid` (`review_hostname`) claim.
+	`customerId` is accepted for observability and prompt context only.
+	
+	PII redaction is the caller's responsibility. aimer-web rewrites
+	per-story / per-event redaction tokens into report-scope tokens of
+	the form `<<REDACTED_*_R{j}_*>>` before calling this mutation; aimer
+	forwards every string to the LLM verbatim and the prompt is
+	instructed to preserve those tokens.
+	
+	Exactly one LLM call is issued per invocation. The response always
+	includes `promptVersion` and `modelActualVersion`.
+	
+	# Errors
+	
+	Returns an error if:
+	- Input validation fails (empty `customerId` / `model` / `name`,
+	malformed `date`)
+	- The requested LLM server `name` is not registered
+	- LLM call fails (transport error, provider error envelope,
+	structured-output payload missing)
+	"""
+	generatePeriodicSecurityReport(customerId: ID!, period: Period!, date: String!, timezone: String!, lang: Language, model: String!, name: String!, inputs: PeriodicReportInputs!): PeriodicSecurityReportResult!
 	"""
 	Generates a report for a given customer.
 	
@@ -143,36 +271,6 @@ type Mutation {
 	structured-output parse failure, factor/TTP shape violation)
 	"""
 	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
-	"""
-	Synthesizes a periodic security report across already-analyzed
-	stories, single events, and baseline statistics for one
-	`(customer, period, bucket_date, tz)` window.
-
-	Stateless under `auth-mtls`: aimer stores nothing and performs no
-	cache lookup. `customerId` is accepted for prompt context and
-	provider-side observability only. `timezone` is used **only** to
-	render human-readable time strings inside the prompt (e.g.
-	"events between 14:00–16:30 KST") — it is not a cache-key
-	dimension because there is no cache. There is **no `force`
-	parameter** (no aimer-side cache to bypass).
-
-	The prompt does **not** return scores or factors — aimer-web
-	aggregates `severityScore` / `likelihoodScore` / `ttpTags` from the
-	included leaf rows it passed in `inputs`. `inputs` carries the
-	already-redacted, report-scope-namespaced leaf narratives
-	(`<<REDACTED_*_R{j}_*>>` tokens) plus baseline aggregate
-	statistics. Those tokens are preserved verbatim in every section of
-	the returned narrative.
-
-	# Errors
-
-	Returns an error if:
-	- Input validation fails (empty `model` / `name`, unknown `period`)
-	- The requested LLM server `name` is not registered
-	- LLM analysis fails (transport error, provider error envelope,
-	structured-output parse failure)
-	"""
-	generatePeriodicSecurityReport(customerId: ID!, period: PeriodType!, date: String!, timezone: String!, name: String!, model: String!, lang: Language, inputs: PeriodicReportInput!): PeriodicSecurityReportResult!
 }
 
 type OllamaChatMessage {
@@ -213,6 +311,84 @@ type OpenAiChatResponse {
 	model: String!
 	choices: [ChatChoice!]!
 	usage: Usage
+}
+
+"""
+Report period covered by `generatePeriodicSecurityReport`.
+
+Distinct from `ReportType` (DAILY/WEEKLY/MONTHLY) which belongs to the
+legacy stateful `generateReport` path. `Period` is used only by the
+stateless periodic-report flow; merging the two enums would conflate the
+two surfaces.
+"""
+enum Period {
+	"""
+	Rolling live window anchored to `date` in the supplied `timezone`.
+	Exact window definition lives in `rfcs/0002-periodic-llm-analysis.md`.
+	"""
+	LIVE
+	"""
+	24-hour bucket covering `date` in the supplied `timezone`.
+	"""
+	DAILY
+}
+
+"""
+Typed input bundle for `generatePeriodicSecurityReport`.
+
+All fields are pre-redacted and forwarded to the LLM verbatim. The
+`aggregate_ttp_tags` field is computed by aimer-web at write time from
+leaf rows and is the deduplicated sorted union of every `ttp_tags`
+across the bundle.
+"""
+input PeriodicReportInputs {
+	"""
+	Story-level leaves included in this period's bundle.
+	"""
+	storyAnalyses: [StoryAnalysisInput!]!
+	"""
+	Single-event leaves included in this period's bundle.
+	"""
+	eventAnalyses: [EventAnalysisInput!]!
+	"""
+	Period-level baseline aggregates.
+	"""
+	baselineAggregates: BaselineAggregatesInput!
+	"""
+	Deduplicated sorted union of `ttp_tags` across all leaves. Computed by
+	aimer-web at write time; aimer forwards it verbatim.
+	"""
+	aggregateTtpTags: [String!]!
+}
+
+"""
+Wire-shape response for `generatePeriodicSecurityReport`.
+
+`sections` is a JSON-encoded string carrying the LLM's strict structured
+output (executive summary, story highlights, notable events, baseline
+observations, period outlook). String-typing is intentional — it matches
+the `sections_jsonb` shape in `rfcs/0002-periodic-llm-analysis.md`, keeps
+the contract stable across prompt evolutions, and avoids forcing
+aimer-web consumers to migrate every time a section is added or renamed.
+"""
+type PeriodicSecurityReportResult {
+	"""
+	JSON-encoded structured-output payload (executive summary, story
+	highlights, notable events, baseline observations, period outlook).
+	Redaction tokens are preserved verbatim.
+	"""
+	sections: String!
+	"""
+	Identifier of the prompt template that produced this response. Bumped
+	whenever `PERIODIC_SECURITY_REPORT_PROMPT` or the JSON schema changes
+	shape.
+	"""
+	promptVersion: String!
+	"""
+	Provider-reported model snapshot for the call. Falls back to the
+	requested `model` argument when the provider does not report one.
+	"""
+	modelActualVersion: String!
 }
 
 type Query {
@@ -297,6 +473,54 @@ enum ReportType {
 	DAILY
 	WEEKLY
 	MONTHLY
+}
+
+"""
+One already-analyzed story leaf included in the periodic-report bundle.
+
+`sections` carries the leaf's `<<REDACTED_*_R{j}_*>>`-rewritten story
+analysis output produced upstream by aimer-web. `severity_factors`,
+`likelihood_factors`, and `ttp_tags` are the leaf factor / tag arrays
+preserved verbatim for prompt-side narrative weaving.
+"""
+input StoryAnalysisInput {
+	"""
+	Story identifier (opaque, reference only).
+	"""
+	storyId: ID!
+	"""
+	Earliest member event time across the story window (UTC).
+	"""
+	timeRangeStart: DateTime!
+	"""
+	Latest member event time across the story window (UTC).
+	"""
+	timeRangeEnd: DateTime!
+	"""
+	JSON-encoded leaf story-analysis sections (report-scope redaction
+	tokens applied upstream).
+	"""
+	sections: String!
+	"""
+	Leaf severity score from 0.0 to 1.0, when available.
+	"""
+	severityScore: Float
+	"""
+	Leaf likelihood score from 0.0 to 1.0, when available.
+	"""
+	likelihoodScore: Float
+	"""
+	Leaf severity factors preserved verbatim from the story analysis.
+	"""
+	severityFactors: [String!]!
+	"""
+	Leaf likelihood factors preserved verbatim from the story analysis.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	Leaf MITRE ATT&CK technique IDs preserved verbatim.
+	"""
+	ttpTags: [String!]!
 }
 
 """
@@ -420,162 +644,6 @@ input StoryRoleCountInput {
 	Number of members with this role (>= 0).
 	"""
 	count: Int!
-}
-
-"""
-Reporting cadence for `generatePeriodicSecurityReport`. Distinct from
-`ReportType` (the legacy auth-jwt `generateReport` enum, which has no
-`LIVE`). aimer-web's Phase 2 worker only dispatches `LIVE` and `DAILY`;
-`WEEKLY` / `MONTHLY` are accepted by the SDL for forward-compatibility.
-"""
-enum PeriodType {
-	LIVE
-	DAILY
-	WEEKLY
-	MONTHLY
-}
-
-"""
-Per-category event count inside the report window. `category` is
-nullable — events with no category aggregate into the single `null`
-bucket.
-"""
-input PeriodicCategoryCountInput {
-	category: String
-	count: Int!
-}
-
-"""
-Per-category count delta versus the previous period, expressed as a
-fractional change. `category` is nullable for the no-category bucket.
-"""
-input PeriodicCategoryDeltaInput {
-	category: String
-	delta: Float!
-}
-
-"""
-Baseline aggregate statistics for the report window. Carries no
-per-event PII — only counts, a category distribution, and the
-period-over-period drift signal. The prompt renders these as the
-"baseline drift" section.
-"""
-input PeriodicBaselineAggregatesInput {
-	"""
-	Total deduped `baseline_event` count inside the window.
-	"""
-	totalCount: Int!
-	"""
-	Category distribution over the window's baseline events.
-	"""
-	categoryDistribution: [PeriodicCategoryCountInput!]!
-	"""
-	Per-category delta versus the previous period.
-	"""
-	categoryDeltas: [PeriodicCategoryDeltaInput!]!
-	"""
-	Baseline drift severity, `[0.0, 1.0]`, computed by aimer-web.
-	"""
-	driftSeverity: Float!
-	"""
-	Baseline drift likelihood, `[0.0, 1.0]`, computed by aimer-web.
-	"""
-	driftLikelihood: Float!
-}
-
-"""
-One already-analyzed story leaf included in the report. Carries the
-report-scope-rewritten narrative plus the leaf's stored scores, factors,
-and TTP tags so the prompt can weave them into the synthesis. aimer
-returns no scores; aimer-web aggregates these inputs.
-"""
-input PeriodicStoryAnalysisInput {
-	storyId: ID!
-	"""
-	Report-scope narrative (`<<REDACTED_*_R{j}_*>>` tokens) for this story.
-	"""
-	analysis: String!
-	severityScore: Float!
-	likelihoodScore: Float!
-	severityFactors: [String!]!
-	likelihoodFactors: [String!]!
-	ttpTags: [String!]!
-	priorityTier: String!
-}
-
-"""
-One already-analyzed single-event leaf included in the report. Same
-shape as `PeriodicStoryAnalysisInput` but keyed by `(aiceId, eventKey)`.
-"""
-input PeriodicEventAnalysisInput {
-	aiceId: ID!
-	"""
-	Event key as a decimal string (NUMERIC(39,0) on the aimer-web side).
-	"""
-	eventKey: String!
-	"""
-	Report-scope narrative (`<<REDACTED_*_R{j}_*>>` tokens) for this event.
-	"""
-	analysis: String!
-	severityScore: Float!
-	likelihoodScore: Float!
-	severityFactors: [String!]!
-	likelihoodFactors: [String!]!
-	ttpTags: [String!]!
-	priorityTier: String!
-}
-
-"""
-Structured input bundle for `generatePeriodicSecurityReport`. aimer-web
-builds this deterministically from already-stored leaf rows + baseline
-aggregates; the prompt synthesizes a narrative across all three sources.
-"""
-input PeriodicReportInput {
-	storyAnalyses: [PeriodicStoryAnalysisInput!]!
-	eventAnalyses: [PeriodicEventAnalysisInput!]!
-	baselineAggregates: PeriodicBaselineAggregatesInput!
-	"""
-	Deduplicated, sorted union of all included leaf `ttpTags`. The prompt
-	is instructed to reference these techniques by ID in the narrative.
-	"""
-	aggregateTtpTags: [String!]!
-}
-
-"""
-Periodic report narrative returned by `generatePeriodicSecurityReport`.
-Each section is markdown and may contain `<<REDACTED_*_R{j}_*>>` tokens
-preserved verbatim from the input bundle. The mutation returns no scores
-or factors — aimer-web aggregates those from the leaf rows it passed in.
-"""
-type PeriodicSecurityReportResult {
-	"""
-	Period-framed executive summary (the day-over-day distinctness signal).
-	"""
-	executiveSummary: String!
-	"""
-	Top-K story highlights woven from the included story leaves.
-	"""
-	storyHighlights: String!
-	"""
-	Narrative reading of the baseline drift statistics.
-	"""
-	baselineDrift: String!
-	"""
-	Notable single events not already covered by the story highlights.
-	"""
-	notableEvents: String!
-	"""
-	Actionable recommendations for the period.
-	"""
-	recommendations: String!
-	"""
-	Identifier of the prompt template that produced this response.
-	"""
-	promptVersion: String!
-	"""
-	Provider-reported model snapshot. Falls back to the requested `model`.
-	"""
-	modelActualVersion: String!
 }
 
 scalar TimestampIso8601
