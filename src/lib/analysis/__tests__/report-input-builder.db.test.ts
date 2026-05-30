@@ -340,6 +340,10 @@ describe.skipIf(!hasPostgres)(
       expect(byCat.recon).toBe(1);
       expect(byCat.malware).toBe(1);
       expect(byCat.exfil).toBeUndefined();
+      // categoryDistribution is deterministically ordered (null last, then
+      // by category name) so the canonical input bundle and its order-
+      // sensitive input_hash are stable across plans/runs (#297 round 4 2).
+      expect(dist.map((d) => d.category)).toEqual(["malware", "recon"]);
     });
 
     it("excludes an event whose canonical baseline row is out-of-window", async () => {

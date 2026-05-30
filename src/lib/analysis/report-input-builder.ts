@@ -40,6 +40,7 @@ import type {
 import {
   type BaselineDrift,
   type CategoryCount,
+  compareCategoryNullLast,
   computeBaselineDrift,
 } from "./baseline-drift";
 import {
@@ -604,10 +605,14 @@ export async function buildPeriodicReportInput(
     eventAnalyses,
     baselineAggregates: {
       totalCount,
-      categoryDistribution: currentCounts.map((c) => ({
-        category: c.category,
-        count: c.count,
-      })),
+      // `categoryCounts` GROUPs without an ORDER BY, so Postgres may return
+      // the rows in any order across plans/runs. Sort with the same
+      // null-last comparator as `categoryDeltas` so the canonical aimer
+      // payload — and the order-sensitive `input_hash` over it — is stable
+      // (#297 review round 4, item 2).
+      categoryDistribution: currentCounts
+        .map((c) => ({ category: c.category, count: c.count }))
+        .sort((a, b) => compareCategoryNullLast(a.category, b.category)),
       categoryDeltas: drift.categoryDeltas.map((d) => ({
         category: d.category,
         delta: d.delta,

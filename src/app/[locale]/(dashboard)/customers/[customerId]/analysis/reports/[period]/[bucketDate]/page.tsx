@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { forbidden, notFound } from "next/navigation";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   loadReportResultPage,
@@ -60,13 +60,16 @@ export default async function ReportDetailPage({
   });
 
   // Non-member / non-existent → 404 (existence-hiding). Permission- or
-  // bridge-denied → 403 (round-15 S3). `forbidden()` is not available in
-  // this Next version, so render an inline 403 panel and stamp the status.
+  // bridge-denied → 403 (round-15 S3). `forbidden()` (enabled via
+  // `experimental.authInterrupts`) interrupts rendering with a real 403
+  // and renders the nearest `forbidden.tsx` boundary — the page response
+  // is no longer a 200 that merely looks denied (#297 review round 4,
+  // item 1).
   if (outcome.kind === "unauthorized" || outcome.kind === "not_found") {
     notFound();
   }
   if (outcome.kind === "forbidden") {
-    return <ForbiddenPanel period={period} bucketDate={bucketDate} />;
+    forbidden();
   }
   if (outcome.kind === "pending") {
     return (
@@ -171,34 +174,6 @@ export default async function ReportDetailPage({
           }}
         />
       </section>
-    </div>
-  );
-}
-
-function ForbiddenPanel({
-  period,
-  bucketDate,
-}: {
-  period: string;
-  bucketDate: string;
-}) {
-  return (
-    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Security Report</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {period} • {bucketDate}
-        </p>
-      </header>
-      <div
-        role="alert"
-        aria-label="forbidden-banner"
-        data-testid="forbidden-banner"
-        className="rounded border border-rose-400 bg-rose-50 px-4 py-3 text-sm text-rose-800"
-      >
-        You do not have permission to view this report (403). Ask a customer
-        administrator to grant the <code>reports:read</code> permission.
-      </div>
     </div>
   );
 }

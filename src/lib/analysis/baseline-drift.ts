@@ -61,6 +61,21 @@ export interface BaselineDrift {
   categoryDeltas: CategoryDelta[];
 }
 
+/**
+ * Deterministic category ordering shared by `categoryDeltas` and the
+ * `categoryDistribution` array: a `null` (no-category) bucket sorts last,
+ * then by category name ascending. Both arrays are order-sensitive in the
+ * canonical `input_hash`, so they must use one comparator.
+ */
+export function compareCategoryNullLast(
+  a: string | null,
+  b: string | null,
+): number {
+  if (a === null) return b === null ? 0 : 1;
+  if (b === null) return -1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function toMap(
   counts: ReadonlyArray<CategoryCount>,
 ): Map<string | null, number> {
@@ -110,11 +125,9 @@ export function computeBaselineDrift(
   }
   // Deterministic ordering for hash stability + display: nulls last,
   // then by category name.
-  categoryDeltas.sort((a, b) => {
-    if (a.category === null) return b.category === null ? 0 : 1;
-    if (b.category === null) return -1;
-    return a.category < b.category ? -1 : a.category > b.category ? 1 : 0;
-  });
+  categoryDeltas.sort((a, b) =>
+    compareCategoryNullLast(a.category, b.category),
+  );
 
   // First-bucket bootstrap: no prior distribution ⇒ no drift signal.
   if (priorTotal === 0) {

@@ -21,6 +21,9 @@ vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");
   },
+  forbidden: () => {
+    throw new Error("NEXT_FORBIDDEN");
+  },
 }));
 
 vi.mock("../regenerate-button", () => ({
@@ -131,6 +134,13 @@ describe("report detail page", () => {
     mockLoad.mockResolvedValue({ kind: "not_found" });
     await expect(renderPage("DAILY", "2026-05-26")).rejects.toThrow(
       "NEXT_NOT_FOUND",
+    );
+  });
+
+  it("403s (real status) when the loader reports forbidden", async () => {
+    mockLoad.mockResolvedValue({ kind: "forbidden" });
+    await expect(renderPage("DAILY", "2026-05-26")).rejects.toThrow(
+      "NEXT_FORBIDDEN",
     );
   });
 });

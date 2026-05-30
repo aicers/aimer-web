@@ -21,6 +21,12 @@ globally unique — bucket date `2026-05-26` exists for every customer.
 A lowercase period in the URL returns `404` rather than redirecting, so
 the UI route and the API path validation share one case convention.
 
+Access is existence-hiding and matches the summary and regenerate
+endpoints: a caller who is not a member of the customer — or a request
+for a report that does not exist — returns `404`, while a member without
+the `reports:read` permission, or a rejected bridge session, returns a
+real `403` (a permission notice, not a normal page).
+
 ![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, baseline drift, notable events, and recommendations sections](../../assets/report-detail.en.png)
 
 ## LIVE vs DAILY cadence

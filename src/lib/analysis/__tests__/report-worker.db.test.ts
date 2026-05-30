@@ -464,6 +464,42 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].generation).toBe(2);
   });
 
+  it("suppresses the result write when the parent archives during the LLM call", async () => {
+    // The tz-change trigger archives the parent state after the claim and
+    // the pre-call re-check pass, while the LLM call is in flight. The
+    // pre-insert re-check must catch it: no result row for the now-terminal
+    // state, and the claimed job is released back to queued, not finalized
+    // (#297 review round 4, item 3).
+    aimerCalls = 0;
+    await seedState(authPool, "DAILY", "2026-06-05", "ready");
+    await seedQueuedJob(authPool, "DAILY", "2026-06-05");
+
+    await processReportJob(makeJob({ bucket_date: "2026-06-05" }), {
+      ...opts(),
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        await seedState(authPool, "DAILY", "2026-06-05", "archived");
+        return AIMER_RESPONSE;
+      },
+    });
+
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-06-05' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(result).toHaveLength(0);
+
+    const { rows: job } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-06-05' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(job[0].status).toBe("queued");
+  });
+
   it("pickup skips a queued job whose parent state archived after queueing", async () => {
     // A timezone change archives the old-tz state without deleting its
     // queued jobs. The runtime pickup path must not call the LLM or write

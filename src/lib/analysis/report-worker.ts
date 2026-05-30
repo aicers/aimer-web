@@ -330,6 +330,17 @@ export async function processReportJob(
   const redactionPolicyVersion =
     built.redaction.kind === "ok" ? built.redaction.version : "baseline-only";
 
+  // Re-check the parent state immediately before the (expensive,
+  // irreversible) LLM call. The tz-change trigger archives old-tz state
+  // rows independently of this worker (migrations/auth/0030), so a state
+  // archived in the claim→here window must not reach the LLM. The pickup
+  // filter and the claim re-check close the pickup→claim window; this
+  // closes claim→call (#297 review round 4, item 3).
+  if (await parentStateArchived(opts.authPool, job)) {
+    await releaseArchivedJob(opts.authPool, job);
+    return;
+  }
+
   const force = job.force_requested_at !== null;
   void auditLog({
     ...auditBase,
@@ -426,6 +437,19 @@ export async function processReportJob(
   };
   const inputWatermark =
     job.cursor_watermark_quality === "strict" ? job.cursor_watermark : null;
+
+  // Final archived re-check immediately before the customer-DB result
+  // write. The state and the result row live in separate databases and so
+  // cannot share a transaction; this narrows the window in which an
+  // old-tz archive could land a result row for a terminal state to the
+  // sub-millisecond gap between this auth-DB read and the customer-DB
+  // INSERT commit. If archived, suppress the write and release the job
+  // rather than persisting a result for a terminal state (#297 review
+  // round 4, item 3).
+  if (await parentStateArchived(opts.authPool, job)) {
+    await releaseArchivedJob(opts.authPool, job);
+    return;
+  }
 
   // Step 1 — customer-DB INSERT + supersede prior.
   try {
@@ -611,6 +635,55 @@ async function writeResultRow(
 // ---------------------------------------------------------------------------
 // Auth-DB finalize / fail / requeue
 // ---------------------------------------------------------------------------
+
+// True when the parent `periodic_report_state` row is archived or gone —
+// either way the job must not produce an LLM call or result row. The
+// tz-change trigger (migrations/auth/0030) archives old-tz states
+// asynchronously, so this is re-evaluated at the call and write barriers.
+async function parentStateArchived(
+  authPool: Pool,
+  job: JobPickup,
+): Promise<boolean> {
+  const { rows } = await authPool.query<{ archived: boolean }>(
+    `SELECT (status = 'archived') AS archived
+       FROM periodic_report_state
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4`,
+    [job.customer_id, job.period, job.bucket_date, job.tz],
+  );
+  return rows.length === 0 || rows[0].archived === true;
+}
+
+// Return a claimed (`processing`) job to `queued` without recording
+// progress, used when the parent state archived mid-flight. The pickup
+// filter excludes archived parents, so the job is not re-picked; the
+// belt-and-braces archived-parent sweep (migrations/auth/0035) reaps it.
+async function releaseArchivedJob(
+  authPool: Pool,
+  job: JobPickup,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE periodic_report_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $8
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.period,
+      job.bucket_date,
+      job.tz,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
+    ],
+  );
+}
 
 async function finalizeJob(authPool: Pool, job: JobPickup): Promise<void> {
   await authPool.query(
