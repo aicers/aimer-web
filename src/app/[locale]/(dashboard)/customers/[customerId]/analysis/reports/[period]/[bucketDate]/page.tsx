@@ -13,6 +13,13 @@ interface PageProps {
     period: string;
     bucketDate: string;
   }>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
+
+// Collapse a possibly-repeated search param to its first scalar value.
+function firstParam(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 // UPPERCASE only (case lock): a lowercase period in the URL is a 404,
@@ -23,8 +30,12 @@ const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
 const BUCKET_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const LIVE_BUCKET_DATE = "1970-01-01";
 
-export default async function ReportDetailPage({ params }: PageProps) {
+export default async function ReportDetailPage({
+  params,
+  searchParams,
+}: PageProps) {
   const { customerId, period, bucketDate } = await params;
+  const sp = (await searchParams) ?? {};
 
   if (!PERIODS.has(period)) notFound();
   if (!BUCKET_DATE_RE.test(bucketDate)) notFound();
@@ -32,14 +43,30 @@ export default async function ReportDetailPage({ params }: PageProps) {
   // WEEKLY/MONTHLY are not produced in Phase 2 — no report to show yet.
   if (!PHASE2_PERIODS.has(period)) notFound();
 
+  // Forward the active report variant (if pinned via the query string) so a
+  // non-default report opens, displays, and regenerates as that variant.
+  const variant = {
+    tz: firstParam(sp.tz),
+    lang: firstParam(sp.lang),
+    model_name: firstParam(sp.model_name),
+    model: firstParam(sp.model),
+  };
+
   const outcome = await loadReportResultPage({
     customerId,
     period,
     bucketDate,
+    variant,
   });
 
+  // Non-member / non-existent → 404 (existence-hiding). Permission- or
+  // bridge-denied → 403 (round-15 S3). `forbidden()` is not available in
+  // this Next version, so render an inline 403 panel and stamp the status.
   if (outcome.kind === "unauthorized" || outcome.kind === "not_found") {
     notFound();
+  }
+  if (outcome.kind === "forbidden") {
+    return <ForbiddenPanel period={period} bucketDate={bucketDate} />;
   }
   if (outcome.kind === "pending") {
     return (
@@ -136,8 +163,42 @@ export default async function ReportDetailPage({ params }: PageProps) {
           customerId={data.customerId}
           period={data.period}
           bucketDate={data.bucketDate}
+          variant={{
+            tz: data.tz,
+            lang: data.lang,
+            model_name: data.modelName,
+            model: data.model,
+          }}
         />
       </section>
+    </div>
+  );
+}
+
+function ForbiddenPanel({
+  period,
+  bucketDate,
+}: {
+  period: string;
+  bucketDate: string;
+}) {
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      <header className="mb-6">
+        <h1 className="text-2xl font-bold text-foreground">Security Report</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {period} • {bucketDate}
+        </p>
+      </header>
+      <div
+        role="alert"
+        aria-label="forbidden-banner"
+        data-testid="forbidden-banner"
+        className="rounded border border-rose-400 bg-rose-50 px-4 py-3 text-sm text-rose-800"
+      >
+        You do not have permission to view this report (403). Ask a customer
+        administrator to grant the <code>reports:read</code> permission.
+      </div>
     </div>
   );
 }

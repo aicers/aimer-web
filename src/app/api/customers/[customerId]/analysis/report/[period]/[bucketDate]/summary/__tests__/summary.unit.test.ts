@@ -118,7 +118,7 @@ describe("periodic report summary endpoint", () => {
     expect(body).toEqual({ exists: false });
   });
 
-  it("returns the aggregate summary with an uppercase customer-scoped link", async () => {
+  it("returns the aggregate summary with an uppercase customer-scoped link carrying the requested variant", async () => {
     mockCustomerQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -129,19 +129,55 @@ describe("periodic report summary endpoint", () => {
       ],
     });
     const { GET } = await import("../route");
-    const res = await GET(summaryRequest("DAILY", "2026-05-26"));
+    // The request pins a non-default variant; the deep link must forward it
+    // so opening the link shows the same variant the summary described.
+    const res = await GET(
+      summaryRequest(
+        "DAILY",
+        "2026-05-26",
+        "?tz=Asia/Seoul&lang=KOREAN&model_name=anthropic&model=claude-3",
+      ),
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({
-      exists: true,
-      priority_tier: "HIGH",
-      severity_score: 0.85,
-      likelihood_score: 0.7,
-      score_kind: "aggregate",
-      link: `/customers/${CUSTOMER_ID}/analysis/reports/DAILY/2026-05-26`,
-    });
+    expect(body.exists).toBe(true);
+    expect(body.priority_tier).toBe("HIGH");
+    expect(body.severity_score).toBe(0.85);
+    expect(body.likelihood_score).toBe(0.7);
+    expect(body.score_kind).toBe("aggregate");
+    const linkUrl = new URL(`http://localhost${body.link}`);
+    expect(linkUrl.pathname).toBe(
+      `/customers/${CUSTOMER_ID}/analysis/reports/DAILY/2026-05-26`,
+    );
+    expect(linkUrl.searchParams.get("tz")).toBe("Asia/Seoul");
+    expect(linkUrl.searchParams.get("lang")).toBe("KOREAN");
+    expect(linkUrl.searchParams.get("model_name")).toBe("anthropic");
+    expect(linkUrl.searchParams.get("model")).toBe("claude-3");
     // The period in the link is UPPERCASE (case lock) — never `/daily/`.
     expect(body.link).not.toContain("/daily/");
+  });
+
+  it("omits variant query params from the link when none were requested", async () => {
+    mockClientQuery.mockResolvedValueOnce({
+      rows: [{ timezone: "Asia/Seoul" }],
+    });
+    mockCustomerQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          priority_tier: "LOW",
+          aggregate_severity_score: 0.1,
+          aggregate_likelihood_score: 0.1,
+        },
+      ],
+    });
+    const { GET } = await import("../route");
+    // No variant query at all → the link stays bare (default-variant behavior).
+    const res = await GET(summaryRequest("DAILY", "2026-05-26", ""));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.link).toBe(
+      `/customers/${CUSTOMER_ID}/analysis/reports/DAILY/2026-05-26`,
+    );
   });
 
   it("falls back to the customer timezone when ?tz is absent", async () => {

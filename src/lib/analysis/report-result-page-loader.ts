@@ -42,6 +42,7 @@ export interface ReportSections {
 
 export type ReportResultPageOutcome =
   | { kind: "unauthorized" }
+  | { kind: "forbidden" }
   | { kind: "not_found" }
   | { kind: "pending"; stateStatus: string }
   | { kind: "ok"; data: ReportResultPageData };
@@ -73,6 +74,18 @@ export interface ReportResultPageInput {
   customerId: string;
   period: string;
   bucketDate: string;
+  /**
+   * Optional report-variant selectors from the page's search params. When
+   * omitted, each falls back to its default (customer-timezone snapshot
+   * for `tz`; env defaults for `lang`/`model_name`/`model`), preserving the
+   * original default-variant behavior.
+   */
+  variant?: {
+    tz?: string;
+    lang?: string;
+    model_name?: string;
+    model?: string;
+  };
 }
 
 interface StoryRef {
@@ -114,19 +127,42 @@ export async function loadReportResultPage(
     authorize(client, "general", claims.sub, "reports:read", {
       customerId: input.customerId,
       operationKind: "read",
+      // Bridge sessions cannot read these surfaces (round-15 S3): an
+      // in-scope bridge → 403, mirroring the regenerate/summary endpoints.
+      allowInBridge: false,
       bridgeScope: bridgeCustomerIds
         ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
         : null,
     }),
   );
-  if (!auth.authorized) return { kind: "unauthorized" };
+  if (!auth.authorized) {
+    // Distinguish outcomes so the page can map them to the right status
+    // (round-15 S3): bridge denial and member-without-permission → 403;
+    // non-membership → 404 (existence-hiding). `authorizeGeneral` returns
+    // a `permissions` set for members (even when the required permission is
+    // absent) and leaves it undefined for non-members; a `reason` is only
+    // set for bridge denials.
+    if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
+    if (auth.permissions !== undefined) return { kind: "forbidden" };
+    return { kind: "unauthorized" };
+  }
 
-  // Default tz = the customer's current timezone snapshot.
-  const tzRow = await authPool.query<{ timezone: string }>(
-    `SELECT timezone FROM customers WHERE id = $1`,
-    [input.customerId],
-  );
-  const tz = tzRow.rows[0]?.timezone ?? "UTC";
+  // Variant resolution: each selector falls back to its default when the
+  // caller did not pin it. Default tz = the customer's current timezone
+  // snapshot; lang/model_name/model default to the env-configured variant.
+  let tz: string;
+  if (input.variant?.tz) {
+    tz = input.variant.tz;
+  } else {
+    const tzRow = await authPool.query<{ timezone: string }>(
+      `SELECT timezone FROM customers WHERE id = $1`,
+      [input.customerId],
+    );
+    tz = tzRow.rows[0]?.timezone ?? "UTC";
+  }
+  const lang = input.variant?.lang ?? DEFAULT_LANG;
+  const modelName = input.variant?.model_name ?? DEFAULT_MODEL_NAME;
+  const model = input.variant?.model ?? DEFAULT_MODEL;
 
   const stateRows = await authPool.query<{ status: string }>(
     `SELECT status FROM periodic_report_state
@@ -173,9 +209,9 @@ export async function loadReportResultPage(
       input.period,
       input.bucketDate,
       tz,
-      DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
+      lang,
+      modelName,
+      model,
     ],
   );
   if (resultRow.rows.length === 0) {
@@ -215,9 +251,11 @@ export async function loadReportResultPage(
       period: input.period,
       bucketDate: input.bucketDate,
       tz,
-      lang: DEFAULT_LANG,
-      modelName: DEFAULT_MODEL_NAME,
-      model: DEFAULT_MODEL,
+      // Report the row's actual stored variant, not the requested defaults,
+      // so the displayed metadata is truthful for non-default reports.
+      lang: row.lang,
+      modelName: row.model_name,
+      model: row.model,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
       generation: row.generation,

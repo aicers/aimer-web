@@ -12,10 +12,14 @@
 // period segment (`/customers/{cid}/analysis/reports/DAILY/...`) so the
 // UI route and the API path validation share one case convention.
 //
-// Permission gate: `reports:read`. Bridge sessions are allowed for reads.
-// Non-member → 404 (existence-hiding); member-without-perm → 403;
-// bridge_not_allowed → 403. Path validation mirrors the regenerate
-// endpoint (calendar-valid ISO date; LIVE pinned to 1970-01-01).
+// Permission gate: `reports:read`. Bridge sessions are denied on reads
+// (round-15 S3): non-member → 404 (existence-hiding); member-without-perm
+// → 403; bridge → 403. Path validation mirrors the regenerate endpoint
+// (calendar-valid ISO date; LIVE pinned to 1970-01-01).
+//
+// The returned `link` carries the report-variant query params that were
+// requested (`?tz=&lang=&model_name=&model=`) so the deep link opens the
+// same variant the summary described instead of coercing to the default.
 
 import type { NextRequest } from "next/server";
 import { type AuthorizeResult, authorize } from "@/lib/auth/authorization";
@@ -97,6 +101,9 @@ export const GET = withAuth(
         {
           customerId,
           operationKind: "read",
+          // Bridge sessions cannot read these surfaces (round-15 S3):
+          // an in-scope bridge is denied with bridge_not_allowed → 403.
+          allowInBridge: false,
           bridgeScope: auth.bridgeCustomerIds
             ? {
                 aiceId: auth.bridgeAiceId ?? "",
@@ -157,14 +164,26 @@ export const GET = withAuth(
       return Response.json({ exists: false });
     }
     const row = rows.rows[0];
+    // Forward only the variant params the caller actually requested so the
+    // deep link opens the same variant. Omitted selectors stay implicit and
+    // resolve to the page's defaults, matching pre-existing link behavior.
+    const linkQuery = new URLSearchParams();
+    for (const key of ["tz", "lang", "model_name", "model"] as const) {
+      const value = req.nextUrl.searchParams.get(key);
+      if (value) linkQuery.set(key, value);
+    }
+    const linkQs = linkQuery.toString();
     return Response.json({
       exists: true,
       priority_tier: row.priority_tier,
       severity_score: row.aggregate_severity_score,
       likelihood_score: row.aggregate_likelihood_score,
       score_kind: "aggregate",
-      // Customer-scoped, uppercase-period view URL (item 4 / case lock).
-      link: `/customers/${customerId}/analysis/reports/${parts.period}/${parts.bucketDate}`,
+      // Customer-scoped, uppercase-period view URL (item 4 / case lock),
+      // carrying the requested variant so the deep link is variant-faithful.
+      link: `/customers/${customerId}/analysis/reports/${parts.period}/${parts.bucketDate}${
+        linkQs ? `?${linkQs}` : ""
+      }`,
     });
   },
   { ctx: "general" },

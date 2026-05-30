@@ -398,10 +398,42 @@ function dedupeSorted(values: ReadonlyArray<string>): string[] {
 }
 
 /**
- * Canonical, stable JSON serialization of the input bundle for the
- * `input_hash`. Variant fields are included so the hash distinguishes
- * report variants; refs and aggregates are sorted so two worker
- * instances building the same bucket produce the same hash.
+ * Deterministic JSON serialization with object keys sorted recursively so
+ * the same logical value always serializes to the same string regardless of
+ * key insertion order. Arrays keep their order — callers sort arrays whose
+ * ordering is not semantically meaningful before passing them in.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`)
+    .join(",")}}`;
+}
+
+/**
+ * `input_hash` over the canonical input bundle. Earlier this hashed only
+ * period/bucket/variant + provenance refs + baseline counts/drift, which
+ * missed input-*builder* drift: a change to token rewriting, factor
+ * formatting, or aggregation would produce a different LLM payload under
+ * identical refs yet the same hash, defeating the column's purpose (#297
+ * review round 3, item 3). It now hashes the deterministic, key-sorted
+ * serialization of the actual `aimerInputs` payload sent to aimer PLUS the
+ * variant identity `(period, bucket_date, tz, lang, model_name, model)` and
+ * the generation-stamped provenance refs (sorted canonically), so two
+ * worker instances building the same bundle hash identically while any
+ * change to the produced payload changes the hash.
+ *
+ * (Refs carry `generation` and leaf rows are immutable per generation —
+ * round-14 item 1 — so identical refs already imply identical leaf content;
+ * the payload term is what additionally captures code/builder drift.)
  */
 function computeInputHash(args: {
   period: string;
@@ -409,8 +441,7 @@ function computeInputHash(args: {
   variant: ReportVariant;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
-  drift: BaselineDrift;
-  currentCounts: CategoryCount[];
+  aimerInputs: PeriodicReportInput;
 }): string {
   const storyRefs = [...args.storyRefs].sort(
     (a, b) =>
@@ -422,9 +453,6 @@ function computeInputHash(args: {
       a.event_key.localeCompare(b.event_key) ||
       a.generation - b.generation,
   );
-  const sortedCounts = [...args.currentCounts].sort((a, b) =>
-    String(a.category).localeCompare(String(b.category)),
-  );
   const canonical = {
     period: args.period,
     bucket_date: args.bucketDate,
@@ -434,14 +462,9 @@ function computeInputHash(args: {
     model: args.variant.model,
     story_refs: storyRefs,
     event_refs: eventRefs,
-    baseline_aggregates: {
-      category_distribution: sortedCounts,
-      category_deltas: args.drift.categoryDeltas,
-      drift_severity: args.drift.severity,
-      drift_likelihood: args.drift.likelihood,
-    },
+    aimer_inputs: args.aimerInputs,
   };
-  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  return createHash("sha256").update(stableStringify(canonical)).digest("hex");
 }
 
 export async function buildPeriodicReportInput(
@@ -611,8 +634,7 @@ export async function buildPeriodicReportInput(
     variant: args.variant,
     storyRefs,
     eventRefs,
-    drift,
-    currentCounts,
+    aimerInputs,
   });
 
   const sourceAiceIds = Array.from(

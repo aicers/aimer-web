@@ -6,6 +6,17 @@ interface Props {
   customerId: string;
   period: string;
   bucketDate: string;
+  /**
+   * The active report variant the page was opened with. Forwarded on the
+   * regenerate POST as `?tz=&lang=&model_name=&model=` so a non-default
+   * report is regenerated as that same variant instead of the default.
+   */
+  variant?: {
+    tz?: string;
+    lang?: string;
+    model_name?: string;
+    model?: string;
+  };
 }
 
 /**
@@ -22,6 +33,7 @@ export function ReportRegenerateButton({
   customerId,
   period,
   bucketDate,
+  variant,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -39,8 +51,16 @@ export function ReportRegenerateButton({
           .split("; ")
           .find((c) => c.startsWith("csrf="))
           ?.slice("csrf=".length) ?? "";
+      const query = new URLSearchParams();
+      if (variant?.tz) query.set("tz", variant.tz);
+      if (variant?.lang) query.set("lang", variant.lang);
+      if (variant?.model_name) query.set("model_name", variant.model_name);
+      if (variant?.model) query.set("model", variant.model);
+      const qs = query.toString();
       const res = await fetch(
-        `/api/customers/${customerId}/analysis/report/${period}/${bucketDate}/regenerate`,
+        `/api/customers/${customerId}/analysis/report/${period}/${bucketDate}/regenerate${
+          qs ? `?${qs}` : ""
+        }`,
         {
           method: "POST",
           headers: { "x-csrf-token": csrf },
