@@ -99,6 +99,27 @@ function resolveDailySettleHoursWithWatermark(): number {
   );
 }
 
+// Issue #358 — read-at-tick-time story readiness windows so operators
+// (and integration tests) can tune how long a settled story waits before
+// it becomes eligible for analysis without reloading the process. Mirrors
+// the `resolveDailySettleHours()` pattern above and reuses `resolveInt`,
+// whose `> 0` floor rejects the worst misconfiguration (idle = 0 →
+// analyzing half-formed stories) by falling back to the default. The
+// 15-min / 6-hr defaults stay the product-policy windows.
+function resolveStoryIdleMinutes(): number {
+  return resolveInt(
+    process.env.ANALYSIS_STORY_IDLE_MINUTES,
+    DEFAULT_STORY_IDLE_MINUTES,
+  );
+}
+
+function resolveStoryMaxWaitHours(): number {
+  return resolveInt(
+    process.env.ANALYSIS_STORY_MAX_WAIT_HOURS,
+    DEFAULT_STORY_MAX_WAIT_HOURS,
+  );
+}
+
 function resolveInt(raw: string | undefined, fallback: number): number {
   if (!raw) return fallback;
   const n = Number(raw);
@@ -143,12 +164,7 @@ async function tickStoryStates(
       ORDER BY customer_id, story_id
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [
-      BATCH_SIZE,
-      DEFAULT_STORY_IDLE_MINUTES,
-      DEFAULT_STORY_MAX_WAIT_HOURS,
-      nowIso,
-    ],
+    [BATCH_SIZE, resolveStoryIdleMinutes(), resolveStoryMaxWaitHours(), nowIso],
   );
   for (const row of pending) {
     await client.query(

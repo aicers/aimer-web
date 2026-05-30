@@ -6,6 +6,25 @@
 커서 워터마크(RFC 0002 Phase 0.5 / issue #295)에 관련된 운영자용
 환경 변수와 로그 신호를 설명합니다.
 
+## 스토리 준비(readiness) 윈도우
+
+워커는 `story_analysis_state` 행도 `pending`에서 `ready`로 승격시킵니다.
+스토리는 정적 윈도우 동안 유휴 상태가 되거나
+(`ANALYSIS_STORY_IDLE_MINUTES` 동안 새 멤버 없음) **또는** 첫 멤버 이후
+최대 대기 시간이 경과하면(`ANALYSIS_STORY_MAX_WAIT_HOURS`) 둘 중 먼저
+도달하는 시점에 ready가 됩니다.
+
+| 변수 | 기본값 | 적용 조건 |
+| --- | --- | --- |
+| `ANALYSIS_STORY_IDLE_MINUTES` | `15` | 유휴 윈도우. `last_member_at`과 비교 — 이만큼 유휴 상태인 스토리가 ready가 됩니다. |
+| `ANALYSIS_STORY_MAX_WAIT_HOURS` | `6` | 최대 대기 상한. `first_member_at`과 비교 — 계속 활동 중인 스토리도 첫 멤버 이후 이만큼 경과하면 ready가 됩니다. |
+
+두 값 모두 틱 시점에 읽으므로(프로세스 재시작 불필요) 배포별로 분석
+지연 시간을 단축하거나 늘릴 수 있습니다. 각 값은 양의 정수여야 하며,
+`0`, 음수, 숫자가 아닌 값은 거부되고 기본값이 사용됩니다. 이 윈도우는
+순수 성능 노브가 아니라 제품 정책상 settle 노브입니다 — 값을 낮추면
+스토리가 settle을 마치기 전에 분석되므로 의미 있는 하한을 유지하세요.
+
 ## DAILY settle 윈도우
 
 워커는 각 pending DAILY 행에 대해 고객 시간대 기준 버킷 종료 시점과

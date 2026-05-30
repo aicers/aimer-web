@@ -28,11 +28,12 @@ The worker pipeline runs the following stages without operator action:
 1. As Phase 2 ingest writes story member events for a customer, the
    `story_analysis_state` row tracks readiness. It promotes from
    `pending` to `ready` once the story has been idle for the readiness
-   quiet window or once the maximum wait has elapsed. Both windows are
-   compile-time constants in Phase 1 — `DEFAULT_STORY_IDLE_MINUTES`
-   (15 minutes) and `DEFAULT_STORY_MAX_WAIT_HOURS` (6 hours) in
-   `src/lib/analysis/state.ts` — and are not yet exposed as env
-   vars.
+   quiet window or once the maximum wait has elapsed. Both windows
+   default to `15` minutes (idle) and `6` hours (max wait) and are
+   tunable per deployment via `ANALYSIS_STORY_IDLE_MINUTES` /
+   `ANALYSIS_STORY_MAX_WAIT_HOURS` (read at tick time; see
+   [Analysis Worker](../operations/analysis-worker.md)). Non-positive or
+   non-numeric overrides fall back to the defaults.
 2. The dispatcher seeds a real `story_analysis_job` row for the default
    variant against every `ready` or `dirty` state row that lacks one,
    then picks `queued` rows with `FOR UPDATE SKIP LOCKED`, advisory-

@@ -6,6 +6,26 @@ their bucket has closed and the settle window has elapsed. This page
 documents the operator knobs and log signals tied to the cursor
 watermark (RFC 0002 Phase 0.5 / issue #295).
 
+## Story readiness windows
+
+The worker also promotes `story_analysis_state` rows from `pending` to
+`ready`. A story becomes ready once it has been idle for the quiet
+window (no new member for `ANALYSIS_STORY_IDLE_MINUTES`) **or** once the
+maximum wait since its first member has elapsed
+(`ANALYSIS_STORY_MAX_WAIT_HOURS`), whichever comes first.
+
+| Variable | Default | When used |
+| --- | --- | --- |
+| `ANALYSIS_STORY_IDLE_MINUTES` | `15` | Quiet window. Compared against `last_member_at` — a story idle this long becomes ready. |
+| `ANALYSIS_STORY_MAX_WAIT_HOURS` | `6` | Max-wait ceiling. Compared against `first_member_at` — a still-active story becomes ready once this long has passed since its first member. |
+
+Both are read at tick time (no process restart needed) and shorten or
+lengthen analysis latency per deployment. Each value must be a positive
+integer; `0`, negative, or non-numeric values are rejected and the
+default is used. These windows are product-policy settle knobs, not pure
+performance knobs — lowering them analyzes stories before they have
+finished settling, so keep a meaningful floor.
+
 ## DAILY settle windows
 
 The worker compares each pending DAILY row's bucket end (in the
