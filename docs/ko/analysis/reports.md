@@ -97,6 +97,10 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
 스케줄링·LLM 호출을 수행합니다. **Regenerate** 버튼은 주기 외 강제 갱신을
 위한 것입니다.
 
+![주간 주기 리포트 상세 페이지 — HIGH 우선순위의 한 주 리뷰로, 요약은 7일 구간에 걸친 반복적 비즈니스 이메일 침해(BEC) 캠페인(동의 피싱 유인, 악성 OAuth 권한 부여, 이어진 결제 우회 시도)을 매일 나열하는 대신 추상화하며, 리포트 본문 위 주기 탭 바가 Weekly로 설정되어 있음](../../assets/report-detail-weekly.ko.png)
+
+![월간 주기 리포트 상세 페이지 — 지속적인 웹 익스플로잇 캠페인에 대한 CRITICAL 한 달 리뷰로, 요약은 한 달 내 악화 추세를 서술하고 베이스라인 관찰은 개별 스토리보다 그 달의 우선순위 등급을 끌어올린 월 중순 정찰 급증을 짚음](../../assets/report-detail-monthly.ko.png)
+
 ## 주기 탭
 
 상세 페이지에는 리포트 본문 위에 **Live / Daily / Weekly / Monthly** 탭
@@ -108,6 +112,8 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
 없는(추적 상태가 없는) 버킷은 `404`를 반환합니다. 탭 바 자체는 항상
 렌더링되므로 주기 간 이동은 자유롭게 할 수 있습니다. 고정된
 변형(`?tz=&lang=&model_name=&model=`)은 탭 사이에서 그대로 유지됩니다.
+
+![리포트 본문 위에 표시되는 Live / Daily / Weekly / Monthly 주기 탭 바로, Weekly 탭이 활성·강조된 주기이며 나머지 셋은 같은 시간 구간을 각자의 주기로 보는 리포트로 연결됨](../../assets/report-period-tabs.ko.png)
 
 ## 리포트 생성 과정
 

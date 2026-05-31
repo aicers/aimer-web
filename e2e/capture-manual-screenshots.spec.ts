@@ -45,7 +45,11 @@ import {
 import { loadEnv } from "./fixtures/env";
 import {
   REPORT_BUCKET_DATE,
+  REPORT_BUCKET_DATE_MONTHLY,
+  REPORT_BUCKET_DATE_WEEKLY,
   REPORT_PERIOD,
+  REPORT_PERIOD_MONTHLY,
+  REPORT_PERIOD_WEEKLY,
   seedReportAnalysisFixture,
 } from "./fixtures/report-analysis.seed";
 import {
@@ -1274,31 +1278,99 @@ base.describe.serial("Manual screenshots", () => {
     });
   }
 
-  function reportUrl(locale: Locale): string {
+  function reportUrl(
+    locale: Locale,
+    period: string = REPORT_PERIOD,
+    bucketDate: string = REPORT_BUCKET_DATE,
+  ): string {
     return (
       `/${locale}/customers/${testData.customer.id}` +
-      `/analysis/reports/${REPORT_PERIOD}/${REPORT_BUCKET_DATE}`
+      `/analysis/reports/${period}/${bucketDate}`
     );
   }
 
+  // The three period detail captures (DAILY / WEEKLY / MONTHLY) share one
+  // capture flow — only the seeded `(period, bucket_date)` and the output
+  // filename change. WEEKLY / MONTHLY exist because #298 added their report
+  // surfaces and #365's deferred deliverable is their manual screenshots;
+  // the seed gives each a within-window comparative narrative (escalating /
+  // sustained, no fabricated prior-period delta — matching aimer#434).
+  const REPORT_DETAIL_SHOTS: ReadonlyArray<{
+    name: string;
+    period: string;
+    bucketDate: string;
+  }> = [
+    {
+      name: "report-detail",
+      period: REPORT_PERIOD,
+      bucketDate: REPORT_BUCKET_DATE,
+    },
+    {
+      name: "report-detail-weekly",
+      period: REPORT_PERIOD_WEEKLY,
+      bucketDate: REPORT_BUCKET_DATE_WEEKLY,
+    },
+    {
+      name: "report-detail-monthly",
+      period: REPORT_PERIOD_MONTHLY,
+      bucketDate: REPORT_BUCKET_DATE_MONTHLY,
+    },
+  ];
+
+  for (const shot of REPORT_DETAIL_SHOTS) {
+    for (const locale of LOCALES) {
+      base(`${shot.name}.${locale}.png`, async () => {
+        await ensureReportFixtures();
+        // The five sections + metadata grid run well past 720 px on the
+        // fixed-height dashboard shell, so bump the viewport height for the
+        // capture (same per-shot override pattern as the story captures).
+        await mgrPage.setViewportSize({ width: 1280, height: 1600 });
+        await mgrPage.goto(reportUrl(locale, shot.period, shot.bucketDate));
+        await settle(mgrPage);
+        await expect(
+          mgrPage.locator('[data-testid="priority-tier-badge"]'),
+        ).toBeVisible();
+        await expect(
+          mgrPage.locator('[data-testid="section-executive_summary"]'),
+        ).toBeVisible();
+        await mgrPage.screenshot({
+          path: resolve(ASSETS, `${shot.name}.${locale}.png`),
+          fullPage: true,
+        });
+      });
+    }
+  }
+
+  // Period tab bar (#298) — the Live / Daily / Weekly / Monthly navigation
+  // above the report body. Captured from the WEEKLY view so the active tab
+  // is one of the new Phase 3 periods. Clipped to the tab strip rather than
+  // the full page so the manual's "Period tabs" section shows just the
+  // affordance it documents.
   for (const locale of LOCALES) {
-    base(`report-detail.${locale}.png`, async () => {
+    base(`report-period-tabs.${locale}.png`, async () => {
       await ensureReportFixtures();
-      // The five sections + metadata grid run well past 720 px on the
-      // fixed-height dashboard shell, so bump the viewport height for the
-      // capture (same per-shot override pattern as the story captures).
-      await mgrPage.setViewportSize({ width: 1280, height: 1600 });
-      await mgrPage.goto(reportUrl(locale));
+      await mgrPage.setViewportSize(VIEWPORT);
+      await mgrPage.goto(
+        reportUrl(locale, REPORT_PERIOD_WEEKLY, REPORT_BUCKET_DATE_WEEKLY),
+      );
       await settle(mgrPage);
+      const tabs = mgrPage.locator('[data-testid="report-period-tabs"]');
+      await expect(tabs).toBeVisible();
       await expect(
-        mgrPage.locator('[data-testid="priority-tier-badge"]'),
+        mgrPage.locator('[data-testid="report-tab-WEEKLY"]'),
       ).toBeVisible();
-      await expect(
-        mgrPage.locator('[data-testid="section-executive_summary"]'),
-      ).toBeVisible();
+      // Clip to the tab bar's bounding box (plus a small margin) so the
+      // asset is the navigation strip, not the whole report page.
+      const box = await tabs.boundingBox();
+      if (!box) throw new Error("Could not locate report period tab bar");
       await mgrPage.screenshot({
-        path: resolve(ASSETS, `report-detail.${locale}.png`),
-        fullPage: true,
+        path: resolve(ASSETS, `report-period-tabs.${locale}.png`),
+        clip: {
+          x: Math.max(0, box.x - 8),
+          y: Math.max(0, box.y - 8),
+          width: Math.min(VIEWPORT.width, box.width + 16),
+          height: box.height + 16,
+        },
       });
     });
   }
