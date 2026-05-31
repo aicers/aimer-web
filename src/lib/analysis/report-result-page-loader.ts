@@ -51,7 +51,11 @@ export type ReportResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "forbidden" }
   | { kind: "not_found" }
-  | { kind: "pending"; stateStatus: string }
+  // `tz` is the resolved report timezone (pinned variant → customer
+  // default → UTC). The detail page anchors the LIVE period tab on
+  // "today" in this tz, so the pending outcome must surface it too — the
+  // `ok` outcome already exposes it via `data.tz`.
+  | { kind: "pending"; stateStatus: string; tz: string }
   | { kind: "ok"; data: ReportResultPageData };
 
 export interface ReportResultPageData {
@@ -222,7 +226,7 @@ export async function loadReportResultPage(
     ],
   );
   if (resultRow.rows.length === 0) {
-    return { kind: "pending", stateStatus: stateRows.rows[0].status };
+    return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
   }
   const row = resultRow.rows[0];
 

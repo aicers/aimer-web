@@ -31,20 +31,43 @@ function firstParam(value: string | string[] | undefined): string | undefined {
 // The calendar day the period tabs anchor their cross-period links to.
 // For a calendar period the bucket_date IS that day; LIVE carries the
 // synthetic epoch bucket, so anchor the other tabs on "today" in the
-// pinned tz (UTC fallback) instead — otherwise every non-LIVE tab would
-// point at 1970.
+// resolved report tz instead — otherwise every non-LIVE tab would point
+// at 1970. The tz must be the timezone the loader resolved (pinned
+// variant → customer default → UTC), NOT the raw `?tz` query value: a
+// default LIVE URL has no `?tz`, and falling back to UTC there would
+// anchor an Asia/Seoul customer's tabs on the wrong calendar day around
+// the UTC date boundary.
 function tabReferenceDate(
   period: string,
   bucketDate: string,
   tz: string | undefined,
 ): string {
   if (period !== "LIVE") return bucketDate;
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz || "UTC",
+  return formatDayInTz(getCurrentTimestamp(), tz);
+}
+
+// Format `at` as a `YYYY-MM-DD` calendar day in `tz`. A malformed tz
+// makes `Intl.DateTimeFormat` throw `RangeError`; swallow it and fall
+// back to UTC so a bad pinned `?tz` cannot 500 the detail page (the
+// loader already turns an unmatched tz into the usual not-found/pending
+// outcome).
+function formatDayInTz(at: Date, tz: string | undefined): string {
+  const opts: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(getCurrentTimestamp());
+  };
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || "UTC",
+      ...opts,
+    }).format(at);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "UTC",
+      ...opts,
+    }).format(at);
+  }
 }
 
 // UPPERCASE only (case lock): a lowercase period in the URL is a 404,
@@ -75,16 +98,6 @@ export default async function ReportDetailPage({
     model: firstParam(sp.model),
   };
 
-  const tabs = (
-    <ReportPeriodTabs
-      locale={locale}
-      customerId={customerId}
-      activePeriod={period}
-      referenceDate={tabReferenceDate(period, bucketDate, variant.tz)}
-      variant={variant}
-    />
-  );
-
   const outcome = await loadReportResultPage({
     customerId,
     period,
@@ -104,6 +117,23 @@ export default async function ReportDetailPage({
   if (outcome.kind === "forbidden") {
     forbidden();
   }
+
+  // Build the tab bar only now that the loader has resolved the report
+  // timezone (the only remaining outcomes — `pending` and `ok` — both
+  // carry it). The LIVE tab anchors its cross-period links on "today" in
+  // that resolved tz, so this must run after the loader rather than off
+  // the raw `?tz` query value.
+  const resolvedTz = outcome.kind === "ok" ? outcome.data.tz : outcome.tz;
+  const tabs = (
+    <ReportPeriodTabs
+      locale={locale}
+      customerId={customerId}
+      activePeriod={period}
+      referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
+      variant={variant}
+    />
+  );
+
   if (outcome.kind === "pending") {
     return (
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
