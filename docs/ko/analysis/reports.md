@@ -97,6 +97,10 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
 스케줄링·LLM 호출을 수행합니다. **Regenerate** 버튼은 주기 외 강제 갱신을
 위한 것입니다.
 
+![Weekly 탭이 활성화된 주간 주기 리포트 상세 페이지 — CRITICAL 한 주 리뷰로, 우선순위 등급 배지, 집계 심각도·신뢰도 점수, MITRE ATT&CK 기법 칩, 그리고 요약·스토리 하이라이트·주요 이벤트·베이스라인 관찰·기간 전망 섹션이 표시됨. 요약은 매일을 나열하지 않고 한 주의 활동을 하나의 서술로 추상화함](../../assets/report-detail-weekly.ko.png)
+
+![Monthly 탭이 활성화된 월간 주기 리포트 상세 페이지 — CRITICAL 한 달 리뷰로, 동일한 헤더(우선순위 등급, 집계 점수, 기법 칩)와 다섯 개의 서술 섹션이 표시되며, 요약과 베이스라인 관찰이 그 달의 추세를 구간 내에서 서술함](../../assets/report-detail-monthly.ko.png)
+
 ## 주기 탭
 
 상세 페이지에는 리포트 본문 위에 **Live / Daily / Weekly / Monthly** 탭
@@ -108,6 +112,8 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
 없는(추적 상태가 없는) 버킷은 `404`를 반환합니다. 탭 바 자체는 항상
 렌더링되므로 주기 간 이동은 자유롭게 할 수 있습니다. 고정된
 변형(`?tz=&lang=&model_name=&model=`)은 탭 사이에서 그대로 유지됩니다.
+
+![리포트 본문 위에 표시되는 Live / Daily / Weekly / Monthly 주기 탭 바로, Weekly 탭이 활성화되어 있고 나머지 셋은 같은 시간 구간을 각자의 주기로 보는 리포트로 연결됨](../../assets/report-period-tabs.ko.png)
 
 ## 리포트 생성 과정
 

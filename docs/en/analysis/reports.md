@@ -110,6 +110,10 @@ No operator action is needed for any period: a background worker seeds,
 schedules, and runs the LLM calls. The **Regenerate** button (below) is
 for forcing an out-of-cadence refresh.
 
+![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
+
+![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and baseline observations framing the month's trend from within the window](../../assets/report-detail-monthly.en.png)
+
 ## Period tabs
 
 The detail page shows a **Live / Daily / Weekly / Monthly** tab bar
@@ -123,6 +127,8 @@ whose bucket is tracked but not yet generated opens the page in its
 (no tracked state) returns `404`. The tab bar itself always renders, so
 you can move between cadences freely. Any pinned variant
 (`?tz=&lang=&model_name=&model=`) carries across the tabs.
+
+![The Live / Daily / Weekly / Monthly period tab bar shown above the report body, with the Weekly tab active and the other three linking to the report for the same stretch of time at their own cadence](../../assets/report-period-tabs.en.png)
 
 ## How a report is built
 
