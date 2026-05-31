@@ -1319,6 +1319,28 @@ base.describe.serial("Manual screenshots", () => {
     });
   }
 
+  for (const locale of LOCALES) {
+    base(`report-index.${locale}.png`, async () => {
+      // #369 — the customer-scoped report index. Reuses the report seed
+      // (a DAILY bucket), so the index renders at least the Daily section
+      // with one linked bucket. The page lists buckets discovered from
+      // `periodic_report_state`, so the seed's state row is enough.
+      await ensureReportFixtures();
+      await mgrPage.setViewportSize({ width: 1280, height: 900 });
+      await mgrPage.goto(
+        `/${locale}/customers/${testData.customer.id}/analysis/reports`,
+      );
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="report-index"]'),
+      ).toBeVisible();
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `report-index.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
   base("analysis-result cleanup", async () => {
     // Captures above leave the per-customer DB behind so subsequent
     // reruns are cheap; explicit cleanup here means a fresh capture
