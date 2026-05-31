@@ -8,6 +8,12 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
+  // Screenshots are not a CI artifact. `capture-manual-screenshots.spec.ts`
+  // is the only spec that takes screenshots; it is excluded here so the CI
+  // E2E run (`pnpm test:e2e`) stays pure regression and never writes images.
+  // Manual screenshots are captured locally via `pnpm capture` (see
+  // e2e/capture.config.ts) and committed as static assets under docs/assets/.
+  testIgnore: ["**/capture-manual-screenshots.spec.ts"],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
