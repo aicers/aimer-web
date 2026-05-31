@@ -8,7 +8,9 @@ import {
   loadReportResultPage,
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
+import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { ReportRegenerateButton } from "./regenerate-button";
+import { ReportPeriodTabs } from "./report-period-tabs";
 
 interface PageProps {
   params: Promise<{
@@ -26,17 +28,58 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
+// The calendar day the period tabs anchor their cross-period links to.
+// For a calendar period the bucket_date IS that day; LIVE carries the
+// synthetic epoch bucket, so anchor the other tabs on "today" in the
+// resolved report tz instead — otherwise every non-LIVE tab would point
+// at 1970. The tz must be the timezone the loader resolved (pinned
+// variant → customer default → UTC), NOT the raw `?tz` query value: a
+// default LIVE URL has no `?tz`, and falling back to UTC there would
+// anchor an Asia/Seoul customer's tabs on the wrong calendar day around
+// the UTC date boundary.
+function tabReferenceDate(
+  period: string,
+  bucketDate: string,
+  tz: string | undefined,
+): string {
+  if (period !== "LIVE") return bucketDate;
+  return formatDayInTz(getCurrentTimestamp(), tz);
+}
+
+// Format `at` as a `YYYY-MM-DD` calendar day in `tz`. A malformed tz
+// makes `Intl.DateTimeFormat` throw `RangeError`; swallow it and fall
+// back to UTC so a bad pinned `?tz` cannot 500 the detail page (the
+// loader already turns an unmatched tz into the usual not-found/pending
+// outcome).
+function formatDayInTz(at: Date, tz: string | undefined): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || "UTC",
+      ...opts,
+    }).format(at);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "UTC",
+      ...opts,
+    }).format(at);
+  }
+}
+
 // UPPERCASE only (case lock): a lowercase period in the URL is a 404,
 // not a case-insensitive redirect, so the UI route and the API path
 // validation share one case convention.
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
 
 export default async function ReportDetailPage({
   params,
   searchParams,
 }: PageProps) {
-  const { customerId, period, bucketDate } = await params;
+  const { locale, customerId, period, bucketDate } = await params;
   const sp = (await searchParams) ?? {};
 
   if (!PERIODS.has(period)) notFound();
@@ -45,8 +88,6 @@ export default async function ReportDetailPage({
   // `$3::date` cast (#297 review round 5, item 2).
   if (!isValidBucketDate(bucketDate)) notFound();
   if (period === "LIVE" && bucketDate !== LIVE_BUCKET_DATE) notFound();
-  // WEEKLY/MONTHLY are not produced in Phase 2 — no report to show yet.
-  if (!PHASE2_PERIODS.has(period)) notFound();
 
   // Forward the active report variant (if pinned via the query string) so a
   // non-default report opens, displays, and regenerates as that variant.
@@ -76,6 +117,23 @@ export default async function ReportDetailPage({
   if (outcome.kind === "forbidden") {
     forbidden();
   }
+
+  // Build the tab bar only now that the loader has resolved the report
+  // timezone (the only remaining outcomes — `pending` and `ok` — both
+  // carry it). The LIVE tab anchors its cross-period links on "today" in
+  // that resolved tz, so this must run after the loader rather than off
+  // the raw `?tz` query value.
+  const resolvedTz = outcome.kind === "ok" ? outcome.data.tz : outcome.tz;
+  const tabs = (
+    <ReportPeriodTabs
+      locale={locale}
+      customerId={customerId}
+      activePeriod={period}
+      referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
+      variant={variant}
+    />
+  );
+
   if (outcome.kind === "pending") {
     return (
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -87,6 +145,7 @@ export default async function ReportDetailPage({
             {period} • {bucketDate}
           </p>
         </header>
+        <div className="mb-6">{tabs}</div>
         <div
           role="status"
           aria-label="pending-banner"
@@ -111,6 +170,8 @@ export default async function ReportDetailPage({
           generation {data.generation}
         </p>
       </header>
+
+      <div className="mb-6">{tabs}</div>
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Priority tier">

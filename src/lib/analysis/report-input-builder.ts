@@ -50,7 +50,7 @@ import {
 } from "./priority-tier";
 import { buildReportTokenMap, type ReportTokenRef } from "./report-token";
 
-export type PeriodicPeriod = "LIVE" | "DAILY";
+export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
 
 export interface ReportVariant {
   tz: string;
@@ -177,9 +177,16 @@ interface Windows {
 /**
  * Resolve the current and previous period windows in the customer
  * timezone. DAILY uses the calendar day in `tz` (and the prior day);
- * LIVE uses a trailing 24h ending at `nowIso` (vs the prior 24h). The
- * tz math is done in Postgres so DST and offset rules match the
- * readiness tick (`analysis-job-worker.ts`).
+ * WEEKLY uses the 7-day window anchored at `bucket_date` (vs the prior
+ * 7 days); MONTHLY uses the calendar month anchored at `bucket_date`
+ * (vs the prior calendar month — `date - INTERVAL '1 month'` honors
+ * variable month lengths); LIVE uses a trailing 24h ending at `nowIso`
+ * (vs the prior 24h). The window length is selected per period so the
+ * input builder feeds the same `PeriodicReportInputs` shape over the
+ * longer WEEKLY/MONTHLY windows (#298 F2 resolution — comparative
+ * framing is prompt-side only, no prior-period feed). The tz / interval
+ * math is done in Postgres so DST and offset rules match the readiness
+ * tick (`analysis-job-worker.ts`).
  */
 async function resolveWindows(
   customerPool: Pool,
@@ -195,16 +202,27 @@ async function resolveWindows(
     prev_end: Date;
     report_date: string;
   }>(
+    // The per-period window length mirrors the bucket-end math in the
+    // readiness tick (`analysis-job-worker.ts`): DAILY 1 day, WEEKLY
+    // 7 days, MONTHLY 1 calendar month.
     `SELECT
        CASE WHEN $1 = 'LIVE'
             THEN $4::timestamptz - INTERVAL '24 hours'
             ELSE ($2::date)::timestamp AT TIME ZONE $3 END AS cur_start,
        CASE WHEN $1 = 'LIVE'
             THEN $4::timestamptz
-            ELSE ($2::date + INTERVAL '1 day')::timestamp AT TIME ZONE $3 END AS cur_end,
+            ELSE ($2::date + (CASE $1
+                    WHEN 'WEEKLY'  THEN INTERVAL '7 days'
+                    WHEN 'MONTHLY' THEN INTERVAL '1 month'
+                    ELSE INTERVAL '1 day' END))::timestamp
+                 AT TIME ZONE $3 END AS cur_end,
        CASE WHEN $1 = 'LIVE'
             THEN $4::timestamptz - INTERVAL '48 hours'
-            ELSE ($2::date - INTERVAL '1 day')::timestamp AT TIME ZONE $3 END AS prev_start,
+            ELSE ($2::date - (CASE $1
+                    WHEN 'WEEKLY'  THEN INTERVAL '7 days'
+                    WHEN 'MONTHLY' THEN INTERVAL '1 month'
+                    ELSE INTERVAL '1 day' END))::timestamp
+                 AT TIME ZONE $3 END AS prev_start,
        CASE WHEN $1 = 'LIVE'
             THEN $4::timestamptz - INTERVAL '24 hours'
             ELSE ($2::date)::timestamp AT TIME ZONE $3 END AS prev_end,
@@ -720,7 +738,7 @@ export async function buildPeriodicReportInput(
   );
 
   // --- Structured aimer inputs ----------------------------------------
-  // Mapped to aimer's real SDL shape (schemas/aimer.graphql @ 014d294):
+  // Mapped to aimer's real SDL shape (schemas/aimer.graphql @ f04caba):
   // `StoryAnalysisInput` / `EventAnalysisInput` carry a single JSON/markdown
   // `sections` narrative (the report-scope-rewritten leaf analysis) plus the
   // leaf's nullable scores, factor arrays, and TTP tags — no `priorityTier`

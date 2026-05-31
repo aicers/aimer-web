@@ -604,6 +604,51 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].status).toBe("queued");
   });
 
+  it.each([
+    { period: "WEEKLY", bucket: "2026-05-25" },
+    { period: "MONTHLY", bucket: "2026-05-01" },
+  ])("pickup processes a queued $period job (Phase 2 LIVE/DAILY filter lifted in #298)", async ({
+    period,
+    bucket,
+  }) => {
+    // The Phase 2 pickup filter (`pickQueuedReportJobs`) restricted to
+    // LIVE/DAILY; #298 widened it to all four periods. Prove a queued
+    // WEEKLY/MONTHLY job under a `ready` parent is actually claimed by
+    // the runtime tick, calls the LLM, and finalizes — not silently
+    // skipped by the period filter.
+    aimerCalls = 0;
+    // Isolate this tick to the job under test (earlier cases leave
+    // queued rows behind).
+    await authPool.query(
+      `UPDATE periodic_report_job SET status = 'done' WHERE status = 'queued'`,
+    );
+    await seedState(authPool, period, bucket, "ready");
+    await seedQueuedJob(authPool, period, bucket);
+
+    const picked = await tickReportJobsOnce(authPool, 10, opts());
+
+    expect(picked).toBe(1);
+    expect(aimerCalls).toBe(1);
+
+    const { rows: result } = await customerPool.query<{
+      redaction_policy_version: string;
+    }>(
+      `SELECT redaction_policy_version FROM periodic_report_result
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4 AND generation = 1`,
+      [CUSTOMER_ID, period, bucket, TZ],
+    );
+    expect(result).toHaveLength(1);
+
+    const { rows: job } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_job
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4`,
+      [CUSTOMER_ID, period, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+  });
+
   it("LIVE next_due_at re-queue skips an archived parent state row", async () => {
     // Archived LIVE state with a done LIVE job whose cadence elapsed.
     await seedState(authPool, "LIVE", LIVE_BUCKET, "archived");

@@ -34,3 +34,52 @@ export function isValidBucketDate(value: string): boolean {
     d.getUTCDate() === day
   );
 }
+
+export type PeriodKind = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * RFC 0002 Phase 3 (#298) — derive the `bucket_date` of `period` that
+ * contains the calendar day `referenceDate` (`YYYY-MM-DD`). Used by the
+ * report detail page's period-tab navigation to point each tab at the
+ * bucket overlapping the day the operator is currently viewing.
+ *
+ *   - LIVE    → the synthetic epoch bucket (`1970-01-01`); LIVE is a
+ *               rolling window with no calendar bucket.
+ *   - DAILY   → `referenceDate` itself.
+ *   - WEEKLY  → the Monday of `referenceDate`'s week, matching Postgres
+ *               `date_trunc('week', …)` (ISO weeks start Monday — see
+ *               `state.ts` / `analysis-job-worker.ts`).
+ *   - MONTHLY → the first day of `referenceDate`'s month, matching
+ *               `date_trunc('month', …)`.
+ *
+ * Pure UTC calendar math: the worker truncates the event-time in the
+ * customer tz, but for a navigation affordance the displayed bucket date
+ * is read as a plain calendar day, so UTC truncation of that day yields
+ * the same `bucket_date` string. Returns `null` for an invalid
+ * `referenceDate` so callers can omit a tab rather than link to a broken
+ * date.
+ */
+export function periodBucketDate(
+  period: PeriodKind,
+  referenceDate: string,
+): string | null {
+  if (period === "LIVE") return LIVE_BUCKET_DATE;
+  if (!isValidBucketDate(referenceDate)) return null;
+  const m = BUCKET_DATE_RE.exec(referenceDate);
+  if (!m) return null;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (period === "DAILY") return referenceDate;
+  if (period === "MONTHLY") return `${m[1]}-${m[2]}-01`;
+  // WEEKLY — back up to the ISO Monday of the reference day's week.
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const dow = d.getUTCDay(); // 0=Sun … 6=Sat
+  const offset = dow === 0 ? 6 : dow - 1; // days since Monday
+  d.setUTCDate(d.getUTCDate() - offset);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}

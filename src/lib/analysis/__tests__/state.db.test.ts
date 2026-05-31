@@ -861,10 +861,9 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // so it must remain pending.
     expect(settled.get("DAILY|2099-12-31")).toBe("pending");
 
-    // Phase 2 (#297): only DAILY is processed (real queued job); WEEKLY/
-    // MONTHLY become ready but are NOT job-seeded until #298 lifts the
-    // period filter. So exactly one DAILY job exists and zero WEEKLY/
-    // MONTHLY jobs.
+    // Phase 3 (#298): all three closed periods are now job-seeded. Each
+    // ready DAILY/WEEKLY/MONTHLY bucket gets exactly one real (non-dry-run)
+    // queued job for the default variant once the period filter is lifted.
     const { rows: jobRows } = await pool.query<{
       period: string;
       status: string;
@@ -873,12 +872,17 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       `SELECT period, status, dry_run
          FROM periodic_report_job
         WHERE customer_id = $1
-          AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
+          AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
+        ORDER BY period`,
       [customer],
     );
-    expect(jobRows).toHaveLength(1);
-    expect(jobRows[0].period).toBe("DAILY");
-    expect(jobRows[0].dry_run).toBe(false);
+    expect(jobRows).toHaveLength(3);
+    expect(jobRows.map((r) => r.period)).toEqual([
+      "DAILY",
+      "MONTHLY",
+      "WEEKLY",
+    ]);
+    expect(jobRows.every((r) => r.dry_run === false)).toBe(true);
   });
 
   it("worker holds a pending bucket with recent ingest activity in pending until the quiet window elapses (round-7 review item 1)", async () => {
