@@ -33,6 +33,44 @@ real `403` (a permission notice, not a normal page).
 
 ![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections](../../assets/report-detail.en.png)
 
+## Report index
+
+The customer-scoped reports root lists the report buckets that exist for
+the customer and links into the detail page above:
+
+```
+/customers/{customerId}/analysis/reports
+```
+
+Before this index existed the bare path returned `404` — a report could
+only be opened by navigating directly to a specific
+`{period}/{bucketDate}` URL. The index groups the available buckets by
+period (Live, Daily, Weekly, Monthly), showing the most recent bucket of
+each period first, followed by a bounded recent list.
+
+![Report index page listing the available report buckets grouped by period, each linking into the detail page](../../assets/report-index.en.png)
+
+Bucket discovery reads the non-archived `periodic_report_state` rows
+(`pending`, `ready`, or `dirty`) — the same source of truth the detail
+page uses — so a bucket that is tracked but whose report has not been
+produced yet still appears, marked **Being generated**. A bucket whose
+latest default-variant result exists shows **Ready** with its priority
+tier; a bucket awaiting a refresh after new source data shows
+**Updating**.
+
+Each entry links to the detail page with the bucket's timezone pinned on
+the link (`?tz=`), so an older-timezone bucket (kept after a customer
+timezone change) still resolves to the right report instead of being
+re-resolved to the customer's current timezone and returning `404`.
+
+The recent list is bounded per period (Live 1, Daily 14, Weekly 8,
+Monthly 12 by default, each tunable via the matching
+`ANALYSIS_REPORT_INDEX_CAP_*` environment variable) so the page never
+renders an unbounded list. Access control matches the detail page: a
+non-member or non-existent customer returns `404`, while a member
+without `reports:read` or a rejected bridge session returns a real
+`403`.
+
 ## Report periods
 
 Four report periods are produced, each over a different window in the
