@@ -3,7 +3,7 @@
 // RFC 0002 Phase 2 (#297) — periodic report detail page. Verifies:
 //   - uppercase-period case lock (lowercase period → notFound)
 //   - LIVE pinned to the synthetic epoch bucket
-//   - WEEKLY/MONTHLY not shown in Phase 2
+//   - WEEKLY/MONTHLY render (Phase 3 / #298)
 //   - ok render shows tier badge, aggregate scores, TTP chips, sections
 //   - pending render shows the banner
 
@@ -28,6 +28,29 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("../regenerate-button", () => ({
   ReportRegenerateButton: () => null,
+}));
+
+// The period tabs navigate via `next/link`; render it as a plain anchor
+// so the cross-period `href` assertions below can read the attribute.
+vi.mock("next/link", () => ({
+  default: ({
+    href,
+    children,
+    ...props
+  }: {
+    href: string;
+    children: React.ReactNode;
+  }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+// `@/lib/instrumentation/time` is `server-only` (throws on import in
+// jsdom) and seeds the LIVE-tab reference day; pin it to a fixed clock.
+vi.mock("@/lib/instrumentation/time", () => ({
+  getCurrentTimestamp: () => new Date("2026-05-27T12:00:00Z"),
 }));
 
 import ReportDetailPage from "../page";
@@ -103,6 +126,25 @@ describe("report detail page", () => {
     ).toBe("Malware up 30%.");
   });
 
+  it("renders the period tabs with the active period marked and cross-period links", async () => {
+    // DAILY 2026-05-26 (a Tuesday): WEEKLY tab → ISO Monday 2026-05-25,
+    // MONTHLY tab → 2026-05-01, LIVE tab → the synthetic epoch bucket.
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.getByTestId("report-period-tabs")).toBeTruthy();
+    expect(
+      screen.getByTestId("report-tab-DAILY").getAttribute("data-active"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("report-tab-WEEKLY").getAttribute("href"),
+    ).toContain("/reports/WEEKLY/2026-05-25");
+    expect(
+      screen.getByTestId("report-tab-MONTHLY").getAttribute("href"),
+    ).toContain("/reports/MONTHLY/2026-05-01");
+    expect(
+      screen.getByTestId("report-tab-LIVE").getAttribute("href"),
+    ).toContain("/reports/LIVE/1970-01-01");
+  });
+
   it("shows the pending banner when the report is still generating", async () => {
     mockLoad.mockResolvedValue({ kind: "pending", stateStatus: "ready" });
     await renderPage("DAILY", "2026-05-26");
@@ -132,11 +174,21 @@ describe("report detail page", () => {
     expect(mockLoad).not.toHaveBeenCalled();
   });
 
-  it("404s WEEKLY/MONTHLY (not produced in Phase 2)", async () => {
-    await expect(renderPage("WEEKLY", "2026-05-26")).rejects.toThrow(
-      "NEXT_NOT_FOUND",
-    );
-    expect(mockLoad).not.toHaveBeenCalled();
+  it.each([
+    "WEEKLY",
+    "MONTHLY",
+  ])("renders %s reports (lifted in #298)", async (period) => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, period },
+    });
+    await renderPage(period, "2026-05-25");
+    expect(mockLoad).toHaveBeenCalled();
+    expect(
+      screen.getByTestId("priority-tier-badge").getAttribute("data-tier"),
+    ).toBe("HIGH");
   });
 
   it("404s when the loader reports not_found", async () => {

@@ -442,11 +442,13 @@ describe("report regenerate (Phase 2 #297)", () => {
     expect(body.error).toBe("source_unavailable");
   });
 
-  // round-14 item 4: WEEKLY/MONTHLY are rejected AFTER auth/permission.
+  // #298: WEEKLY/MONTHLY are now processed (the Phase 2 rejection was
+  // lifted), so a force-regenerate on either period reaches the UPSERT
+  // and returns 202 like LIVE/DAILY.
   it.each([
     "WEEKLY",
     "MONTHLY",
-  ])("returns 400 period_not_yet_supported for %s (after auth passes)", async (period) => {
+  ])("returns 202 for %s (period rejection lifted in #298)", async (period) => {
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"
     );
@@ -457,15 +459,16 @@ describe("report regenerate (Phase 2 #297)", () => {
       { method: "POST" },
     );
     const res = await POST(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(202);
     const body = await res.json();
-    expect(body.error).toBe("period_not_yet_supported");
+    expect(body.accepted).toBe(true);
+    expect(body.state_pk.period).toBe(period);
     expect(mockAuthorize).toHaveBeenCalled();
   });
 
-  it("a denied caller sees its denial code before the period rejection", async () => {
-    // Non-member requesting WEEKLY must get 404 (existence-hiding), not
-    // the period rejection — auth is evaluated first.
+  it("a denied caller requesting WEEKLY still sees its denial code", async () => {
+    // Non-member requesting WEEKLY must get 404 (existence-hiding) — auth
+    // is evaluated before the source-availability precheck.
     mockAuthorize.mockResolvedValue({ authorized: false });
     const { POST } = await import(
       "../report/[period]/[bucketDate]/regenerate/route"

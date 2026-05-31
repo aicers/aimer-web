@@ -59,7 +59,7 @@ export interface BaselineCountInput {
 
 export interface PeriodicReportVariables {
   customerId: string;
-  period: "LIVE" | "DAILY";
+  period: "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
   date: string;
   timezone: string;
   name: string;

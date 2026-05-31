@@ -6,12 +6,12 @@
 // endpoint, `tz` IS accepted (periodic reports are timezone-keyed);
 // it defaults to the customer's current `customers.timezone`.
 //
-// Order of checks (round-14 item 4 / round-15 S3): path validation →
-// origin/CSRF → authorize (401 / non-member 404 / member-without-perm
-// 403 / bridge 403) → Phase 2 period rejection (WEEKLY/MONTHLY →
-// 400 period_not_yet_supported) → source-availability precheck
-// (missing state row → 404 report_state_not_found; archived → 409
-// source_unavailable) → UPSERT job row.
+// Order of checks (round-15 S3): path validation → origin/CSRF →
+// authorize (401 / non-member 404 / member-without-perm 403 / bridge
+// 403) → source-availability precheck (missing state row → 404
+// report_state_not_found; archived → 409 source_unavailable) → UPSERT
+// job row. All four periods (LIVE/DAILY/WEEKLY/MONTHLY) are accepted as
+// of #298 — the Phase 2 WEEKLY/MONTHLY rejection was lifted here.
 //
 // Two branches per RFC §"Force regenerate":
 //   - Existing row for `(tz, lang, model_name, model)` → UPDATE
@@ -35,11 +35,8 @@ import { getAuthPool } from "@/lib/db/client";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Path-shape set stays all four periods (#298 lifts the rejection). The
-// Phase 2 real handler rejects WEEKLY/MONTHLY *after* auth so denied
-// callers still see their denial code first.
+// All four periods are processed as of #298.
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
@@ -135,15 +132,6 @@ export const POST = withAuth(
         }
         // Member without the required permission — precise 403.
         return Response.json(errorBody("Forbidden"), { status: 403 });
-      }
-
-      // Phase 2 boundary (round-14 item 4): WEEKLY/MONTHLY are not yet
-      // processed. Rejected only after the caller has cleared auth, so a
-      // denied caller sees its denial code (401/404/403), not this.
-      if (!PHASE2_PERIODS.has(parts.period)) {
-        return Response.json(errorBody("period_not_yet_supported"), {
-          status: 400,
-        });
       }
 
       // Default tz = the customer's current timezone snapshot.

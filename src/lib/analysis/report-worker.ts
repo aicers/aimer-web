@@ -1,7 +1,8 @@
 // RFC 0002 Phase 2 (#297) — periodic report analysis worker.
 //
 // Picks up `periodic_report_job` rows with `status='queued',
-// dry_run=FALSE, period IN ('LIVE','DAILY')`, builds the structured
+// dry_run=FALSE, period IN ('LIVE','DAILY','WEEKLY','MONTHLY')`, builds
+// the structured
 // input bundle from the customer DB (`report-input-builder.ts`), calls
 // aimer's `generatePeriodicSecurityReport` mutation, validates the
 // narrative for residual redaction tokens / PII, and writes the result
@@ -15,10 +16,14 @@
 //     (customer-DB INSERT first, then auth-DB finalize),
 //   - same backoff predicate, retry envs, and fatal-vs-retryable split.
 //
-// WEEKLY / MONTHLY are explicitly out of scope (round-14 item 4): the
-// dispatcher's pickup filter and `seedRealReportJobs` both restrict to
-// LIVE + DAILY. WEEKLY/MONTHLY state rows keep being seeded + dirtied by
-// the Phase 0 reconcile/ingest path; #298 lifts the period filter.
+// All four periods are in scope (#298): the dispatcher's pickup filter,
+// the stuck-job watchdog, and `seedRealReportJobs` cover LIVE + DAILY +
+// WEEKLY + MONTHLY. WEEKLY/MONTHLY readiness promotion (the 6h / 12h
+// settle) was already wired by Phase 0/2 (`analysis-job-worker.ts`);
+// Phase 3 lets those promoted `ready` rows flow into real LLM jobs. The
+// input builder feeds the same `PeriodicReportInputs` shape over the
+// longer 7-day / calendar-month windows — week/month comparative
+// framing is prompt-side only (#298 F2 resolution).
 
 import "server-only";
 
@@ -213,7 +218,7 @@ async function pickQueuedReportJobs(
         AND s.bucket_date = j.bucket_date AND s.tz = j.tz
       WHERE j.status = 'queued'
         AND j.dry_run = FALSE
-        AND j.period IN ('LIVE', 'DAILY')
+        AND j.period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')
         -- Skip jobs whose parent state archived after queueing (e.g. a
         -- timezone change archives the old-tz state without deleting its
         -- jobs). A terminal archived state must never reach the LLM /
@@ -942,7 +947,7 @@ export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
             updated_at = NOW()
       WHERE status = 'processing'
         AND dry_run = FALSE
-        AND period IN ('LIVE', 'DAILY')
+        AND period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')
         AND (processing_started_at IS NULL
              OR processing_started_at <= NOW() - ($1 || ' minutes')::interval)`,
     [PROCESSING_TIMEOUT_MINUTES],
@@ -951,7 +956,8 @@ export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
 
 /**
  * Seed a real (non-dry-run) job row for every `ready`/`dirty`
- * LIVE/DAILY state row that lacks one for the default variant. Mirrors
+ * state row (all four periods) that lacks one for the default variant.
+ * Mirrors
  * `seedRealStoryJobs`. A `dirty` row bumps the generation of *every*
  * existing variant job underneath it — not just the default — because
  * RFC 0002's dirty rule re-queues all variant jobs under the state, and
@@ -960,7 +966,8 @@ export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
  * review round 8, item 1). Each bump is capped at `ANALYSIS_MAX_GENERATION`
  * and a fresh generation-1 default job is seeded when none exists; the
  * state then returns to `ready`. Archived rows are never enqueued (#294
- * decision 1); WEEKLY/MONTHLY are skipped (round-14 item 4) until #298.
+ * decision 1); all four periods (LIVE/DAILY/WEEKLY/MONTHLY) are seeded
+ * as of #298.
  */
 export async function seedRealReportJobs(
   authClient: PoolClient,
@@ -980,7 +987,7 @@ export async function seedRealReportJobs(
             s.tz,
             s.status
        FROM periodic_report_state s
-      WHERE s.period IN ('LIVE', 'DAILY')
+      WHERE s.period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')
         AND (s.status = 'dirty'
              OR (s.status = 'ready'
                  AND NOT EXISTS (

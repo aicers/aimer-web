@@ -309,8 +309,10 @@ async function tickPeriodicStates(
   // that fired against the shortened-watermark branch — per issue #295
   // decision 10 the verification gate requires "watermark-driven settle
   // reduction observable in logs". WEEKLY / MONTHLY promotions are
-  // silent in Phase 0.5: they do not yet consume the watermark (scope
-  // deferred to #298 per decision 6).
+  // silent: they promote on the fixed 6h / 12h settle and do not consume
+  // the watermark. Phase 3 (#298) wires WEEKLY/MONTHLY into real jobs but
+  // intentionally leaves the watermark-shortening as DAILY-only; extending
+  // it to the longer windows remains a separate enhancement (decision 6).
   if (dailySettleHoursWithWatermark < dailySettleHours) {
     // The shortened branch was the deciding factor when the baseline
     // settle hasn't elapsed yet: `bucket_end + baseline_settle > NOW()`.
@@ -339,19 +341,18 @@ async function tickPeriodicStates(
     }
   }
 
-  // Phase 2 (#297) — LIVE re-queue + real-job seeding for LIVE/DAILY.
+  // LIVE re-queue + real-job seeding for all four periods.
   //
   //   1. `requeueLiveReportJobs` bumps `done` LIVE variant jobs whose
   //      per-variant `next_due_at` cadence has elapsed back to `queued`
   //      (gated by `state.status <> 'archived'`, round-14 item 5).
   //   2. `seedRealReportJobs` ensures a real (non-dry-run) `queued` job
-  //      exists for every `ready`/`dirty` LIVE/DAILY state row.
+  //      exists for every `ready`/`dirty` LIVE/DAILY/WEEKLY/MONTHLY
+  //      state row.
   //
-  // WEEKLY/MONTHLY are intentionally NOT seeded here (round-14 item 4):
-  // their state rows keep being seeded/dirtied by the Phase 0
-  // reconcile/ingest path, but no job rows are processed until #298
-  // lifts the period filter. The pending→ready promotions above still
-  // run for them so the dirty signal stays durable.
+  // Phase 3 (#298) lifted the LIVE/DAILY-only seeding filter: WEEKLY and
+  // MONTHLY `ready`/`dirty` rows (promoted above on their 6h / 12h
+  // settle) now flow into real LLM jobs alongside LIVE/DAILY.
   await requeueLiveReportJobs(client, nowIso);
   await seedRealReportJobs(client, BATCH_SIZE, nowIso);
 }

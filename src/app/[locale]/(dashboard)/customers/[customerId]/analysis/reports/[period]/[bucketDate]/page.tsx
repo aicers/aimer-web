@@ -8,7 +8,9 @@ import {
   loadReportResultPage,
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
+import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { ReportRegenerateButton } from "./regenerate-button";
+import { ReportPeriodTabs } from "./report-period-tabs";
 
 interface PageProps {
   params: Promise<{
@@ -26,17 +28,35 @@ function firstParam(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
+// The calendar day the period tabs anchor their cross-period links to.
+// For a calendar period the bucket_date IS that day; LIVE carries the
+// synthetic epoch bucket, so anchor the other tabs on "today" in the
+// pinned tz (UTC fallback) instead — otherwise every non-LIVE tab would
+// point at 1970.
+function tabReferenceDate(
+  period: string,
+  bucketDate: string,
+  tz: string | undefined,
+): string {
+  if (period !== "LIVE") return bucketDate;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz || "UTC",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(getCurrentTimestamp());
+}
+
 // UPPERCASE only (case lock): a lowercase period in the URL is a 404,
 // not a case-insensitive redirect, so the UI route and the API path
 // validation share one case convention.
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
-const PHASE2_PERIODS = new Set(["LIVE", "DAILY"]);
 
 export default async function ReportDetailPage({
   params,
   searchParams,
 }: PageProps) {
-  const { customerId, period, bucketDate } = await params;
+  const { locale, customerId, period, bucketDate } = await params;
   const sp = (await searchParams) ?? {};
 
   if (!PERIODS.has(period)) notFound();
@@ -45,8 +65,6 @@ export default async function ReportDetailPage({
   // `$3::date` cast (#297 review round 5, item 2).
   if (!isValidBucketDate(bucketDate)) notFound();
   if (period === "LIVE" && bucketDate !== LIVE_BUCKET_DATE) notFound();
-  // WEEKLY/MONTHLY are not produced in Phase 2 — no report to show yet.
-  if (!PHASE2_PERIODS.has(period)) notFound();
 
   // Forward the active report variant (if pinned via the query string) so a
   // non-default report opens, displays, and regenerates as that variant.
@@ -56,6 +74,16 @@ export default async function ReportDetailPage({
     model_name: firstParam(sp.model_name),
     model: firstParam(sp.model),
   };
+
+  const tabs = (
+    <ReportPeriodTabs
+      locale={locale}
+      customerId={customerId}
+      activePeriod={period}
+      referenceDate={tabReferenceDate(period, bucketDate, variant.tz)}
+      variant={variant}
+    />
+  );
 
   const outcome = await loadReportResultPage({
     customerId,
@@ -87,6 +115,7 @@ export default async function ReportDetailPage({
             {period} • {bucketDate}
           </p>
         </header>
+        <div className="mb-6">{tabs}</div>
         <div
           role="status"
           aria-label="pending-banner"
@@ -111,6 +140,8 @@ export default async function ReportDetailPage({
           generation {data.generation}
         </p>
       </header>
+
+      <div className="mb-6">{tabs}</div>
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Priority tier">

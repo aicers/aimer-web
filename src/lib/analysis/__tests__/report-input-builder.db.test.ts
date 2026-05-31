@@ -444,5 +444,63 @@ describe.skipIf(!hasPostgres)(
       // No two leaves share a wire reference, even when they share a key.
       expect(new Set(refs).size).toBe(refs.length);
     });
+
+    // RFC 0002 Phase 3 (#298 F2) — the WEEKLY/MONTHLY window length is the
+    // core Phase 3 input-builder change. Prove that an event seeded several
+    // days into the week/month is OUT of the one-day DAILY bucket anchored
+    // at the same date but IN of the 7-day / calendar-month window, so the
+    // per-period interval in `resolveWindows` is actually selected.
+    it("selects events across the longer WEEKLY / MONTHLY window that a DAILY bucket excludes", async () => {
+      // 2026-05-29 11:00 KST — Friday of the week starting Mon 2026-05-25,
+      // and within May. Outside the single day 2026-05-25.
+      const MID_PERIOD = "2026-05-29T02:00:00Z";
+      await seedBaselineEvent(
+        customerPool,
+        "v-9001",
+        "9001",
+        MID_PERIOD,
+        "malware",
+        MID_PERIOD,
+      );
+      await seedEventResult(customerPool, "9001", EN, "HIGH", "event 9001 EN");
+
+      // WEEKLY bucket = Monday 2026-05-25; window [2026-05-25, 2026-06-01).
+      const weekly = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "WEEKLY",
+        bucketDate: "2026-05-25",
+        variant: EN,
+        nowIso: "2026-06-02T00:00:00Z",
+      });
+      expect(weekly.eventRefs.map((r) => r.event_key)).toContain("9001");
+
+      // MONTHLY bucket = 2026-05-01; window [2026-05-01, 2026-06-01).
+      const monthly = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "MONTHLY",
+        bucketDate: "2026-05-01",
+        variant: EN,
+        nowIso: "2026-06-02T00:00:00Z",
+      });
+      expect(monthly.eventRefs.map((r) => r.event_key)).toContain("9001");
+
+      // The same event against the one-day DAILY bucket at the week anchor
+      // is excluded — proving the longer interval, not a wider default, is
+      // what pulls 9001 in.
+      const daily = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "DAILY",
+        bucketDate: "2026-05-25",
+        variant: EN,
+        nowIso: "2026-06-02T00:00:00Z",
+      });
+      expect(daily.eventRefs.map((r) => r.event_key)).not.toContain("9001");
+    });
   },
 );

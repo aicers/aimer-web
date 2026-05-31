@@ -182,7 +182,8 @@ type Mutation {
 	"""
 	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
 	"""
-	Generates a periodic (LIVE / DAILY) security report by synthesizing
+	Generates a periodic (LIVE / DAILY / WEEKLY / MONTHLY) security report
+	by synthesizing
 	already-analyzed story leaves, single-event leaves, and baseline
 	aggregates into a narrative `sections` JSON.
 	
@@ -331,6 +332,16 @@ enum Period {
 	24-hour bucket covering `date` in the supplied `timezone`.
 	"""
 	DAILY
+	"""
+	7-day window anchored to `date` in the supplied `timezone`.
+	Exact window definition lives in `rfcs/0002-periodic-llm-analysis.md`.
+	"""
+	WEEKLY
+	"""
+	Calendar-month window anchored to `date` in the supplied `timezone`.
+	Exact window definition lives in `rfcs/0002-periodic-llm-analysis.md`.
+	"""
+	MONTHLY
 }
 
 """

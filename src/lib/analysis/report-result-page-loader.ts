@@ -33,7 +33,7 @@ const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/;
 const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/;
 
 // Display-ready report sections, keyed by aimer's real
-// `PERIODIC_SECURITY_REPORT` output schema (schemas/aimer.graphql @ 014d294):
+// `PERIODIC_SECURITY_REPORT` output schema (schemas/aimer.graphql @ f04caba):
 // `executive_summary` / `period_outlook` are single Markdown strings, while
 // `story_highlights` / `notable_events` / `baseline_observations` are arrays
 // of Markdown strings (one entry per surfaced leaf / observation). The loader

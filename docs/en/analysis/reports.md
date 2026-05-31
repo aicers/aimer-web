@@ -15,7 +15,8 @@ directly via the customer-scoped URL:
 /customers/{customerId}/analysis/reports/{period}/{bucketDate}
 ```
 
-`{period}` is **uppercase** — `LIVE` or `DAILY` (Phase 2). The customer
+`{period}` is **uppercase** — `LIVE`, `DAILY`, `WEEKLY`, or `MONTHLY`.
+The customer
 id appears in the path because a `(period, bucket_date)` pair is not
 globally unique — bucket date `2026-05-26` exists for every customer.
 A lowercase period in the URL returns `404` rather than redirecting, so
@@ -32,9 +33,10 @@ real `403` (a permission notice, not a normal page).
 
 ![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections](../../assets/report-detail.en.png)
 
-## LIVE vs DAILY cadence
+## Report periods
 
-Two report periods are produced today:
+Four report periods are produced, each over a different window in the
+customer's timezone:
 
 - **LIVE** — a rolling snapshot covering the trailing 24 hours. LIVE
   rows use a synthetic bucket date (`1970-01-01`); the report is
@@ -44,19 +46,45 @@ Two report periods are produced today:
   automatic generation cap (`ANALYSIS_MAX_GENERATION`, default 50);
   once a LIVE report reaches the cap the cadence stops bumping it, and
   only a force regenerate (below) can produce a newer generation.
-- **DAILY** — one report per calendar day in the customer's timezone.
-  A DAILY bucket becomes eligible once the day has closed and the
-  settle window has elapsed (shortened when a strict cursor watermark
-  confirms ingest is complete). It is regenerated when new in-window
-  source data arrives ("dirty" re-queue).
+- **DAILY** — one report per calendar day. A DAILY bucket becomes
+  eligible once the day has closed and the settle window has elapsed
+  (shortened when a strict cursor watermark confirms ingest is
+  complete). It is regenerated when new in-window source data arrives
+  ("dirty" re-queue).
+- **WEEKLY** — one report per 7-day window, anchored to the start of
+  the week (Monday). The bucket becomes eligible roughly 6 hours after
+  the week closes, giving late stories and events time to settle.
+- **MONTHLY** — one report per calendar month, anchored to the first of
+  the month. The bucket becomes eligible roughly 12 hours after the
+  month closes.
 
-`WEEKLY` and `MONTHLY` periods are defined but not yet produced — the
-worker does not process them and the regenerate endpoint rejects them
-with `400 period_not_yet_supported`. They arrive in a later phase.
+`WEEKLY` and `MONTHLY` reports are built from the **same inputs** as a
+daily report, selected over the longer window — they are not a
+concatenation of the dailies underneath them. The week-over-week and
+month-over-month comparative framing (whether the period is escalating,
+easing, or steady, and how a monthly reads against the prior month) is
+the LLM's job from the single window's evidence; aimer-web does not feed
+prior-period data into the prompt. A weekly that simply re-lists each
+day, or a monthly that never frames against the previous month, is the
+signal that the prompt or the input builder needs attention.
 
-No operator action is needed for either period: a background worker
-seeds, schedules, and runs the LLM calls. The **Regenerate** button
-(below) is for forcing an out-of-cadence refresh.
+No operator action is needed for any period: a background worker seeds,
+schedules, and runs the LLM calls. The **Regenerate** button (below) is
+for forcing an out-of-cadence refresh.
+
+## Period tabs
+
+The detail page shows a **Live / Daily / Weekly / Monthly** tab bar
+above the report body. The tab for the period you are viewing is
+highlighted; the others link to the report for the same stretch of time
+at their own cadence — switching from a daily to **Weekly** opens the
+week that contains the day you were reading, and **Monthly** opens that
+day's month. The **Live** tab always opens the rolling snapshot. A tab
+whose bucket is tracked but not yet generated opens the page in its
+"being generated" state; a bucket with no source activity in that window
+(no tracked state) returns `404`. The tab bar itself always renders, so
+you can move between cadences freely. Any pinned variant
+(`?tz=&lang=&model_name=&model=`) carries across the tabs.
 
 ## How a report is built
 
@@ -65,7 +93,8 @@ The worker pipeline runs without operator action:
 1. The state worker tracks per-`(customer, period, bucket_date, tz)`
    readiness and seeds a real `periodic_report_job` row for the default
    `(tz, language, provider, model)` variant against every `ready` or
-   `dirty` LIVE/DAILY state row. When a state turns `dirty` (new in-window
+   `dirty` state row across all four periods. When a state turns `dirty`
+   (new in-window
    source data), the re-queue bumps **every** existing variant job under
    it — not only the default — so a force-created Korean or alternate-model
    report is refreshed too rather than left serving a stale generation.
@@ -121,8 +150,9 @@ The header shows the report's priority and its two aggregate scores:
 ### Baseline drift
 
 The baseline-drift signal compares the window's event-category
-distribution against the previous period (the prior 24 hours for LIVE,
-the prior calendar day for DAILY):
+distribution against the previous period of the same length (the prior
+24 hours for LIVE, the prior calendar day for DAILY, the prior 7 days
+for WEEKLY, the prior calendar month for MONTHLY):
 
 - **drift severity** — the largest per-category count change versus the
   prior period, normalized and clamped to `[0, 1]`.
@@ -166,7 +196,8 @@ report-scope tokens restored to plaintext:
   the top techniques and sensors.
 - **Period outlook** — a short forward-looking note in the period's
   tone: for LIVE, what to watch in the next window; for DAILY, what
-  tomorrow's operator should re-check.
+  tomorrow's operator should re-check; for WEEKLY / MONTHLY, the trend
+  to carry into the next week or month.
 
 Story highlights, notable events, and baseline observations are each a
 list of entries; the page joins them into one block per section. Tokens
@@ -213,8 +244,8 @@ timezone-keyed). Behaviour:
   and the summary endpoint).
 - A missing state row returns `404 report_state_not_found`; a state row
   that has been archived by a timezone change returns
-  `409 source_unavailable`. `WEEKLY` / `MONTHLY` return
-  `400 period_not_yet_supported` once the caller has cleared auth.
+  `409 source_unavailable`. All four periods (`LIVE` / `DAILY` /
+  `WEEKLY` / `MONTHLY`) are accepted.
 
 While the regenerate is queued, the page shows a yellow status banner
 naming the new generation number. Refresh once the worker has written
