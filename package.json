@@ -16,6 +16,7 @@
     "test:unit": "vitest run --passWithNoTests 'unit.test'",
     "test:db": "vitest run --passWithNoTests 'db.test'",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "capture": "playwright test --config e2e/capture.config.ts",
     "graphql:codegen": "tsx scripts/graphql-codegen.ts write",
     "graphql:check": "tsx scripts/graphql-codegen.ts check",
     "migrate:customers": "tsx src/lib/db/migrate-customers-cli.ts",
