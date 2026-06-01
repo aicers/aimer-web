@@ -144,9 +144,10 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
    `system:analysis-worker`이며, 리포트가 여러 AICE 환경을 가로지르므로 단일
    정규 AICE id가 없어 안정적인 `system:periodic-report` 센티넬 AICE id를
    사용합니다.
-5. 반환된 서술은 잔여 토큰 또는 평문 PII가 있는지 검사되고(환각 디코드는
-   작업을 실패시키고 저장되지 않음), `periodic_report_result`에 기록된 뒤
-   auth-DB 작업이 최종화됩니다.
+5. 반환된 서술은 스캔이 복원할 수 없는 모든 리댁션 토큰(하위 범위 잔여 토큰,
+   매핑되지 않은 리포트 범위 토큰, 또는 모든 범위의 알 수 없는 종류 토큰) 또는
+   평문 PII가 있는지 검사되고(환각 디코드는 작업을 실패시키고 저장되지 않음),
+   `periodic_report_result`에 기록된 뒤 auth-DB 작업이 최종화됩니다.
 
 재시도 가능한 실패(5xx, 전송, mTLS 오류)는 `ANALYSIS_MAX_ATTEMPTS`까지
 백오프로 재큐됩니다. 치명적 실패(4xx, 환각 탐지, 포함된 리프 간 누락/불일치

@@ -49,6 +49,18 @@ const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_([0-9]+)>>/g;
 // LLM cannot have read one from the input.
 const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_[0-9]+>>/g;
 
+// Kind-agnostic backstop matcher. Unlike the matchers above it is NOT
+// pinned to the kinds the redaction engine emits (`IP`/`EMAIL`/`MAC`),
+// so it also catches an unknown-kind token the engine never produces —
+// e.g. a hallucinated `<<REDACTED_HOSTNAME_E1_001>>` synthesised
+// upstream (aicers/aimer#445). It matches all three token scopes: bare
+// event `<<REDACTED_KIND_NNN>>`, story `<<REDACTED_KIND_E{i}_NNN>>`, and
+// report `<<REDACTED_KIND_R{j}_NNN>>`. Any match not in `allowedTokens`
+// is a token shape the scan cannot account for and must fail the job —
+// defense-in-depth that survives even after the upstream synthesis is
+// fixed (#380).
+const REDACTION_TOKEN_SHAPE_RE = /<<REDACTED_[A-Z]+(?:_[ER]\d+)?_\d+>>/g;
+
 // Plaintext-PII leak heuristics. Email + MAC are always-redacted
 // kinds in the event-scope engine, so any match here is a leak or a
 // hallucination (the prompt cannot have carried one in unredacted).
@@ -165,6 +177,7 @@ export function buildStoryTokenMap(
 export type LeakKind =
   | "unmapped_story_token"
   | "residual_event_token"
+  | "unknown_kind_token"
   | "plaintext_pii";
 
 export interface AnalysisLeak {
@@ -215,6 +228,9 @@ export function scanStoryAnalysisForLeaks(
   ranges: RangeSet,
 ): ScanResult {
   const leaks: AnalysisLeak[] = [];
+  // Token strings already classified by a kind-specific check below, so
+  // the generic backstop doesn't re-flag them under `unknown_kind_token`.
+  const classified = new Set<string>();
 
   // Reset stateful regex objects defensively — `lastIndex` is shared
   // across calls when /g is used.
@@ -225,6 +241,7 @@ export function scanStoryAnalysisForLeaks(
     m = STORY_TOKEN_RE.exec(analysisText)
   ) {
     if (!allowedTokens.has(m[0])) {
+      classified.add(m[0]);
       leaks.push({
         kind: "unmapped_story_token",
         match: m[0],
@@ -239,7 +256,23 @@ export function scanStoryAnalysisForLeaks(
     m !== null;
     m = RESIDUAL_EVENT_TOKEN_RE.exec(analysisText)
   ) {
+    classified.add(m[0]);
     leaks.push({ kind: "residual_event_token", match: m[0] });
+  }
+
+  // Kind-agnostic backstop: any redaction-token shape not in
+  // `allowedTokens` and not already classified above is a token the
+  // scan cannot restore — including unknown-kind tokens the engine never
+  // emits (e.g. `<<REDACTED_HOSTNAME_E1_001>>`, #380).
+  REDACTION_TOKEN_SHAPE_RE.lastIndex = 0;
+  for (
+    let m = REDACTION_TOKEN_SHAPE_RE.exec(analysisText);
+    m !== null;
+    m = REDACTION_TOKEN_SHAPE_RE.exec(analysisText)
+  ) {
+    if (allowedTokens.has(m[0]) || classified.has(m[0])) continue;
+    classified.add(m[0]);
+    leaks.push({ kind: "unknown_kind_token", match: m[0] });
   }
 
   for (const re of ALWAYS_REDACTED_PII_PATTERNS) {

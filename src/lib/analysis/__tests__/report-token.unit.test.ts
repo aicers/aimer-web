@@ -241,6 +241,38 @@ describe("scanReportAnalysisForLeaks", () => {
     );
   });
 
+  it("flags unknown-kind residual tokens the kind-pinned matchers miss (#380)", () => {
+    // The redaction engine only emits IP/EMAIL/MAC, so a HOSTNAME token
+    // is foreign to every kind-pinned matcher. The kind-agnostic
+    // backstop must still fail the job for each scope: story `E{i}`,
+    // bare event, and report `R{j}`.
+    for (const token of [
+      "<<REDACTED_HOSTNAME_E1_001>>",
+      "<<REDACTED_HOSTNAME_001>>",
+      "<<REDACTED_HOSTNAME_R1_001>>",
+    ]) {
+      const res = scanReportAnalysisForLeaks(
+        `synthesized ${token}`,
+        built.refs,
+        EMPTY_RANGES,
+      );
+      expect(res.hasLeak).toBe(true);
+      expect(res.leaks).toContainEqual(
+        expect.objectContaining({ kind: "unknown_kind_token", match: token }),
+      );
+    }
+  });
+
+  it("does not flag a mapped report token via the backstop (no false positive)", () => {
+    const res = scanReportAnalysisForLeaks(
+      "actor at <<REDACTED_IP_R1_001>> mailed <<REDACTED_EMAIL_R2_001>>",
+      built.refs,
+      EMPTY_RANGES,
+    );
+    expect(res.hasLeak).toBe(false);
+    expect(res.leaks.some((l) => l.kind === "unknown_kind_token")).toBe(false);
+  });
+
   it("flags always-redacted plaintext PII (email, MAC)", () => {
     const res = scanReportAnalysisForLeaks(
       "contact alice@example.com via aa:bb:cc:dd:ee:ff",
