@@ -164,10 +164,12 @@ The worker pipeline runs without operator action:
    The worker actor is `system:analysis-worker` with a stable
    `system:periodic-report` sentinel AICE id, because a report spans
    multiple AICE environments and has no single canonical one.
-5. The returned narrative is scanned for residual tokens or plaintext
-   PII (a hallucinated decode fails the job and is never stored), then
-   written to `periodic_report_result`, followed by the auth-DB job
-   finalize.
+5. The returned narrative is scanned for any redaction token the scan
+   cannot restore — residual lower-scope tokens, unmapped report-scope
+   tokens, or a token of any unknown kind in any scope — or for
+   plaintext PII (a hallucinated decode fails the job and is never
+   stored), then written to `periodic_report_result`, followed by the
+   auth-DB job finalize.
 
 Retryable failures (5xx, transport, mTLS error) re-queue with backoff up
 to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx, hallucination detected,
