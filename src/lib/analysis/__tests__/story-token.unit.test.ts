@@ -135,6 +135,38 @@ describe("scanStoryAnalysisForLeaks", () => {
     expect(r.leaks.some((l) => l.kind === "residual_event_token")).toBe(true);
   });
 
+  it("flags unknown-kind tokens the kind-pinned matchers miss (#380)", () => {
+    // The redaction engine only emits IP/EMAIL/MAC, so a HOSTNAME token
+    // is foreign to STORY_TOKEN_RE and RESIDUAL_EVENT_TOKEN_RE. The
+    // kind-agnostic backstop must still fail the job for the story `E{i}`
+    // and bare event scopes — this is the first backstop that should
+    // have caught the observed leak.
+    for (const token of [
+      "<<REDACTED_HOSTNAME_E1_001>>",
+      "<<REDACTED_HOSTNAME_001>>",
+    ]) {
+      const r = scanStoryAnalysisForLeaks(
+        `synthesized ${token}`,
+        allowed,
+        EMPTY_RANGES,
+      );
+      expect(r.hasLeak).toBe(true);
+      expect(r.leaks).toContainEqual(
+        expect.objectContaining({ kind: "unknown_kind_token", match: token }),
+      );
+    }
+  });
+
+  it("does not flag mapped story tokens via the backstop (no false positive)", () => {
+    const r = scanStoryAnalysisForLeaks(
+      "Saw <<REDACTED_IP_E0_001>> talking to <<REDACTED_IP_E1_004>>.",
+      allowed,
+      EMPTY_RANGES,
+    );
+    expect(r.hasLeak).toBe(false);
+    expect(r.leaks.some((l) => l.kind === "unknown_kind_token")).toBe(false);
+  });
+
   it("flags plaintext IPv4 / email / MAC PII", () => {
     const r = scanStoryAnalysisForLeaks(
       "User alice@example.com from 10.0.0.5 (mac 00:11:22:33:44:55).",
