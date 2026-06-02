@@ -1083,15 +1083,19 @@ base.describe.serial("Manual screenshots", () => {
           ANALYSIS_SEVERITY,
           ANALYSIS_LIKELIHOOD,
           ANALYSIS_TIER,
-          // A concise sample so the screenshot is dominated by the
-          // header (badge + scores + metadata) rather than the body
-          // text. Two short paragraphs keep the body section non-empty
-          // so the visual hierarchy of the page is faithfully captured.
-          "The source host attempted credential stuffing against the " +
-            "/login endpoint with 412 failed attempts in 60 seconds, " +
-            "matching the brute-force baseline for this aice.\n\n" +
-            "Recommended action: review session anomalies on the source " +
-            "account and enable per-IP rate limiting at the edge.",
+          // A concise Markdown sample so the screenshot is dominated by
+          // the header (badge + scores + metadata) while still exercising
+          // the shared Markdown renderer (#382): a heading, an inline
+          // code span, a list, and an `<<UNVERIFIED_*>>` marker badge.
+          "## Summary\n\n" +
+            "The source host attempted credential stuffing against the " +
+            "`/login` endpoint with 412 failed attempts in 60 seconds, " +
+            "matching the brute-force baseline for this aice. The LLM " +
+            "also referenced an unverified address " +
+            "<<UNVERIFIED_IP_001>> not present in the original event.\n\n" +
+            "## Recommended action\n\n" +
+            "- review session anomalies on the source account\n" +
+            "- enable per-IP rate limiting at the edge",
           testData.manager.accountId,
         ],
       );
@@ -1262,6 +1266,20 @@ base.describe.serial("Manual screenshots", () => {
   //                              the aice-web-next capture pipeline rather
   //                              than here; the manual page references it as
   //                              a cross-repo deliverable.
+  //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail shots are
+  //     report-detail-monthly      real captures from the gauntlet live
+  //                              multi-host stack (real gpt-4o reports), not
+  //                              this fixture pipeline; they are produced by
+  //                              the gauntlet periodic-report-screenshots
+  //                              scenario (aicers/gauntlet#149, #365). Only
+  //                              the DAILY shot is fixture-driven here. The
+  //                              #382 Markdown renderer does not invalidate
+  //                              the live weekly/monthly assets: those gpt-4o
+  //                              narratives are plain prose with no Markdown
+  //                              syntax, so they render identically before
+  //                              and after the change. The DAILY fixture
+  //                              below deliberately carries Markdown to
+  //                              exercise the renderer.
   // Reuses the per-customer DB provisioned for the analysis-result
   // captures; the `analysis-result cleanup` test drops it.
   // =========================================================================

@@ -154,9 +154,15 @@ two-column grid:
 
 ## Analysis body
 
-The body shows the LLM analysis narrative with every story-scope
-token (`<<REDACTED_*_E{i}_*>>`) restored to its original plaintext
-entity. The token namespacing prevents the LLM from accidentally
+The body shows the LLM analysis narrative as rendered Markdown — headings,
+bullet and numbered lists, and inline code spans appear as styled elements
+rather than raw `#`, `-`, or backtick characters, matching the event
+analysis page. Raw HTML in the narrative is treated as inert text and is
+never rendered as live markup.
+
+Every story-scope token (`<<REDACTED_*_E{i}_*>>`) is restored to its
+original plaintext entity. The token namespacing prevents the LLM from
+accidentally
 merging entities across member events while the analysis is being
 generated; on the rendering side, the loader parses each `E{i}`,
 looks up `(aice_id, event_key)` in `input_event_refs`, decrypts the

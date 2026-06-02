@@ -226,8 +226,13 @@ LLM cannot add or drop a technique from the column.
 
 ## Report sections
 
-The body renders the five narrative sections the LLM returns, each with
-report-scope tokens restored to plaintext:
+The body renders the five narrative sections the LLM returns as Markdown —
+headings, bullet and numbered lists, and inline code spans appear as styled
+elements rather than raw `#`, `-`, or backtick characters, matching the
+event and story analysis pages. Raw HTML in a section is treated as inert
+text and is never rendered as live markup. A section the LLM left empty
+renders a `—` placeholder. Each section has report-scope tokens restored
+to plaintext:
 
 - **Executive summary** — the period-framed headline. This is the
   section the day-over-day near-duplicate check watches: two consecutive

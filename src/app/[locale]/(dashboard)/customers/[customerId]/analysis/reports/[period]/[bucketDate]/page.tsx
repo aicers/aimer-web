@@ -1,4 +1,5 @@
 import { forbidden, notFound } from "next/navigation";
+import { AnalysisBody } from "@/components/analysis-body";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -258,12 +259,7 @@ function ReportSection({
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </h2>
-      <div
-        data-testid={testid}
-        className="whitespace-pre-wrap rounded border border-border bg-card px-4 py-3 text-sm text-foreground"
-      >
-        {body || "—"}
-      </div>
+      <AnalysisBody text={body} testid={testid} emptyFallback="—" />
     </section>
   );
 }

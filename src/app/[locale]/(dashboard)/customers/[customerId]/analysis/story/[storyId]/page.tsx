@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { AnalysisBody } from "@/components/analysis-body";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { loadStoryResultPage } from "@/lib/analysis/story-result-page-loader";
 import { StoryRegenerateButton } from "./regenerate-button";
@@ -93,12 +94,7 @@ export default async function StoryAnalysisPage({ params }: PageProps) {
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Analysis
         </h2>
-        <div
-          data-testid="analysis-body"
-          className="whitespace-pre-wrap rounded border border-border bg-card px-4 py-3 text-sm text-foreground"
-        >
-          {data.analysisText}
-        </div>
+        <AnalysisBody text={data.analysisText} testid="analysis-body" />
       </section>
 
       <section className="mt-8">
