@@ -76,20 +76,24 @@ export const STORY_FIXTURE_HIGH: StoryFixtureTier = {
     "client fingerprint absent from the rest of the fleet",
   ],
   ttpTags: ["T1078", "T1110.001", "T1059.001", "T1071.001"],
+  // Real Markdown (headings, lists, inline code) so the capture
+  // exercises the shared Markdown renderer (#382).
   analysisText:
+    "## Summary\n\n" +
     "The story groups a credential-stuffing burst against the SSO " +
     "endpoint with a follow-on interactive sign-in from the same " +
     "source. 412 failed authentications in 60 seconds preceded a " +
     "single success on a privileged service account, after which the " +
     "session pivoted toward an internal domain controller.\n\n" +
-    "Taken together the members describe an account-takeover attempt " +
-    "that reached an initial foothold rather than isolated noise. The " +
-    "reused credential and the lateral movement raise the severity " +
-    "above a single-host compromise.\n\n" +
-    "Recommended action: revoke the affected account's active " +
-    "sessions, force a credential reset, and review domain-controller " +
-    "authentication logs for the source host over the surrounding " +
-    "window.",
+    "Taken together the members describe an **account-takeover " +
+    "attempt** that reached an initial foothold rather than isolated " +
+    "noise. The reused credential and the lateral movement raise the " +
+    "severity above a single-host compromise.\n\n" +
+    "## Recommended action\n\n" +
+    "- revoke the affected account's active sessions\n" +
+    "- force a credential reset\n" +
+    "- review `domain-controller` authentication logs for the source " +
+    "host over the surrounding window",
 };
 
 // Severity 0.350, likelihood 0.300 ⇒ LOW via the matrix (S < 0.4). The
@@ -110,14 +114,16 @@ export const STORY_FIXTURE_LOW: StoryFixtureTier = {
   ],
   ttpTags: ["T1595.001"],
   analysisText:
+    "## Summary\n\n" +
     "The story collects unauthenticated probe requests against a " +
     "public health-check path. The requests came from a rotating set " +
-    "of source addresses and never advanced past an HTTP 404.\n\n" +
+    "of source addresses and never advanced past an `HTTP 404`.\n\n" +
     "The pattern matches commodity internet scanning rather than a " +
     "targeted attempt. No credential was presented and no session was " +
     "established, so the likelihood of a real compromise is low.\n\n" +
-    "Recommended action: no immediate response required; the events " +
-    "are retained for trend baselining.",
+    "## Recommended action\n\n" +
+    "No immediate response required; the events are retained for trend " +
+    "baselining.",
 };
 
 /**

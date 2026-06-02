@@ -37,33 +37,36 @@ const REPORT_REDACTION_POLICY = "engine:0.0.0|ranges:none";
 // Keyed by aimer's real PERIODIC_SECURITY_REPORT output schema (#360):
 // `executive_summary` / `period_outlook` are strings; `story_highlights` /
 // `notable_events` / `baseline_observations` are arrays of Markdown strings.
+// The text uses real Markdown (headings, lists, inline code) so the manual
+// screenshots exercise the shared Markdown renderer (#382).
 const REPORT_SECTIONS = {
   executive_summary:
-    "Activity this period was dominated by a credential-stuffing burst " +
+    "Activity this period was dominated by a **credential-stuffing burst** " +
     "against the SSO endpoint that reached an initial foothold, set " +
     "against a 31% rise in reconnaissance-category events versus the " +
     "prior day.",
   story_highlights: [
-    "The highest-priority narrative was an account-takeover attempt: 412 " +
-      "failed authentications in 60 seconds preceded a single success on a " +
-      "privileged service account, after which the session pivoted toward " +
-      "a domain controller (T1078, T1110.001).",
+    "### Account-takeover attempt (T1078, T1110.001)\n\n" +
+      "The highest-priority narrative was an account-takeover attempt:\n\n" +
+      "- 412 failed authentications in 60 seconds\n" +
+      "- a single success on a privileged service account\n" +
+      "- the session then pivoted toward a domain controller",
   ],
   notable_events: [
     "A single outbound C2 beacon to a newly-registered domain stood out " +
-      "from the rest of the fleet (T1071.001); it was not part of any " +
+      "from the rest of the fleet (`T1071.001`); it was not part of any " +
       "correlated story this period.",
   ],
   baseline_observations: [
-    "Reconnaissance events rose from 120 to 157 (+31%), clearing the " +
-      "noise threshold; this was the dominant shift against the prior " +
+    "Reconnaissance events rose from `120` to `157` (**+31%**), clearing " +
+      "the noise threshold; this was the dominant shift against the prior " +
       "window. Malware-category volume was flat.",
     "Top sensors by event count were unchanged from the prior day.",
   ],
   period_outlook:
-    "Tomorrow's operator should re-check the SSO endpoint for renewed " +
-    "credential-stuffing and confirm the flagged service account's " +
-    "sessions stay revoked.",
+    "Tomorrow's operator should:\n\n" +
+    "1. re-check the SSO endpoint for renewed credential-stuffing\n" +
+    "2. confirm the flagged service account's sessions stay revoked",
 };
 
 /**

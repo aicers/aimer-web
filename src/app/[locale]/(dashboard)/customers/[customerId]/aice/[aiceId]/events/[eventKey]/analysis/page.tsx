@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { AnalysisBody } from "@/components/analysis-body";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { loadAnalysisResultPage } from "@/lib/analysis/result-page-loader";
 
@@ -113,7 +114,7 @@ export default async function AnalysisResultPage({
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Analysis
         </h2>
-        <AnalysisBody text={data.analysisText} />
+        <AnalysisBody text={data.analysisText} testid="analysis-body" />
       </section>
 
       {data.sourceEventPresent ? (
@@ -213,40 +214,6 @@ function TtpChipRow({
         </li>
       ))}
     </ul>
-  );
-}
-
-const UNVERIFIED_RE = /(<<UNVERIFIED_(?:IP|EMAIL|MAC)_\d+>>)/g;
-
-function AnalysisBody({ text }: { text: string }) {
-  // Split on `<<UNVERIFIED_*>>` markers so we can render them with a
-  // separate visual treatment (RFC 0001 §"UI — analysis result page").
-  // Original `<<REDACTED_*>>` tokens have already been substituted
-  // back to their entity values by the loader; nothing else needs
-  // special handling here.
-  const parts = text.split(UNVERIFIED_RE);
-  return (
-    <div
-      data-testid="analysis-body"
-      className="whitespace-pre-wrap rounded border border-border bg-card px-4 py-3 text-sm text-foreground"
-    >
-      {parts.map((part, idx) =>
-        UNVERIFIED_RE.test(part) ? (
-          <span
-            // biome-ignore lint/suspicious/noArrayIndexKey: stable split-order index
-            key={`u-${idx}`}
-            data-testid="unverified-marker"
-            title="Entity emitted by the LLM but not present in the original event"
-            className="inline-flex items-center rounded-full border border-rose-400 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-700"
-          >
-            {part}
-          </span>
-        ) : (
-          // biome-ignore lint/suspicious/noArrayIndexKey: stable split-order index
-          <span key={`t-${idx}`}>{part}</span>
-        ),
-      )}
-    </div>
   );
 }
 

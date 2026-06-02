@@ -83,11 +83,18 @@ two-column grid:
 ## Analysis body
 
 The body shows the LLM analysis text with PII tokens already restored
-to their original values. Any
-`<<UNVERIFIED_IP_...>>` / `<<UNVERIFIED_EMAIL_...>>` /
+to their original values. The analysis is Markdown, and the page renders
+it as formatted output — headings, bullet and numbered lists, and inline
+code spans appear as styled elements rather than raw `#`, `-`, or
+backtick characters. Raw HTML embedded in the text is never rendered as
+live markup; it is treated as inert text, since the body is
+LLM-generated.
+
+Any `<<UNVERIFIED_IP_...>>` / `<<UNVERIFIED_EMAIL_...>>` /
 `<<UNVERIFIED_MAC_...>>` markers — entities the LLM emitted that were
 not present in the original event — are rendered as red pill badges so
-they stand out from the rest of the analysis.
+they stand out from the rest of the analysis, even when they appear
+inside a list item or heading.
 
 ## Retention banner
 
