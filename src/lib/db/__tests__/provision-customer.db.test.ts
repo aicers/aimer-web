@@ -139,6 +139,12 @@ describe.skipIf(!hasPostgres)("provisionCustomerDb (DB integration)", () => {
     const custPool = new Pool({
       connectionString: authDbUrl.replace(/\/[^/?]+(\?|$)/, `/${dbName}$1`),
     });
+    // Suppress async client errors: cleanupCustomerDb below terminates
+    // every backend on this DB, and the resulting FATAL (57P01) can arrive
+    // after pool.end() resolves but before the socket is fully torn down.
+    // Without a handler that lands as an unhandled error and fails the run.
+    // Same rationale as dropTestDatabase in db-test-helpers.
+    custPool.on("error", () => {});
     try {
       const migs = await custPool.query("SELECT version FROM _migrations");
       expect(migs.rows.length).toBeGreaterThanOrEqual(1);
