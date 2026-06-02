@@ -5,7 +5,7 @@ time window for one customer — it weaves together the stories and single
 events already analysed in that window plus the statistical drift in the
 baseline event stream. Unlike a story analysis (one LLM call about one
 story), a report aggregates many leaf analyses into one narrative and
-does **not** ask the LLM for scores: aimer-web computes the aggregate
+does **not** ask the LLM for scores: Clumit Insight computes the aggregate
 scores itself from the included leaves and the baseline drift.
 
 The page is reached from an aice-web-next dashboard card deep link, or
@@ -101,7 +101,7 @@ daily report, selected over the longer window — they are not a
 concatenation of the dailies underneath them. The week-over-week and
 month-over-month comparative framing (whether the period is escalating,
 easing, or steady, and how a monthly reads against the prior month) is
-the LLM's job from the single window's evidence; aimer-web does not feed
+the LLM's job from the single window's evidence; Clumit Insight does not feed
 prior-period data into the prompt. A weekly that simply re-lists each
 day, or a monthly that never frames against the previous month, is the
 signal that the prompt or the input builder needs attention.

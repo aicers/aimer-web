@@ -6,7 +6,7 @@
 워커에 의해 분석되며, 페이지는 가장 최신의 비-슈퍼시디드(latest non-superseded)
 결과를 렌더링합니다.
 
-이 페이지는 aice-web-next에서 스토리 상세 화면을 열고 aimer-web 딥링크를
+이 페이지는 aice-web-next에서 스토리 상세 화면을 열고 Clumit Insight 딥링크를
 따라가거나, 다음 고객 범위 URL을 통해 직접 접근할 수 있습니다.
 
 ```
@@ -208,7 +208,7 @@ GET /api/customers/{customerId}/analysis/story/{storyId}/summary
 없는 작은 페이로드를 반환합니다. TTP 태그와 점수 근거는 콘텐츠이며 표면
 메타데이터가 아니므로, aice-web-next 배지가 분석 세부 정보를 누설하지
 못하도록 요약에서 제외됩니다. TTP로 스토리를 필터링하려면 배지가 아니라
-aimer-web의 `/analysis` 개요 목록을 사용하세요.
+Clumit Insight의 `/analysis` 개요 목록을 사용하세요.
 
 요약 엔드포인트는 페이지 및 재생성 라우트와 동일한 존재 은닉 정책을
 적용합니다. 고객의 멤버가 아닌 호출자는 `403`이 아니라 `404

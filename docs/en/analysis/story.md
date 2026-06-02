@@ -7,7 +7,7 @@ before deeper review. Each story is analysed once per default
 renders the latest non-superseded result.
 
 The page is reached from aice-web-next by opening a story detail and
-following the deep link to aimer-web, or directly via the
+following the deep link to Clumit Insight, or directly via the
 customer-scoped URL:
 
 ```
@@ -224,7 +224,7 @@ produced yet) or a small content-free payload with `priority_tier`, the
 two scores, `score_kind: "leaf"`, and a `link` to this page. TTP tags
 and factors are content, not surface metadata, and stay out of the
 summary so the aice-web-next badge cannot leak details of the
-analysis. To filter stories by TTP, use the aimer-web overview list at
+analysis. To filter stories by TTP, use the Clumit Insight overview list at
 `/analysis` rather than the badge.
 
 The summary endpoint applies the same existence-hiding policy as the
