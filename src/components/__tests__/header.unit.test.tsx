@@ -88,6 +88,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSeparator: () => <hr />,
 }));
 
+import { useTheme } from "next-themes";
 import { AppHeader } from "../header";
 
 const defaultProps = {
@@ -105,6 +106,11 @@ const defaultProps = {
 describe("AppHeader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset the theme to light before each test; `clearAllMocks` clears call
+    // history but not implementations, so a per-test override could leak.
+    vi.mocked(useTheme).mockReturnValue({
+      resolvedTheme: "gray-light",
+    } as ReturnType<typeof useTheme>);
   });
 
   afterEach(() => {
@@ -118,6 +124,20 @@ describe("AppHeader", () => {
     expect(link).not.toBeNull();
     const logo = link?.querySelector('img[alt="Clumit Insight"]');
     expect(logo).not.toBeNull();
+    // Light theme (and first paint) shows the light-background wordmark.
+    expect(logo?.getAttribute("src")).toContain("light");
+  });
+
+  it("renders the dark wordmark when the resolved theme is gray-dark", () => {
+    vi.mocked(useTheme).mockReturnValue({
+      resolvedTheme: "gray-dark",
+    } as ReturnType<typeof useTheme>);
+
+    const { container } = render(<AppHeader {...defaultProps} />);
+
+    const logo = container.querySelector('img[alt="Clumit Insight"]');
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute("src")).toContain("dark");
   });
 
   it("renders mobile menu trigger", () => {
