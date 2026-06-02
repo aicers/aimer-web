@@ -89,13 +89,13 @@ pdf_plugin = {
 }
 
 if locale == "ko":
-    pdf_plugin["with-pdf"]["cover_title"] = "Aimer Web"
+    pdf_plugin["with-pdf"]["cover_title"] = "Clumit Insight"
     pdf_plugin["with-pdf"]["cover_subtitle"] = "\uc0ac\uc6a9\uc790 \ub9e4\ub274\uc5bc"
     pdf_plugin["with-pdf"]["toc_title"] = "\ubaa9\ucc28"
     pdf_plugin["with-pdf"]["author"] = f"{now.strftime('%Y\ub144 %-m\uc6d4 %-d\uc77c')}"
     data.setdefault("extra", {})["cover_tagline"] = "\uc124\uce58 \ubc0f \uc0ac\uc6a9\uc790 \ub9e4\ub274\uc5bc"
 else:
-    pdf_plugin["with-pdf"]["cover_title"] = "Aimer Web"
+    pdf_plugin["with-pdf"]["cover_title"] = "Clumit Insight"
     pdf_plugin["with-pdf"]["cover_subtitle"] = "User Manual"
     pdf_plugin["with-pdf"]["toc_title"] = "Table of Contents"
     data.setdefault("extra", {})["cover_tagline"] = "Installation and User Manual"

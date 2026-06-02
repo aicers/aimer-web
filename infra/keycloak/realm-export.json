@@ -1,5 +1,6 @@
 {
   "realm": "aimer",
+  "displayName": "Clumit Insight",
   "enabled": true,
   "loginTheme": "aimer",
   "sslRequired": "external",
@@ -29,13 +30,13 @@
   "otpPolicyDigits": 6,
   "otpPolicyPeriod": 30,
   "otpPolicyInitialCounter": 0,
-  "webAuthnPolicyRpEntityName": "aimer",
+  "webAuthnPolicyRpEntityName": "Clumit Insight",
   "webAuthnPolicySignatureAlgorithms": ["ES256"],
   "webAuthnPolicyAttestationConveyancePreference": "not specified",
   "webAuthnPolicyAuthenticatorAttachment": "not specified",
   "webAuthnPolicyRequireResidentKey": "not specified",
   "webAuthnPolicyUserVerificationRequirement": "not specified",
-  "webAuthnPolicyPasswordlessRpEntityName": "aimer",
+  "webAuthnPolicyPasswordlessRpEntityName": "Clumit Insight",
   "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256"],
   "clientScopes": [
     {
@@ -136,7 +137,7 @@
   "clients": [
     {
       "clientId": "aimer-web",
-      "name": "Aimer General Client",
+      "name": "Clumit Insight General Client",
       "description": "General OIDC client — MFA optional",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",
@@ -160,7 +161,7 @@
     },
     {
       "clientId": "aimer-web-admin",
-      "name": "Aimer System Admin Client",
+      "name": "Clumit Insight System Admin Client",
       "description": "System Admin OIDC client — MFA mandatory via custom browser flow",
       "enabled": true,
       "clientAuthenticatorType": "client-secret",

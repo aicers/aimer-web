@@ -1,7 +1,7 @@
 # Manual Authoring Guide
 
 This guide defines the principles and conventions for writing and
-maintaining the Aimer Web user manual. All manual authors — human and
+maintaining the Clumit Insight user manual. All manual authors — human and
 AI agent alike — must follow these rules.
 
 ## When to write documentation

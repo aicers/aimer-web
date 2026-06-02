@@ -105,7 +105,7 @@ async function sendTestEmail(params: InvitationEmailParams) {
     secure: false,
   });
 
-  const subject = `Invitation to join ${params.customerName} on AIMER`;
+  const subject = `Invitation to join ${params.customerName} on Clumit Insight`;
 
   await transport.sendMail({
     from: EMAIL_FROM,

@@ -1,7 +1,7 @@
 # Backup & Restore
 
 This guide covers how to back up and restore all stateful components
-of Aimer Web: the central databases (`auth_db`, `audit_db`),
+of Clumit Insight: the central databases (`auth_db`, `audit_db`),
 per-customer databases, and the OpenBao secret engine.
 
 ## Prerequisites

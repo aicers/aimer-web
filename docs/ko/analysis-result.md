@@ -1,7 +1,7 @@
 # 분석 결과 페이지
 
 분석 결과 페이지는 단일 보안 이벤트에 대한 LLM 분석을 보여줍니다. aice-web-next에서
-이벤트 상세 화면을 열고 aimer-web 딥링크를 따라가거나,
+이벤트 상세 화면을 열고 Clumit Insight 딥링크를 따라가거나,
 `/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis` 경로로
 직접 접근할 수 있습니다.
 

@@ -1,10 +1,11 @@
 "use client";
 
-import { BarChart3, ChevronDown, LogOut, Menu } from "lucide-react";
+import { ChevronDown, LogOut, Menu } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import type { ReactNode } from "react";
-
+import { useTheme } from "next-themes";
+import { type ReactNode, useEffect, useState } from "react";
 import { HEADER_HEIGHT } from "@/components/layout-constants";
 import { LocaleSwitcher } from "@/components/locale-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -15,6 +16,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import logoDark from "../../public/brand/clumit-insight-dark.svg";
+import logoLight from "../../public/brand/clumit-insight-light.svg";
 
 interface AppHeaderProps {
   collapsed: boolean;
@@ -37,6 +40,17 @@ export function AppHeader({
 }: AppHeaderProps) {
   const tSidebar = useTranslations("sidebar");
   const tAuth = useTranslations("auth");
+  const { resolvedTheme } = useTheme();
+
+  // Avoid a hydration mismatch: the resolved theme is only known on the
+  // client, so render the light wordmark on the server / first paint and
+  // swap to the dark variant once mounted.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const logo = mounted && resolvedTheme === "gray-dark" ? logoDark : logoLight;
 
   return (
     <header
@@ -54,11 +68,17 @@ export function AppHeader({
         >
           <Menu className="h-5 w-5" />
         </button>
-        <Link href={homeHref} className="flex items-center gap-2">
-          <BarChart3 className="h-6 w-6 shrink-0 text-[var(--sidebar-active)]" />
-          <span className="text-lg font-bold text-[var(--sidebar-fg)]">
-            AIMER
-          </span>
+        <Link
+          href={homeHref}
+          className="flex items-center"
+          aria-label="Clumit Insight"
+        >
+          <Image
+            src={logo}
+            alt="Clumit Insight"
+            priority
+            className="h-6 w-auto shrink-0"
+          />
         </Link>
         {contextLabel}
       </div>

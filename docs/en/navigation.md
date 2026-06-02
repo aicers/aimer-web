@@ -1,6 +1,6 @@
 # Navigation
 
-The Aimer Web dashboard uses a top header bar for branding and
+The Clumit Insight dashboard uses a top header bar for branding and
 user controls, a sidebar for navigation and context switching, and
 breadcrumbs for orientation.
 
@@ -9,7 +9,7 @@ breadcrumbs for orientation.
 A full-width header bar sits at the top of every authenticated
 page. It contains:
 
-- **Left side** — hamburger button (sidebar toggle), AIMER logo,
+- **Left side** — hamburger button (sidebar toggle), Clumit Insight logo,
     and context label (e.g., "Admin" when in the admin dashboard).
 - **Right side** — theme toggle, language switcher, and a user
     profile dropdown (avatar, display name, email, and chevron)
@@ -68,7 +68,7 @@ customer workspace and AICE environment.
 
 ### Bridge sessions
 
-When you access Aimer Web through a bridge session, the customer
+When you access Clumit Insight through a bridge session, the customer
 and environment selectors are locked and cannot be changed. A lock
 icon and a "Locked to bridge session" label indicate the
 locked state.

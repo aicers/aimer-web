@@ -17,6 +17,25 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("next/image", () => ({
+  default: ({
+    src,
+    alt,
+    ...props
+  }: {
+    src: string | { src: string };
+    alt: string;
+  }) => {
+    const resolved = typeof src === "string" ? src : src.src;
+    // biome-ignore lint/performance/noImgElement: test stub for next/image
+    return <img src={resolved} alt={alt} {...props} />;
+  },
+}));
+
+vi.mock("next-themes", () => ({
+  useTheme: vi.fn(() => ({ resolvedTheme: "gray-light" })),
+}));
+
 vi.mock("next-intl", () => {
   const sidebarMap: Record<string, string> = {
     expandSidebar: "Expand sidebar",
@@ -69,6 +88,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenuSeparator: () => <hr />,
 }));
 
+import { useTheme } from "next-themes";
 import { AppHeader } from "../header";
 
 const defaultProps = {
@@ -86,18 +106,38 @@ const defaultProps = {
 describe("AppHeader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Reset the theme to light before each test; `clearAllMocks` clears call
+    // history but not implementations, so a per-test override could leak.
+    vi.mocked(useTheme).mockReturnValue({
+      resolvedTheme: "gray-light",
+    } as ReturnType<typeof useTheme>);
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  it("renders AIMER branding with link to homeHref", () => {
+  it("renders Clumit Insight branding with link to homeHref", () => {
     const { container } = render(<AppHeader {...defaultProps} />);
 
     const link = container.querySelector('a[href="/en"]');
     expect(link).not.toBeNull();
-    expect(link?.textContent).toContain("AIMER");
+    const logo = link?.querySelector('img[alt="Clumit Insight"]');
+    expect(logo).not.toBeNull();
+    // Light theme (and first paint) shows the light-background wordmark.
+    expect(logo?.getAttribute("src")).toContain("light");
+  });
+
+  it("renders the dark wordmark when the resolved theme is gray-dark", () => {
+    vi.mocked(useTheme).mockReturnValue({
+      resolvedTheme: "gray-dark",
+    } as ReturnType<typeof useTheme>);
+
+    const { container } = render(<AppHeader {...defaultProps} />);
+
+    const logo = container.querySelector('img[alt="Clumit Insight"]');
+    expect(logo).not.toBeNull();
+    expect(logo?.getAttribute("src")).toContain("dark");
   });
 
   it("renders mobile menu trigger", () => {

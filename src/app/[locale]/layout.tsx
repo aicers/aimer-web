@@ -9,8 +9,8 @@ import { themeConfig } from "@/lib/theme";
 import "@/app/globals.css";
 
 export const metadata: Metadata = {
-  title: "Aimer Web",
-  description: "Aimer Web Application",
+  title: "Clumit Insight",
+  description: "Clumit Insight",
 };
 
 export default async function LocaleLayout({

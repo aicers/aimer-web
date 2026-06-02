@@ -72,8 +72,8 @@ dialog. The invitation link becomes invalid immediately.
 When a user receives an invitation email, they click the acceptance
 link. The flow works as follows:
 
-1. The link redirects to the Aimer Web sign-in page.
-2. After signing in, Aimer Web verifies that the sign-in email
+1. The link redirects to the Clumit Insight sign-in page.
+2. After signing in, Clumit Insight verifies that the sign-in email
     matches the invited email and that the email is verified in
     Keycloak.
 3. If verification passes, the user is automatically added to the

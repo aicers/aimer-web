@@ -2,7 +2,7 @@
 
 The analysis result page shows a single LLM analysis of one security event.
 It is reached from aice-web-next by opening an event detail and following
-the deep link to aimer-web, or directly via
+the deep link to Clumit Insight, or directly via
 `/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis`.
 
 ![Analysis result page with priority badge and severity / likelihood scores](../assets/analysis-result.en.png)
