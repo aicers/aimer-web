@@ -187,7 +187,7 @@ export default async function ReportDetailPage({
             {data.aggregateLikelihoodScore.toFixed(3)}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Aggregated by aimer-web from {data.topStoryCount} stor
+            Aggregated by Clumit Insight from {data.topStoryCount} stor
             {data.topStoryCount === 1 ? "y" : "ies"} and {data.topEventCount}{" "}
             event{data.topEventCount === 1 ? "" : "s"} plus baseline drift.
           </div>
