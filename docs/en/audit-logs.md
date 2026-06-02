@@ -1,7 +1,7 @@
 # Audit Logs
 
 The audit log viewer provides a read-only, searchable view of all
-system events recorded by Aimer Web. It is available to System
+system events recorded by Clumit Insight. It is available to System
 Administrators in the Admin dashboard.
 
 ## Accessing the audit log viewer
@@ -42,7 +42,7 @@ Click any row to expand it and view additional details:
 
 ## Correlation ID grouping
 
-Each request processed by Aimer Web is assigned a correlation ID.
+Each request processed by Clumit Insight is assigned a correlation ID.
 Related events (e.g., an authentication check followed by a
 resource creation) share the same correlation ID.
 

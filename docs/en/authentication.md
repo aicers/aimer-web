@@ -1,6 +1,6 @@
 # Authentication
 
-Aimer Web uses Keycloak as its identity provider. Users sign in
+Clumit Insight uses Keycloak as its identity provider. Users sign in
 through an OpenID Connect (OIDC) redirect flow and are returned to
 the dashboard after successful authentication.
 
@@ -9,7 +9,7 @@ the dashboard after successful authentication.
 Click **Sign In** or navigate to any protected page. The browser
 redirects to the Keycloak login screen where you enter your
 credentials. After authentication completes, you are returned to
-the Aimer Web dashboard.
+the Clumit Insight dashboard.
 
 ![Sign-in page](../assets/sign-in.png)
 
@@ -22,7 +22,7 @@ can switch customers using the sidebar selector (see
 
 Click the profile dropdown on the right side of the header bar to
 open the user menu, then click **Sign Out**. Signing out revokes
-your Aimer Web session and redirects you to the Keycloak logout
+your Clumit Insight session and redirects you to the Keycloak logout
 page, which terminates your single sign-on (SSO) session.
 
 ![Sign Out in the profile dropdown](../assets/sign-out-header.png)
@@ -37,9 +37,9 @@ session.
 
 ## Bridge entry from Aimer Console
 
-Aimer Web also accepts entry from Aimer Console (aice-web-next) via the
+Clumit Insight also accepts entry from Aimer Console (aice-web-next) via the
 **Send to Aimer** action. When a Console operator clicks this button,
-the browser performs a top-level multipart POST to Aimer Web's bridge
+the browser performs a top-level multipart POST to Clumit Insight's bridge
 endpoint, which validates the request and then continues into the same
 Keycloak sign-in screen described above.
 
@@ -54,7 +54,7 @@ field rather than a binary file upload — the bridge endpoint accepts
 either form, and applies the same size cap and SHA-256 payload-hash
 verification to both.
 
-If the context token is missing, expired, or rejected, Aimer Web does
+If the context token is missing, expired, or rejected, Clumit Insight does
 not start a sign-in flow. Instead, the bridge endpoint responds with a
 JSON error (HTTP 400 for a missing token, HTTP 403 for a rejected or
 expired token), which Aimer Console surfaces back to the operator. In
@@ -65,7 +65,7 @@ to obtain a fresh context token.
 
 ## Access denied
 
-When authentication or authorization fails, Aimer Web displays an
+When authentication or authorization fails, Clumit Insight displays an
 access denied page with a message explaining the reason.
 
 ![Access denied page](../assets/deny-page.png)
@@ -98,9 +98,9 @@ explains each one with the recovery action you should take:
     used. Initiate a new connection from AICE.
 - **Customer scope mismatch** — the customer scope sent from AICE
     does not match what is registered for that environment in
-    Aimer Web. Report this configuration error to your operator
+    Clumit Insight. Report this configuration error to your operator
     with the time of failure so they can reconcile the registration.
-- **Customer inactive** — the customer record exists in Aimer Web
+- **Customer inactive** — the customer record exists in Clumit Insight
     but is currently not active. Wait for the operator to
     reactivate the customer, then try again.
 - **Environment inactive** — the AICE environment is registered

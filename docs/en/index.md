@@ -1,3 +1,3 @@
 # Overview
 
-Welcome to the Aimer Web user manual.
+Welcome to the Clumit Insight user manual.

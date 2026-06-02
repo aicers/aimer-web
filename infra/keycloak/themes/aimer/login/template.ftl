@@ -24,7 +24,8 @@
     <div class="aimer-container">
         <div class="aimer-card">
             <div class="aimer-logo">
-                <img src="${url.resourcesPath}/img/logo.svg" alt="${realm.displayName!'Aimer'}" />
+                <img class="aimer-logo-img aimer-logo-light" src="${url.resourcesPath}/img/clumit-insight-light.svg" alt="${realm.displayName!'Clumit Insight'}" />
+                <img class="aimer-logo-img aimer-logo-dark" src="${url.resourcesPath}/img/clumit-insight-dark.svg" alt="${realm.displayName!'Clumit Insight'}" />
             </div>
             <#nested "form">
             <#if displayInfo>

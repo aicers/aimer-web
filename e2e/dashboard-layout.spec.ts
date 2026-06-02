@@ -9,7 +9,7 @@ test.describe("Dashboard sidebar", () => {
     managerPage,
   }) => {
     await managerPage.goto("/en");
-    await expect(managerPage.getByText("AIMER")).toBeVisible();
+    await expect(managerPage.getByAltText("Clumit Insight")).toBeVisible();
 
     const nav = managerPage.getByRole("navigation", { name: "Main" });
     await expect(nav.getByText("Home")).toBeVisible();
@@ -276,8 +276,8 @@ test.describe("Dashboard navigation", () => {
   test("logo links to home page", async ({ managerPage }) => {
     await managerPage.goto("/en/events");
 
-    // Click logo (the AIMER link)
-    await managerPage.getByText("AIMER").click();
+    // Click logo (the Clumit Insight link)
+    await managerPage.getByRole("link", { name: "Clumit Insight" }).click();
 
     await expect(managerPage).toHaveURL(/\/en$/);
   });

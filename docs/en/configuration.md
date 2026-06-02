@@ -1,6 +1,6 @@
 # Configuration
 
-This page will describe how to configure Aimer Web.
+This page will describe how to configure Clumit Insight.
 
 ## Environment variables
 

@@ -117,6 +117,42 @@ body.aimer-login {
   color: var(--aimer-logo-color);
 }
 
+/* Light/dark wordmark swap — name files by the background they sit on.
+ * Default (light background) shows the dark-text (light) wordmark. */
+.aimer-logo-dark {
+  display: none;
+}
+
+.aimer-logo-light {
+  display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .aimer-logo-light {
+    display: none;
+  }
+
+  :root:not([data-theme="light"]) .aimer-logo-dark {
+    display: block;
+  }
+}
+
+[data-theme="dark"] .aimer-logo-light {
+  display: none;
+}
+
+[data-theme="dark"] .aimer-logo-dark {
+  display: block;
+}
+
+[data-theme="light"] .aimer-logo-light {
+  display: block;
+}
+
+[data-theme="light"] .aimer-logo-dark {
+  display: none;
+}
+
 /* ── Typography ── */
 .aimer-title {
   font-size: 20px;

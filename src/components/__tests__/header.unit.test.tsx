@@ -17,6 +17,25 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("next/image", () => ({
+  default: ({
+    src,
+    alt,
+    ...props
+  }: {
+    src: string | { src: string };
+    alt: string;
+  }) => {
+    const resolved = typeof src === "string" ? src : src.src;
+    // biome-ignore lint/performance/noImgElement: test stub for next/image
+    return <img src={resolved} alt={alt} {...props} />;
+  },
+}));
+
+vi.mock("next-themes", () => ({
+  useTheme: vi.fn(() => ({ resolvedTheme: "gray-light" })),
+}));
+
 vi.mock("next-intl", () => {
   const sidebarMap: Record<string, string> = {
     expandSidebar: "Expand sidebar",
@@ -92,12 +111,13 @@ describe("AppHeader", () => {
     cleanup();
   });
 
-  it("renders AIMER branding with link to homeHref", () => {
+  it("renders Clumit Insight branding with link to homeHref", () => {
     const { container } = render(<AppHeader {...defaultProps} />);
 
     const link = container.querySelector('a[href="/en"]');
     expect(link).not.toBeNull();
-    expect(link?.textContent).toContain("AIMER");
+    const logo = link?.querySelector('img[alt="Clumit Insight"]');
+    expect(logo).not.toBeNull();
   });
 
   it("renders mobile menu trigger", () => {
