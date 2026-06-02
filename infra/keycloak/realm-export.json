@@ -1,5 +1,6 @@
 {
   "realm": "aimer",
+  "displayName": "Clumit Insight",
   "enabled": true,
   "loginTheme": "aimer",
   "sslRequired": "external",
