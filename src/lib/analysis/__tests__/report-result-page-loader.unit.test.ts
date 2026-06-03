@@ -431,3 +431,61 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     expect(leafCall?.[1]?.[3]).toBe("ENGLISH");
   });
 });
+
+describe("loadReportResultPage — generation pin (T2 cited-by)", () => {
+  async function callPinned(opts: {
+    locale: string;
+    lang?: string;
+    generation: number;
+  }) {
+    const mod = await import("../report-result-page-loader");
+    return mod.loadReportResultPage({
+      customerId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-26",
+      locale: opts.locale,
+      variant: { lang: opts.lang },
+      generation: opts.generation,
+    });
+  }
+
+  it("resolves the exact pinned generation, no fallback / no enqueue", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      { ...resultRow("ENGLISH"), generation: 2, superseded_at: null },
+    ];
+    const outcome = await callPinned({
+      locale: "ko",
+      lang: "en",
+      generation: 2,
+    });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.generation).toBe(2);
+    expect(outcome.data.languageFallback).toBeNull();
+    // The pin must not trigger the on-demand enqueue even though the
+    // viewer's locale (ko) differs from the pinned language (en).
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    // The pinned query carries the generation as its 8th positional param.
+    const pinnedCall = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("AND generation = $8"),
+    );
+    expect(pinnedCall?.[1]?.[7]).toBe(2);
+  });
+
+  it("returns pin_unavailable when the pinned generation row is missing", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [];
+    const outcome = await callPinned({ locale: "en", generation: 9 });
+    expect(outcome.kind).toBe("pin_unavailable");
+    if (outcome.kind === "pin_unavailable") expect(outcome.generation).toBe(9);
+  });
+
+  it("returns pin_unavailable when the pinned generation row is superseded", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      { ...resultRow("ENGLISH"), generation: 2, superseded_at: new Date() },
+    ];
+    const outcome = await callPinned({ locale: "en", generation: 2 });
+    expect(outcome.kind).toBe("pin_unavailable");
+  });
+});

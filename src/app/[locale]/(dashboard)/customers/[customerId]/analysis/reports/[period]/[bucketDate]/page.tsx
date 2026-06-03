@@ -114,17 +114,38 @@ export default async function ReportDetailPage({
     model: firstParam(sp.model),
   };
 
+  // Optional generation pin (T2 "Cited by" link). A present-but-invalid
+  // value 404s rather than silently resolving the latest generation
+  // (parent #386 generation-pin contract).
+  let generation: number | undefined;
+  const rawGeneration = firstParam(sp.generation);
+  if (rawGeneration !== undefined) {
+    const n = Number(rawGeneration);
+    if (!Number.isInteger(n) || n <= 0) notFound();
+    generation = n;
+  }
+
   const outcome = await loadReportResultPage({
     customerId,
     period,
     bucketDate,
     locale,
     variant,
+    generation,
   });
 
   // The page's current query string, preserved across the tabs and the
-  // language switcher via the shared `mergeQuery` helper.
-  const currentQuery = mergeQuery(searchParamsToUrlSearchParams(sp), {});
+  // language switcher via the shared `mergeQuery` helper. A `generation`
+  // pin (T2 "Cited by" deep-link) is intentionally dropped here: it is
+  // specific to this exact bucket + variant, so carrying it onto a period
+  // tab (a different bucket) or the language switcher (a different variant)
+  // would almost always resolve to "report version no longer available".
+  // Ambient navigation shows the latest generation of its target; the
+  // Sources / Cited-by links set `generation` explicitly when a pin is
+  // wanted.
+  const currentQuery = mergeQuery(searchParamsToUrlSearchParams(sp), {
+    generation: null,
+  });
 
   // Non-member / non-existent → 404 (existence-hiding). Permission- or
   // bridge-denied → 403 (round-15 S3). `forbidden()` (enabled via
@@ -137,6 +158,31 @@ export default async function ReportDetailPage({
   }
   if (outcome.kind === "forbidden") {
     forbidden();
+  }
+  if (outcome.kind === "pin_unavailable") {
+    // A "Cited by" link pinned a generation that is gone/superseded. Show
+    // the same "evidence version no longer available" notice the leaf
+    // pages use — never silently fall back to the latest generation.
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold text-foreground">
+            Security Report
+          </h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {period} • {bucketDate} • generation {outcome.generation}
+          </p>
+        </header>
+        <div
+          role="status"
+          aria-label="pin-unavailable-banner"
+          className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          This report version is no longer available. The cited generation has
+          been superseded or removed.
+        </div>
+      </div>
+    );
   }
 
   // Build the tab bar only now that the loader has resolved the report

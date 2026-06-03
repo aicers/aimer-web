@@ -1,10 +1,16 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { CitedByTrail } from "@/components/analysis/cited-by-trail";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
+import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
-import { loadAnalysisResultPage } from "@/lib/analysis/result-page-loader";
+import {
+  type AnalysisResultPageData,
+  loadAnalysisResultPage,
+} from "@/lib/analysis/result-page-loader";
 import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
 
 interface PageProps {
@@ -28,7 +34,7 @@ export default async function AnalysisResultPage({
   params,
   searchParams,
 }: PageProps) {
-  const { customerId, aiceId, eventKey } = await params;
+  const { locale, customerId, aiceId, eventKey } = await params;
   const search = await searchParams;
   const lang = search.lang ?? "ENGLISH";
   const modelName = search.model_name ?? "";
@@ -95,6 +101,13 @@ export default async function AnalysisResultPage({
   const data = outcome.data;
   const t = await getTranslations("nav");
 
+  // Reverse trail: the report(s) that cite this event (T2 #396).
+  // Permission-gated inside the loader; an empty trail renders nothing.
+  const citedBy = await loadCitedByReports({
+    customerId,
+    leaf: { kind: "event", aiceId: data.aiceId, eventKey: data.eventKey },
+  });
+
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       {/* Feed the breadcrumb its leaf label from already-loaded data
@@ -119,6 +132,14 @@ export default async function AnalysisResultPage({
           Source event removed by retention; analysis result preserved.
         </div>
       ) : null}
+
+      {/* Upward backlink: the threat story / stories this event is part of
+          (T2 #396). Nothing renders when the event is not a story member. */}
+      <ParentStoryBacklink
+        locale={locale}
+        customerId={customerId}
+        parentStories={data.parentStories}
+      />
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Priority tier">
@@ -163,12 +184,96 @@ export default async function AnalysisResultPage({
         <AnalysisBody text={data.analysisText} testid="analysis-body" />
       </section>
 
+      {/* Reverse "Cited by" trail back up to the citing report(s). */}
+      <CitedByTrail locale={locale} customerId={customerId} reports={citedBy} />
+
+      {/* Bottom of the trust chain: the raw source event. aimer-web does
+          not store raw event payloads, so the final hop links out to the
+          aice-web-next source event — but ONLY when the source is still
+          present. When retention has swept it (`sourceEventPresent`
+          false) the chain ends gracefully at the preserved analysis (the
+          retention banner above) instead of a dead link (parent #386). */}
       {data.sourceEventPresent ? (
-        <section className="mt-8">
+        <section className="mt-8 flex flex-wrap gap-2">
+          <RawEventHop aiceId={data.aiceId} eventKey={data.eventKey} />
           <ForceRerunButton aiceId={data.aiceId} eventKey={data.eventKey} />
         </section>
       ) : null}
     </div>
+  );
+}
+
+function ParentStoryBacklink({
+  locale,
+  customerId,
+  parentStories,
+}: {
+  locale: string;
+  customerId: string;
+  parentStories: AnalysisResultPageData["parentStories"];
+}) {
+  if (parentStories.length === 0) return null;
+  return (
+    <section className="mb-6" data-testid="parent-stories">
+      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Part of threat {parentStories.length === 1 ? "story" : "stories"}
+      </h2>
+      <ul className="flex flex-wrap gap-2">
+        {parentStories.map((s) => (
+          <li key={s.storyId}>
+            <Link
+              href={`/${locale}/customers/${customerId}/analysis/story/${encodeURIComponent(
+                s.storyId,
+              )}`}
+              data-testid={`parent-story-${s.storyId}`}
+              className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:border-foreground"
+            >
+              <span>Story {s.storyId}</span>
+              <span
+                data-tier={s.priorityTier}
+                className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${TIER_CLASSES[s.priorityTier]}`}
+              >
+                {s.priorityTier}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+// Drill-down to the raw source event. Mirrors the force-rerun button's
+// origin handling: the aice-web-next origin is deploy-time config, so a
+// missing origin renders the link disabled rather than broken. Unlike
+// force-rerun this is a plain "view" hop — no `aimerForce` signal — so
+// aice-web-next opens the source event read-only.
+function RawEventHop({
+  aiceId,
+  eventKey,
+}: {
+  aiceId: string;
+  eventKey: string;
+}) {
+  const origin = process.env.AICE_WEB_NEXT_ORIGIN ?? "";
+  let target = "";
+  if (origin !== "") {
+    const params = new URLSearchParams({ aice_id: aiceId });
+    target = `${origin.replace(/\/$/, "")}/events/${encodeURIComponent(
+      eventKey,
+    )}?${params.toString()}`;
+  }
+  return (
+    <a
+      data-testid="raw-event-link"
+      href={target || "#"}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
+      aria-disabled={target === "" ? "true" : undefined}
+    >
+      View source event in aice-web-next
+    </a>
   );
 }
 

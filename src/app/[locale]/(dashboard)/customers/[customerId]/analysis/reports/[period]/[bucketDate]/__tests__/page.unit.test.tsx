@@ -292,6 +292,25 @@ describe("report detail page", () => {
     ).toContain("/reports/LIVE/1970-01-01");
   });
 
+  it("drops a generation pin from tab links but preserves other variant params", async () => {
+    // Arriving via a "Cited by" deep-link pins `?generation`. That pin is
+    // specific to this bucket + variant, so the period tabs (different
+    // buckets) must NOT carry it — otherwise switching period bounces the
+    // reader to "report version no longer available". Other variant params
+    // (lang/model) are still preserved per the query-preservation contract.
+    await renderPage("DAILY", "2026-05-26", {
+      generation: "2",
+      lang: "ko",
+      model_name: "openai",
+    });
+    const weeklyHref = screen
+      .getByTestId("report-tab-WEEKLY")
+      .getAttribute("href");
+    expect(weeklyHref).not.toContain("generation");
+    expect(weeklyHref).toContain("lang=ko");
+    expect(weeklyHref).toContain("model_name=openai");
+  });
+
   it("renders the language switcher marking available vs unavailable locales", async () => {
     const base = okFixture();
     if (base.kind !== "ok") throw new Error("fixture must be ok");

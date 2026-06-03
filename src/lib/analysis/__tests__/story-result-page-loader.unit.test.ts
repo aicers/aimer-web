@@ -40,6 +40,9 @@ vi.mock("../story-token-restore", () => ({
 
 let stateRows: Array<{ status: string }> = [];
 let resultRows: Array<Record<string, unknown>> = [];
+// Member-event display rows returned for the `event_analysis_result`
+// batch SELECT the loader runs to populate the story's member list (T2).
+let eventDisplayRows: Array<Record<string, unknown>> = [];
 
 const authPool = {
   query: vi.fn(async (sql: string) => {
@@ -51,6 +54,9 @@ const authPool = {
 const customerPool = {
   query: vi.fn(async (sql: string, _params?: unknown[]) => {
     if (sql.includes("FROM story_analysis_result")) return { rows: resultRows };
+    if (sql.includes("FROM event_analysis_result")) {
+      return { rows: eventDisplayRows };
+    }
     return { rows: [] };
   }),
 };
@@ -107,6 +113,7 @@ beforeEach(() => {
   customerPool.query.mockClear();
   stateRows = [{ status: "ready" }];
   resultRows = [];
+  eventDisplayRows = [];
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
   mockVerifyJwtFull
     .mockReset()
@@ -166,5 +173,75 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     resultRows = [resultRow({ generation: 2, superseded_at: new Date() })];
     const outcome = await callLoader({ generation: 2 });
     expect(outcome.kind).toBe("pin_unavailable");
+  });
+});
+
+describe("loadStoryResultPage — member events (T2 #396)", () => {
+  it("returns members in ordinal order with display fields", async () => {
+    // Refs arrive out of order; the loader must sort by member ordinal
+    // (`index`), not array position, before rendering.
+    resultRows = [
+      resultRow({
+        input_event_refs: [
+          { index: 2, aiceId: "aice-b", eventKey: "20" },
+          { index: 1, aiceId: "aice-a", eventKey: "10" },
+        ],
+      }),
+    ];
+    eventDisplayRows = [
+      {
+        aice_id: "aice-a",
+        event_key: "10",
+        priority_tier: "HIGH",
+        severity_score: 0.6,
+        likelihood_score: 0.7,
+      },
+      {
+        aice_id: "aice-b",
+        event_key: "20",
+        priority_tier: "LOW",
+        severity_score: 0.1,
+        likelihood_score: 0.2,
+      },
+    ];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.memberEvents.map((m) => m.index)).toEqual([1, 2]);
+    expect(outcome.data.memberEvents[0]).toEqual({
+      index: 1,
+      aiceId: "aice-a",
+      eventKey: "10",
+      display: {
+        priorityTier: "HIGH",
+        severityScore: 0.6,
+        likelihoodScore: 0.7,
+      },
+    });
+    expect(outcome.data.memberEventVariant).toEqual({
+      lang: "ENGLISH",
+      modelName: "openai",
+      model: "gpt-4o",
+    });
+  });
+
+  it("degrades a member with no canonical event row to display: null", async () => {
+    resultRows = [
+      resultRow({
+        input_event_refs: [{ index: 1, aiceId: "aice-a", eventKey: "10" }],
+      }),
+    ];
+    eventDisplayRows = []; // no event row at the canonical variant
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.memberEvents).toEqual([
+      { index: 1, aiceId: "aice-a", eventKey: "10", display: null },
+    ]);
+  });
+
+  it("returns an empty member list when the story has no recorded members", async () => {
+    resultRows = [resultRow({ input_event_refs: [] })];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.memberEvents).toEqual([]);
   });
 });

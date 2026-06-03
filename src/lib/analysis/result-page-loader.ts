@@ -79,6 +79,15 @@ export interface AnalysisResultPageData {
    * preserved" banner and hides the force re-run button.
    */
   sourceEventPresent: boolean;
+  /**
+   * The threat story / stories this event is a member of, for the
+   * upward "part of story" backlink (T2 #396). Found by a reverse
+   * containment lookup over `story_analysis_result.input_event_refs`.
+   * An event usually belongs to one story, but the lookup tolerates
+   * several (deduped by story, newest-first). Empty when the event is
+   * not a member of any story.
+   */
+  parentStories: Array<{ storyId: string; priorityTier: PriorityTier }>;
 }
 
 export interface ResultPageInput {
@@ -254,6 +263,34 @@ export async function loadAnalysisResultPage(
     [input.aiceId, input.eventKey],
   );
 
+  // Upward backlink: the story / stories that include this event as a
+  // member (T2 #396). Membership lives in `story_analysis_result.
+  // input_event_refs` (camelCase `{index, aiceId, eventKey}`), so the
+  // probe uses those keys. Membership is variant-independent, so the
+  // lookup is not filtered by lang/model; `DISTINCT ON (story_id) …
+  // generation DESC` collapses a story's variants/generations to one
+  // row. Newest-first by the kept row's `requested_at`.
+  const parentStoryRows = await customerPool.query<{
+    story_id: string;
+    priority_tier: PriorityTier;
+    requested_at: Date;
+  }>(
+    `SELECT DISTINCT ON (story_id)
+            story_id::text AS story_id, priority_tier, requested_at
+       FROM story_analysis_result
+      WHERE customer_id = $1
+        AND input_event_refs @> $2::jsonb
+        AND superseded_at IS NULL
+      ORDER BY story_id, generation DESC`,
+    [
+      input.customerId,
+      JSON.stringify([{ aiceId: input.aiceId, eventKey: input.eventKey }]),
+    ],
+  );
+  const parentStories = [...parentStoryRows.rows]
+    .sort((a, b) => b.requested_at.getTime() - a.requested_at.getTime())
+    .map((r) => ({ storyId: r.story_id, priorityTier: r.priority_tier }));
+
   return {
     kind: "ok",
     data: {
@@ -275,6 +312,7 @@ export async function loadAnalysisResultPage(
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
       sourceEventPresent: sourcePresent.rows[0]?.exists === true,
+      parentStories,
     },
   };
 }

@@ -1,10 +1,16 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { CitedByTrail } from "@/components/analysis/cited-by-trail";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
+import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
-import { loadStoryResultPage } from "@/lib/analysis/story-result-page-loader";
+import {
+  loadStoryResultPage,
+  type StoryMemberEvent,
+} from "@/lib/analysis/story-result-page-loader";
 import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
 import { StoryRegenerateButton } from "./regenerate-button";
 
@@ -36,7 +42,7 @@ export default async function StoryAnalysisPage({
   params,
   searchParams,
 }: PageProps) {
-  const { customerId, storyId } = await params;
+  const { locale, customerId, storyId } = await params;
   const search = (await searchParams) ?? {};
 
   const generation = parseGeneration(search.generation);
@@ -108,6 +114,18 @@ export default async function StoryAnalysisPage({
   const collapseFactors = data.priorityTier === "LOW";
   const t = await getTranslations("nav");
 
+  // Reverse trail: the report(s) that cite this story (T2 #396).
+  // Permission-gated inside the loader; an empty trail renders nothing.
+  const citedBy = await loadCitedByReports({
+    customerId,
+    leaf: { kind: "story", storyId: data.storyId },
+  });
+  const memberVariantQuery = new URLSearchParams({
+    lang: data.memberEventVariant.lang,
+    model_name: data.memberEventVariant.modelName,
+    model: data.memberEventVariant.model,
+  }).toString();
+
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       {/* Feed the breadcrumb its leaf label from already-loaded data
@@ -166,6 +184,18 @@ export default async function StoryAnalysisPage({
         <AnalysisBody text={data.analysisText} testid="analysis-body" />
       </section>
 
+      {/* Story → member suspicious events, in member-ordinal order, each
+          linking down to the event detail page (T2 #396). */}
+      <MemberEventsSection
+        locale={locale}
+        customerId={customerId}
+        members={data.memberEvents}
+        variantQuery={memberVariantQuery}
+      />
+
+      {/* Reverse "Cited by" trail back up to the citing report(s). */}
+      <CitedByTrail locale={locale} customerId={customerId} reports={citedBy} />
+
       <section className="mt-8">
         <StoryRegenerateButton
           customerId={data.customerId}
@@ -173,6 +203,103 @@ export default async function StoryAnalysisPage({
         />
       </section>
     </div>
+  );
+}
+
+function MemberEventsSection({
+  locale,
+  customerId,
+  members,
+  variantQuery,
+}: {
+  locale: string;
+  customerId: string;
+  members: StoryMemberEvent[];
+  variantQuery: string;
+}) {
+  if (members.length === 0) return null;
+  return (
+    <section className="mt-8" data-testid="member-events">
+      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        Member suspicious events
+      </h2>
+      <p className="mb-3 text-xs text-muted-foreground">
+        The suspicious events correlated into this story, in order.
+      </p>
+      <ul className="space-y-2">
+        {members.map((m) => (
+          <MemberEventCard
+            key={`${m.aiceId}-${m.eventKey}`}
+            locale={locale}
+            customerId={customerId}
+            member={m}
+            variantQuery={variantQuery}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function MemberEventCard({
+  locale,
+  customerId,
+  member,
+  variantQuery,
+}: {
+  locale: string;
+  customerId: string;
+  member: StoryMemberEvent;
+  variantQuery: string;
+}) {
+  const href = `/${locale}/customers/${customerId}/aice/${encodeURIComponent(
+    member.aiceId,
+  )}/events/${encodeURIComponent(member.eventKey)}/analysis?${variantQuery}`;
+  return (
+    <li>
+      <Link
+        href={href}
+        data-testid={`member-event-${member.aiceId}-${member.eventKey}`}
+        className="block rounded border border-border bg-card px-4 py-3 transition-colors hover:border-foreground"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-foreground">
+              <span className="text-muted-foreground">#{member.index}</span>{" "}
+              Event {member.aiceId} · {member.eventKey}
+            </div>
+            {member.display ? (
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                severity {member.display.severityScore.toFixed(3)} • likelihood{" "}
+                {member.display.likelihoodScore.toFixed(3)}
+              </div>
+            ) : (
+              <div
+                data-testid="member-event-unavailable"
+                className="mt-0.5 text-xs text-muted-foreground"
+              >
+                Event analysis not available at the default variant.
+              </div>
+            )}
+          </div>
+          {member.display ? (
+            <MemberPriorityBadge tier={member.display.priorityTier} />
+          ) : null}
+        </div>
+      </Link>
+    </li>
+  );
+}
+
+function MemberPriorityBadge({ tier }: { tier: PriorityTier }) {
+  return (
+    <span
+      data-testid="member-priority-badge"
+      data-tier={tier}
+      className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${TIER_CLASSES[tier]}`}
+    >
+      {tier}
+    </span>
   );
 }
 

@@ -189,6 +189,44 @@ row, out-of-range index) are passed through unchanged so the page
 still renders. Hallucinated decodes are blocked at write time and
 never reach this view.
 
+## Member suspicious events
+
+Below the analysis body the page lists the **member suspicious events**
+correlated into this story, in the story's member order (the member
+ordinal embedded in the redaction token namespace). Each member is a card
+linking down to that event's [Analysis Result page](../analysis-result.md),
+carrying the default `(language, provider, model)` variant so the event
+page resolves the same evidence the card describes. A card shows the
+member's priority-tier badge and severity / likelihood scores when the
+event has a result at that variant; a member whose event has no result
+there (for example, swept by retention) still links by id, with a short
+"Event analysis not available at the default variant" note instead of the
+scores.
+
+This is the downward half of the trust drill-down: a reader can move from
+the story narrative into each cited event, then on to the raw source
+event from the event page.
+
+<!-- Screenshot placeholder (#396): story page with the member suspicious
+events list. Capture from a stack with real story-member data. -->
+
+## Cited by
+
+If one or more periodic reports cite this story, the page shows a **Cited
+by** trail listing those reports, newest first. Each entry links back up
+to the **exact report generation** that consumed the story — the link is
+generation-pinned, so it opens the version the report was built from
+rather than the latest. A story may be cited across several periods; the
+trail lists one entry per report bucket, and a story cited by no report
+shows no trail (a normal state, not an error).
+
+The trail is permission-gated on `reports:read`: a viewer who cannot read
+the customer's reports sees no trail rather than links they could not
+open.
+
+<!-- Screenshot placeholder (#396): story page with the "Cited by" trail.
+Capture from a stack with real report-citation data. -->
+
 ## Force regenerate
 
 Operators with `analyses:configure` can rerun the analysis manually via

@@ -1,0 +1,266 @@
+// DB integration test for the reverse-citation lookup (T2, #396) against a
+// real customer database with the 0009 GIN migration applied. Validates
+// that the JSONB containment (`@>`) probes match the exact persisted ref
+// shapes (`{aice_id,event_key,generation}` for events, `{story_id,...}`
+// for stories), that superseded reports are excluded, that the trail is
+// deduped per bucket and ordered newest-first, and that the parent-story
+// reverse probe matches the camelCase `story_analysis_result` refs.
+//
+// The auth preamble (cookie / JWT / session / authorize) is covered by the
+// unit test; here those modules are stubbed to allow access so the SQL
+// itself is exercised end-to-end through the loader.
+
+import { join } from "node:path";
+import type { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  closeAdminPool,
+  createTestDatabase,
+  dropTestDatabase,
+  hasPostgres,
+} from "@/lib/db/__tests__/db-test-helpers";
+import { runMigrations } from "@/lib/db/migrate";
+
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/auth/cookies", () => ({
+  getAuthCookie: vi.fn(async () => "tok"),
+}));
+vi.mock("@/lib/auth/jwt", () => ({
+  verifyJwtFull: vi.fn(async () => ({ sub: "acc-1", sid: "sess-1" })),
+}));
+vi.mock("@/lib/auth/session-policy", () => ({
+  getSessionPolicy: vi.fn(async () => ({ general: {} })),
+}));
+vi.mock("@/lib/auth/session-validator", () => ({
+  validateSession: vi.fn(async () => ({
+    bridgeAiceId: null,
+    bridgeCustomerIds: null,
+  })),
+}));
+vi.mock("@/lib/auth/authorization", () => ({
+  authorize: vi.fn(async () => ({ authorized: true })),
+}));
+vi.mock("@/lib/db/client", () => ({
+  getAuthPool: () => ({ query: vi.fn() }),
+  withTransaction: async (_pool: unknown, fn: (client: unknown) => unknown) =>
+    fn({ query: vi.fn() }),
+}));
+
+const poolHolder: { pool: Pool | null } = { pool: null };
+vi.mock("@/lib/db/customer-runtime-pool", () => ({
+  getCustomerRuntimePool: () => poolHolder.pool,
+}));
+
+const { loadCitedByReports } = await import("../cited-by-loader");
+
+const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
+const CUSTOMER_LOCK_ID = 3711;
+const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004a1";
+
+describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
+  let customerDbName: string;
+  let customerPool: Pool;
+
+  async function seedReport(args: {
+    period: string;
+    bucketDate: string;
+    tz?: string;
+    lang?: string;
+    generation: number;
+    tier: string;
+    requestedAt: string;
+    eventRefs?: unknown[];
+    storyRefs?: unknown[];
+    superseded?: boolean;
+  }): Promise<void> {
+    await customerPool.query(
+      `INSERT INTO periodic_report_result
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          aggregate_severity_score, aggregate_likelihood_score,
+          aggregate_ttp_tags, priority_tier, sections_jsonb,
+          input_event_refs, input_story_refs, input_hash,
+          redaction_policy_version, requested_by, requested_at, superseded_at)
+       VALUES ($1, $2, $3::date, $4, $5, 'openai', 'gpt-4o',
+               'mv', 'pv', $6,
+               0, 0,
+               '[]'::jsonb, $7, '{}'::jsonb,
+               $8::jsonb, $9::jsonb, 'h',
+               'baseline-only', NULL,
+               $10::timestamptz,
+               CASE WHEN $11::boolean THEN NOW() ELSE NULL END)`,
+      [
+        CUSTOMER_ID,
+        args.period,
+        args.bucketDate,
+        args.tz ?? "Asia/Seoul",
+        args.lang ?? "ENGLISH",
+        args.generation,
+        args.tier,
+        JSON.stringify(args.eventRefs ?? []),
+        JSON.stringify(args.storyRefs ?? []),
+        args.requestedAt,
+        args.superseded ?? false,
+      ],
+    );
+  }
+
+  beforeAll(async () => {
+    const cust = await createTestDatabase("cited_by_cust");
+    customerDbName = cust.dbName;
+    customerPool = cust.pool;
+    poolHolder.pool = customerPool;
+    await runMigrations(
+      customerPool,
+      CUSTOMER_MIGRATIONS_DIR,
+      CUSTOMER_LOCK_ID,
+    );
+
+    // Event aice-9/777 is cited by a DAILY report (en + ko variants of the
+    // SAME bucket) and an older WEEKLY report; a superseded DAILY gen and a
+    // report that cites a different event must not appear.
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-26",
+      lang: "ENGLISH",
+      generation: 2,
+      tier: "HIGH",
+      requestedAt: "2026-05-27T12:00:00Z",
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-26",
+      lang: "KOREAN",
+      generation: 1,
+      tier: "HIGH",
+      requestedAt: "2026-05-27T11:00:00Z",
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+    });
+    await seedReport({
+      period: "WEEKLY",
+      bucketDate: "2026-05-24",
+      generation: 1,
+      tier: "MEDIUM",
+      requestedAt: "2026-05-24T09:00:00Z",
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 3 }],
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-25",
+      generation: 1,
+      tier: "LOW",
+      requestedAt: "2026-05-25T08:00:00Z",
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 2 }],
+      superseded: true,
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-23",
+      generation: 1,
+      tier: "LOW",
+      requestedAt: "2026-05-23T08:00:00Z",
+      eventRefs: [{ aice_id: "aice-other", event_key: "111", generation: 1 }],
+    });
+
+    // Story 555 is cited by one MONTHLY report.
+    await seedReport({
+      period: "MONTHLY",
+      bucketDate: "2026-05-01",
+      generation: 3,
+      tier: "CRITICAL",
+      requestedAt: "2026-05-31T00:00:00Z",
+      storyRefs: [{ story_id: "555", generation: 2 }],
+    });
+  });
+
+  afterAll(async () => {
+    if (customerPool) await customerPool.end();
+    if (customerDbName) await dropTestDatabase(customerDbName);
+    await closeAdminPool();
+  });
+
+  it("finds citing reports for an event, deduped per bucket, newest-first", async () => {
+    const trail = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777" },
+    });
+    // DAILY 2026-05-26 (en/ko collapse to one) then WEEKLY 2026-05-24; the
+    // superseded DAILY 2026-05-25 and the aice-other report are excluded.
+    expect(trail.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-05-26",
+      "WEEKLY:2026-05-24",
+    ]);
+    // The kept DAILY representative is the most-recent (English gen 2) row.
+    expect(trail[0]).toMatchObject({ generation: 2, locale: "en" });
+  });
+
+  it("finds citing reports for a story via input_story_refs", async () => {
+    const trail = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: { kind: "story", storyId: "555" },
+    });
+    expect(trail).toHaveLength(1);
+    expect(trail[0]).toMatchObject({
+      period: "MONTHLY",
+      bucketDate: "2026-05-01",
+      generation: 3,
+      priorityTier: "CRITICAL",
+    });
+  });
+
+  it("returns an empty trail for a leaf no report cites", async () => {
+    const trail = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: { kind: "story", storyId: "999" },
+    });
+    expect(trail).toEqual([]);
+  });
+
+  it("matches the camelCase story member refs for the event→story backlink", async () => {
+    // The event loader's parent-story backlink probes
+    // `story_analysis_result.input_event_refs @> [{aiceId, eventKey}]`,
+    // whose persisted refs use camelCase keys (unlike the report refs).
+    // Verify the containment matches the stored shape end-to-end.
+    await customerPool.query(
+      `INSERT INTO story_analysis_result
+         (customer_id, story_id, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score, priority_tier, analysis_text,
+          input_event_refs, input_hash, redaction_policy_version, requested_at)
+       VALUES ($1, $2::bigint, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 1,
+               0, 0, 'HIGH', 'n',
+               $3::jsonb, 'h', 'baseline-only', NOW())`,
+      [
+        CUSTOMER_ID,
+        "888",
+        JSON.stringify([{ index: 1, aiceId: "aice-9", eventKey: "777" }]),
+      ],
+    );
+    const { rows } = await customerPool.query<{ story_id: string }>(
+      `SELECT story_id::text AS story_id
+         FROM story_analysis_result
+        WHERE customer_id = $1
+          AND input_event_refs @> $2::jsonb
+          AND superseded_at IS NULL`,
+      [CUSTOMER_ID, JSON.stringify([{ aiceId: "aice-9", eventKey: "777" }])],
+    );
+    expect(rows.map((r) => r.story_id)).toEqual(["888"]);
+  });
+
+  it("created the GIN indexes the reverse lookup relies on", async () => {
+    const { rows } = await customerPool.query<{ indexname: string }>(
+      `SELECT indexname FROM pg_indexes
+        WHERE indexname IN (
+          'periodic_report_result_input_event_refs_gin',
+          'periodic_report_result_input_story_refs_gin',
+          'story_analysis_result_input_event_refs_gin')`,
+    );
+    expect(rows.map((r) => r.indexname).sort()).toEqual([
+      "periodic_report_result_input_event_refs_gin",
+      "periodic_report_result_input_story_refs_gin",
+      "story_analysis_result_input_event_refs_gin",
+    ]);
+  });
+});

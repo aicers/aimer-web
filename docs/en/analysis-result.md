@@ -113,12 +113,57 @@ not present in the original event — are rendered as red pill badges so
 they stand out from the rest of the analysis, even when they appear
 inside a list item or heading.
 
+## Part of threat stories
+
+When this suspicious event is a member of one or more threat stories, the
+page shows a **Part of threat story / stories** section near the top with
+a link to each parent story (with its priority-tier badge). This is the
+upward half of the trust drill-down: a reader who arrived at the event
+can navigate back up to the correlation it belongs to. The membership is
+resolved by a reverse lookup over each story's member list, so it stays
+in sync as stories are re-analysed. The section is omitted when the event
+is not a member of any story.
+
+<!-- Screenshot placeholder (#396): event page with the "Part of threat
+stories" backlink. Capture from a stack with real story-member data. -->
+
+## Cited by
+
+If one or more periodic reports cite this event, the page shows a **Cited
+by** trail listing those reports, newest first. Each entry links back up
+to the **exact report generation** that consumed this event — the link is
+generation-pinned, so it lands on the version the report was built from,
+not the latest. A single event may be cited by reports across several
+periods; the trail lists one entry per report bucket. An event cited by
+no report shows no trail (this is a normal state, not an error).
+
+The trail is permission-gated: it only appears for viewers who can read
+the customer's reports (`reports:read`). A viewer without that permission
+sees no trail rather than links they could not open.
+
+<!-- Screenshot placeholder (#396): event page with the "Cited by" trail.
+Capture from a stack with real report-citation data. -->
+
+## Raw source event
+
+The raw source event is the bottom of the trust chain. aimer-web does not
+store raw event payloads — only the (tokenized) analysis — so this final
+hop is an **external link to the aice-web-next source event**. When the
+source event is still present, the page shows a **View source event in
+aice-web-next** link alongside the force-re-run action.
+
+When the source has been swept by retention (see the retention banner
+below), the chain ends gracefully at the preserved analysis: the
+raw-event link is **not** rendered, so a reader never follows a dead
+link. The retention banner makes the end-of-chain state explicit.
+
 ## Retention banner
 
 If the source `detection_events` row has been removed by retention but
 the analysis row survives, the page shows a yellow banner reading
-"Source event removed by retention; analysis result preserved." The
-"Force re-run" button is hidden in this state because force re-run
+"Source event removed by retention; analysis result preserved." Both the
+"View source event" hop and the "Force re-run" button are hidden in this
+state: the raw event no longer exists to link to, and force re-run
 requires the original event payload, which only aice-web-next holds.
 
 ## Force re-run
@@ -127,3 +172,5 @@ When the source event is still present, the page shows a "Force re-run
 in aice-web-next" link. Clicking it opens aice-web-next at the original
 event detail with a query parameter that tells aice-web-next to send
 `force=true` on the next analyze click, bypassing the cached result.
+Unlike the **View source event** hop above — a plain read-only link to
+the source event — this link carries the re-run signal.
