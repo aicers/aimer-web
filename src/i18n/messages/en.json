@@ -54,6 +54,12 @@
     "settings": "Settings",
     "admin": "Admin"
   },
+  "reportPeriod": {
+    "LIVE": "Live",
+    "DAILY": "Daily",
+    "WEEKLY": "Weekly",
+    "MONTHLY": "Monthly"
+  },
   "admin": {
     "accounts": "Accounts",
     "admins": "Admins",

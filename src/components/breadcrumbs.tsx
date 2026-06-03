@@ -22,10 +22,16 @@ type NavKey =
   | "customerSettings"
   | "customers";
 
+// Report period route enum values (`[period]` segment). Localized via the
+// `reportPeriod` namespace; any other value falls back to itself.
+const PERIOD_KEYS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
+
 // Context handed to each node's label resolver.
 interface ResolveContext {
   t: (key: NavKey) => string;
   customerName: (id: string) => string | undefined;
+  // Localized report-period label (e.g. "DAILY" → "Daily"/"일간").
+  period: (value: string) => string;
 }
 
 // Accumulated dynamic-segment values along the matched path, keyed by the
@@ -111,16 +117,19 @@ const ROOT: RouteNode = {
                 kind: "link",
                 label: navLabel("reports"),
                 param: {
-                  // [period] — plain text (e.g. "DAILY"); no page here.
+                  // [period] — plain text (localized "Daily"/"Weekly"/…);
+                  // no page here.
                   kind: "text",
                   paramName: "period",
-                  label: (value) => value,
+                  label: (value, _params, ctx) => ctx.period(value),
                   param: {
-                    // [bucketDate] — the report leaf page.
+                    // [bucketDate] — the report leaf page. A LIVE report has
+                    // no fixed bucket, so the localized period word stands in
+                    // for the date; otherwise the date itself is the label.
                     kind: "link",
                     paramName: "bucketDate",
-                    label: (value, params) =>
-                      params.period === "LIVE" ? "Live" : value,
+                    label: (value, params, ctx) =>
+                      params.period === "LIVE" ? ctx.period("LIVE") : value,
                   },
                 },
               },
@@ -219,6 +228,7 @@ export function Breadcrumbs() {
   const pathname = usePathname();
   const locale = useLocale();
   const t = useTranslations("nav");
+  const tp = useTranslations("reportPeriod");
   const { customers } = useCustomerContext();
   const labels = useBreadcrumbLabels();
 
@@ -231,9 +241,13 @@ export function Breadcrumbs() {
 
     const customerName = (id: string) =>
       customers.find((c) => c.id === id)?.name;
+    const period = (value: string) =>
+      PERIOD_KEYS.has(value)
+        ? tp(value as "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY")
+        : value;
 
-    return resolveCrumbs(segments, base, { t, customerName }, labels);
-  }, [pathname, locale, t, customers, labels]);
+    return resolveCrumbs(segments, base, { t, customerName, period }, labels);
+  }, [pathname, locale, t, tp, customers, labels]);
 
   return (
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm">

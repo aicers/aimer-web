@@ -54,6 +54,12 @@
     "settings": "설정",
     "admin": "관리자"
   },
+  "reportPeriod": {
+    "LIVE": "실시간",
+    "DAILY": "일간",
+    "WEEKLY": "주간",
+    "MONTHLY": "월간"
+  },
   "admin": {
     "accounts": "계정",
     "admins": "관리자 지정",

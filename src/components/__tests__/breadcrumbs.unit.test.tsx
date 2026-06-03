@@ -36,6 +36,11 @@ vi.mock("next-intl", () => ({
       members: "Members",
       customerSettings: "Customer Settings",
       customers: "Customers",
+      // `reportPeriod` namespace (the mock ignores the namespace arg).
+      LIVE: "Live",
+      DAILY: "Daily",
+      WEEKLY: "Weekly",
+      MONTHLY: "Monthly",
     };
     return map[key] ?? key;
   }),
@@ -154,7 +159,7 @@ describe("Breadcrumbs", () => {
   });
 
   it("renders a deep customer-scoped report path", () => {
-    // Home › Customers(text) › Acme Corp › Reports › DAILY(text) › date.
+    // Home › Customers(text) › Acme Corp › Reports › Daily(text) › date.
     // The customer-scoped `analysis` segment is collapsed (no page).
     mockedUsePathname.mockReturnValue(
       "/en/customers/c1/analysis/reports/DAILY/2026-06-01",
@@ -168,9 +173,11 @@ describe("Breadcrumbs", () => {
       "2026-06-01",
     ]);
 
-    // Structural prefixes render as plain text, not dead links.
+    // Structural prefixes render as plain text, not dead links. The period
+    // crumb shows the localized label, not the raw `DAILY` enum.
     expect(hasTextCrumb(container, "Customers")).toBe(true);
-    expect(hasTextCrumb(container, "DAILY")).toBe(true);
+    expect(hasTextCrumb(container, "Daily")).toBe(true);
+    expect(container.textContent).not.toContain("DAILY");
 
     // The collapsed `analysis` segment appears nowhere.
     expect(container.textContent).not.toContain("analysis");
@@ -181,6 +188,29 @@ describe("Breadcrumbs", () => {
     expect(reports?.getAttribute("href")).toBe(
       "/en/customers/c1/analysis/reports",
     );
+  });
+
+  it("localizes the LIVE report period and bucket crumbs", () => {
+    // A LIVE report pins the synthetic epoch bucket `1970-01-01`. The period
+    // crumb (text) localizes to "Live", and the leaf bucket crumb (link)
+    // stands in with the same localized word instead of the meaningless date
+    // or a hardcoded English string.
+    mockedUsePathname.mockReturnValue(
+      "/en/customers/c1/analysis/reports/LIVE/1970-01-01",
+    );
+
+    const { container } = render(<Breadcrumbs />);
+
+    // The bucket leaf links with the localized "Live" label.
+    expect(linkTexts(container)).toEqual(["Acme Corp", "Reports", "Live"]);
+    // The period prefix is a single non-link span, also localized.
+    const liveSpans = Array.from(container.querySelectorAll("span")).filter(
+      (s) => s.children.length === 0 && s.textContent === "Live",
+    );
+    expect(liveSpans.length).toBe(1);
+    // Neither the raw enum nor the synthetic epoch date leaks into the UI.
+    expect(container.textContent).not.toContain("LIVE");
+    expect(container.textContent).not.toContain("1970");
   });
 
   it("renders a threat story leaf with a terminology + short-id label", () => {
