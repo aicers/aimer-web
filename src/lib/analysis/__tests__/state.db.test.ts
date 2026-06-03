@@ -17,6 +17,14 @@ import { runMigrations } from "@/lib/db/migrate";
 
 vi.mock("server-only", () => ({}));
 
+// Pin the eager language set to English-only so the Phase 3 seeding
+// assertions below count a single real job per bucket. With the app default
+// `DEFAULT_LOCALE=ko` the eager set would also seed a Korean job (#389
+// Part A); that multi-language behavior is covered in
+// `report-worker-eager.db.test.ts`. Set before the dynamic imports so the
+// report-worker module reads it at init.
+process.env.DEFAULT_LOCALE = "en";
+
 const {
   dirtyPeriodicStatesOverlapping,
   dirtyStoryStatesInRange,

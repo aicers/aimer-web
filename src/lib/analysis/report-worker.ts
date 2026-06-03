@@ -29,6 +29,7 @@ import "server-only";
 
 import { ClientError } from "graphql-request";
 import type { Pool, PoolClient } from "pg";
+import { localeToLanguage } from "@/i18n/language";
 import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
@@ -111,6 +112,29 @@ const WORKER_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? DEFAULT_LANG;
 const WORKER_MODEL_NAME =
   process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? DEFAULT_MODEL_NAME;
 const WORKER_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? DEFAULT_MODEL;
+
+// `DEFAULT_LOCALE` is the global app UI locale (`en` / `ko`), mirrored from
+// `src/i18n/routing.ts` (same `?? "ko"` fallback). It is read directly here
+// rather than imported so the worker stays free of next-intl.
+const DEFAULT_LOCALE = process.env.DEFAULT_LOCALE ?? "ko";
+
+// Eager language set seeded natively for every report bucket (#389 Part A,
+// correction #4): English baseline ∪ the app default-locale language ∪ the
+// legacy `ANALYSIS_DEFAULT_LANG` knob (`WORKER_LANG`). This is a UNION, never
+// a replacement — a deployment that set `ANALYSIS_DEFAULT_LANG=KOREAN`
+// keeps Korean, and English is always present as the guaranteed baseline.
+// Deduplicated, so it collapses to a single entry when all three coincide
+// (e.g. `DEFAULT_LOCALE=en` with `WORKER_LANG=ENGLISH`). Every entry is
+// generated natively via the existing `generatePeriodicSecurityReport`
+// mutation — no aimer change and, since each language is independent, no
+// cross-variant ordering dependency on the English canonical.
+export const EAGER_LANGS = Array.from(
+  new Set<string>([
+    DEFAULT_LANG,
+    localeToLanguage(DEFAULT_LOCALE),
+    WORKER_LANG,
+  ]),
+);
 
 const BACKOFF_MAX_EXPONENT = Math.max(
   0,
@@ -955,19 +979,28 @@ export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
 }
 
 /**
- * Seed a real (non-dry-run) job row for every `ready`/`dirty`
- * state row (all four periods) that lacks one for the default variant.
- * Mirrors
- * `seedRealStoryJobs`. A `dirty` row bumps the generation of *every*
- * existing variant job underneath it — not just the default — because
- * RFC 0002's dirty rule re-queues all variant jobs under the state, and
- * force-created non-default variants (Korean / alternate model) are
- * equally invalidated when their bucket's source data changes (#297
- * review round 8, item 1). Each bump is capped at `ANALYSIS_MAX_GENERATION`
- * and a fresh generation-1 default job is seeded when none exists; the
- * state then returns to `ready`. Archived rows are never enqueued (#294
- * decision 1); all four periods (LIVE/DAILY/WEEKLY/MONTHLY) are seeded
- * as of #298.
+ * Seed a real (non-dry-run) job row for every `ready`/`dirty` state row
+ * (all four periods) that is missing a job for any language in the eager
+ * set (`EAGER_LANGS` — English baseline ∪ default-locale language ∪
+ * `WORKER_LANG`, #389 Part A). Mirrors `seedRealStoryJobs`.
+ *
+ * The eager set is seeded "along the language dimension only": every entry
+ * shares the default model variant (`WORKER_MODEL_NAME` / `WORKER_MODEL`)
+ * and is generated natively via the existing `lang`-accepting mutation, so
+ * the schedule/state-machine contract is untouched — only job rows are
+ * added. A `ready` bucket that already has English but not the
+ * default-locale language is therefore still actionable: the missing
+ * eager-language job is seeded.
+ *
+ * A `dirty` row bumps the generation of *every* existing variant job
+ * underneath it — not just the eager set — because RFC 0002's dirty rule
+ * re-queues all variant jobs under the state, and force-created
+ * non-default variants (alternate model, on-demand language) are equally
+ * invalidated when their bucket's source data changes (#297 review round 8,
+ * item 1). Each bump is capped at `ANALYSIS_MAX_GENERATION`, then any
+ * still-missing eager-language job is seeded at generation 1 and the state
+ * returns to `ready`. Archived rows are never enqueued (#294 decision 1);
+ * all four periods (LIVE/DAILY/WEEKLY/MONTHLY) are seeded as of #298.
  */
 export async function seedRealReportJobs(
   authClient: PoolClient,
@@ -981,6 +1014,10 @@ export async function seedRealReportJobs(
     tz: string;
     status: "ready" | "dirty";
   }>(
+    // A `ready` state is actionable when ANY eager-set language lacks a job
+    // (anti-join over `unnest($2)`), so a bucket that has English but not the
+    // default-locale language is still picked up and the missing language
+    // seeded.
     `SELECT s.customer_id::text AS customer_id,
             s.period,
             s.bucket_date::text AS bucket_date,
@@ -990,30 +1027,25 @@ export async function seedRealReportJobs(
       WHERE s.period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')
         AND (s.status = 'dirty'
              OR (s.status = 'ready'
-                 AND NOT EXISTS (
-                   SELECT 1 FROM periodic_report_job j
-                    WHERE j.customer_id = s.customer_id
-                      AND j.period = s.period
-                      AND j.bucket_date = s.bucket_date
-                      AND j.tz = s.tz
-                      AND j.lang = $2 AND j.model_name = $3 AND j.model = $4
+                 AND EXISTS (
+                   SELECT 1 FROM unnest($2::text[]) AS el(lang)
+                    WHERE NOT EXISTS (
+                      SELECT 1 FROM periodic_report_job j
+                       WHERE j.customer_id = s.customer_id
+                         AND j.period = s.period
+                         AND j.bucket_date = s.bucket_date
+                         AND j.tz = s.tz
+                         AND j.lang = el.lang
+                         AND j.model_name = $3 AND j.model = $4
+                    )
                  )))
       ORDER BY s.customer_id, s.period, s.bucket_date, s.tz
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
-    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL],
+    [batchSize, EAGER_LANGS, WORKER_MODEL_NAME, WORKER_MODEL],
   );
 
   for (const row of actionable) {
-    const keyParams = [
-      row.customer_id,
-      row.period,
-      row.bucket_date,
-      row.tz,
-      WORKER_LANG,
-      WORKER_MODEL_NAME,
-      WORKER_MODEL,
-    ];
     if (row.status === "dirty") {
       const stateKey = [row.customer_id, row.period, row.bucket_date, row.tz];
       // Surface every existing variant already at the cap (parity with the
@@ -1073,21 +1105,12 @@ export async function seedRealReportJobs(
             AND generation < $6`,
         [...stateKey, nowIso, MAX_GENERATION],
       );
-      // Seed the default variant when the bucket has no default job yet
-      // (parity with the `ready` seeding branch — the system invariant is
-      // that every LIVE/DAILY state carries a default-variant job). ON
-      // CONFLICT DO NOTHING leaves a default job that was just bumped above
-      // — or one already at the cap — untouched.
-      await authClient.query(
-        `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz, lang, model_name, model,
-            status, generation, dry_run, created_at, updated_at)
-         VALUES ($1, $2, $3::date, $4, $5, $6, $7,
-                 'queued', 1, FALSE, $8::timestamptz, $8::timestamptz)
-         ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
-         DO NOTHING`,
-        [...keyParams, nowIso],
-      );
+      // Seed any still-missing eager-language variant (parity with the
+      // `ready` seeding branch — the system invariant is that every
+      // LIVE/DAILY state carries the full eager set). ON CONFLICT DO NOTHING
+      // leaves a variant that was just bumped above — or one already at the
+      // cap — untouched.
+      await seedEagerLangJobs(authClient, row, nowIso);
       await authClient.query(
         `UPDATE periodic_report_state
             SET status = 'ready',
@@ -1100,6 +1123,24 @@ export async function seedRealReportJobs(
       );
       continue;
     }
+    await seedEagerLangJobs(authClient, row, nowIso);
+  }
+}
+
+/**
+ * Seed a generation-1 `queued` job for every eager-set language that does
+ * not already have one under this state. ON CONFLICT DO NOTHING makes it
+ * idempotent, so an existing variant (default or on-demand) is left
+ * untouched and only the genuinely-missing languages get a row. Every
+ * eager language shares the default model variant and is generated
+ * natively (#389 Part A).
+ */
+async function seedEagerLangJobs(
+  authClient: PoolClient,
+  row: { customer_id: string; period: string; bucket_date: string; tz: string },
+  nowIso: string,
+): Promise<void> {
+  for (const lang of EAGER_LANGS) {
     await authClient.query(
       `INSERT INTO periodic_report_job
          (customer_id, period, bucket_date, tz, lang, model_name, model,
@@ -1108,8 +1149,204 @@ export async function seedRealReportJobs(
                'queued', 1, FALSE, $8::timestamptz, $8::timestamptz)
        ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
        DO NOTHING`,
-      [...keyParams, nowIso],
+      [
+        row.customer_id,
+        row.period,
+        row.bucket_date,
+        row.tz,
+        lang,
+        WORKER_MODEL_NAME,
+        WORKER_MODEL,
+        nowIso,
+      ],
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// On-demand enqueue (coalescing, no force) — #389 Part A
+// ---------------------------------------------------------------------------
+
+/** The variant key for an on-demand report-language request. */
+export interface OnDemandVariant {
+  customerId: string;
+  period: string;
+  bucketDate: string;
+  tz: string;
+  lang: string;
+  modelName: string;
+  model: string;
+}
+
+/**
+ * Outcome of `enqueueOnDemandReportJob`.
+ *   - `seeded`     — no prior row; a fresh generation-1 `queued` job was created.
+ *   - `coalesced`  — an existing `queued`/`processing`/`done` job satisfies the
+ *                    request; left untouched (no generation bump).
+ *   - `requeued`   — an existing `failed` (or leftover dry-run) row was reset to
+ *                    `queued` at the SAME generation so the worker retries.
+ *   - `state_not_found`    — no parent `periodic_report_state` row exists.
+ *   - `source_pending`     — the parent state is still `pending` (not yet
+ *                            promoted past its settle window); no job created.
+ *   - `source_unavailable` — the parent state is `archived` (terminal).
+ */
+export type OnDemandEnqueueResult =
+  | { action: "seeded"; generation: number; status: "queued" }
+  | { action: "coalesced"; generation: number; status: string }
+  | { action: "requeued"; generation: number; status: "queued" }
+  | { action: "state_not_found" }
+  | { action: "source_pending" }
+  | { action: "source_unavailable" };
+
+/**
+ * Server-side coalescing enqueue for an on-demand report-language variant
+ * (#389 Part A — this issue owns the helper and its contract; #388 owns the
+ * UI/API that calls it when a user views a not-yet-generated language).
+ *
+ * Routes through the SAME `periodic_report_job` table and worker as the
+ * Regenerate path but WITHOUT its force-regenerate semantics: it never bumps
+ * `generation` and never sets `force_requested_*`. An existing in-flight or
+ * completed variant (`queued`/`processing`/`done`) coalesces — only a genuine
+ * first request seeds a row. A previously `failed` variant (or a leftover
+ * dry-run row that the pickup filter would otherwise ignore) is re-queued at
+ * the same generation so the worker can produce the report the user is now
+ * actively requesting.
+ *
+ * Only a `ready` or `dirty` parent state is enqueueable — the same states
+ * `seedRealReportJobs` acts on. A still-`pending` bucket (settle window not
+ * yet elapsed) returns `source_pending` WITHOUT creating a job: because the
+ * pickup query only excludes `archived` states (`pickQueuedReportJobs`), a
+ * `queued` job seeded under a `pending` state would be dispatched to the LLM
+ * before the bucket's normal readiness promotion, bypassing the
+ * schedule/state-machine contract this no-force helper must respect (the
+ * Regenerate path may force generation; this one must not).
+ *
+ * The whole operation runs in one transaction with the parent state and the
+ * variant row locked `FOR UPDATE`, so concurrent on-demand requests for the
+ * same variant serialize onto a single seeded row. Mirrors the regenerate
+ * route's source-availability precheck (`state_not_found` / `source_unavailable`)
+ * so the caller can map those to 404 / 409 without catching an FK violation.
+ */
+export async function enqueueOnDemandReportJob(
+  authPool: Pool,
+  variant: OnDemandVariant,
+  nowIso: string = getCurrentTimestamp().toISOString(),
+): Promise<OnDemandEnqueueResult> {
+  const variantKey = [
+    variant.customerId,
+    variant.period,
+    variant.bucketDate,
+    variant.tz,
+    variant.lang,
+    variant.modelName,
+    variant.model,
+  ];
+  const client = await authPool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Source-availability precheck inside the txn (and lock the parent so a
+    // concurrent tz-change archive cannot slip in before the job INSERT).
+    const state = await client.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = $2
+          AND bucket_date = $3::date AND tz = $4
+        FOR UPDATE`,
+      [variant.customerId, variant.period, variant.bucketDate, variant.tz],
+    );
+    if (state.rowCount === 0) {
+      await client.query("COMMIT");
+      return { action: "state_not_found" };
+    }
+    if (state.rows[0].status === "archived") {
+      await client.query("COMMIT");
+      return { action: "source_unavailable" };
+    }
+    if (state.rows[0].status !== "ready" && state.rows[0].status !== "dirty") {
+      // Still `pending` (settle window not elapsed). Enqueue nothing: a queued
+      // job here would be picked up before the bucket is ready (the pickup
+      // query only excludes `archived`), bypassing the schedule contract.
+      await client.query("COMMIT");
+      return { action: "source_pending" };
+    }
+
+    // Lock the existing variant row (if any) so concurrent on-demand
+    // requests for the same variant serialize.
+    const existing = await client.query<{
+      status: string;
+      generation: number;
+      dry_run: boolean;
+    }>(
+      `SELECT status, generation, dry_run FROM periodic_report_job
+        WHERE customer_id = $1 AND period = $2
+          AND bucket_date = $3::date AND tz = $4
+          AND lang = $5 AND model_name = $6 AND model = $7
+        FOR UPDATE`,
+      variantKey,
+    );
+
+    if (existing.rowCount === 0) {
+      // Genuine first request → seed a generation-1 queued row. No force
+      // metadata: this is explicitly NOT the Regenerate force path.
+      const ins = await client.query<{ generation: number }>(
+        `INSERT INTO periodic_report_job
+           (customer_id, period, bucket_date, tz, lang, model_name, model,
+            status, generation, dry_run, attempts, last_error,
+            created_at, updated_at)
+         VALUES ($1, $2, $3::date, $4, $5, $6, $7,
+                 'queued', 1, FALSE, 0, NULL, $8::timestamptz, $8::timestamptz)
+         RETURNING generation`,
+        [...variantKey, nowIso],
+      );
+      await client.query("COMMIT");
+      return {
+        action: "seeded",
+        generation: ins.rows[0].generation,
+        status: "queued",
+      };
+    }
+
+    const job = existing.rows[0];
+    if (job.status === "failed" || job.dry_run) {
+      // A previously failed variant — or a leftover dry-run row the pickup
+      // filter ignores — that the user is now actively requesting: reset to
+      // `queued` at the SAME generation (no bump, no force) so the existing
+      // retry/backoff machinery produces the report.
+      await client.query(
+        `UPDATE periodic_report_job
+            SET status = 'queued',
+                dry_run = FALSE,
+                attempts = 0,
+                last_error = NULL,
+                processing_started_at = NULL,
+                updated_at = $8::timestamptz
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4
+            AND lang = $5 AND model_name = $6 AND model = $7`,
+        [...variantKey, nowIso],
+      );
+      await client.query("COMMIT");
+      return {
+        action: "requeued",
+        generation: job.generation,
+        status: "queued",
+      };
+    }
+
+    // queued / processing / done → coalesce: leave the row untouched. The
+    // in-flight worker pass (or an already-stored result) satisfies the
+    // request without a generation bump.
+    await client.query("COMMIT");
+    return {
+      action: "coalesced",
+      generation: job.generation,
+      status: job.status,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
 }
 

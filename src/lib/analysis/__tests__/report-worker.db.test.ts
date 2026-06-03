@@ -27,6 +27,14 @@ vi.mock("server-only", () => ({}));
 // story-worker unit tests) to avoid real audit-DB I/O.
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn(async () => {}) }));
 
+// Pin the eager language set to English-only for the lifecycle cases below,
+// which assert the single English-variant job's transitions. With the app
+// default `DEFAULT_LOCALE=ko` the eager set would also seed a Korean job
+// (#389 Part A); the dedicated multi-language seeding behavior is covered in
+// `report-worker-eager.db.test.ts`. Set before the dynamic import so the
+// module reads it at init.
+process.env.DEFAULT_LOCALE = "en";
+
 const {
   processReportJob,
   requeueLiveReportJobs,
