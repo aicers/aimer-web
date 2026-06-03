@@ -217,6 +217,29 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
     ]);
   });
 
+  it("freezes the time-window lower bound in the cursor across pages", async () => {
+    // Page 1 with a wide window that admits every row.
+    const page1 = await queryEventListPage(pool, {
+      customerId: "x",
+      since: new Date("2026-05-01T00:00:00Z"),
+      pageSize: 2,
+    });
+    expect(page1.items.map(key)).toEqual(["aiceA:1000", "aiceA:1001"]);
+    expect(page1.nextCursor).toBeTruthy();
+
+    // The next request arrives later; a naive re-derivation of `since` would
+    // pass a tighter (later) lower bound that drops the 05-20 rows. The bound
+    // frozen in the cursor must win, so page 2 still returns them in order —
+    // keyset pagination stays stable while a window is active.
+    const page2 = await queryEventListPage(pool, {
+      customerId: "x",
+      since: new Date("2026-05-22T00:00:00Z"),
+      cursor: page1.nextCursor,
+      pageSize: 2,
+    });
+    expect(page2.items.map(key)).toEqual(["aiceA:2000", "aiceA:2001"]);
+  });
+
   it("keyset-paginates every row exactly once, in order, no gaps", async () => {
     const collected: string[] = [];
     let cursor: string | null = null;

@@ -78,6 +78,12 @@ interface StoryCursor {
   rt: string;
   /** `story_id` as a decimal text (BIGINT). */
   sid: string;
+  /**
+   * Frozen time-window lower bound for the whole pagination session, as an
+   * ISO timestamp, or `null` for the "all time" window. Pinned at the first
+   * page so later pages do not re-derive it from a (later) request clock.
+   */
+  lb?: string | null;
 }
 
 function isStoryCursor(value: unknown): value is StoryCursor {
@@ -88,7 +94,8 @@ function isStoryCursor(value: unknown): value is StoryCursor {
     typeof c.ss === "number" &&
     typeof c.ls === "number" &&
     typeof c.rt === "string" &&
-    typeof c.sid === "string"
+    typeof c.sid === "string" &&
+    (c.lb === undefined || c.lb === null || typeof c.lb === "string")
   );
 }
 
@@ -128,6 +135,22 @@ export async function queryStoryListPage(
 
   const rankCase = priorityRankCaseSql("priority_tier");
 
+  const cursor = decodeCursor(input.cursor, isStoryCursor);
+
+  // The time-window lower bound is frozen at the first page and carried in the
+  // cursor so every page of one pagination session filters against the SAME
+  // `since`. Re-deriving it from the request clock would shift the bound
+  // forward between pages (page 2 is requested later than page 1) and drop
+  // rows near the boundary, breaking keyset stability while a window is active.
+  // `lb === null` means the "all time" window; an absent `lb` (pre-fix cursor)
+  // falls back to the request's `since`.
+  const since =
+    cursor && cursor.lb !== undefined
+      ? cursor.lb === null
+        ? null
+        : new Date(cursor.lb)
+      : (input.since ?? null);
+
   const baseConds = [
     `customer_id = ${p(input.customerId)}`,
     `status <> 'archived'`,
@@ -136,9 +159,9 @@ export async function queryStoryListPage(
   if (input.priorityTier) {
     baseConds.push(`priority_tier = ${p(input.priorityTier)}`);
   }
-  if (input.since) {
+  if (since) {
     baseConds.push(
-      `COALESCE(last_ready_at, updated_at) >= ${p(input.since.toISOString())}::timestamptz`,
+      `COALESCE(last_ready_at, updated_at) >= ${p(since.toISOString())}::timestamptz`,
     );
   }
 
@@ -146,7 +169,6 @@ export async function queryStoryListPage(
   // recency) with ASC (story_id), so a uniform row-value comparison does not
   // apply — the predicate is an expanded per-column lexicographic chain with
   // each column's own direction.
-  const cursor = decodeCursor(input.cursor, isStoryCursor);
   let keyset = "";
   if (cursor) {
     const pr = p(cursor.pr);
@@ -221,6 +243,7 @@ export async function queryStoryListPage(
       ls: last.likelihood_score,
       rt: last.recency_ts,
       sid: last.story_id,
+      lb: since ? since.toISOString() : null,
     } satisfies StoryCursor);
   }
 

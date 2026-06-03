@@ -310,6 +310,60 @@ describe("processStoryJob — happy path", () => {
     );
     expect(stateUpdate).toBeUndefined();
   });
+
+  it("does NOT mirror priority when the finalize matched zero rows (regenerate race, WS3 #392)", async () => {
+    // The finalize UPDATE is guarded on `generation = $captured AND status =
+    // 'processing'`. If a force-regenerate raced ahead while the LLM call was
+    // in flight, the auth row is already a newer generation, so the guarded
+    // update matches zero rows. This generation's result is therefore already
+    // (or about to be) superseded — publishing its priority/scores would show
+    // a stale, superseded generation as the canonical denormalized priority on
+    // the Threat Stories list until the newer job finishes. The mirror write
+    // must be skipped; the newer generation mirrors its own values.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 0 }, // finalize → zero rows (regenerate raced)
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe — no existing result row
+        ...goodMembersQuery(),
+      ],
+      clientQueryPlan: [
+        { rows: [] }, // BEGIN
+        { rows: [] }, // INSERT result
+        { rows: [] }, // UPDATE supersede
+        { rows: [] }, // COMMIT
+      ],
+    });
+    const callAnalyzeStory = async () => goodAimerResponse();
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    // The customer-DB result INSERT still ran (the work was done)...
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    expect(insertCall).toBeDefined();
+    // ...and the finalize was attempted (it just matched no row)...
+    const finalize = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'done'"),
+    );
+    expect(finalize).toBeDefined();
+    // ...but for this default variant the mirror update must NOT fire, since
+    // the captured generation lost the finalize race.
+    const stateUpdate = authPool.__calls.find((c) =>
+      c.sql.includes("UPDATE story_analysis_state"),
+    );
+    expect(stateUpdate).toBeUndefined();
+  });
 });
 
 describe("processStoryJob — input_hash canonical bundle (#344)", () => {

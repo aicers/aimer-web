@@ -943,7 +943,7 @@ async function finalizeJob(
   // Captured generation must still match. If a force-regenerate raced
   // ahead while the LLM call was in flight, the WHERE-clause matches
   // zero rows and the new queued generation runs on the next tick.
-  await authPool.query(
+  const finalized = await authPool.query(
     `UPDATE story_analysis_job
         SET status = 'done',
             last_generated_at = NOW(),
@@ -963,6 +963,16 @@ async function finalizeJob(
       job.generation,
     ],
   );
+
+  // Only mirror the priority when THIS generation actually finalized. If the
+  // guarded update above matched zero rows — a force-regenerate raced ahead
+  // and bumped the auth row to a newer generation while the LLM call was in
+  // flight — then this generation's result is already (or about to be)
+  // superseded. Publishing its priority/scores would show a stale, superseded
+  // generation as the canonical denormalized priority on the Threat Stories
+  // list until the newer job finishes. The newer generation mirrors its own
+  // values when it finalizes, so skip the write here.
+  if ((finalized.rowCount ?? 0) === 0) return;
 
   // WS3 (#392) — denormalize the canonical variant's priority onto
   // `story_analysis_state` so the Threat Stories list can order

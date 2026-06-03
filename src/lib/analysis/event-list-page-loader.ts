@@ -77,6 +77,12 @@ interface EventCursor {
   aid: string;
   /** `event_key` as a decimal text. */
   ek: string;
+  /**
+   * Frozen time-window lower bound for the whole pagination session, as an
+   * ISO timestamp, or `null` for the "all time" window. Pinned at the first
+   * page so later pages do not re-derive it from a (later) request clock.
+   */
+  lb?: string | null;
 }
 
 function isEventCursor(value: unknown): value is EventCursor {
@@ -88,7 +94,8 @@ function isEventCursor(value: unknown): value is EventCursor {
     typeof c.ls === "number" &&
     typeof c.rt === "string" &&
     typeof c.aid === "string" &&
-    typeof c.ek === "string"
+    typeof c.ek === "string" &&
+    (c.lb === undefined || c.lb === null || typeof c.lb === "string")
   );
 }
 
@@ -130,19 +137,32 @@ export async function queryEventListPage(
   const modelName = p(DEFAULT_MODEL_NAME);
   const model = p(DEFAULT_MODEL);
 
+  const cursor = decodeCursor(input.cursor, isEventCursor);
+
+  // The time-window lower bound is frozen at the first page and carried in the
+  // cursor so every page of one pagination session filters against the SAME
+  // `since`. Re-deriving it from the request clock would shift the bound
+  // forward between pages (page 2 is requested later than page 1) and drop
+  // rows near the boundary, breaking keyset stability while a window is active.
+  // `lb === null` means the "all time" window; an absent `lb` (pre-fix cursor)
+  // falls back to the request's `since`.
+  const since =
+    cursor && cursor.lb !== undefined
+      ? cursor.lb === null
+        ? null
+        : new Date(cursor.lb)
+      : (input.since ?? null);
+
   const rankedConds: string[] = [];
   if (input.priorityTier) {
     rankedConds.push(`priority_tier = ${p(input.priorityTier)}`);
   }
-  if (input.since) {
-    rankedConds.push(
-      `requested_at >= ${p(input.since.toISOString())}::timestamptz`,
-    );
+  if (since) {
+    rankedConds.push(`requested_at >= ${p(since.toISOString())}::timestamptz`);
   }
   const rankedWhere =
     rankedConds.length > 0 ? `WHERE ${rankedConds.join(" AND ")}` : "";
 
-  const cursor = decodeCursor(input.cursor, isEventCursor);
   let keyset = "";
   if (cursor) {
     const pr = p(cursor.pr);
@@ -236,6 +256,7 @@ export async function queryEventListPage(
       rt: last.requested_at,
       aid: last.aice_id,
       ek: last.event_key,
+      lb: since ? since.toISOString() : null,
     } satisfies EventCursor);
   }
 

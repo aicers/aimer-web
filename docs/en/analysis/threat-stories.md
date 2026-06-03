@@ -61,7 +61,11 @@ The list paginates server-side with a **keyset** cursor (not an offset),
 so ordering stays stable across pages even as new stories are analyzed.
 The default page size is 25; a **Next page** link appears when more rows
 remain and carries an opaque cursor that encodes every ordering-key
-component. The cursor also preserves the active filters.
+component. The cursor also preserves the active filters. When a time
+window is active, its lower bound is **frozen at the first page** and
+carried in the cursor, so every page of a pagination session filters
+against the same instant — the window does not slide forward as you page,
+which would otherwise drop rows near the boundary.
 
 ## Filtering
 

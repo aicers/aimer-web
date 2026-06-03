@@ -61,7 +61,11 @@ Events are listed **highest risk first**, with every direction pinned:
 The list paginates server-side with a **keyset** cursor (not an offset),
 default page size 25. A **Next page** link appears when more rows remain
 and carries an opaque cursor encoding every ordering-key component, plus
-the active filters.
+the active filters. When a time window is active, its lower bound is
+**frozen at the first page** and carried in the cursor, so every page of a
+pagination session filters against the same instant — the window does not
+slide forward as you page, which would otherwise drop rows near the
+boundary.
 
 ## Filtering
 
