@@ -349,6 +349,20 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     expect(res).toEqual({ action: "state_not_found" });
   });
 
+  it("on-demand: reports source_pending for a pending parent (no job created)", async () => {
+    await seedState(authPool, "DAILY", "2026-06-17", "pending");
+    const res = await enqueueOnDemandReportJob(
+      authPool,
+      VARIANT({ bucketDate: "2026-06-17" }),
+    );
+    expect(res).toEqual({ action: "source_pending" });
+    // A pending bucket must not start generation: the pickup query only
+    // excludes `archived`, so a queued job here would reach the LLM before
+    // the bucket's normal readiness promotion.
+    const jobs = await jobsForBucket(authPool, "DAILY", "2026-06-17");
+    expect(jobs).toHaveLength(0);
+  });
+
   it("on-demand: reports source_unavailable for an archived parent", async () => {
     await seedState(authPool, "DAILY", "2026-06-16", "archived");
     const res = await enqueueOnDemandReportJob(

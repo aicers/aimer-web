@@ -1186,6 +1186,8 @@ export interface OnDemandVariant {
  *   - `requeued`   — an existing `failed` (or leftover dry-run) row was reset to
  *                    `queued` at the SAME generation so the worker retries.
  *   - `state_not_found`    — no parent `periodic_report_state` row exists.
+ *   - `source_pending`     — the parent state is still `pending` (not yet
+ *                            promoted past its settle window); no job created.
  *   - `source_unavailable` — the parent state is `archived` (terminal).
  */
 export type OnDemandEnqueueResult =
@@ -1193,6 +1195,7 @@ export type OnDemandEnqueueResult =
   | { action: "coalesced"; generation: number; status: string }
   | { action: "requeued"; generation: number; status: "queued" }
   | { action: "state_not_found" }
+  | { action: "source_pending" }
   | { action: "source_unavailable" };
 
 /**
@@ -1208,6 +1211,15 @@ export type OnDemandEnqueueResult =
  * dry-run row that the pickup filter would otherwise ignore) is re-queued at
  * the same generation so the worker can produce the report the user is now
  * actively requesting.
+ *
+ * Only a `ready` or `dirty` parent state is enqueueable — the same states
+ * `seedRealReportJobs` acts on. A still-`pending` bucket (settle window not
+ * yet elapsed) returns `source_pending` WITHOUT creating a job: because the
+ * pickup query only excludes `archived` states (`pickQueuedReportJobs`), a
+ * `queued` job seeded under a `pending` state would be dispatched to the LLM
+ * before the bucket's normal readiness promotion, bypassing the
+ * schedule/state-machine contract this no-force helper must respect (the
+ * Regenerate path may force generation; this one must not).
  *
  * The whole operation runs in one transaction with the parent state and the
  * variant row locked `FOR UPDATE`, so concurrent on-demand requests for the
@@ -1249,6 +1261,13 @@ export async function enqueueOnDemandReportJob(
     if (state.rows[0].status === "archived") {
       await client.query("COMMIT");
       return { action: "source_unavailable" };
+    }
+    if (state.rows[0].status !== "ready" && state.rows[0].status !== "dirty") {
+      // Still `pending` (settle window not elapsed). Enqueue nothing: a queued
+      // job here would be picked up before the bucket is ready (the pickup
+      // query only excludes `archived`), bypassing the schedule contract.
+      await client.query("COMMIT");
+      return { action: "source_pending" };
     }
 
     // Lock the existing variant row (if any) so concurrent on-demand
