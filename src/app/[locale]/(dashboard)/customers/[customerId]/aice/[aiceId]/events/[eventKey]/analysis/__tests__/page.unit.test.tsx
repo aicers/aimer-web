@@ -26,6 +26,12 @@ vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");
   },
+  // Read by the breadcrumb label registrar mounted on the ok path.
+  usePathname: () => "/en/customers/c1/aice/aice-1/events/1001/analysis",
+}));
+
+vi.mock("next-intl/server", () => ({
+  getTranslations: async () => (key: string) => key,
 }));
 
 import AnalysisResultPage from "../page";

@@ -29,19 +29,54 @@ vi.mock("next-intl", () => ({
       overview: "Overview",
       suspiciousEvents: "Suspicious Events",
       threatStories: "Threat Stories",
+      threatStory: "Threat Story",
+      event: "Event",
       reports: "Reports",
       settings: "Settings",
       members: "Members",
       customerSettings: "Customer Settings",
+      customers: "Customers",
     };
     return map[key] ?? key;
   }),
 }));
 
+// The customer name comes from the ambient context (no refetch). Only `c1`
+// is known; an unknown id falls back to the raw id.
+vi.mock("@/hooks/use-customer-context", () => ({
+  useCustomerContext: vi.fn(() => ({
+    customers: [{ id: "c1", name: "Acme Corp" }],
+  })),
+}));
+
 import { usePathname } from "next/navigation";
+import {
+  BreadcrumbLabelProvider,
+  BreadcrumbLabelRegistrar,
+} from "../breadcrumb-label-store";
 import { Breadcrumbs } from "../breadcrumbs";
 
 const mockedUsePathname = vi.mocked(usePathname);
+
+// Texts of every rendered `<a>` (the mocked `<Link>`), skipping the home
+// icon link (which has no text).
+function linkTexts(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll("a"))
+    .map((a) => a.textContent ?? "")
+    .filter((text) => text.length > 0);
+}
+
+// Whether any crumb renders `label` as plain text (a non-link span) rather
+// than as an `<a>`.
+function hasTextCrumb(container: HTMLElement, label: string): boolean {
+  const inLink = Array.from(container.querySelectorAll("a")).some(
+    (a) => a.textContent === label,
+  );
+  const inSpan = Array.from(container.querySelectorAll("span")).some(
+    (s) => s.children.length === 0 && s.textContent === label,
+  );
+  return inSpan && !inLink;
+}
 
 describe("Breadcrumbs", () => {
   it("renders only home link on the home page", () => {
@@ -94,34 +129,111 @@ describe("Breadcrumbs", () => {
     }
   });
 
-  it("labels deep events/story segments with the plural parent labels", () => {
-    // The deep route identifiers stay `events`/`story`, but the crumbs read
-    // "Suspicious Events"/"Threat Stories" (parent route policy, #394). The
-    // `customers/<id>` segments are unknown and skipped; `analysis` is
-    // intentionally dropped (no page there).
-    mockedUsePathname.mockReturnValue("/en/customers/c1/analysis/events");
-    {
-      const { container, unmount } = render(<Breadcrumbs />);
-      const links = container.querySelectorAll("a");
-      expect(links.length).toBe(2);
-      expect(links[1].getAttribute("href")).toBe(
-        "/en/customers/c1/analysis/events",
-      );
-      expect(links[1].textContent).toBe("Suspicious Events");
-      unmount();
-    }
+  it("renders the customer hub trail with a non-link `Customers` prefix", () => {
+    // `/customers` has no index page, so the prefix is plain text; the
+    // customer name resolves from context and links to the hub.
+    mockedUsePathname.mockReturnValue("/en/customers/c1");
 
-    mockedUsePathname.mockReturnValue("/en/customers/c1/analysis/story");
-    {
-      const { container, unmount } = render(<Breadcrumbs />);
-      const links = container.querySelectorAll("a");
-      expect(links.length).toBe(2);
-      expect(links[1].getAttribute("href")).toBe(
-        "/en/customers/c1/analysis/story",
-      );
-      expect(links[1].textContent).toBe("Threat Stories");
-      unmount();
-    }
+    const { container } = render(<Breadcrumbs />);
+
+    expect(linkTexts(container)).toEqual(["Acme Corp"]);
+    expect(hasTextCrumb(container, "Customers")).toBe(true);
+
+    const hub = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent === "Acme Corp",
+    );
+    expect(hub?.getAttribute("href")).toBe("/en/customers/c1");
+  });
+
+  it("falls back to the raw id for an unknown customer", () => {
+    mockedUsePathname.mockReturnValue("/en/customers/unknown");
+
+    const { container } = render(<Breadcrumbs />);
+
+    expect(linkTexts(container)).toEqual(["unknown"]);
+  });
+
+  it("renders a deep customer-scoped report path", () => {
+    // Home › Customers(text) › Acme Corp › Reports › DAILY(text) › date.
+    // The customer-scoped `analysis` segment is collapsed (no page).
+    mockedUsePathname.mockReturnValue(
+      "/en/customers/c1/analysis/reports/DAILY/2026-06-01",
+    );
+
+    const { container } = render(<Breadcrumbs />);
+
+    expect(linkTexts(container)).toEqual([
+      "Acme Corp",
+      "Reports",
+      "2026-06-01",
+    ]);
+
+    // Structural prefixes render as plain text, not dead links.
+    expect(hasTextCrumb(container, "Customers")).toBe(true);
+    expect(hasTextCrumb(container, "DAILY")).toBe(true);
+
+    // The collapsed `analysis` segment appears nowhere.
+    expect(container.textContent).not.toContain("analysis");
+
+    const reports = Array.from(container.querySelectorAll("a")).find(
+      (a) => a.textContent === "Reports",
+    );
+    expect(reports?.getAttribute("href")).toBe(
+      "/en/customers/c1/analysis/reports",
+    );
+  });
+
+  it("renders a threat story leaf with a terminology + short-id label", () => {
+    mockedUsePathname.mockReturnValue(
+      "/en/customers/c1/analysis/story/s1abcdef0123",
+    );
+
+    const { container } = render(<Breadcrumbs />);
+
+    expect(linkTexts(container)).toEqual([
+      "Acme Corp",
+      "Threat Stories",
+      "Threat Story · s1abcdef…",
+    ]);
+    expect(hasTextCrumb(container, "Customers")).toBe(true);
+  });
+
+  it("prefers a page-registered leaf label over the computed fallback", () => {
+    // When a leaf page mounts a `<BreadcrumbLabelRegistrar />`, its label
+    // (keyed by the leaf path) overrides the terminology + short-id
+    // fallback the route map would otherwise compute.
+    mockedUsePathname.mockReturnValue(
+      "/en/customers/c1/analysis/story/s1abcdef0123",
+    );
+
+    const { container } = render(
+      <BreadcrumbLabelProvider>
+        <BreadcrumbLabelRegistrar label="Phishing campaign on finance" />
+        <Breadcrumbs />
+      </BreadcrumbLabelProvider>,
+    );
+
+    expect(linkTexts(container)).toEqual([
+      "Acme Corp",
+      "Threat Stories",
+      "Phishing campaign on finance",
+    ]);
+    // The computed fallback must not also appear.
+    expect(container.textContent).not.toContain("Threat Story · s1abcdef…");
+  });
+
+  it("renders an event-analysis leaf with the aice prefix collapsed", () => {
+    // The `aice/<id>/events/<key>` prefix carries no crumbs; only the
+    // `Event · <short-key>` leaf and the customer hub remain.
+    mockedUsePathname.mockReturnValue(
+      "/en/customers/c1/aice/a1/events/evkey123456/analysis",
+    );
+
+    const { container } = render(<Breadcrumbs />);
+
+    expect(linkTexts(container)).toEqual(["Acme Corp", "Event · evkey123…"]);
+    expect(hasTextCrumb(container, "Customers")).toBe(true);
+    expect(container.textContent).not.toContain("aice");
   });
 
   it("renders nested crumbs for /en/settings/members", () => {

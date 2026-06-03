@@ -141,5 +141,13 @@ page automatically closes the panel.
 ## Breadcrumbs
 
 A breadcrumb bar appears at the top of the main content area,
-showing the current page path. Click any breadcrumb segment to
-navigate to that level.
+showing the current page path. Segments with a destination are
+links — click one to navigate to that level. Structural segments
+that have no page of their own (for example the `Customers` group
+or a report period) render as plain text rather than dead links.
+
+Within a customer scope the breadcrumb shows readable labels
+instead of raw identifiers: the customer's name, the report period
+and date, and a terminology label with a short identifier for
+threat-story and event-analysis pages (for example
+`Threat Story · 1f3c9a2b…`).
