@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { AnalysisBody } from "@/components/analysis-body";
+import { Timestamp } from "@/components/timestamp";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { loadAnalysisResultPage } from "@/lib/analysis/result-page-loader";
 
@@ -55,7 +56,6 @@ export default async function AnalysisResultPage({
   }
 
   const data = outcome.data;
-  const requestedAt = data.requestedAt.toISOString();
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -107,7 +107,9 @@ export default async function AnalysisResultPage({
           <Field label="Prompt version">{data.promptVersion}</Field>
         ) : null}
         <Field label="Requested by">{data.requestedBy}</Field>
-        <Field label="Requested at">{requestedAt}</Field>
+        <Field label="Requested at">
+          <Timestamp at={data.requestedAt} />
+        </Field>
       </section>
 
       <section className="mt-8">

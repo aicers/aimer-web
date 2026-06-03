@@ -134,7 +134,11 @@ severity factors` / `Show likelihood factors` 디스클로저 안으로 접혀,
 - **프롬프트 버전(Prompt version)** — aimer 프롬프트 템플릿 버전.
 - **요청자(Requested by)** — 최신 세대를 트리거한 계정 ID. 정기 워커 틱이
   생성한 분석이라면 `system`으로 표시됩니다.
-- **요청 시각(Requested at)** — 요청의 ISO 8601 타임스탬프.
+- **요청 시각(Requested at)** — 분석을 요청한 시각으로, 사용자의
+  시간대에 맞춰 명시적 시간대 레이블과 함께 표시됩니다. 결정 순서
+  (저장된 값 → 브라우저 → UTC)는
+  [계정 환경설정 → 시간대](../account-preferences.md#시간대)를
+  참고하세요.
 
 ## 분석 본문
 

@@ -1,5 +1,6 @@
 import { forbidden, notFound } from "next/navigation";
 import { AnalysisBody } from "@/components/analysis-body";
+import { Timestamp } from "@/components/timestamp";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -199,7 +200,9 @@ export default async function ReportDetailPage({
         <Field label="Model snapshot">{data.modelActualVersion}</Field>
         <Field label="Prompt version">{data.promptVersion}</Field>
         <Field label="Requested by">{data.requestedBy ?? "system"}</Field>
-        <Field label="Requested at">{data.requestedAt.toISOString()}</Field>
+        <Field label="Requested at">
+          <Timestamp at={data.requestedAt} />
+        </Field>
       </section>
 
       <ReportSection
