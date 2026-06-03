@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,7 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
 
-import { DATE_TIME_FORMAT, type Member, type Role } from "./types";
+import type { Member, Role } from "./types";
 
 interface MemberTableProps {
   members: Member[];
@@ -39,7 +40,6 @@ export function MemberTable({
 }: MemberTableProps) {
   const t = useTranslations("members");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
   const [changeRoleTarget, setChangeRoleTarget] = useState<Member | null>(null);
@@ -130,12 +130,11 @@ export function MemberTable({
                   </span>
                 </td>
                 <td className="px-3 py-3.5 text-muted-foreground">
-                  {member.lastSignInAt
-                    ? format.dateTime(
-                        new Date(member.lastSignInAt),
-                        DATE_TIME_FORMAT,
-                      )
-                    : t("never")}
+                  {member.lastSignInAt ? (
+                    <Timestamp at={member.lastSignInAt} />
+                  ) : (
+                    t("never")
+                  )}
                 </td>
                 {isManager && (
                   <td className="px-3 py-3.5 text-right">

@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,15 +37,6 @@ const INITIAL_FILTERS: Filters = {
   to: "",
 };
 
-const DATE_TIME_FORMAT = {
-  year: "numeric" as const,
-  month: "2-digit" as const,
-  day: "2-digit" as const,
-  hour: "2-digit" as const,
-  minute: "2-digit" as const,
-  second: "2-digit" as const,
-};
-
 const AUTO_REFRESH_MS = 30_000;
 
 function toISOWithOffset(datetimeLocal: string): string {
@@ -72,7 +64,6 @@ export function SuspiciousActivityPage() {
   const t = useTranslations("suspiciousActivity");
   const tIndicators = useTranslations("suspiciousActivity.indicators");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [entries, setEntries] = useState<Alert[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -305,7 +296,6 @@ export function SuspiciousActivityPage() {
                           prev === entry.id ? null : entry.id,
                         )
                       }
-                      format={format}
                       t={t}
                       tIndicators={tIndicators}
                     />
@@ -339,14 +329,12 @@ function AlertRow({
   entry,
   expanded,
   onToggle,
-  format,
   t,
   tIndicators,
 }: {
   entry: Alert;
   expanded: boolean;
   onToggle: () => void;
-  format: ReturnType<typeof useFormatter>;
   t: ReturnType<typeof useTranslations<"suspiciousActivity">>;
   tIndicators: ReturnType<
     typeof useTranslations<"suspiciousActivity.indicators">
@@ -359,7 +347,7 @@ function AlertRow({
         onClick={onToggle}
       >
         <td className="px-3 py-3.5 text-muted-foreground whitespace-nowrap">
-          {format.dateTime(new Date(entry.createdAt), DATE_TIME_FORMAT)}
+          <Timestamp at={entry.createdAt} />
         </td>
         <td className="px-3 py-3.5">
           <Badge

@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-import { DATE_TIME_FORMAT, type PendingInvitation } from "./types";
+import type { PendingInvitation } from "./types";
 
 interface PendingInvitationsProps {
   invitations: PendingInvitation[];
@@ -27,7 +28,6 @@ export function PendingInvitations({
 }: PendingInvitationsProps) {
   const t = useTranslations("members");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [revokeTarget, setRevokeTarget] = useState<PendingInvitation | null>(
     null,
@@ -82,7 +82,7 @@ export function PendingInvitations({
                   </Badge>
                 </td>
                 <td className="px-3 py-3.5 text-muted-foreground">
-                  {format.dateTime(new Date(inv.expiresAt), DATE_TIME_FORMAT)}
+                  <Timestamp at={inv.expiresAt} />
                 </td>
                 <td className="px-3 py-3.5 text-right">
                   <Button

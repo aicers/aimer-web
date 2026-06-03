@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,15 +46,6 @@ const INITIAL_FILTERS: Filters = {
   to: "",
 };
 
-const DATE_TIME_FORMAT = {
-  year: "numeric" as const,
-  month: "2-digit" as const,
-  day: "2-digit" as const,
-  hour: "2-digit" as const,
-  minute: "2-digit" as const,
-  second: "2-digit" as const,
-};
-
 /** Append the browser's timezone offset to a datetime-local value so the
  *  server can interpret it correctly as timestamptz. */
 function toISOWithOffset(datetimeLocal: string): string {
@@ -88,7 +80,6 @@ function buildQueryString(
 export function AuditLogsPage() {
   const t = useTranslations("auditLogs");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -344,7 +335,6 @@ export function AuditLogsPage() {
                         )
                       }
                       onCorrelationClick={handleCorrelationClick}
-                      format={format}
                       t={t}
                     />
                   ))}
@@ -378,14 +368,12 @@ function AuditLogRow({
   expanded,
   onToggle,
   onCorrelationClick,
-  format,
   t,
 }: {
   entry: AuditLogEntry;
   expanded: boolean;
   onToggle: () => void;
   onCorrelationClick: (id: string) => void;
-  format: ReturnType<typeof useFormatter>;
   t: ReturnType<typeof useTranslations<"auditLogs">>;
 }) {
   const targetDisplay = entry.targetId
@@ -399,7 +387,7 @@ function AuditLogRow({
         onClick={onToggle}
       >
         <td className="px-3 py-3.5 text-muted-foreground whitespace-nowrap">
-          {format.dateTime(new Date(entry.timestamp), DATE_TIME_FORMAT)}
+          <Timestamp at={entry.timestamp} />
         </td>
         <td className="px-3 py-3.5">
           <code className="text-xs">{truncateId(entry.actorId)}</code>
