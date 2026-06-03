@@ -49,6 +49,10 @@ const AUTH_LOCK_ID = 3693;
 const CUSTOMER_LOCK_ID = 3694;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004a1";
 const NAME = "XC Customer";
+// A second customer used only by the fetch-cap boundary tests, so its seeds
+// don't perturb the counts asserted by the lifecycle tests above.
+const BOUNDARY_CUSTOMER_ID = "00000000-0000-0000-0000-0000000004b2";
+const BOUNDARY_NAME = "XC Boundary";
 
 describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
   let authDbName: string;
@@ -102,12 +106,13 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     storyId: string,
     status: string,
     lastReadyAt?: string,
+    customerId: string = CUSTOMER_ID,
   ): Promise<void> {
     await authPool.query(
       `INSERT INTO story_analysis_state
          (customer_id, story_id, status, last_ready_at, updated_at)
        VALUES ($1, $2::bigint, $3, $4::timestamptz, NOW())`,
-      [CUSTOMER_ID, storyId, status, lastReadyAt ?? null],
+      [customerId, storyId, status, lastReadyAt ?? null],
     );
   }
 
@@ -121,6 +126,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     severity?: number;
     likelihood?: number;
     superseded?: boolean;
+    customerId?: string;
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO story_analysis_result
@@ -138,7 +144,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
                'baseline-only', NULL,
                CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
       [
-        CUSTOMER_ID,
+        args.customerId ?? CUSTOMER_ID,
         args.storyId,
         args.lang ?? "ENGLISH",
         args.modelName ?? "openai",
@@ -157,13 +163,14 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     bucketDate: string;
     tz?: string;
     status: string;
+    customerId?: string;
   }): Promise<void> {
     await authPool.query(
       `INSERT INTO periodic_report_state
          (customer_id, period, bucket_date, tz, status)
        VALUES ($1, $2, $3::date, $4, $5)`,
       [
-        CUSTOMER_ID,
+        args.customerId ?? CUSTOMER_ID,
         args.period,
         args.bucketDate,
         args.tz ?? "UTC",
@@ -181,6 +188,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     severity?: number;
     likelihood?: number;
     superseded?: boolean;
+    customerId?: string;
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO periodic_report_result
@@ -198,7 +206,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
                'baseline-only', NULL,
                CASE WHEN $9::boolean THEN NOW() ELSE NULL END)`,
       [
-        CUSTOMER_ID,
+        args.customerId ?? CUSTOMER_ID,
         args.period,
         args.bucketDate,
         args.tz ?? "UTC",
@@ -228,8 +236,9 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
 
     await authPool.query(
       `INSERT INTO customers (id, external_key, name, database_status, timezone)
-       VALUES ($1, 'xc-1', $2, 'active', 'UTC')`,
-      [CUSTOMER_ID, NAME],
+       VALUES ($1, 'xc-1', $2, 'active', 'UTC'),
+              ($3, 'xc-2', $4, 'active', 'UTC')`,
+      [CUSTOMER_ID, NAME, BOUNDARY_CUSTOMER_ID, BOUNDARY_NAME],
     );
 
     // --- Events: canonical dedup + non-default variant exclusion. ---
@@ -325,6 +334,79 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
       generation: 1,
       tier: "CRITICAL",
     });
+
+    // --- Fetch-cap boundary (BOUNDARY_CUSTOMER_ID) ---
+    // The lifecycle intersection must be applied BEFORE the risk LIMIT, or
+    // archived/pending rows that out-rank the eligible ones by priority can
+    // fill the over-fetch window and hide an eligible high-risk row. Each
+    // surface seeds several archived CRITICAL rows that sort AHEAD of one
+    // ready CRITICAL row (higher severity, lower story_id/bucket_date). With a
+    // fetch cap of 2, a rank-then-filter implementation would pick two
+    // archived rows and drop them, returning nothing; intersect-then-rank
+    // returns the eligible row.
+    for (const storyId of ["9001", "9002", "9003"]) {
+      await seedStoryState(
+        storyId,
+        "archived",
+        "2026-06-01T00:00:00Z",
+        BOUNDARY_CUSTOMER_ID,
+      );
+      await seedStoryResult({
+        storyId,
+        generation: 1,
+        tier: "CRITICAL",
+        severity: 0.9,
+        likelihood: 0.9,
+        customerId: BOUNDARY_CUSTOMER_ID,
+      });
+    }
+    await seedStoryState(
+      "9100",
+      "ready",
+      "2026-06-02T00:00:00Z",
+      BOUNDARY_CUSTOMER_ID,
+    );
+    await seedStoryResult({
+      storyId: "9100",
+      generation: 1,
+      tier: "CRITICAL",
+      severity: 0.5,
+      likelihood: 0.5,
+      customerId: BOUNDARY_CUSTOMER_ID,
+    });
+
+    for (const bucketDate of ["2026-05-01", "2026-05-02", "2026-05-03"]) {
+      await seedReportState({
+        period: "DAILY",
+        bucketDate,
+        status: "archived",
+        customerId: BOUNDARY_CUSTOMER_ID,
+      });
+      await seedReport({
+        period: "DAILY",
+        bucketDate,
+        generation: 1,
+        tier: "CRITICAL",
+        severity: 0.9,
+        likelihood: 0.9,
+        customerId: BOUNDARY_CUSTOMER_ID,
+      });
+    }
+    await seedReportState({
+      period: "DAILY",
+      bucketDate: "2026-05-10",
+      status: "ready",
+      customerId: BOUNDARY_CUSTOMER_ID,
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-10",
+      generation: 1,
+      tier: "CRITICAL",
+      severity: 0.5,
+      likelihood: 0.5,
+      customerId: BOUNDARY_CUSTOMER_ID,
+    });
   }, 30_000);
 
   afterAll(async () => {
@@ -381,5 +463,38 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     expect(rows.some((r) => r.priorityTier === "LOW")).toBe(false);
     // No archived bucket leaks in (its detail link would 404).
     expect(rows.some((r) => r.period === "MONTHLY")).toBe(false);
+  });
+
+  it("stories: an eligible high-risk row survives when archived rows would exhaust the fetch cap", async () => {
+    // fetchCap = 2: three archived CRITICAL stories out-rank the lone ready
+    // CRITICAL by severity. Intersecting the lifecycle set before the LIMIT is
+    // what keeps the eligible story visible (rank-then-filter would lose it).
+    const { rows, total } = await fetchCustomerStories(
+      authPool,
+      customerPool,
+      BOUNDARY_CUSTOMER_ID,
+      BOUNDARY_NAME,
+      25,
+      2,
+    );
+    // Only the ready story is lifecycle-eligible, so it is both the count and
+    // the single returned row — never crowded out by the archived rows.
+    expect(total).toBe(1);
+    expect(rows.map((r) => r.storyId)).toEqual(["9100"]);
+  });
+
+  it("reports: an eligible high-risk bucket survives when archived buckets would exhaust the fetch cap", async () => {
+    const { rows, total } = await fetchCustomerReports(
+      authPool,
+      customerPool,
+      BOUNDARY_CUSTOMER_ID,
+      BOUNDARY_NAME,
+      25,
+      2,
+    );
+    expect(total).toBe(1);
+    expect(rows.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-05-10",
+    ]);
   });
 });
