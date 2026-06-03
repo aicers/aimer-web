@@ -34,6 +34,11 @@ The sidebar includes the following links:
 - **Reports** — report generation.
 - **Dashboard** — operational overview.
 
+All users see a personal settings item:
+
+- **Account Settings** — set your personal language and timezone
+    preferences (see [Account Preferences](account-preferences.md)).
+
 Users with the Manager role see two additional items under
 settings:
 
@@ -85,7 +90,9 @@ email. From this menu you can:
 The header bar also provides:
 
 - **Theme toggle** — switch between light and dark modes.
-- **Language switcher** — switch between English and Korean.
+- **Language switcher** — switch between English and Korean. This
+    affects only the current browser; to save a language preference to
+    your account, use [Account Preferences](account-preferences.md).
 
 ## Mobile menu
 

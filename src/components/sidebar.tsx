@@ -9,6 +9,7 @@ import {
   Search,
   Settings,
   Shield,
+  UserCog,
   Users,
 } from "lucide-react";
 import Link from "next/link";
@@ -88,6 +89,11 @@ function useNavItems(): NavItem[] {
       href: `/${locale}/dashboard`,
       label: t("dashboard"),
       icon: LayoutDashboard,
+    },
+    {
+      href: `/${locale}/settings/account`,
+      label: t("accountSettings"),
+      icon: UserCog,
     },
     {
       href: `/${locale}/settings/members`,

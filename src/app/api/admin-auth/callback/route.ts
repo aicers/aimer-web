@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { setNextLocaleCookie } from "@/i18n/locale-cookie";
 import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { upsertAccount } from "@/lib/auth/account";
@@ -11,6 +12,7 @@ import {
 } from "@/lib/auth/cookies";
 import { generateCsrf } from "@/lib/auth/csrf";
 import { signJwt } from "@/lib/auth/jwt";
+import { reconcileSignInLocale } from "@/lib/auth/locale-sync";
 import { exchangeCodeForTokens, getIssuerUrl } from "@/lib/auth/oidc";
 import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
 import { validateIdToken } from "@/lib/auth/oidc-validate";
@@ -162,6 +164,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       }
 
       return denyRedirect(request, denyReason);
+    }
+
+    // Locale sync (#387): the app-wide preference is shared by regular
+    // and admin sessions of the same account, so mirror it to the
+    // NEXT_LOCALE cookie here too (same rules as the general callback).
+    const cookieLocale = request.cookies.get("NEXT_LOCALE")?.value;
+    const resolvedLocale = await reconcileSignInLocale(
+      pool,
+      account.id,
+      account.locale,
+      cookieLocale,
+    );
+    if (resolvedLocale) {
+      await setNextLocaleCookie(resolvedLocale);
     }
 
     // Same-account enforcement: only after all deny checks pass

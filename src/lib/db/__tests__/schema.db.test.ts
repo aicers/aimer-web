@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(38);
+    expect(rows).toHaveLength(39);
   });
 
   // -- Built-in roles --
@@ -171,6 +171,32 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
           "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, status) VALUES ('i', 's2', 'u', 'd', 'invalid')",
         ),
       ).rejects.toThrow();
+    });
+
+    it("accounts.locale rejects an unsupported locale (#387)", async () => {
+      await expect(
+        pool.query(
+          "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, locale) VALUES ('i', 'loc_bad', 'u', 'd', 'fr')",
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("accounts.locale accepts supported locales and NULL (#387)", async () => {
+      await expect(
+        pool.query(
+          "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, locale) VALUES ('i', 'loc_en', 'u', 'd', 'en')",
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, locale) VALUES ('i', 'loc_ko', 'u', 'd', 'ko')",
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, locale) VALUES ('i', 'loc_null', 'u', 'd', NULL)",
+        ),
+      ).resolves.toBeDefined();
     });
 
     it("pending_connections.status", async () => {
