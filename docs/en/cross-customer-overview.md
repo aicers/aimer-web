@@ -49,7 +49,9 @@ participates in ordering is intentionally not displayed. Threat-story and
 suspicious-event rows may show their severity and likelihood scores.
 
 Archived and not-yet-analyzed threat stories are excluded from the Threat
-Stories surface.
+Stories surface. The Reports surface likewise excludes archived and
+not-yet-generated report buckets, so every listed row links to a report
+that still exists (an archived bucket's detail page is gone).
 
 ## Drilling in
 
@@ -61,6 +63,9 @@ complete pagination and filtering.
 
 ## States
 
+- **Loading** — because a surface may open several customers' data stores
+    in one request, each page shows a brief skeleton placeholder while the
+    cross-customer data is gathered.
 - **Empty** — when no items match the active scope and permissions, the
     surface shows a short empty notice.
 - **Partial failure** — if one customer's data store is temporarily

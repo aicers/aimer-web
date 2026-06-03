@@ -209,6 +209,39 @@ export function PartialFailureNotice({ failed }: { failed: FailedCustomer[] }) {
   );
 }
 
+// Route-level loading skeleton (#391). The overview surfaces fan out across
+// potentially many customer DBs per request, so each route ships a
+// `loading.tsx` that renders this while the server component awaits the
+// aggregator — Next.js wraps the page in a Suspense boundary automatically.
+export function OverviewSkeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <div
+      className="mx-auto max-w-4xl px-4 py-8 sm:px-6"
+      role="status"
+      aria-label="loading"
+      aria-busy="true"
+      data-testid="overview-loading"
+    >
+      <div className="mb-6 h-8 w-48 animate-pulse rounded bg-muted" />
+      <ul className="space-y-2">
+        {Array.from({ length: rows }, (_, i) => (
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: static placeholder list
+            key={i}
+            className="flex items-center justify-between gap-3 rounded border border-border bg-card px-4 py-3"
+          >
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-4 w-1/3 animate-pulse rounded bg-muted" />
+              <div className="h-3 w-1/5 animate-pulse rounded bg-muted" />
+            </div>
+            <div className="h-5 w-16 animate-pulse rounded-full bg-muted" />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function CountBadge({ count }: { count: number }) {
   return (
     <span

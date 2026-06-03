@@ -6,7 +6,8 @@
 //   - stories: `story_analysis_state` lifecycle exclusion (archived + pending
 //     dropped, ready/dirty kept) with customer-DB score enrichment; the
 //     disclosure count is the full ready/dirty set
-//   - reports: canonical dedup + tier-rank ordering + window count
+//   - reports: auth-DB `periodic_report_state` discovery (archived buckets
+//     excluded from items AND count) + customer-DB canonical dedup + tier-rank
 //
 // The auth preamble (cookie / JWT / session) is not exercised here — these
 // fetchers take pools directly — so those modules are stubbed only so the
@@ -151,6 +152,26 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     );
   }
 
+  async function seedReportState(args: {
+    period: string;
+    bucketDate: string;
+    tz?: string;
+    status: string;
+  }): Promise<void> {
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status)
+       VALUES ($1, $2, $3::date, $4, $5)`,
+      [
+        CUSTOMER_ID,
+        args.period,
+        args.bucketDate,
+        args.tz ?? "UTC",
+        args.status,
+      ],
+    );
+  }
+
   async function seedReport(args: {
     period: string;
     bucketDate: string;
@@ -259,7 +280,26 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     await seedStoryResult({ storyId: "200", generation: 1, tier: "CRITICAL" });
     await seedStoryResult({ storyId: "300", generation: 1, tier: "LOW" });
 
-    // --- Reports: canonical dedup. ---
+    // --- Reports: discover/enrich (auth state is the source of truth). ---
+    // DAILY 2026-06-01: gen1 LOW superseded, gen2 HIGH live; state ready.
+    // WEEKLY 2026-05-25: CRITICAL; state ready.
+    // MONTHLY 2026-04-01: CRITICAL result lingering, but state ARCHIVED — must
+    //   be excluded from both items and count (its detail link would 404).
+    await seedReportState({
+      period: "DAILY",
+      bucketDate: "2026-06-01",
+      status: "ready",
+    });
+    await seedReportState({
+      period: "WEEKLY",
+      bucketDate: "2026-05-25",
+      status: "ready",
+    });
+    await seedReportState({
+      period: "MONTHLY",
+      bucketDate: "2026-04-01",
+      status: "archived",
+    });
     await seedReport({
       period: "DAILY",
       bucketDate: "2026-06-01",
@@ -276,6 +316,12 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     await seedReport({
       period: "WEEKLY",
       bucketDate: "2026-05-25",
+      generation: 1,
+      tier: "CRITICAL",
+    });
+    await seedReport({
+      period: "MONTHLY",
+      bucketDate: "2026-04-01",
       generation: 1,
       tier: "CRITICAL",
     });
@@ -319,16 +365,21 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     expect(rows.some((r) => r.storyId === "300")).toBe(false);
   });
 
-  it("reports: canonical dedup + tier-rank ordering + window count", async () => {
+  it("reports: state-discover + canonical dedup + tier-rank, excludes archived", async () => {
     const { rows, total } = await fetchCustomerReports(
+      authPool,
       customerPool,
       CUSTOMER_ID,
       NAME,
       25,
     );
-    expect(total).toBe(2); // two canonical buckets
+    // Only the two non-archived (ready) buckets count; the archived MONTHLY
+    // bucket whose result still lingers is excluded from both count and rows.
+    expect(total).toBe(2);
     expect(rows.map((r) => r.priorityTier)).toEqual(["CRITICAL", "HIGH"]);
     // The superseded gen1 LOW is never the canonical row for the DAILY bucket.
     expect(rows.some((r) => r.priorityTier === "LOW")).toBe(false);
+    // No archived bucket leaks in (its detail link would 404).
+    expect(rows.some((r) => r.period === "MONTHLY")).toBe(false);
   });
 });

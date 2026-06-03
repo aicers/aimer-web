@@ -70,19 +70,24 @@ const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 export const OVERVIEW_CAP = 25;
 
 /**
- * Per-customer candidate bound for the threat-story fan-out. Story priority
- * and scores live in the customer DB while the lifecycle/recency lives in the
- * auth DB, so a true priority-first top-K cannot be expressed in one query
- * without #392's denormalization. We bound the per-customer candidate set by
- * the most-recent `STORY_CANDIDATE_CAP` lifecycle rows, enrich their scores,
- * then rank in app. The disclosure COUNT is computed over the FULL set (a
- * window count before the LIMIT), so the bound never understates the count —
- * it only means an extremely old high-priority story could fall outside the
- * displayed top-K, which is the inherent two-DB limit #392's keyset list
- * page resolves. Generous by default; tunable via env.
+ * Per-customer over-fetch bound for the threat-story and report fan-outs.
+ *
+ * Priority/scores live in the customer DB while the lifecycle/recency lives in
+ * the auth DB, so a true priority-first top-K of the lifecycle-eligible set
+ * cannot be expressed in one query without #392's `story_analysis_state`
+ * priority denormalization. Until that lands we over-fetch the customer DB's
+ * top `FETCH_CAP` results ORDERED BY PRIORITY (not recency), then intersect
+ * with the auth-DB lifecycle set and rank in app. Bounding by priority — the
+ * acceptance ordering itself — keeps the displayed top-K correct: a row only
+ * falls outside it if more than `FETCH_CAP` of the customer's HIGHER-priority
+ * results are archived/superseded-away, a far narrower failure mode than the
+ * earlier recency-window bound (which dropped any old-but-high-risk row once a
+ * customer had more than `FETCH_CAP` recent rows). The disclosure COUNT is the
+ * exact lifecycle count from the auth DB and is unaffected by this bound.
+ * Generous by default; tunable via env.
  */
-const STORY_CANDIDATE_CAP = (() => {
-  const raw = process.env.ANALYSIS_OVERVIEW_STORY_CANDIDATE_CAP;
+const FETCH_CAP = (() => {
+  const raw = process.env.ANALYSIS_OVERVIEW_FETCH_CAP;
   if (!raw) return 500;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : 500;
@@ -294,23 +299,41 @@ const PRIORITY_RANK_SQL = `CASE priority_tier
     ELSE 0 END`;
 
 export async function fetchCustomerReports(
-  pool: Pool,
+  authPool: Pool,
+  customerPool: Pool,
   customerId: string,
   customerName: string,
   cap: number,
 ): Promise<CustomerSlice<ReportOverviewRow>> {
-  // Customer DB only: the canonical default-variant, non-superseded, latest-
-  // generation result per `(period, bucket_date, tz)`. Ordering uses the
-  // aggregate scores (not displayed); `tz` is carried through to pin the link.
+  // Reports follow the proven discover/enrich split (`report-index-page-
+  // loader.ts`): the auth-DB `periodic_report_state` is the source of truth,
+  // the customer-DB `periodic_report_result` is enrichment. Reading the result
+  // table alone would surface buckets whose state row is `archived` (or gone)
+  // but whose result still lingers — the detail loader 404s exactly those
+  // (`report-result-page-loader.ts` returns not_found on missing/archived
+  // state), so such rows would render dead links and inflate the count.
   //
-  // Only buckets that HAVE a result appear (a risk-ranked overview needs a
-  // tier), which naturally drops `pending` buckets. Unlike threat stories,
-  // reports have no lifecycle-exclusion acceptance criterion (#391), so this
-  // path does not additionally join the auth-DB `periodic_report_state` to
-  // hide an `archived` bucket whose customer-DB result still lingers — a
-  // deliberate simplification kept reviewable here. When #392's loader layer
-  // is consumed, this can move to the state-enumeration discover/enrich path.
-  const res = await pool.query<{
+  // Disclosure count: the renderable, non-archived buckets (`ready`/`dirty`)
+  // from the auth DB. `pending` (no result yet — nothing to rank or show) and
+  // `archived` (retention-removed) are excluded, mirroring the threat-story
+  // lifecycle filter.
+  const countRes = await authPool.query<{ total_count: string }>(
+    `SELECT COUNT(*) AS total_count
+       FROM periodic_report_state
+      WHERE customer_id = $1
+        AND status IN ('ready', 'dirty')`,
+    [customerId],
+  );
+  const total = Number(countRes.rows[0]?.total_count ?? 0);
+  if (total === 0) return { rows: [], total: 0 };
+
+  // Enrich from the customer DB: the canonical default-variant, non-
+  // superseded, latest-generation result per `(period, bucket_date, tz)`,
+  // ordered HIGH-RISK FIRST and bounded to the top `FETCH_CAP` (see its doc —
+  // bounding by priority, not recency, keeps the displayed top-K aligned with
+  // the acceptance ordering). Ordering uses the aggregate scores (not
+  // displayed); `tz` is carried through to pin the detail link.
+  const candRes = await customerPool.query<{
     period: PeriodKind;
     bucket_date: string;
     tz: string;
@@ -318,7 +341,6 @@ export async function fetchCustomerReports(
     aggregate_severity_score: number;
     aggregate_likelihood_score: number;
     requested_at: Date;
-    total_count: string;
   }>(
     `WITH canonical AS (
        SELECT DISTINCT ON (period, bucket_date, tz)
@@ -333,28 +355,61 @@ export async function fetchCustomerReports(
         ORDER BY period, bucket_date, tz, generation DESC
      )
      SELECT period, bucket_date, tz, priority_tier,
-            aggregate_severity_score, aggregate_likelihood_score, requested_at,
-            COUNT(*) OVER () AS total_count
+            aggregate_severity_score, aggregate_likelihood_score, requested_at
        FROM canonical
       ORDER BY ${PRIORITY_RANK_SQL} DESC,
                aggregate_severity_score DESC, aggregate_likelihood_score DESC,
                requested_at DESC, period ASC, bucket_date ASC, tz ASC
       LIMIT $5`,
-    [customerId, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL, cap],
+    [customerId, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL, FETCH_CAP],
   );
-  const total = res.rows.length > 0 ? Number(res.rows[0].total_count) : 0;
-  const rows: ReportOverviewRow[] = res.rows.map((r) => ({
-    customerId,
-    customerName,
-    period: r.period,
-    bucketDate: r.bucket_date,
-    tz: r.tz,
-    priorityTier: r.priority_tier,
-    aggregateSeverityScore: r.aggregate_severity_score,
-    aggregateLikelihoodScore: r.aggregate_likelihood_score,
-    requestedAt: r.requested_at,
-  }));
-  return { rows, total };
+  if (candRes.rows.length === 0) return { rows: [], total };
+
+  // Keep only candidates whose auth-DB state is non-archived (`ready`/`dirty`),
+  // so a result row lingering after its bucket was archived never produces a
+  // link that 404s in the detail loader.
+  const periods = candRes.rows.map((r) => r.period);
+  const bucketDates = candRes.rows.map((r) => r.bucket_date);
+  const tzs = candRes.rows.map((r) => r.tz);
+  const stateRes = await authPool.query<{
+    period: PeriodKind;
+    bucket_date: string;
+    tz: string;
+  }>(
+    `WITH wanted(period, bucket_date, tz) AS (
+       SELECT p, d::date, z
+         FROM unnest($2::text[], $3::date[], $4::text[]) AS u(p, d, z)
+     )
+     SELECT s.period, s.bucket_date::text AS bucket_date, s.tz
+       FROM periodic_report_state s
+       JOIN wanted w
+         ON w.period = s.period
+        AND w.bucket_date = s.bucket_date
+        AND w.tz = s.tz
+      WHERE s.customer_id = $1
+        AND s.status IN ('ready', 'dirty')`,
+    [customerId, periods, bucketDates, tzs],
+  );
+  const eligible = new Set(
+    stateRes.rows.map((r) => `${r.period}|${r.bucket_date}|${r.tz}`),
+  );
+
+  const rows: ReportOverviewRow[] = [];
+  for (const r of candRes.rows) {
+    if (!eligible.has(`${r.period}|${r.bucket_date}|${r.tz}`)) continue;
+    rows.push({
+      customerId,
+      customerName,
+      period: r.period,
+      bucketDate: r.bucket_date,
+      tz: r.tz,
+      priorityTier: r.priority_tier,
+      aggregateSeverityScore: r.aggregate_severity_score,
+      aggregateLikelihoodScore: r.aggregate_likelihood_score,
+      requestedAt: r.requested_at,
+    });
+  }
+  return { rows: rankAndCap(rows, reportKey, cap), total };
 }
 
 export async function fetchCustomerEvents(
@@ -425,60 +480,79 @@ export async function fetchCustomerStories(
   customerName: string,
   cap: number,
 ): Promise<CustomerSlice<StoryOverviewRow>> {
-  // Discovery + lifecycle + recency from the auth DB `story_analysis_state`.
-  // Default list excludes `archived` (retention-removed) and `pending` (no
-  // result yet) exactly as the story detail loader hides them — only `ready`
-  // / `dirty` rows have a result to rank. `COUNT(*) OVER ()` runs over the
-  // full match set BEFORE the LIMIT, so `total` is the true disclosure count
-  // even though candidates are bounded for the score enrichment.
-  const stateRes = await authPool.query<{
-    story_id: string;
-    recency_at: Date;
-    total_count: string;
-  }>(
-    `SELECT story_id::text AS story_id,
-            COALESCE(last_ready_at, updated_at) AS recency_at,
-            COUNT(*) OVER () AS total_count
+  // Disclosure count: the full lifecycle-eligible set from the auth-DB
+  // `story_analysis_state`. `ready`/`dirty` only — `archived` (retention-
+  // removed) and `pending` (no result yet) are excluded exactly as the story
+  // detail loader hides them. This is the exact count, independent of the
+  // priority over-fetch bound below.
+  const countRes = await authPool.query<{ total_count: string }>(
+    `SELECT COUNT(*) AS total_count
        FROM story_analysis_state
       WHERE customer_id = $1
-        AND status IN ('ready', 'dirty')
-      ORDER BY COALESCE(last_ready_at, updated_at) DESC, story_id ASC
-      LIMIT $2`,
-    [customerId, STORY_CANDIDATE_CAP],
+        AND status IN ('ready', 'dirty')`,
+    [customerId],
   );
-  const total =
-    stateRes.rows.length > 0 ? Number(stateRes.rows[0].total_count) : 0;
-  if (stateRes.rows.length === 0) return { rows: [], total };
+  const total = Number(countRes.rows[0]?.total_count ?? 0);
+  if (total === 0) return { rows: [], total: 0 };
 
-  const recencyById = new Map<string, Date>();
-  for (const r of stateRes.rows) recencyById.set(r.story_id, r.recency_at);
-  const storyIds = stateRes.rows.map((r) => r.story_id);
-
-  // Enrich priority/scores from the customer DB `story_analysis_result`:
-  // canonical default variant, latest generation, not superseded.
-  const resultRes = await customerPool.query<{
+  // Candidate priority/scores from the customer DB `story_analysis_result`:
+  // canonical default variant, latest generation, not superseded, ordered
+  // HIGH-RISK FIRST and bounded to the top `FETCH_CAP`. Bounding by priority
+  // (not recency) keeps the displayed top-K aligned with the acceptance
+  // ordering even when a customer has a long story history — the prior
+  // recency-window bound could drop an old high-priority story before the
+  // risk sort ran (#392's denormalization is the unbounded-guarantee path).
+  const candRes = await customerPool.query<{
     story_id: string;
     priority_tier: PriorityTier;
     severity_score: number;
     likelihood_score: number;
   }>(
-    `SELECT DISTINCT ON (story_id)
-            story_id::text AS story_id,
-            priority_tier, severity_score, likelihood_score
-       FROM story_analysis_result
+    `WITH canonical AS (
+       SELECT DISTINCT ON (story_id)
+              story_id::text AS story_id,
+              priority_tier, severity_score, likelihood_score
+         FROM story_analysis_result
+        WHERE customer_id = $1
+          AND lang = $2 AND model_name = $3 AND model = $4
+          AND superseded_at IS NULL
+        ORDER BY story_id, generation DESC
+     )
+     SELECT story_id, priority_tier, severity_score, likelihood_score
+       FROM canonical
+      ORDER BY ${PRIORITY_RANK_SQL} DESC,
+               severity_score DESC, likelihood_score DESC, story_id ASC
+      LIMIT $5`,
+    [customerId, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL, FETCH_CAP],
+  );
+  if (candRes.rows.length === 0) return { rows: [], total };
+
+  // Lifecycle filter + recency from the auth DB: keep only candidates that are
+  // `ready`/`dirty` (archived/pending dropped, mirroring the story detail
+  // loader), carrying each row's recency (`last_ready_at` → `updated_at`) for
+  // the final ordering tiebreak.
+  const storyIds = candRes.rows.map((r) => r.story_id);
+  const stateRes = await authPool.query<{
+    story_id: string;
+    recency_at: Date;
+  }>(
+    `SELECT story_id::text AS story_id,
+            COALESCE(last_ready_at, updated_at) AS recency_at
+       FROM story_analysis_state
       WHERE customer_id = $1
         AND story_id = ANY($2::bigint[])
-        AND lang = $3 AND model_name = $4 AND model = $5
-        AND superseded_at IS NULL
-      ORDER BY story_id, generation DESC`,
-    [customerId, storyIds, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
+        AND status IN ('ready', 'dirty')`,
+    [customerId, storyIds],
   );
+  const recencyById = new Map<string, Date>();
+  for (const r of stateRes.rows) recencyById.set(r.story_id, r.recency_at);
 
   const rows: StoryOverviewRow[] = [];
-  for (const r of resultRes.rows) {
+  for (const r of candRes.rows) {
     const recencyAt = recencyById.get(r.story_id);
-    // A lifecycle row without a resolvable default-variant result cannot be
-    // ranked; drop it from the list (it still counts in `total`).
+    // A candidate whose state is archived/pending (or has no state row) is
+    // not lifecycle-eligible; drop it from the list. It is already excluded
+    // from `total` by the count's status filter.
     if (!recencyAt) continue;
     rows.push({
       customerId,
@@ -588,7 +662,13 @@ export async function loadCrossCustomerOverview(
     result.reports = await aggregateSurface(
       customers,
       (c) =>
-        fetchCustomerReports(getCustomerRuntimePool(c.id), c.id, c.name, cap),
+        fetchCustomerReports(
+          authPool,
+          getCustomerRuntimePool(c.id),
+          c.id,
+          c.name,
+          cap,
+        ),
       reportKey,
       cap,
     );
