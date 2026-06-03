@@ -26,6 +26,14 @@ import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreRedactedTokens } from "./restore";
 
+// Default variant the story detail page resolves when a backlink opens it
+// without explicit variant params (mirrors `story-result-page-loader.ts`).
+// The event→story backlink lookup is scoped to this variant so the
+// generation it pins is one the story page can actually render.
+const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
+const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
+
 export type ResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "not_found" }
@@ -43,6 +51,14 @@ export interface AnalysisResultPageData {
   lang: "KOREAN" | "ENGLISH";
   modelName: string;
   model: string;
+  /**
+   * The resolved generation of the event leaf shown on the page (the
+   * pinned generation, or the latest non-superseded one). The reverse
+   * "Cited by" trail probes this so it only surfaces reports that cited
+   * THIS generation, not other generations of the same event (T2 #396,
+   * parent #386 exact-evidence contract).
+   */
+  generation: number;
   modelActualVersion: string | null;
   promptVersion: string | null;
   severityScore: number;
@@ -79,6 +95,25 @@ export interface AnalysisResultPageData {
    * preserved" banner and hides the force re-run button.
    */
   sourceEventPresent: boolean;
+  /**
+   * The threat story / stories this event is a member of, for the
+   * upward "part of story" backlink (T2 #396). Found by a reverse
+   * containment lookup over `story_analysis_result.input_event_refs`,
+   * scoped to the story page's default variant. An event usually belongs
+   * to one story, but the lookup tolerates several (deduped by story,
+   * newest-first). Empty when the event is not a member of any story.
+   *
+   * `generation` is the default-variant generation whose membership
+   * actually contains this event; the backlink pins it (`?generation=`)
+   * so the story page lands on the version that lists the event, not
+   * whatever the latest generation happens to be (membership can change
+   * across re-analysis generations — T2 #396 review round 1).
+   */
+  parentStories: Array<{
+    storyId: string;
+    generation: number;
+    priorityTier: PriorityTier;
+  }>;
 }
 
 export interface ResultPageInput {
@@ -254,6 +289,48 @@ export async function loadAnalysisResultPage(
     [input.aiceId, input.eventKey],
   );
 
+  // Upward backlink: the story / stories that include this event as a
+  // member (T2 #396). Membership lives in `story_analysis_result.
+  // input_event_refs` (camelCase `{index, aiceId, eventKey}`), so the
+  // probe uses those keys. The lookup is scoped to the story page's
+  // DEFAULT variant — the variant a bare backlink opens — so the kept
+  // `generation` is one the story page can render, and `DISTINCT ON
+  // (story_id) … generation DESC` keeps that variant's latest
+  // membership-matching generation. Carrying the generation lets the
+  // backlink pin it (`?generation=`): membership can change across
+  // re-analysis generations, so linking to the latest generation blindly
+  // could land on a version that no longer lists this event (review round
+  // 1). Newest-first by the kept row's `requested_at`.
+  const parentStoryRows = await customerPool.query<{
+    story_id: string;
+    generation: number;
+    priority_tier: PriorityTier;
+    requested_at: Date;
+  }>(
+    `SELECT DISTINCT ON (story_id)
+            story_id::text AS story_id, generation, priority_tier, requested_at
+       FROM story_analysis_result
+      WHERE customer_id = $1
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND input_event_refs @> $2::jsonb
+        AND superseded_at IS NULL
+      ORDER BY story_id, generation DESC`,
+    [
+      input.customerId,
+      JSON.stringify([{ aiceId: input.aiceId, eventKey: input.eventKey }]),
+      DEFAULT_LANG,
+      DEFAULT_MODEL_NAME,
+      DEFAULT_MODEL,
+    ],
+  );
+  const parentStories = [...parentStoryRows.rows]
+    .sort((a, b) => b.requested_at.getTime() - a.requested_at.getTime())
+    .map((r) => ({
+      storyId: r.story_id,
+      generation: r.generation,
+      priorityTier: r.priority_tier,
+    }));
+
   return {
     kind: "ok",
     data: {
@@ -263,6 +340,7 @@ export async function loadAnalysisResultPage(
       lang: input.lang as "KOREAN" | "ENGLISH",
       modelName: input.modelName,
       model: input.model,
+      generation: row.generation,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
       severityScore: row.severity_score,
@@ -275,6 +353,7 @@ export async function loadAnalysisResultPage(
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
       sourceEventPresent: sourcePresent.rows[0]?.exists === true,
+      parentStories,
     },
   };
 }

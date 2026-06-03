@@ -18,6 +18,12 @@ vi.mock("@/lib/analysis/story-result-page-loader", () => ({
   loadStoryResultPage: () => mockLoad(),
 }));
 
+// The page also loads the reverse "Cited by" trail (T2 #396); stub it to
+// an empty trail so these disclosure / pin tests stay isolated.
+vi.mock("@/lib/analysis/cited-by-loader", () => ({
+  loadCitedByReports: async () => [],
+}));
+
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");
@@ -81,6 +87,12 @@ function fixture(tier: PriorityTier): StoryResultPageOutcome {
       analysisText: "Narrative body.",
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),
+      memberEvents: [],
+      memberEventVariant: {
+        lang: "ENGLISH",
+        modelName: "openai",
+        model: "gpt-4o",
+      },
     },
   };
 }

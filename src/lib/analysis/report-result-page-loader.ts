@@ -135,6 +135,12 @@ export type ReportResultPageOutcome =
   // "today" in this tz, so the pending outcome must surface it too — the
   // `ok` outcome already exposes it via `data.tz`.
   | { kind: "pending"; stateStatus: string; tz: string }
+  // A specific report generation was pinned (T2 "Cited by" link) but the
+  // pinned row is missing or superseded. The page shows the "evidence
+  // version no longer available" notice and does NOT fall back to the
+  // latest generation (parent #386 generation-pin contract). Mirrors the
+  // leaf loaders' `pin_unavailable`.
+  | { kind: "pin_unavailable"; generation: number }
   | { kind: "ok"; data: ReportResultPageData };
 
 export interface ReportResultPageData {
@@ -215,6 +221,16 @@ export interface ReportResultPageInput {
     model_name?: string;
     model?: string;
   };
+  /**
+   * Optional report-generation pin (T2 "Cited by" link, parent #386).
+   * When present, the loader resolves the EXACT generation at the
+   * requested `(tz, lang, model_name, model)` variant instead of the
+   * latest non-superseded one, performs NO language fallback and NO
+   * on-demand enqueue (the pin means "show exactly what that report
+   * cited"), and reports `pin_unavailable` when the row is missing or
+   * superseded. A positive integer; the page validates it before calling.
+   */
+  generation?: number;
 }
 
 interface StoryRef {
@@ -330,46 +346,57 @@ export async function loadReportResultPage(
   );
   const availableLangs = availLangRows.rows.map((r) => r.lang);
 
+  // A generation pin (T2 "Cited by" link) resolves the EXACT requested
+  // variant + generation: no language fallback, no on-demand enqueue. A
+  // pinned generation that is missing or superseded is surfaced as
+  // `pin_unavailable` below (parent #386), never silently replaced.
+  const pinnedGeneration = input.generation ?? null;
+
   // Fallback chain: requested → English (guaranteed baseline) → any available.
   // `null` only when no variant exists at all (the bucket has no result yet).
+  // Skipped on the pinned path, which targets the requested language as-is.
   let shownLang: string | null;
-  if (availableLangs.includes(requestedLang)) {
-    shownLang = requestedLang;
-  } else if (availableLangs.includes(ENGLISH_BASELINE)) {
-    shownLang = ENGLISH_BASELINE;
-  } else {
-    // Deterministic pick of "any available" so a shareable link is stable.
-    shownLang = [...availableLangs].sort()[0] ?? null;
-  }
-
-  if (shownLang === null) {
-    // No result for any language yet — the bucket's first generation is still
-    // in flight. Surface the existing pending state (state #5): the worker is
-    // already producing the English baseline, so do NOT enqueue an on-demand
-    // job here (an unavailable language while nothing exists is the pending
-    // case, not a spinner tied to a per-language job).
-    return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
-  }
-
-  // A fallback occurred when the shown language is not the requested one. In
-  // that case (phase 2) enqueue the requested variant on-demand and surface
-  // its job status; repeated views coalesce (no generation bump).
   let languageFallback: ReportResultPageData["languageFallback"] = null;
-  if (shownLang !== requestedLang) {
-    const jobStatus = await enqueueRequestedLanguage(authPool, {
-      customerId: input.customerId,
-      period: input.period,
-      bucketDate: input.bucketDate,
-      tz,
-      lang: requestedLang,
-      modelName,
-      model,
-    });
-    languageFallback = {
-      requestedLocale,
-      shownLocale: reportLanguageToAppLocale(shownLang as ReportLanguage),
-      jobStatus,
-    };
+  if (pinnedGeneration !== null) {
+    shownLang = requestedLang;
+  } else {
+    if (availableLangs.includes(requestedLang)) {
+      shownLang = requestedLang;
+    } else if (availableLangs.includes(ENGLISH_BASELINE)) {
+      shownLang = ENGLISH_BASELINE;
+    } else {
+      // Deterministic pick of "any available" so a shareable link is stable.
+      shownLang = [...availableLangs].sort()[0] ?? null;
+    }
+
+    if (shownLang === null) {
+      // No result for any language yet — the bucket's first generation is
+      // still in flight. Surface the existing pending state (state #5): the
+      // worker is already producing the English baseline, so do NOT enqueue
+      // an on-demand job here (an unavailable language while nothing exists
+      // is the pending case, not a spinner tied to a per-language job).
+      return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
+    }
+
+    // A fallback occurred when the shown language is not the requested one.
+    // In that case (phase 2) enqueue the requested variant on-demand and
+    // surface its job status; repeated views coalesce (no generation bump).
+    if (shownLang !== requestedLang) {
+      const jobStatus = await enqueueRequestedLanguage(authPool, {
+        customerId: input.customerId,
+        period: input.period,
+        bucketDate: input.bucketDate,
+        tz,
+        lang: requestedLang,
+        modelName,
+        model,
+      });
+      languageFallback = {
+        requestedLocale,
+        shownLocale: reportLanguageToAppLocale(shownLang as ReportLanguage),
+        jobStatus,
+      };
+    }
   }
 
   const resultRow = await customerPool.query<{
@@ -387,38 +414,78 @@ export async function loadReportResultPage(
     sections_jsonb: ReportSections;
     input_story_refs: StoryRef[];
     input_event_refs: EventRef[];
+    superseded_at: Date | null;
     requested_by: string | null;
     requested_at: Date;
   }>(
-    `SELECT model_actual_version, prompt_version, generation,
-            lang, restoration_lang, model_name, model,
-            priority_tier, aggregate_severity_score, aggregate_likelihood_score,
-            aggregate_ttp_tags, sections_jsonb,
-            input_story_refs, input_event_refs,
-            requested_by::text AS requested_by, requested_at
-       FROM periodic_report_result
-      WHERE customer_id = $1 AND period = $2
-        AND bucket_date = $3::date AND tz = $4
-        AND lang = $5 AND model_name = $6 AND model = $7
-        AND superseded_at IS NULL
-      ORDER BY generation DESC
-      LIMIT 1`,
-    [
-      input.customerId,
-      input.period,
-      input.bucketDate,
-      tz,
-      shownLang,
-      modelName,
-      model,
-    ],
+    // Pinned path: target the exact generation and read `superseded_at`
+    // so a superseded pin degrades to the notice; unpinned path keeps the
+    // latest-non-superseded behavior. `superseded_at` is selected
+    // uniformly to keep one row shape (it is NULL on the unpinned path by
+    // construction).
+    pinnedGeneration === null
+      ? `SELECT model_actual_version, prompt_version, generation,
+                lang, restoration_lang, model_name, model,
+                priority_tier, aggregate_severity_score,
+                aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
+                input_story_refs, input_event_refs, superseded_at,
+                requested_by::text AS requested_by, requested_at
+           FROM periodic_report_result
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4
+            AND lang = $5 AND model_name = $6 AND model = $7
+            AND superseded_at IS NULL
+          ORDER BY generation DESC
+          LIMIT 1`
+      : `SELECT model_actual_version, prompt_version, generation,
+                lang, restoration_lang, model_name, model,
+                priority_tier, aggregate_severity_score,
+                aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
+                input_story_refs, input_event_refs, superseded_at,
+                requested_by::text AS requested_by, requested_at
+           FROM periodic_report_result
+          WHERE customer_id = $1 AND period = $2
+            AND bucket_date = $3::date AND tz = $4
+            AND lang = $5 AND model_name = $6 AND model = $7
+            AND generation = $8
+          LIMIT 1`,
+    pinnedGeneration === null
+      ? [
+          input.customerId,
+          input.period,
+          input.bucketDate,
+          tz,
+          shownLang,
+          modelName,
+          model,
+        ]
+      : [
+          input.customerId,
+          input.period,
+          input.bucketDate,
+          tz,
+          shownLang,
+          modelName,
+          model,
+          pinnedGeneration,
+        ],
   );
   if (resultRow.rows.length === 0) {
+    // A pinned generation that no longer exists is "evidence no longer
+    // available", not a still-generating bucket.
+    if (pinnedGeneration !== null) {
+      return { kind: "pin_unavailable", generation: pinnedGeneration };
+    }
     // `shownLang` came from the available-language set, so a row should
     // exist; treat a vanished row (e.g. just superseded) as still pending.
     return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
   }
   const row = resultRow.rows[0];
+  // A superseded pinned row is treated as unavailable — the page must not
+  // present stale evidence as the version the report cited.
+  if (pinnedGeneration !== null && row.superseded_at !== null) {
+    return { kind: "pin_unavailable", generation: pinnedGeneration };
+  }
 
   const storyRefs = Array.isArray(row.input_story_refs)
     ? row.input_story_refs

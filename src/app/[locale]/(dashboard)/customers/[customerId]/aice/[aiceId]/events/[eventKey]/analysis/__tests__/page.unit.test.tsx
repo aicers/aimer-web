@@ -19,6 +19,12 @@ vi.mock("@/lib/analysis/result-page-loader", () => ({
   },
 }));
 
+// The page also loads the reverse "Cited by" trail (T2 #396) on the ok
+// path; stub it (and avoid pulling its `server-only` import into jsdom).
+vi.mock("@/lib/analysis/cited-by-loader", () => ({
+  loadCitedByReports: async () => [],
+}));
+
 // biome-ignore lint/suspicious/noExplicitAny: captured loader input
 let lastArgs: any;
 

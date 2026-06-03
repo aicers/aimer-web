@@ -53,7 +53,7 @@ const authPool = {
 };
 
 const customerPool = {
-  query: vi.fn(async (sql: string) => {
+  query: vi.fn(async (sql: string, _params?: unknown[]) => {
     const idx = queryQueue.findIndex((s) => s.match(sql));
     if (idx === -1) return { rows: [], rowCount: 0 };
     const [stub] = queryQueue.splice(idx, 1);
@@ -98,6 +98,7 @@ function pushResultRow(extras: Record<string, unknown> = {}) {
         analysis_text: "attacker <<REDACTED_IP_001>> reached us",
         model_actual_version: null,
         prompt_version: null,
+        generation: 1,
         requested_by: "acc-1",
         requested_at: new Date("2026-05-20T00:00:00Z"),
         ...extras,
@@ -283,6 +284,59 @@ describe("loadAnalysisResultPage", () => {
 
     const outcome = await callLoaderPinned(2);
     expect(outcome.kind).toBe("pin_unavailable");
+  });
+
+  it("surfaces parent stories (event→story backlink), newest-first", async () => {
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    pushStub({
+      match: (s) => s.includes("FROM story_analysis_result"),
+      rows: [
+        {
+          story_id: "300",
+          generation: 4,
+          priority_tier: "LOW",
+          requested_at: new Date("2026-05-21T00:00:00Z"),
+        },
+        {
+          story_id: "200",
+          generation: 7,
+          priority_tier: "HIGH",
+          requested_at: new Date("2026-05-25T00:00:00Z"),
+        },
+      ],
+    });
+
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    // Newest-first by the kept row's requested_at (story 200 > 300). Each
+    // carries the membership-matching generation the backlink pins.
+    expect(outcome.data.parentStories).toEqual([
+      { storyId: "200", generation: 7, priorityTier: "HIGH" },
+      { storyId: "300", generation: 4, priorityTier: "LOW" },
+    ]);
+    // The reverse probe uses the story refs' camelCase keys, and the
+    // lookup is scoped to the story page's default variant so the pinned
+    // generation is one that variant can render.
+    const call = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("FROM story_analysis_result"),
+    );
+    expect(String(call?.[0])).toContain("lang = $3 AND model_name = $4");
+    expect(JSON.parse(String(call?.[1]?.[1]))).toEqual([
+      { aiceId: AICE_ID, eventKey: EVENT_KEY },
+    ]);
+    expect(call?.[1]?.slice(2)).toEqual(["ENGLISH", "openai", "gpt-4o"]);
+  });
+
+  it("reports no parent stories when the event is not a story member", async () => {
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    // No story_analysis_result stub → the default empty result.
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.parentStories).toEqual([]);
   });
 
   it("passes through analysis text when there is no map row at all", async () => {

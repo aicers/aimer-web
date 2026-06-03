@@ -62,6 +62,40 @@ export interface StoryResultPageData {
   analysisText: string;
   requestedBy: string | null;
   requestedAt: Date;
+  /**
+   * The story's member suspicious events, in `input_event_refs[].index`
+   * order (the member ordinal — see `story-token.ts`, which persists
+   * `index: ordinal`). Each carries display fields fetched from the
+   * canonical event variant when available; `display` is `null` when no
+   * canonical event row exists (e.g. swept by retention), in which case
+   * the page still links to the event by id (T2 #396). Empty when the
+   * story has no recorded members.
+   */
+  memberEvents: StoryMemberEvent[];
+  /**
+   * The canonical event variant the member display fields were fetched
+   * at. The story page builds each member link with these so the event
+   * detail page (which requires `model_name` / `model`) resolves the same
+   * variant the cards describe.
+   */
+  memberEventVariant: { lang: string; modelName: string; model: string };
+}
+
+/**
+ * A story's member suspicious event, surfaced on the story detail page so
+ * a reader can drill down from the story into each cited event (T2 #396).
+ * Display fields stay within the parent guardrails (tier + leaf-derived
+ * scores, already exposed on the event detail page).
+ */
+export interface StoryMemberEvent {
+  index: number;
+  aiceId: string;
+  eventKey: string;
+  display: {
+    priorityTier: PriorityTier;
+    severityScore: number;
+    likelihoodScore: number;
+  } | null;
 }
 
 export interface StoryResultPageInput {
@@ -310,6 +344,11 @@ export async function loadStoryResultPage(
     mapsByIndex,
   );
 
+  // Member suspicious events for the story → member drill-down (T2 #396).
+  // Fetched at the canonical event variant so the cards match the
+  // Suspicious Events list; ordered by the member ordinal (`index`).
+  const memberEvents = await fetchMemberEventDisplays(customerPool, refs);
+
   return {
     kind: "ok",
     data: {
@@ -330,6 +369,78 @@ export async function loadStoryResultPage(
       analysisText: restoredText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
+      memberEvents,
+      memberEventVariant: {
+        lang: DEFAULT_LANG,
+        modelName: DEFAULT_MODEL_NAME,
+        model: DEFAULT_MODEL,
+      },
     },
   };
+}
+
+/**
+ * Fetch display fields for a story's member events at the canonical event
+ * variant, returning them in member-ordinal (`index`) order. A member
+ * with no canonical event row (swept by retention, or never analyzed at
+ * this variant) maps to `display: null` so the page still links to it by
+ * id (T2 #396). One batched SELECT covers all members; the
+ * `DISTINCT ON (aice_id, event_key) … ORDER BY … generation DESC` picks
+ * each event's latest non-superseded generation.
+ */
+async function fetchMemberEventDisplays(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  refs: ReadonlyArray<{ index: number; aiceId: string; eventKey: string }>,
+): Promise<StoryMemberEvent[]> {
+  const ordered = [...refs].sort((a, b) => a.index - b.index);
+  if (ordered.length === 0) return [];
+
+  const tuples = ordered
+    .map((_, i) => `($${i * 2 + 1}::text, $${i * 2 + 2}::numeric)`)
+    .join(", ");
+  const params: unknown[] = ordered.flatMap((r) => [r.aiceId, r.eventKey]);
+  const base = ordered.length * 2;
+  params.push(DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL);
+
+  const { rows } = await customerPool.query(
+    `SELECT DISTINCT ON (aice_id, event_key)
+            aice_id, event_key::text AS event_key,
+            priority_tier, severity_score, likelihood_score
+       FROM event_analysis_result
+      WHERE (aice_id, event_key) IN (${tuples})
+        AND lang = $${base + 1}
+        AND model_name = $${base + 2}
+        AND model = $${base + 3}
+        AND superseded_at IS NULL
+      ORDER BY aice_id, event_key, generation DESC`,
+    params,
+  );
+  const byKey = new Map<
+    string,
+    {
+      priorityTier: PriorityTier;
+      severityScore: number;
+      likelihoodScore: number;
+    }
+  >();
+  for (const r of rows as Array<{
+    aice_id: string;
+    event_key: string;
+    priority_tier: PriorityTier;
+    severity_score: number;
+    likelihood_score: number;
+  }>) {
+    byKey.set(`${r.aice_id}:${r.event_key}`, {
+      priorityTier: r.priority_tier,
+      severityScore: r.severity_score,
+      likelihoodScore: r.likelihood_score,
+    });
+  }
+  return ordered.map((r) => ({
+    index: r.index,
+    aiceId: r.aiceId,
+    eventKey: r.eventKey,
+    display: byKey.get(`${r.aiceId}:${r.eventKey}`) ?? null,
+  }));
 }

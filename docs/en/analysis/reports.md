@@ -345,6 +345,19 @@ is preserved even when the underlying evidence version is gone.
 stopping point of the drill-down: the section reports only narrative
 baseline readings and is not traced back to individual leaves.
 
+### Reverse trail (Cited by)
+
+The Sources panel is the forward half of the link. The reverse half lives
+on the leaf detail pages: a [story](story.md#cited-by) or
+[event](../analysis-result.md#cited-by) cited by this report shows a
+**Cited by** trail back up to it. Those reverse links are
+**generation-pinned to this report**, so the report detail page accepts a
+`generation` query parameter and opens **exactly that generation** rather
+than the latest. When the pinned report generation is no longer available
+— superseded or removed — the page shows a **"This report version is no
+longer available"** notice instead of silently falling back to the latest,
+mirroring the leaf pages' pinned-evidence behaviour.
+
 ## Metadata fields
 
 Below the header the page shows the report metadata: language, provider
