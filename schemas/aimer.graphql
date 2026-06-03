@@ -215,11 +215,11 @@ type Mutation {
 	report into `targetLang`, returning the same 5-field `sections` shape
 	`generatePeriodicSecurityReport` produces, with all narrative prose
 	localized and every redaction token preserved verbatim.
-	
+
 	Stateless under `auth-mtls`: aimer stores nothing, performs no caching,
 	and accepts no `force`. `customerId` is accepted for observability and
 	prompt context only.
-	
+
 	The input `sections` is the JSON string `generatePeriodicSecurityReport`
 	returns (executive summary, story highlights, notable events, baseline
 	observations, period outlook). It is validated against that shape before
@@ -228,7 +228,7 @@ type Mutation {
 	is limited to the `Language` enum's current variants (Korean / English);
 	`targetLang: ENGLISH` on an English canonical report is a no-op
 	round-trip.
-	
+
 	Exactly one LLM call is issued per invocation (no retry). Two defensive
 	checks run on the response: an element-count check rejects any merge /
 	split / drop / add of the array sections, and a per-corresponding-string
@@ -236,9 +236,9 @@ type Mutation {
 	well as any token moved to a different string or array element. A pure
 	reorder of token-free prose is not separately detected; it is left to the
 	prompt's same-order constraint.
-	
+
 	# Errors
-	
+
 	Returns an error if:
 	- Input validation fails (empty `customerId` / `model` / `name`, or
 	`sections` that does not deserialize into the canonical report shape)

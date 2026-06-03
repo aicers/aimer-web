@@ -1003,9 +1003,14 @@ async function runTranslation(args: {
 
 /**
  * The English canonical `periodic_report_result` row a non-English variant
- * derives from: the latest non-superseded English row at the SAME
- * `(model_name, model)` as the job. `null` when no such row exists yet —
- * the caller defers (the canonical is not ready).
+ * derives from: the non-superseded English row at the SAME
+ * `(model_name, model, generation)` as the job. The `generation` match is
+ * load-bearing — a prior generation's English row stays `superseded_at IS
+ * NULL` until the current generation is written, so without it a non-English
+ * job bumped to generation N (dirty / force regenerate) could read the stale
+ * generation N-1 refs/sections instead of deferring, breaking the
+ * canonical-first contract. `null` when no such row exists yet — the caller
+ * defers (the canonical for THIS generation is not ready).
  */
 interface EnglishCanonical {
   /** JSON string of the stored sections, for the translate mutation input. */
@@ -1055,8 +1060,8 @@ async function loadEnglishCanonical(
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $8
         AND superseded_at IS NULL
-      ORDER BY generation DESC
       LIMIT 1`,
     [
       job.customer_id,
@@ -1066,6 +1071,7 @@ async function loadEnglishCanonical(
       DEFAULT_LANG,
       job.model_name,
       job.model,
+      job.generation,
     ],
   );
   if (rows.length === 0) return null;

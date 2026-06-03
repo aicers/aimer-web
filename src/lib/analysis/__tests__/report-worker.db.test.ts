@@ -1101,6 +1101,90 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(res).toHaveLength(0);
   });
 
+  it("non-English defers when only a PRIOR-generation English canonical exists", async () => {
+    // Generation-aware canonical lookup (review round 1). A dirty / force
+    // regenerate bumps every variant job to generation 2, but the prior
+    // English generation 1 result stays `superseded_at IS NULL` until the
+    // English generation 2 row is written. If a Korean generation 2 job is
+    // processed before English generation 2, the canonical lookup must NOT
+    // fall back to the stale generation 1 row (generating/translating Korean
+    // gen 2 from gen-1 refs/sections) — it must defer until the gen-2
+    // canonical exists.
+    aimerCalls = 0;
+    const bucket = "2026-06-15";
+    const eventKey = "7001";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // Leaves exist in both langs at the pinned (event_key, generation), so
+    // WITHOUT the generation guard the buggy lookup would read the gen-1
+    // canonical and generate Korean gen 2 natively instead of deferring.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedEventLeafLang(customerPool, eventKey, "KOREAN", "v1");
+    // Only a generation-1 English canonical exists.
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // Korean job bumped to generation 2 (as a dirty/force requeue would).
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 2, FALSE)
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'queued', generation = 2, attempts = 0,
+                     next_due_at = NULL`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    await processReportJob(
+      makeJob({ bucket_date: bucket, lang: "KOREAN", generation: 2 }),
+      {
+        authPool,
+        resolveCustomerPool: () => customerPool,
+        loadRanges: async () => EMPTY_RANGES,
+        callGenerateReport: async () => {
+          aimerCalls += 1;
+          return AIMER_RESPONSE;
+        },
+        callTranslateReport: async () => {
+          translateCalls += 1;
+          return AIMER_RESPONSE;
+        },
+      },
+    );
+
+    // Deferred, not generated/translated off the stale gen-1 canonical.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    const { rows } = await authPool.query<{
+      status: string;
+      attempts: number;
+      last_error: string | null;
+      future: boolean;
+    }>(
+      `SELECT status, attempts, last_error,
+              (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].last_error).toBe("english_canonical_not_ready");
+    expect(rows[0].future).toBe(true);
+
+    // No Korean result row was written at the bumped generation.
+    const { rows: res } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(res).toHaveLength(0);
+  });
+
   it("pickQueuedReportJobs honors a future next_due_at on a queued row", async () => {
     const bucket = "2026-06-11";
     await seedState(authPool, "DAILY", bucket, "ready");
