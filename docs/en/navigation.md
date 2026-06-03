@@ -90,9 +90,12 @@ email. From this menu you can:
 The header bar also provides:
 
 - **Theme toggle** — switch between light and dark modes.
-- **Language switcher** — switch between English and Korean. This
-    affects only the current browser; to save a language preference to
-    your account, use [Account Preferences](account-preferences.md).
+- **Language switcher** — switch between English and Korean. While you
+    are signed in, your choice is also saved to your account, so it
+    follows you across devices — the same as setting it in
+    [Account Preferences](account-preferences.md), which additionally
+    lets you set your timezone. When you are signed out, the switch only
+    affects the current browser.
 
 ## Mobile menu
 

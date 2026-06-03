@@ -9,25 +9,37 @@ const ACCOUNT_ID = "00000000-0000-0000-0000-000000000001";
 
 const mockWithAuth = vi.fn(
   // biome-ignore lint/complexity/noBannedTypes: test mock needs generic callable
-  (handler: Function) => (req: NextRequest) =>
-    handler(req, {
-      accountId: ACCOUNT_ID,
-      sessionId: "sess-1",
-      authContext: "general",
-      tokenVersion: 1,
-      iat: 1000,
-      meta: { ipAddress: "127.0.0.1", userAgent: "test" },
-      bridgeAiceId: null,
-      bridgeCustomerIds: null,
-      audit: {},
-    }),
+  (handler: Function, opts?: { ctx?: "general" | "admin" }) =>
+    (req: NextRequest) =>
+      handler(req, {
+        accountId: ACCOUNT_ID,
+        sessionId: "sess-1",
+        authContext: opts?.ctx ?? "general",
+        tokenVersion: 1,
+        iat: 1000,
+        meta: { ipAddress: "127.0.0.1", userAgent: "test" },
+        bridgeAiceId: null,
+        bridgeCustomerIds: null,
+        audit: {},
+      }),
 );
 
+const mockVerifyCsrf = vi.fn((_ctx: "general" | "admin") => null);
 vi.mock("@/lib/auth/guards", () => ({
   // biome-ignore lint/complexity/noBannedTypes: test mock needs generic callable
-  withAuth: (handler: Function, _opts?: unknown) => mockWithAuth(handler),
+  withAuth: (handler: Function, opts?: { ctx?: "general" | "admin" }) =>
+    mockWithAuth(handler, opts),
   verifyOrigin: () => null,
-  verifyCsrf: () => null,
+  verifyCsrf: (_req: NextRequest, params: { ctx: "general" | "admin" }) =>
+    mockVerifyCsrf(params.ctx),
+}));
+
+// Controls which session the dispatcher authorizes. Default: a general
+// cookie is present (the common case).
+let generalCookie: string | null = "general-token";
+vi.mock("@/lib/auth/cookies", () => ({
+  getAuthCookie: (ctx: "general" | "admin") =>
+    Promise.resolve(ctx === "general" ? generalCookie : "admin-token"),
 }));
 
 const mockQuery = vi.fn();
@@ -60,6 +72,8 @@ beforeEach(() => {
   mockQuery.mockReset();
   mockSetCookie.mockReset();
   mockClearCookie.mockReset();
+  mockVerifyCsrf.mockClear();
+  generalCookie = "general-token";
   mockQuery.mockResolvedValue([{ locale: "en", timezone: null }]);
 });
 
@@ -141,5 +155,22 @@ describe("PATCH /api/account/preferences", () => {
     mockQuery.mockResolvedValue([]);
     const res = await (await loadPatch())(patch({ locale: "en" }));
     expect(res.status).toBe(404);
+  });
+
+  it("authorizes the general session and verifies its CSRF token", async () => {
+    const res = await (await loadPatch())(patch({ locale: "en" }));
+    expect(res.status).toBe(200);
+    expect(mockVerifyCsrf).toHaveBeenCalledWith("general");
+  });
+
+  it("falls back to the admin session when no general cookie is present", async () => {
+    // An admin-only session (e.g. toggling the switcher in the admin
+    // header) must still persist — it should not 401 (#387, #410 review).
+    generalCookie = null;
+    const res = await (await loadPatch())(patch({ locale: "ko" }));
+    expect(res.status).toBe(200);
+    expect(mockVerifyCsrf).toHaveBeenCalledWith("admin");
+    const [, , params] = mockQuery.mock.calls[0];
+    expect(params).toEqual(["ko", ACCOUNT_ID]);
   });
 });

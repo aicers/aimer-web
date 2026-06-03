@@ -116,6 +116,36 @@ test.describe("Account preferences — header switcher write-through (#387)", ()
       .poll(async () => (await readAccount(testData.user.accountId)).locale)
       .toBe("en");
   });
+
+  test("admin-only session also persists via the admin header switcher", async ({
+    adminPage,
+    baseURL,
+    testData,
+  }) => {
+    // The header switcher is shared by the admin header. An admin-only
+    // session (no general cookie) must still persist its choice: the
+    // preferences API authorizes either session and the switcher sends
+    // both CSRF tokens, so this no longer 401s into a cookie-only update
+    // (#387 "common account preference", #410 review round 1).
+    await setAccountLocale(testData.admin.accountId, "ko");
+    await adminPage.context().addCookies([
+      {
+        name: "NEXT_LOCALE",
+        value: "ko",
+        url: baseURL ?? "http://localhost:3000",
+      },
+    ]);
+
+    await adminPage.goto("/admin");
+    await expect(adminPage.locator("html")).toHaveAttribute("lang", "ko");
+    await adminPage.getByRole("button", { name: "English" }).click();
+    await expect(adminPage).toHaveURL(/\/en(\/|$)/);
+    await expect(adminPage.locator("html")).toHaveAttribute("lang", "en");
+
+    await expect
+      .poll(async () => (await readAccount(testData.admin.accountId)).locale)
+      .toBe("en");
+  });
 });
 
 test.describe("Account preferences — API validation (#387)", () => {
@@ -177,6 +207,43 @@ test.describe("Account preferences — resolution order (#387)", () => {
     // Explicit non-default prefix /en always wins for that request.
     await page.goto("/en/events");
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
+
+    await context.close();
+  });
+
+  test("explicit default-locale prefix (/ko) wins over a saved en preference", async ({
+    browser,
+    baseURL,
+    testData,
+  }) => {
+    // The default locale (ko) is non-canonical under as-needed routing:
+    // next-intl redirects /ko/... to the unprefixed path. It does so while
+    // promoting the explicitly-requested locale into NEXT_LOCALE (its
+    // syncCookie step), so the redirected request still renders Korean —
+    // an explicit /ko prefix wins for that navigation even against a saved
+    // `en` preference. This guards the acceptance criterion for the
+    // default locale, which the /en case above cannot cover (#387, #410
+    // review round 1).
+    await setAccountLocale(testData.user.accountId, "en");
+
+    const context = await browser.newContext({
+      baseURL: baseURL ?? undefined,
+      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
+    });
+    await injectAuthCookies(context, testData.user, "general");
+    const host = new URL(baseURL ?? "http://localhost:3000").hostname;
+    await context.addCookies([
+      { name: "NEXT_LOCALE", value: "en", domain: host, path: "/" },
+    ]);
+    const page = await context.newPage();
+
+    // Saved preference (en) drives the unprefixed route.
+    await page.goto("/");
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+
+    // Explicit default-locale prefix /ko wins for that request.
+    await page.goto("/ko/events");
+    await expect(page.locator("html")).toHaveAttribute("lang", "ko");
 
     await context.close();
   });

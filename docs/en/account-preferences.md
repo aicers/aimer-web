@@ -3,9 +3,12 @@
 The **Account Settings** page lets you set your personal language and
 timezone preferences. Open it from **Account Settings** in the sidebar.
 
-Unlike the header [language switcher](navigation.md#user-section) — which
-only affects the current browser — these preferences are saved to your
-account, so they follow you across devices and browsers.
+These preferences are saved to your account, so they follow you across
+devices and browsers. The header
+[language switcher](navigation.md#user-section) also saves your language
+to your account while you are signed in (it only affects the current
+browser when signed out); this page adds a **Timezone** control, which
+the switcher does not provide.
 
 <!-- Screenshot placeholder (#402): account settings page. -->
 > **Screenshot pending.** A real capture requires seeded account-preference
