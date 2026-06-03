@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 90 90">
+  <rect x="0" y="0" width="90" height="90" rx="18" fill="#0d2748"/>
+  <g transform="translate(20.135 11.45)">
+    <polygon fill="#13649d" points="0 43.06 13.24 35.42 24.86 42.14 24.86 57.42 0 43.06"/>
+    <polygon fill="#17469d" points="49.73 43.06 36.49 35.42 24.86 42.14 24.86 57.42 49.73 43.06"/>
+    <polygon fill="#af1f25" points="0 14.36 13.24 22 24.86 15.28 24.86 0 0 14.36"/>
+    <polygon fill="#ffffff" points="49.73 14.36 36.49 22 24.86 15.28 24.86 0 49.73 14.36"/>
+    <polygon fill="#ee424c" points="0 43.06 13.24 35.42 13.24 22 0 14.36 0 43.06"/>
+    <polygon fill="#2f93d0" points="49.73 43.06 36.49 35.42 36.49 22 49.73 14.36 49.73 43.06"/>
+    <polygon fill="#2f93d0" points="24.86 28.71 24.86 44.64 38.66 36.67 24.86 28.71"/>
+    <polygon fill="#ffffff" points="24.86 28.71 38.66 36.67 38.66 20.75 24.86 28.71"/>
+    <polygon fill="#af1f25" points="24.86 28.71 38.66 20.75 24.86 12.78 24.86 28.71"/>
+    <polygon fill="#ee424c" points="24.86 28.71 24.86 12.78 11.07 20.75 24.86 28.71"/>
+    <polygon fill="#13649d" points="24.86 28.71 11.07 20.75 11.07 36.67 24.86 28.71"/>
+    <polygon fill="#17469d" points="24.86 28.71 11.07 36.67 24.86 44.64 24.86 28.71"/>
+    <rect fill="#17469d" x="11.76" y="49.69" width="26.89" height="11.63"/>
+    <polygon fill="#2f93d0" points="25.24 49.69 18.53 61.31 31.95 61.31 25.24 49.69"/>
+    <polygon fill="#ee424c" points="18.53 61.32 25.24 49.7 11.82 49.7 18.53 61.32"/>
+    <polygon fill="#af1f25" points="31.95 61.32 38.66 49.7 25.24 49.7 31.95 61.32"/>
+    <rect fill="#ffffff" x="11.59" y="61.32" width="27.07" height="5.78"/>
+  </g>
+</svg>
