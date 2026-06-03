@@ -501,6 +501,7 @@ export async function processReportJob(
   // natively (same `R{j}` numbering as English); otherwise translate.
   const pinned = await buildCanonicalPinnedReportInput({
     customerPool,
+    customerId: job.customer_id,
     period: job.period,
     bucketDate: job.bucket_date,
     variant,
@@ -810,6 +811,7 @@ async function runTranslation(args: {
   };
   const tokenRefs: ReportTokenRef[] | null = await buildPinnedTokenRefs(
     customerPool,
+    job.customer_id,
     englishVariant,
     canonical.storyRefs,
     canonical.eventRefs,

@@ -878,6 +878,13 @@ async function assembleReportInput(
 
 export interface CanonicalPinnedBuildArgs {
   customerPool: Pool;
+  /**
+   * Owning customer. `story_analysis_result` is keyed by `customer_id`, so the
+   * pinned story lookup must scope to it (mirrors `selectTopStories` and the
+   * loader's customer-scoped replay); otherwise a same-`story_id` row from
+   * another customer could satisfy the completeness gate.
+   */
+  customerId: string;
   period: PeriodicPeriod;
   bucketDate: string;
   /** Target variant — `lang` is the non-English language being generated. */
@@ -922,6 +929,7 @@ export async function buildCanonicalPinnedReportInput(
 
   const stories = await fetchStoryLeavesByRefs(
     args.customerPool,
+    args.customerId,
     args.variant,
     args.storyRefs,
   );
@@ -951,13 +959,17 @@ export async function buildCanonicalPinnedReportInput(
 /**
  * Fetch the target-language story leaves for the pinned refs, returned in
  * the SAME order as `refs` so the report-scope `R{j}` numbering matches the
- * English canonical. Pins each leaf by exact `(story_id, generation)` and
- * the target `(lang, model_name, model)`; does NOT filter `superseded_at`
- * (a generation is immutable, mirroring the page loader's pinned replay).
+ * English canonical. Pins each leaf by the owning `customer_id` and exact
+ * `(story_id, generation)` plus the target `(lang, model_name, model)` — the
+ * `customer_id` scope is part of the story leaf identity (the table's PK), so
+ * a same-`story_id` row belonging to another customer cannot satisfy the gate
+ * and get fed into native generation. Does NOT filter `superseded_at` (a
+ * generation is immutable, mirroring the page loader's pinned replay).
  * Returns `null` if any ref has no matching target-language leaf.
  */
 async function fetchStoryLeavesByRefs(
   customerPool: Pool,
+  customerId: string,
   variant: ReportVariant,
   refs: StoryRef[],
 ): Promise<StoryLeafRow[] | null> {
@@ -985,8 +997,16 @@ async function fetchStoryLeavesByRefs(
        JOIN canonical_story cs ON cs.story_id = r.story_id
        JOIN unnest($1::bigint[], $2::int[]) AS ref(story_id, generation)
          ON ref.story_id = r.story_id AND ref.generation = r.generation
-      WHERE r.lang = $3 AND r.model_name = $4 AND r.model = $5`,
-    [storyIds, generations, variant.lang, variant.modelName, variant.model],
+      WHERE r.customer_id = $6
+        AND r.lang = $3 AND r.model_name = $4 AND r.model = $5`,
+    [
+      storyIds,
+      generations,
+      variant.lang,
+      variant.modelName,
+      variant.model,
+      customerId,
+    ],
   );
   return orderByRefs(
     rows,
@@ -1080,17 +1100,21 @@ function orderByRefs<Row, Ref>(
  * given variant — the same `refs` the loader and leak scan need to validate
  * report-scope `<<REDACTED_*_R{j}_*>>` tokens. Used by the translate path
  * to derive the canonical's `allowedTokens` from its English cited leaves
- * without re-running the full baseline assembly. Returns `null` if any
- * pinned leaf is missing (the caller treats that as an integrity failure).
+ * without re-running the full baseline assembly. Scoped to `customerId` so a
+ * same-`story_id` leaf from another customer cannot stand in for a missing one
+ * (story leaves are keyed by `customer_id`). Returns `null` if any pinned leaf
+ * is missing (the caller treats that as an integrity failure).
  */
 export async function buildPinnedTokenRefs(
   customerPool: Pool,
+  customerId: string,
   variant: ReportVariant,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
 ): Promise<ReportTokenRef[] | null> {
   const stories = await fetchStoryLeavesByRefs(
     customerPool,
+    customerId,
     variant,
     storyRefs,
   );

@@ -48,6 +48,11 @@ const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2501;
 const CUSTOMER_LOCK_ID = 2502;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e1";
+// A second customer sharing the customer DB. `story_analysis_result` is keyed
+// by `customer_id`, so this exercises the pinned story lookup's customer scope
+// (#412 round-3): a same-`story_id` story leaf owned by another customer must
+// NOT satisfy the completeness gate for CUSTOMER_ID.
+const OTHER_CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e2";
 const TZ = "Asia/Seoul";
 const LIVE_BUCKET = "1970-01-01";
 
@@ -239,6 +244,65 @@ async function seedCanonicalResult(
       TZ,
       JSON.stringify(AIMER_SECTIONS),
       eventRefs,
+    ],
+  );
+}
+
+// Seed a story leaf for a given customer + language at the pinned
+// (story_id, generation 1, openai/gpt-4o). `customer_id` is part of the story
+// leaf identity (the PK), so the owning customer is explicit here.
+async function seedStoryLeafLang(
+  customerPool: Pool,
+  customerId: string,
+  storyId: string,
+  lang: string,
+  analysis = "story leaf",
+): Promise<void> {
+  await customerPool.query(
+    `INSERT INTO story_analysis_result
+       (customer_id, story_id, lang, model_name, model,
+        model_actual_version, prompt_version, generation,
+        severity_score, likelihood_score,
+        severity_factors, likelihood_factors, ttp_tags,
+        priority_tier, analysis_text, input_event_refs, input_hash,
+        redaction_policy_version)
+     VALUES ($1, $2::bigint, $3, 'openai', 'gpt-4o',
+             'mv', 'pv', 1,
+             0.8, 0.7,
+             '[]'::jsonb, '[]'::jsonb, '["T1078"]'::jsonb,
+             'MEDIUM', $4, '[]'::jsonb, 'h', 'v1')`,
+    [customerId, storyId, lang, analysis],
+  );
+}
+
+// Seed an English canonical `periodic_report_result` row citing one story ref
+// (and no events), the source the non-English story routing reads (#412).
+async function seedCanonicalResultWithStory(
+  customerPool: Pool,
+  period: string,
+  bucketDate: string,
+  storyId: string,
+): Promise<void> {
+  const storyRefs = JSON.stringify([{ story_id: storyId, generation: 1 }]);
+  await customerPool.query(
+    `INSERT INTO periodic_report_result
+       (customer_id, period, bucket_date, tz, lang, restoration_lang,
+        model_name, model, model_actual_version, prompt_version, generation,
+        aggregate_severity_score, aggregate_likelihood_score,
+        priority_tier, sections_jsonb, input_event_refs, input_story_refs,
+        input_hash, redaction_policy_version)
+     VALUES ($1, $2, $3::date, $4, 'ENGLISH', NULL,
+             'openai', 'gpt-4o', 'canon-mv', 'canon-pv', 1,
+             0.6, 0.6,
+             'MEDIUM', $5::jsonb, '[]'::jsonb, $6::jsonb,
+             'canon-hash', 'v1')`,
+    [
+      CUSTOMER_ID,
+      period,
+      bucketDate,
+      TZ,
+      JSON.stringify(AIMER_SECTIONS),
+      storyRefs,
     ],
   );
 }
@@ -1435,6 +1499,69 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].restoration_lang).toBeNull();
+  });
+
+  it("translates (not native) when only another customer has the target-lang story leaf", async () => {
+    aimerCalls = 0;
+    const bucket = "2026-06-23";
+    const storyId = "7001";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    // A canonical story leaf for THIS customer (English) + the story row.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES ($1::bigint, 'sv1', 'auto_correlated',
+               ($2::date)::timestamptz, ($2::date)::timestamptz + INTERVAL '1 day',
+               '{}'::jsonb, 'aice-1', ($2::date)::timestamptz)`,
+      [storyId, bucket],
+    );
+    await seedStoryLeafLang(customerPool, CUSTOMER_ID, storyId, "ENGLISH");
+    // The Korean story leaf exists ONLY for a DIFFERENT customer at the same
+    // (story_id, generation, model). Without the customer_id scope the pinned
+    // lookup would match it and generate natively off another customer's row.
+    await seedStoryLeafLang(customerPool, OTHER_CUSTOMER_ID, storyId, "KOREAN");
+    await seedCanonicalResultWithStory(customerPool, "DAILY", bucket, storyId);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    // The completeness gate must MISS (no Korean leaf for THIS customer) and
+    // route to translation, never native generation off the other customer.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+    }>(
+      `SELECT restoration_lang FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBe("ENGLISH");
   });
 
   it("dirty auto-requeue clears a stale future next_due_at", async () => {
