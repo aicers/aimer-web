@@ -72,6 +72,60 @@ export interface ReportSections {
   period_outlook: string;
 }
 
+/**
+ * The cited variant a Sources card links to. `lang` is the report-language
+ * enum (`ENGLISH`/`KOREAN`) the leaf row is keyed on — for a translated
+ * report this is the canonical's replay language (`restoration_lang`), NOT
+ * the translated row's own `lang` — paired with the per-leaf `generation`
+ * from `input_*_refs` and the canonical `model_name`/`model`. The leaf
+ * detail page rebuilds its generation pin from exactly these four fields.
+ */
+export interface CitedLeafVariant {
+  generation: number;
+  lang: string;
+  modelName: string;
+  model: string;
+}
+
+/**
+ * Display fields fetched from the leaf table at the pinned variant. `null`
+ * when the pinned row is missing or superseded — the card then degrades to
+ * ID + generation only (parent #386 generation-pin contract). Fields stay
+ * within the parent guardrails: tier + leaf-derived severity/likelihood
+ * scores (+ TTP for stories), all already exposed on the leaf detail pages.
+ */
+export interface CitedStorySource {
+  storyId: string;
+  variant: CitedLeafVariant;
+  display: {
+    priorityTier: PriorityTier;
+    severityScore: number;
+    likelihoodScore: number;
+    ttpTags: Array<{ id: string; name: string | null }>;
+  } | null;
+}
+
+export interface CitedEventSource {
+  aiceId: string;
+  eventKey: string;
+  variant: CitedLeafVariant;
+  display: {
+    priorityTier: PriorityTier;
+    severityScore: number;
+    likelihoodScore: number;
+  } | null;
+}
+
+/**
+ * Report-level cited sources — the generation-pinned leaf input list the
+ * report was built from (NOT a section/sentence-level citation map). Drives
+ * the Sources panel (T1).
+ */
+export interface CitedSources {
+  stories: CitedStorySource[];
+  events: CitedEventSource[];
+}
+
 export type ReportResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "forbidden" }
@@ -102,6 +156,12 @@ export interface ReportResultPageData {
   sections: ReportSections;
   topStoryCount: number;
   topEventCount: number;
+  /**
+   * Report-level cited story/event leaf sources at the pinned variant,
+   * with display fields when the pinned row is available (T1 Sources
+   * panel). Counts match `topStoryCount` / `topEventCount`.
+   */
+  citedSources: CitedSources;
   requestedBy: string | null;
   requestedAt: Date;
   /**
@@ -374,13 +434,75 @@ export async function loadReportResultPage(
   // point at (#412 item 5). `model_name` / `model` are the canonical's on a
   // translated row (copied verbatim), so the pinned leaves resolve.
   const replayLang = row.restoration_lang ?? row.lang;
-  const plaintextByReportToken = await buildReportTokenPlaintext(
-    customerPool,
-    input.customerId,
-    storyRefs,
-    eventRefs,
-    { lang: replayLang, modelName: row.model_name, model: row.model },
-  );
+  // `leafVariant` is the variant the cited leaves are pinned to: the replay
+  // language (canonical's for a translated row) plus the row's model. Both
+  // the token replay AND the Sources display-field fetch / link use it, so
+  // a translated report links to the correct leaf instead of the missing
+  // `row.lang` variant.
+  const leafVariant = {
+    lang: replayLang,
+    modelName: row.model_name,
+    model: row.model,
+  };
+  const { plaintextByReportToken, storyDisplays, eventDisplays } =
+    await buildReportTokenPlaintext(
+      customerPool,
+      input.customerId,
+      storyRefs,
+      eventRefs,
+      leafVariant,
+    );
+
+  // Build the report-level cited sources: each stored ref + the display
+  // fields fetched at the pinned variant. A missing or superseded leaf row
+  // degrades the card to ID/generation only (display = null).
+  const citedSources: CitedSources = {
+    stories: storyRefs.map((ref, i) => {
+      const d = storyDisplays[i];
+      return {
+        storyId: ref.story_id,
+        variant: {
+          generation: ref.generation,
+          lang: replayLang,
+          modelName: row.model_name,
+          model: row.model,
+        },
+        display:
+          d && !d.superseded
+            ? {
+                priorityTier: d.priorityTier,
+                severityScore: d.severityScore,
+                likelihoodScore: d.likelihoodScore,
+                ttpTags: d.ttpTags.map((id) => ({
+                  id,
+                  name: lookupTtpName(id),
+                })),
+              }
+            : null,
+      };
+    }),
+    events: eventRefs.map((ref, i) => {
+      const d = eventDisplays[i];
+      return {
+        aiceId: ref.aice_id,
+        eventKey: ref.event_key,
+        variant: {
+          generation: ref.generation,
+          lang: replayLang,
+          modelName: row.model_name,
+          model: row.model,
+        },
+        display:
+          d && !d.superseded
+            ? {
+                priorityTier: d.priorityTier,
+                severityScore: d.severityScore,
+                likelihoodScore: d.likelihoodScore,
+              }
+            : null,
+      };
+    }),
+  };
 
   const restoreOne = (s: unknown) =>
     restoreReportAnalysisTokens(
@@ -433,6 +555,7 @@ export async function loadReportResultPage(
       sections,
       topStoryCount: storyRefs.length,
       topEventCount: eventRefs.length,
+      citedSources,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
       requestedLocale,
@@ -496,11 +619,40 @@ async function enqueueRequestedLanguage(
 }
 
 /**
+ * Display fields fetched from a leaf table at the pinned variant, used to
+ * populate Sources cards. `superseded` is read from the same row so a
+ * superseded pin degrades to ID/generation only. `null` (not this shape)
+ * is used when no row exists at the pinned variant at all.
+ */
+interface LeafDisplayRow {
+  priorityTier: PriorityTier;
+  severityScore: number;
+  likelihoodScore: number;
+  ttpTags: string[];
+  superseded: boolean;
+}
+
+/**
+ * The token map plus the per-leaf display rows, aligned positionally with
+ * the input `storyRefs` / `eventRefs` (a `null` entry means no row exists
+ * at the pinned variant).
+ */
+interface ReportLeafData {
+  plaintextByReportToken: Map<string, string>;
+  storyDisplays: Array<LeafDisplayRow | null>;
+  eventDisplays: Array<LeafDisplayRow | null>;
+}
+
+/**
  * Re-derive the report token → plaintext map by replaying
  * `buildReportTokenMap` over the cited leaf narratives (pinned by
  * generation), then resolving each leaf's source token through the
  * relevant event redaction map. The result is keyed by the report-scope
  * token string so `restoreReportAnalysisTokens` can substitute directly.
+ *
+ * The same per-leaf SELECTs also return the Sources-panel display fields
+ * (tier / scores / TTP / `superseded_at`) at the pinned variant (T1), so
+ * the cited-source display data costs no extra round-trips.
  */
 async function buildReportTokenPlaintext(
   // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
@@ -509,9 +661,13 @@ async function buildReportTokenPlaintext(
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
   variant: { lang: string; modelName: string; model: string },
-): Promise<Map<string, string>> {
+): Promise<ReportLeafData> {
   const out = new Map<string, string>();
-  if (storyRefs.length === 0 && eventRefs.length === 0) return out;
+  const storyDisplays: Array<LeafDisplayRow | null> = [];
+  const eventDisplays: Array<LeafDisplayRow | null> = [];
+  if (storyRefs.length === 0 && eventRefs.length === 0) {
+    return { plaintextByReportToken: out, storyDisplays, eventDisplays };
+  }
 
   // Fetch story leaf narratives + their member refs at the pinned
   // generation AND the report variant. `generation` is variant-scoped
@@ -531,7 +687,8 @@ async function buildReportTokenPlaintext(
   for (const ref of storyRefs) {
     const { rows } = await customerPool.query(
       `SELECT analysis_text, severity_factors, likelihood_factors,
-              input_event_refs
+              input_event_refs, priority_tier, severity_score,
+              likelihood_score, ttp_tags, superseded_at
          FROM story_analysis_result
         WHERE customer_id = $1 AND story_id = $2::bigint AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
@@ -557,6 +714,7 @@ async function buildReportTokenPlaintext(
     storyMemberRefs.push(
       Array.isArray(rows[0]?.input_event_refs) ? rows[0].input_event_refs : [],
     );
+    storyDisplays.push(toLeafDisplay(rows[0]));
   }
 
   // Fetch event leaf narratives + factors at the pinned generation AND
@@ -568,7 +726,9 @@ async function buildReportTokenPlaintext(
   }> = [];
   for (const ref of eventRefs) {
     const { rows } = await customerPool.query(
-      `SELECT analysis_text, severity_factors, likelihood_factors
+      `SELECT analysis_text, severity_factors, likelihood_factors,
+              priority_tier, severity_score, likelihood_score, ttp_tags,
+              superseded_at
          FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
@@ -591,6 +751,7 @@ async function buildReportTokenPlaintext(
         ? rows[0].likelihood_factors
         : [],
     });
+    eventDisplays.push(toLeafDisplay(rows[0]));
   }
 
   // Replay the rewrite to recover the report→source token map per leaf.
@@ -644,7 +805,27 @@ async function buildReportTokenPlaintext(
       if (plaintext !== undefined) out.set(reportToken, plaintext);
     }
   }
-  return out;
+  return { plaintextByReportToken: out, storyDisplays, eventDisplays };
+}
+
+/**
+ * Map a leaf result row (or `undefined` when no row exists at the pinned
+ * variant) to the Sources-card display fields. A present row carries its
+ * `superseded_at` so the caller can degrade a superseded pin; a missing
+ * row maps to `null`.
+ */
+function toLeafDisplay(
+  // biome-ignore lint/suspicious/noExplicitAny: pg row minimal surface
+  row: any,
+): LeafDisplayRow | null {
+  if (!row) return null;
+  return {
+    priorityTier: row.priority_tier as PriorityTier,
+    severityScore: row.severity_score,
+    likelihoodScore: row.likelihood_score,
+    ttpTags: Array.isArray(row.ttp_tags) ? row.ttp_tags : [],
+    superseded: row.superseded_at != null,
+  };
 }
 
 async function decryptMaps(

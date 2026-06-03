@@ -125,6 +125,11 @@ async function callLoader() {
   return mod.loadAnalysisResultPage(baseInput);
 }
 
+async function callLoaderPinned(generation: number) {
+  const mod = await import("../result-page-loader");
+  return mod.loadAnalysisResultPage({ ...baseInput, generation });
+}
+
 beforeEach(() => {
   vi.resetModules();
   queryQueue = [];
@@ -244,6 +249,40 @@ describe("loadAnalysisResultPage", () => {
     // No crash; the analysis renders with raw tokens. The operator can
     // retry once the vault outage / KEK rotation settles.
     expect(outcome.data.analysisText).toContain("<<REDACTED_IP_001>>");
+  });
+
+  it("pin: loads the pinned generation and restores tokens", async () => {
+    pushResultRow({ generation: 2, superseded_at: null });
+    pushMapRow();
+    pushSourcePresent(true);
+
+    const outcome = await callLoaderPinned(2);
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.analysisText).toBe("attacker 10.0.0.1 reached us");
+  });
+
+  it("pin: missing pinned generation → pin_unavailable (no fallback to latest)", async () => {
+    // No row at the pinned generation. The loader must NOT fall back to the
+    // latest generation — the card linked to an exact cited variant.
+    pushStub({
+      match: (s) => s.includes("FROM event_analysis_result"),
+      rows: [],
+    });
+
+    const outcome = await callLoaderPinned(9);
+    expect(outcome.kind).toBe("pin_unavailable");
+    if (outcome.kind !== "pin_unavailable") return;
+    expect(outcome.generation).toBe(9);
+    // No token decrypt is attempted for an unavailable pin.
+    expect(mockDecryptRedactionMap).not.toHaveBeenCalled();
+  });
+
+  it("pin: superseded pinned row → pin_unavailable", async () => {
+    pushResultRow({ generation: 2, superseded_at: new Date() });
+
+    const outcome = await callLoaderPinned(2);
+    expect(outcome.kind).toBe("pin_unavailable");
   });
 
   it("passes through analysis text when there is no map row at all", async () => {

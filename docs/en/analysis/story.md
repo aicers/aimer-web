@@ -155,6 +155,20 @@ two-column grid:
   [Account Preferences → Timezone](../account-preferences.md#timezone)
   for the resolution order (saved → browser → UTC).
 
+## Pinned evidence version
+
+Opened directly, the page shows the latest analysis for the story. When
+reached from a report's [Sources panel](reports.md#sources), the link
+carries a pinned `generation` (plus the language, provider, and model),
+and the page loads **exactly that version** — the evidence the report was
+built from — rather than the latest re-analysis.
+
+If the pinned version is no longer available — superseded by a newer
+generation or removed by retention — the page shows a **"This evidence
+version is no longer available"** notice instead of silently falling back
+to the latest analysis, so a Sources link can never misrepresent a newer
+version as the one the report cited.
+
 ## Analysis body
 
 The body shows the LLM analysis narrative as rendered Markdown — headings,
