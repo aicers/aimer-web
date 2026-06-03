@@ -268,8 +268,13 @@ export async function processStoryJob(
   // Result-row probe — if the result row at the captured PK already
   // exists, step 1 was completed by a previous attempt that crashed
   // before step 2. Skip the LLM call entirely and finalize.
-  const existingResult = await customerPool.query<{ priority_tier: string }>(
-    `SELECT priority_tier FROM story_analysis_result
+  const existingResult = await customerPool.query<{
+    priority_tier: string;
+    severity_score: number;
+    likelihood_score: number;
+  }>(
+    `SELECT priority_tier, severity_score, likelihood_score
+       FROM story_analysis_result
       WHERE customer_id = $1 AND story_id = $2::bigint
         AND lang = $3 AND model_name = $4 AND model = $5
         AND generation = $6`,
@@ -285,6 +290,8 @@ export async function processStoryJob(
   if (existingResult.rows.length > 0) {
     await finalizeJob(opts.authPool, job, {
       priorityTier: existingResult.rows[0].priority_tier as PriorityTier,
+      severityScore: existingResult.rows[0].severity_score,
+      likelihoodScore: existingResult.rows[0].likelihood_score,
       promptVersion: null,
       modelActualVersion: null,
     });
@@ -578,9 +585,13 @@ export async function processStoryJob(
     throw err;
   }
 
-  // Step 2 — auth-DB finalize.
+  // Step 2 — auth-DB finalize. The raw on-disk scores (not the floored
+  // likelihood used only for tier lookup) are denormalized onto
+  // `story_analysis_state` for the default variant inside `finalizeJob`.
   await finalizeJob(opts.authPool, job, {
     priorityTier,
+    severityScore: aimerResponse.severityScore,
+    likelihoodScore: aimerResponse.likelihoodScore,
     promptVersion: aimerResponse.promptVersion,
     modelActualVersion: aimerResponse.modelActualVersion,
   });
@@ -921,8 +932,10 @@ async function writeResultRow(
 async function finalizeJob(
   authPool: Pool,
   job: JobPickup,
-  _detail: {
+  detail: {
     priorityTier: PriorityTier;
+    severityScore: number;
+    likelihoodScore: number;
     promptVersion: string | null;
     modelActualVersion: string | null;
   },
@@ -950,6 +963,41 @@ async function finalizeJob(
       job.generation,
     ],
   );
+
+  // WS3 (#392) — denormalize the canonical variant's priority onto
+  // `story_analysis_state` so the Threat Stories list can order
+  // priority-first and keyset-paginate in a single auth-DB query. Only the
+  // default (`WORKER_LANG`/`WORKER_MODEL_NAME`/`WORKER_MODEL`) variant feeds
+  // these columns — `story_analysis_state` carries one row per
+  // `(customer_id, story_id)`, and the list resolves each story to its
+  // single canonical variant, so a non-default-variant finalize must not
+  // overwrite the mirror. The scores stored here are the raw on-disk values
+  // (matching `story_analysis_result`), not the floored likelihood used only
+  // for tier lookup. Guarded on `status <> 'archived'`: a row that archived
+  // while this generation was in flight stays archived (the result is
+  // already superseded by the lifecycle).
+  if (
+    job.lang === WORKER_LANG &&
+    job.model_name === WORKER_MODEL_NAME &&
+    job.model === WORKER_MODEL
+  ) {
+    await authPool.query(
+      `UPDATE story_analysis_state
+          SET priority_tier    = $3,
+              severity_score   = $4,
+              likelihood_score = $5,
+              updated_at       = NOW()
+        WHERE customer_id = $1 AND story_id = $2::bigint
+          AND status <> 'archived'`,
+      [
+        job.customer_id,
+        job.story_id,
+        detail.priorityTier,
+        detail.severityScore,
+        detail.likelihoodScore,
+      ],
+    );
+  }
 }
 
 async function failJob(

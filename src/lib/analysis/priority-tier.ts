@@ -111,6 +111,38 @@ export function tierRank(tier: PriorityTier): number {
   return TIER_RANK[tier];
 }
 
+// Integer priority rank for SQL `ORDER BY` and keyset cursors (WS3 #392).
+// `priority_tier` is a TEXT column, and PostgreSQL string ordering does NOT
+// yield CRITICAL > HIGH > MEDIUM > LOW (alphabetically CRITICAL < HIGH <
+// LOW < MEDIUM). Both the list `ORDER BY` and the keyset seek must order by
+// this explicit rank — never the raw text — and the cursor must carry this
+// rank value, not the tier string. Higher = higher priority.
+const PRIORITY_RANK: Record<PriorityTier, number> = {
+  CRITICAL: 4,
+  HIGH: 3,
+  MEDIUM: 2,
+  LOW: 1,
+};
+
+export function priorityRank(tier: PriorityTier): number {
+  return PRIORITY_RANK[tier];
+}
+
+/**
+ * SQL `CASE` expression mapping a `priority_tier` column/expression to its
+ * integer rank. Kept in lockstep with {@link priorityRank} so the SQL
+ * ordering and the JS-built keyset cursor agree.
+ */
+export function priorityRankCaseSql(column: string): string {
+  return (
+    `CASE ${column} ` +
+    `WHEN 'CRITICAL' THEN 4 ` +
+    `WHEN 'HIGH' THEN 3 ` +
+    `WHEN 'MEDIUM' THEN 2 ` +
+    `WHEN 'LOW' THEN 1 END`
+  );
+}
+
 export function maxTier(...tiers: PriorityTier[]): PriorityTier {
   if (tiers.length === 0) {
     throw new Error("maxTier requires at least one tier");
