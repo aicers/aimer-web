@@ -7,19 +7,28 @@ import { useLocale, useTranslations } from "next-intl";
 import { useMemo } from "react";
 
 type NavKey =
-  | "events"
-  | "analysis"
+  | "overview"
+  | "suspiciousEvents"
+  | "threatStories"
   | "reports"
-  | "dashboard"
   | "settings"
   | "members"
   | "customerSettings";
 
+// Maps a path segment to its `nav.*` label key. Top-level cross-customer
+// routes use the new identifiers (`suspicious-events`, `threat-stories`);
+// the deep `events`/`story` segments keep their identifiers but reuse the
+// plural labels so every user-facing crumb reads "Suspicious Events" /
+// "Threat Stories" (parent route policy, #394). The deep `analysis` segment
+// is intentionally absent — `/customers/:id/analysis` has no page, only
+// `events`/`reports`/`story` children, so a crumb link there would 404.
 const SEGMENT_KEYS: Record<string, NavKey> = {
-  events: "events",
-  analysis: "analysis",
+  overview: "overview",
+  "suspicious-events": "suspiciousEvents",
+  "threat-stories": "threatStories",
+  events: "suspiciousEvents",
+  story: "threatStories",
   reports: "reports",
-  dashboard: "dashboard",
   settings: "settings",
   members: "members",
   customer: "customerSettings",
@@ -55,6 +64,7 @@ export function Breadcrumbs() {
     <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-sm">
       <Link
         href={`/${locale}`}
+        aria-label={t("home")}
         className="flex items-center text-muted-foreground transition-colors hover:text-foreground"
       >
         <Home className="h-4 w-4" />

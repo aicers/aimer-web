@@ -14,8 +14,8 @@ interface PageProps {
 // cross-customer `/overview` landing. The redirect preserves the inbound
 // query string (scope + any report-variant params) per the parent
 // query-preservation contract; the target page canonicalizes the scope
-// itself. The sidebar still points here until WS5 (#394); this redirect keeps
-// that link working.
+// itself. WS5 (#394) repointed the sidebar at `/overview` directly; this
+// redirect is kept so bookmarked/external `/analysis` links keep working.
 export default async function AnalysisRedirect({
   params,
   searchParams,

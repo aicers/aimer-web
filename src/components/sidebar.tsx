@@ -2,7 +2,6 @@
 
 import {
   FileText,
-  Home,
   LayoutDashboard,
   Lock,
   Menu,
@@ -95,17 +94,10 @@ function useNavItems(): NavItem[] {
     : mergeQuery(null, { [SCOPE_PARAM]: scope.canonical });
 
   return [
-    { href: `/${locale}`, label: t("home"), icon: Home, exact: true },
     {
-      href: `/${locale}/events`,
-      label: t("events"),
-      icon: Shield,
-      query: scopeQuery,
-    },
-    {
-      href: `/${locale}/analysis`,
-      label: t("analysis"),
-      icon: Search,
+      href: `/${locale}/overview`,
+      label: t("overview"),
+      icon: LayoutDashboard,
       query: scopeQuery,
     },
     {
@@ -115,9 +107,15 @@ function useNavItems(): NavItem[] {
       query: scopeQuery,
     },
     {
-      href: `/${locale}/dashboard`,
-      label: t("dashboard"),
-      icon: LayoutDashboard,
+      href: `/${locale}/threat-stories`,
+      label: t("threatStories"),
+      icon: Shield,
+      query: scopeQuery,
+    },
+    {
+      href: `/${locale}/suspicious-events`,
+      label: t("suspiciousEvents"),
+      icon: Search,
       query: scopeQuery,
     },
     {

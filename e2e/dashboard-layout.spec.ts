@@ -12,11 +12,10 @@ test.describe("Dashboard sidebar", () => {
     await expect(managerPage.getByAltText("Clumit Insight")).toBeVisible();
 
     const nav = managerPage.getByRole("navigation", { name: "Main" });
-    await expect(nav.getByText("Home")).toBeVisible();
-    await expect(nav.getByText("Events")).toBeVisible();
-    await expect(nav.getByText("Analysis")).toBeVisible();
+    await expect(nav.getByText("Overview")).toBeVisible();
     await expect(nav.getByText("Reports")).toBeVisible();
-    await expect(nav.getByText("Dashboard")).toBeVisible();
+    await expect(nav.getByText("Threat Stories")).toBeVisible();
+    await expect(nav.getByText("Suspicious Events")).toBeVisible();
   });
 
   test("renders manager-only items for Manager role", async ({
@@ -33,7 +32,7 @@ test.describe("Dashboard sidebar", () => {
     await userPage.goto("/en");
 
     const nav = userPage.getByRole("navigation", { name: "Main" });
-    await expect(nav.getByText("Home")).toBeVisible();
+    await expect(nav.getByText("Overview")).toBeVisible();
     await expect(nav.getByText("Members")).toBeHidden();
     // Customer Settings is read-only visible for User role because the role
     // has `customer-redaction-ranges:read` and `customer-retention:read`.
@@ -173,9 +172,9 @@ test.describe("Dashboard sidebar collapse", () => {
 
 test.describe("Dashboard breadcrumbs", () => {
   test("shows breadcrumbs for reports page", async ({ managerPage }) => {
-    // `/reports` renders in place and is a breadcrumb segment; the old
-    // `/events` stub now redirects to `/suspicious-events`, whose segment has
-    // no breadcrumb label yet (the relabel/restructure is WS4/WS5).
+    // `/reports` renders in place and is a breadcrumb segment. WS5 also added
+    // crumb labels for `/overview`, `/suspicious-events`, and `/threat-stories`
+    // (covered by the breadcrumbs unit tests).
     await managerPage.goto("/en/reports");
 
     const breadcrumb = managerPage.getByRole("navigation", {
@@ -232,10 +231,10 @@ test.describe("Dashboard user section", () => {
 // ---------------------------------------------------------------------------
 // Top-level pages — cross-customer overviews (WS2, #391)
 //
-// The old stubs (`/dashboard`, `/events`, `/analysis`) are now query-preserving
-// redirects into the cross-customer overview routes (`/overview`,
-// `/suspicious-events`); `/reports` was built out in place. The sidebar still
-// links to the old paths until WS5, so these redirects keep those links live.
+// The sidebar now links to the cross-customer overview routes directly
+// (`/overview`, `/reports`, `/threat-stories`, `/suspicious-events`; WS5).
+// The old paths (`/dashboard`, `/events`, `/analysis`) remain as
+// query-preserving redirect stubs so any bookmarked links stay live.
 // ---------------------------------------------------------------------------
 
 test.describe("Dashboard top-level pages", () => {
@@ -302,11 +301,11 @@ test.describe("Dashboard navigation", () => {
   test("navigates between pages via sidebar links", async ({ managerPage }) => {
     await managerPage.goto("/en");
 
-    // The sidebar still links to the old `/events` path (restructured in WS5);
-    // it redirects to the cross-customer Suspicious Events overview (WS2).
+    // The sidebar links directly to the cross-customer Suspicious Events
+    // overview (WS5 restructure; WS2 destination).
     await managerPage
       .getByRole("navigation", { name: "Main" })
-      .getByText("Events")
+      .getByText("Suspicious Events")
       .click();
 
     await expect(
@@ -315,13 +314,17 @@ test.describe("Dashboard navigation", () => {
     await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
   });
 
-  test("logo links to home page", async ({ managerPage }) => {
+  test("logo links home, which redirects to Overview", async ({
+    managerPage,
+  }) => {
     await managerPage.goto("/en/events");
 
-    // Click logo (the Clumit Insight link)
+    // Click logo (the Clumit Insight link). The header points it at the home
+    // route `/en`, which now redirects to the canonical `/en/overview`
+    // (WS5, #394), so the final URL after the redirect is the Overview page.
     await managerPage.getByRole("link", { name: "Clumit Insight" }).click();
 
-    await expect(managerPage).toHaveURL(/\/en$/);
+    await expect(managerPage).toHaveURL(/\/en\/overview/);
   });
 });
 
@@ -334,10 +337,9 @@ test.describe("Dashboard locale", () => {
     await managerPage.goto("/ko");
 
     const nav = managerPage.getByRole("navigation", { name: "Main" });
-    await expect(nav.getByText("홈")).toBeVisible();
-    await expect(nav.getByText("이벤트")).toBeVisible();
-    await expect(nav.getByText("분석")).toBeVisible();
+    await expect(nav.getByText("개요")).toBeVisible();
     await expect(nav.getByText("보고서")).toBeVisible();
-    await expect(nav.getByText("대시보드")).toBeVisible();
+    await expect(nav.getByText("위협 스토리")).toBeVisible();
+    await expect(nav.getByText("의심 이벤트")).toBeVisible();
   });
 });

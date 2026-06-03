@@ -26,13 +26,16 @@ It contains the customer scope selector and navigation links.
 
 ### Navigation items
 
-The sidebar includes the following links:
+The sidebar includes the following links, each pointing at a top-level
+cross-customer surface (see [Cross-Customer Overview](cross-customer-overview.md)):
 
-- **Home** — the main landing page.
-- **Events** — the event list and approval workflow.
-- **Analysis** — analysis tools.
+- **Overview** — the cross-customer vantage that merges the former Home
+    and Dashboard; routes to `/overview`.
 - **Reports** — report generation.
-- **Dashboard** — operational overview.
+- **Threat Stories** — the highest-priority threat stories across the
+    active scope.
+- **Suspicious Events** — suspicious events awaiting review across the
+    active scope.
 
 All users see a personal settings item:
 

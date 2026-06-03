@@ -25,10 +25,11 @@ vi.mock("next-intl", () => ({
   useLocale: vi.fn(() => "en"),
   useTranslations: vi.fn(() => (key: string) => {
     const map: Record<string, string> = {
-      events: "Events",
-      analysis: "Analysis",
+      home: "Home",
+      overview: "Overview",
+      suspiciousEvents: "Suspicious Events",
+      threatStories: "Threat Stories",
       reports: "Reports",
-      dashboard: "Dashboard",
       settings: "Settings",
       members: "Members",
       customerSettings: "Customer Settings",
@@ -53,16 +54,74 @@ describe("Breadcrumbs", () => {
     expect(links[0].getAttribute("href")).toBe("/en");
   });
 
-  it("renders crumbs for /en/events", () => {
-    mockedUsePathname.mockReturnValue("/en/events");
+  it("labels the home icon link with an accessible name", () => {
+    mockedUsePathname.mockReturnValue("/en");
+
+    const { container } = render(<Breadcrumbs />);
+
+    const home = container.querySelector("a");
+    expect(home?.getAttribute("aria-label")).toBe("Home");
+  });
+
+  it("renders crumbs for /en/overview", () => {
+    mockedUsePathname.mockReturnValue("/en/overview");
 
     const { container } = render(<Breadcrumbs />);
 
     const links = container.querySelectorAll("a");
     expect(links.length).toBe(2);
     expect(links[0].getAttribute("href")).toBe("/en");
-    expect(links[1].getAttribute("href")).toBe("/en/events");
-    expect(links[1].textContent).toBe("Events");
+    expect(links[1].getAttribute("href")).toBe("/en/overview");
+    expect(links[1].textContent).toBe("Overview");
+  });
+
+  it("renders crumbs for the new top-level cross-customer routes", () => {
+    const routes: Array<[string, string]> = [
+      ["/en/suspicious-events", "Suspicious Events"],
+      ["/en/threat-stories", "Threat Stories"],
+    ];
+
+    for (const [path, label] of routes) {
+      mockedUsePathname.mockReturnValue(path);
+      const { container, unmount } = render(<Breadcrumbs />);
+
+      const links = container.querySelectorAll("a");
+      expect(links.length).toBe(2);
+      expect(links[1].getAttribute("href")).toBe(path);
+      expect(links[1].textContent).toBe(label);
+
+      unmount();
+    }
+  });
+
+  it("labels deep events/story segments with the plural parent labels", () => {
+    // The deep route identifiers stay `events`/`story`, but the crumbs read
+    // "Suspicious Events"/"Threat Stories" (parent route policy, #394). The
+    // `customers/<id>` segments are unknown and skipped; `analysis` is
+    // intentionally dropped (no page there).
+    mockedUsePathname.mockReturnValue("/en/customers/c1/analysis/events");
+    {
+      const { container, unmount } = render(<Breadcrumbs />);
+      const links = container.querySelectorAll("a");
+      expect(links.length).toBe(2);
+      expect(links[1].getAttribute("href")).toBe(
+        "/en/customers/c1/analysis/events",
+      );
+      expect(links[1].textContent).toBe("Suspicious Events");
+      unmount();
+    }
+
+    mockedUsePathname.mockReturnValue("/en/customers/c1/analysis/story");
+    {
+      const { container, unmount } = render(<Breadcrumbs />);
+      const links = container.querySelectorAll("a");
+      expect(links.length).toBe(2);
+      expect(links[1].getAttribute("href")).toBe(
+        "/en/customers/c1/analysis/story",
+      );
+      expect(links[1].textContent).toBe("Threat Stories");
+      unmount();
+    }
   });
 
   it("renders nested crumbs for /en/settings/members", () => {
@@ -119,20 +178,24 @@ describe("Breadcrumbs", () => {
     expect(links[2].textContent).toBe("Members");
   });
 
-  it("renders crumbs for each page route", () => {
-    const routes: Array<[string, string]> = [
-      ["/en/analysis", "Analysis"],
-      ["/en/reports", "Reports"],
-      ["/en/dashboard", "Dashboard"],
-    ];
+  it("renders a crumb for /en/reports", () => {
+    mockedUsePathname.mockReturnValue("/en/reports");
+    const { container } = render(<Breadcrumbs />);
 
-    for (const [path, label] of routes) {
+    const links = container.querySelectorAll("a");
+    expect(links.length).toBe(2);
+    expect(links[1].textContent).toBe("Reports");
+  });
+
+  it("renders no crumb for dropped legacy stub segments", () => {
+    // `/analysis` and `/dashboard` are redirect stubs with no rendered page
+    // and no breadcrumb mapping; only the home link remains.
+    for (const path of ["/en/analysis", "/en/dashboard"]) {
       mockedUsePathname.mockReturnValue(path);
       const { container, unmount } = render(<Breadcrumbs />);
 
       const links = container.querySelectorAll("a");
-      expect(links.length).toBe(2);
-      expect(links[1].textContent).toBe(label);
+      expect(links.length).toBe(1);
 
       unmount();
     }

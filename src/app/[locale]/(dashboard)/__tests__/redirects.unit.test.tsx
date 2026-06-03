@@ -20,6 +20,7 @@ vi.mock("next/navigation", () => ({
 import AnalysisRedirect from "../analysis/page";
 import DashboardRedirect from "../dashboard/page";
 import EventsRedirect from "../events/page";
+import HomeRedirect from "../page";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
@@ -39,6 +40,18 @@ async function target(
   ).rejects.toThrow();
   return redirectMock.mock.calls[0][0];
 }
+
+describe("root home redirect", () => {
+  it("redirects /[locale] to /overview preserving scope (WS5, #394)", async () => {
+    expect(await target(HomeRedirect, { scope: "c2,c1", tz: "UTC" })).toBe(
+      "/en/overview?scope=c2%2Cc1&tz=UTC",
+    );
+  });
+
+  it("redirects to bare /overview with no query", async () => {
+    expect(await target(HomeRedirect, {})).toBe("/en/overview");
+  });
+});
 
 describe("dashboard stub redirect", () => {
   it("redirects to /overview preserving scope and variant params", async () => {
