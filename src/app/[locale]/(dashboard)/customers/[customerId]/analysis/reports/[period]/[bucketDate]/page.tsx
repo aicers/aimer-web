@@ -1,6 +1,8 @@
 import { forbidden, notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
+import { type AppLocale, reportLanguageToAppLocale } from "@/i18n/locale";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -11,8 +13,17 @@ import {
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import {
+  mergeQuery,
+  searchParamsToUrlSearchParams,
+} from "@/lib/navigation/query";
 import { ReportRegenerateButton } from "./regenerate-button";
+import { ReportLanguageStatus } from "./report-language-status";
+import { ReportLanguageSwitcher } from "./report-language-switcher";
 import { ReportPeriodTabs } from "./report-period-tabs";
+
+// The app locales offered by the language switcher, in display order.
+const SWITCHER_LOCALES: readonly AppLocale[] = ["en", "ko"];
 
 interface PageProps {
   params: Promise<{
@@ -93,6 +104,8 @@ export default async function ReportDetailPage({
 
   // Forward the active report variant (if pinned via the query string) so a
   // non-default report opens, displays, and regenerates as that variant.
+  // `lang` is now an app-locale code (`en`/`ko`), validated in the loader;
+  // `locale` (the route param) is the viewer-preference default.
   const variant = {
     tz: firstParam(sp.tz),
     lang: firstParam(sp.lang),
@@ -104,8 +117,13 @@ export default async function ReportDetailPage({
     customerId,
     period,
     bucketDate,
+    locale,
     variant,
   });
+
+  // The page's current query string, preserved across the tabs and the
+  // language switcher via the shared `mergeQuery` helper.
+  const currentQuery = mergeQuery(searchParamsToUrlSearchParams(sp), {});
 
   // Non-member / non-existent → 404 (existence-hiding). Permission- or
   // bridge-denied → 403 (round-15 S3). `forbidden()` (enabled via
@@ -132,7 +150,7 @@ export default async function ReportDetailPage({
       customerId={customerId}
       activePeriod={period}
       referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
-      variant={variant}
+      currentQuery={currentQuery}
     />
   );
 
@@ -161,6 +179,70 @@ export default async function ReportDetailPage({
   }
 
   const data = outcome.data;
+  const t = await getTranslations("reports");
+  // Localized language name by app-locale code (literal keys — the message
+  // catalog is statically typed, so dynamic key paths are not allowed).
+  const localeName = (loc: AppLocale): string =>
+    loc === "en" ? t("languageName.en") : t("languageName.ko");
+
+  // Language switcher: offer every supported locale, marking which already
+  // have a stored result. The currently-shown language is the row's actual
+  // `lang` mapped back to a locale code.
+  const shownLocale = reportLanguageToAppLocale(
+    data.lang === "KOREAN" ? "KOREAN" : "ENGLISH",
+  );
+  const basePath = `/${locale}/customers/${customerId}/analysis/reports/${period}/${bucketDate}`;
+  const switcher = (
+    <ReportLanguageSwitcher
+      label={t("languageSwitcherLabel")}
+      basePath={basePath}
+      currentQuery={currentQuery}
+      currentLocale={shownLocale}
+      languages={SWITCHER_LOCALES.map((loc) => ({
+        locale: loc,
+        name: localeName(loc),
+        available: data.availableLocales.includes(loc),
+      }))}
+    />
+  );
+
+  // Fallback notice + phase-2 on-demand status, only when the shown report
+  // fell back from the requested language.
+  let languageNotice: React.ReactNode = null;
+  if (data.languageFallback) {
+    const requestedName = localeName(data.languageFallback.requestedLocale);
+    const statusUrl = `/api/customers/${customerId}/analysis/report/${period}/${bucketDate}/language-status?${mergeQuery(
+      "",
+      {
+        tz: data.tz,
+        lang: data.languageFallback.requestedLocale,
+        model_name: data.modelName,
+        model: data.model,
+      },
+    )}`;
+    languageNotice = (
+      <div className="mt-4 space-y-2">
+        <div
+          role="status"
+          data-testid="report-language-fallback"
+          className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          {t("fallbackNotice", { language: requestedName })}
+        </div>
+        {data.languageFallback.jobStatus !== null ? (
+          <ReportLanguageStatus
+            statusUrl={statusUrl}
+            initialStatus={data.languageFallback.jobStatus}
+            labels={{
+              preparing: t("jobPreparing", { language: requestedName }),
+              failed: t("jobFailed", { language: requestedName }),
+              pendingSource: t("jobPendingSource", { language: requestedName }),
+            }}
+          />
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -173,7 +255,9 @@ export default async function ReportDetailPage({
         </p>
       </header>
 
-      <div className="mb-6">{tabs}</div>
+      <div className="mb-2">{tabs}</div>
+      <div className="mb-6 flex items-center justify-end">{switcher}</div>
+      {languageNotice}
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Priority tier">

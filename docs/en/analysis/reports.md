@@ -130,6 +130,45 @@ you can move between cadences freely. Any pinned variant
 
 ![The Live / Daily / Weekly / Monthly period tab bar shown above the report body, with the Weekly tab active and the other three linking to the report for the same stretch of time at their own cadence](../../assets/report-period-tabs.en.png)
 
+## Report language
+
+Each report exists per language variant (English / Korean). The detail
+page defaults to **your own language** — the locale you are using the app
+in — rather than a fixed deployment default. A **language switcher** next
+to the period tabs lets you change the report language; the choice is
+encoded in the URL as a locale code (`?lang=ko`) and, like the other
+variant selectors, is preserved as you move across the period tabs.
+
+When the language you ask for has not been generated yet, the report does
+**not** error. It falls back along a fixed chain:
+
+1. the requested language, when a result exists for it;
+2. otherwise **English**, the guaranteed baseline, shown with a clear
+   notice naming the language you asked for;
+3. otherwise any available language for the bucket.
+
+Asking for a not-yet-generated language also **requests it on demand**:
+the page enqueues a generation job (the same job table the worker uses,
+but without force-regenerate — repeated views simply coalesce onto the
+in-flight job and never spend an extra generation) and shows its progress
+below the notice. While the job is `queued`/`processing` the page polls
+and refreshes itself automatically; when it finishes, the report reloads
+in the requested language. A `failed` job surfaces a non-blocking error
+instead of spinning forever, and a bucket that is still inside its settle
+window (no job yet) shows the ordinary "being generated" pending state.
+
+The language switcher only changes which language you read; it never
+triggers a force regenerate, and it never changes the underlying source
+selection. Restored values (IP addresses, emails, MAC addresses) are
+language-neutral and stay correct across every language variant.
+
+The report index resolves this fallback **per bucket**, so a Korean
+viewer sees each bucket's Korean tier where it exists and the English
+tier only where Korean has not been generated — never a silent mix. Each
+bucket also shows which languages it already has available.
+
+![The report detail page opened in Korean when only the English variant exists: the language switcher sits beside the period tabs with English active and Korean offered, an English-fallback notice names the Korean language, and the on-demand generation status reports that the Korean report is being prepared](../../assets/report-language-switcher.en.png)
+
 ## How a report is built
 
 The worker pipeline runs without operator action:
@@ -327,7 +366,11 @@ resolves to the right report regardless of which customer the opening
 tab has selected. When the summary was requested for a non-default
 variant (`?tz=&lang=&model_name=&model=`), the `link` forwards those
 same query params so following it opens that variant rather than the
-default. The badge itself (priority tier and aggregate scores
+default. As on the page, `?lang=` is an **app-locale code** (`en` / `ko`),
+not the report-language enum; a viewer-aware caller passes the resolved
+locale code, and when `?lang=` is absent the summary uses the English
+baseline (it has no viewer locale of its own to default from). The badge
+itself (priority tier and aggregate scores
 only, no section content) is rendered by aice-web-next; see the
 aice-web-next manual for its screenshot.
 

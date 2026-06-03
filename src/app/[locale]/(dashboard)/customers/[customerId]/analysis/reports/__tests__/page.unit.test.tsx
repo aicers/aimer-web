@@ -64,6 +64,8 @@ function okFixture(): ReportIndexPageOutcome {
               requestedBy: null,
               requestedAt: new Date("2026-05-27T12:00:00Z"),
             },
+            availableLocales: ["en", "ko"],
+            resolvedLocale: "en",
           },
         ],
       },
@@ -81,6 +83,8 @@ function okFixture(): ReportIndexPageOutcome {
               requestedBy: null,
               requestedAt: new Date("2026-05-27T12:00:00Z"),
             },
+            availableLocales: ["en"],
+            resolvedLocale: "en",
           },
           {
             period: "DAILY",
@@ -88,6 +92,8 @@ function okFixture(): ReportIndexPageOutcome {
             tz: "Asia/Seoul",
             stateStatus: "pending",
             result: null,
+            availableLocales: [],
+            resolvedLocale: null,
           },
         ],
       },
@@ -140,6 +146,18 @@ describe("report index page", () => {
     ).toBe("HIGH");
   });
 
+  it("renders per-bucket available-language chips", async () => {
+    await renderPage();
+    const live = screen.getByTestId("report-langs-LIVE-1970-01-01");
+    expect(
+      Array.from(live.querySelectorAll("[data-locale]")).map((el) =>
+        el.getAttribute("data-locale"),
+      ),
+    ).toEqual(["en", "ko"]);
+    // A bucket with no result has no language chips.
+    expect(screen.queryByTestId("report-langs-DAILY-2026-05-26")).toBeNull();
+  });
+
   it("shows the being-generated hint when no result exists", async () => {
     await renderPage();
     expect(
@@ -167,6 +185,8 @@ describe("report index page", () => {
                 requestedBy: null,
                 requestedAt: new Date("2026-05-26T00:00:00Z"),
               },
+              availableLocales: ["en"],
+              resolvedLocale: "en",
             },
           ],
         },

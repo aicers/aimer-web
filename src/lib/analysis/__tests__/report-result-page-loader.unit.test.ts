@@ -1,0 +1,273 @@
+// Unit test for the periodic report result-page loader's L2 language logic
+// (#388): viewer-locale default, `?lang ∈ {en, ko}` validation, the
+// requested → English → any-available fallback chain, the per-bucket
+// available-language set, and the phase-2 on-demand enqueue + job-status
+// mapping. Token restoration (the redaction replay) is exercised by the
+// report-token / db tests; here the cited-leaf refs are empty so the loader's
+// decision logic is isolated from the decrypt path.
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
+const mockGetAuthCookie = vi.fn();
+const mockVerifyJwtFull = vi.fn();
+const mockAuthorize = vi.fn();
+const mockGetSessionPolicy = vi.fn();
+const mockValidateSession = vi.fn();
+const mockEnqueue = vi.fn();
+
+vi.mock("@/lib/auth/cookies", () => ({
+  getAuthCookie: (...args: unknown[]) => mockGetAuthCookie(...args),
+}));
+vi.mock("@/lib/auth/jwt", () => ({
+  verifyJwtFull: (...args: unknown[]) => mockVerifyJwtFull(...args),
+}));
+vi.mock("@/lib/auth/authorization", () => ({
+  authorize: (...args: unknown[]) => mockAuthorize(...args),
+}));
+vi.mock("@/lib/auth/session-policy", () => ({
+  getSessionPolicy: (...args: unknown[]) => mockGetSessionPolicy(...args),
+}));
+vi.mock("@/lib/auth/session-validator", () => ({
+  validateSession: (...args: unknown[]) => mockValidateSession(...args),
+}));
+vi.mock("../report-worker", () => ({
+  enqueueOnDemandReportJob: (...args: unknown[]) => mockEnqueue(...args),
+}));
+vi.mock("../mitre-ttp", () => ({ lookupTtpName: () => null }));
+// Keep restoration a no-op identity: the refs are empty so nothing is
+// actually replayed, but stubbing avoids pulling the redaction modules in.
+vi.mock("../report-token", () => ({
+  buildReportTokenMap: () => ({ refs: [] }),
+}));
+vi.mock("../report-token-restore", () => ({
+  restoreReportAnalysisTokens: (s: string) => s,
+}));
+
+// --- pool stubs (auth + customer DB), routed by SQL fragment ------------
+let stateRows: Array<{ status: string }> = [];
+let availRows: Array<{ lang: string }> = [];
+let resultRows: Array<Record<string, unknown>> = [];
+
+const authPool = {
+  query: vi.fn(async (sql: string) => {
+    if (sql.includes("FROM customers")) {
+      return { rows: [{ timezone: "Asia/Seoul" }] };
+    }
+    if (sql.includes("FROM periodic_report_state")) {
+      return { rows: stateRows };
+    }
+    return { rows: [] };
+  }),
+};
+
+const customerPool = {
+  query: vi.fn(async (sql: string) => {
+    if (sql.includes("SELECT DISTINCT lang")) return { rows: availRows };
+    if (sql.includes("model_actual_version")) return { rows: resultRows };
+    return { rows: [] };
+  }),
+};
+
+vi.mock("@/lib/db/client", () => ({
+  getAuthPool: () => authPool,
+  withTransaction: async (_pool: unknown, fn: (client: unknown) => unknown) =>
+    fn({ query: vi.fn() }),
+}));
+vi.mock("@/lib/db/customer-runtime-pool", () => ({
+  getCustomerRuntimePool: () => customerPool,
+}));
+
+const CUSTOMER_ID = "a0000000-0000-0000-0000-000000000001";
+
+function resultRow(lang: string): Record<string, unknown> {
+  return {
+    model_actual_version: "2026-01",
+    prompt_version: "v1",
+    generation: 3,
+    lang,
+    restoration_lang: null,
+    model_name: "openai",
+    model: "gpt-4o",
+    priority_tier: "HIGH",
+    aggregate_severity_score: 0.5,
+    aggregate_likelihood_score: 0.5,
+    aggregate_ttp_tags: [],
+    sections_jsonb: {
+      executive_summary: "x",
+      story_highlights: [],
+      notable_events: [],
+      baseline_observations: [],
+      period_outlook: "y",
+    },
+    input_story_refs: [],
+    input_event_refs: [],
+    requested_by: null,
+    requested_at: new Date("2026-05-27T12:00:00Z"),
+  };
+}
+
+async function callLoader(input: {
+  locale: string;
+  variant?: { tz?: string; lang?: string };
+}) {
+  const mod = await import("../report-result-page-loader");
+  return mod.loadReportResultPage({
+    customerId: CUSTOMER_ID,
+    period: "DAILY",
+    bucketDate: "2026-05-26",
+    locale: input.locale,
+    variant: input.variant,
+  });
+}
+
+beforeEach(() => {
+  vi.resetModules();
+  authPool.query.mockClear();
+  customerPool.query.mockClear();
+  stateRows = [{ status: "ready" }];
+  availRows = [];
+  resultRows = [];
+  mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
+  mockVerifyJwtFull
+    .mockReset()
+    .mockResolvedValue({ sub: "acc-1", sid: "sess-1" });
+  mockAuthorize.mockReset().mockResolvedValue({ authorized: true });
+  mockGetSessionPolicy.mockReset().mockResolvedValue({ general: {} });
+  mockValidateSession
+    .mockReset()
+    .mockResolvedValue({ bridgeAiceId: null, bridgeCustomerIds: null });
+  mockEnqueue.mockReset().mockResolvedValue({ action: "seeded" });
+});
+
+describe("loadReportResultPage — L2 language resolution", () => {
+  it("defaults to the viewer's locale and shows it when available", async () => {
+    availRows = [{ lang: "ENGLISH" }, { lang: "KOREAN" }];
+    resultRows = [resultRow("KOREAN")];
+
+    const outcome = await callLoader({ locale: "ko" });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.lang).toBe("KOREAN");
+    expect(outcome.data.requestedLocale).toBe("ko");
+    expect(outcome.data.availableLocales.sort()).toEqual(["en", "ko"]);
+    expect(outcome.data.languageFallback).toBeNull();
+    // The requested variant exists, so no on-demand job is enqueued.
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("falls back to English and enqueues the requested language on-demand", async () => {
+    // Korean viewer, only English generated → English shown with a fallback
+    // notice + a queued on-demand job for Korean.
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    mockEnqueue.mockResolvedValue({ action: "seeded" });
+
+    const outcome = await callLoader({ locale: "ko" });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.lang).toBe("ENGLISH");
+    expect(outcome.data.languageFallback).toEqual({
+      requestedLocale: "ko",
+      shownLocale: "en",
+      jobStatus: "queued",
+    });
+    // The enqueue targets the KOREAN enum mapped from the `ko` locale.
+    expect(mockEnqueue).toHaveBeenCalledTimes(1);
+    expect(mockEnqueue.mock.calls[0][1]).toMatchObject({ lang: "KOREAN" });
+  });
+
+  it("reflects a coalesced job's existing status in the fallback", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    mockEnqueue.mockResolvedValue({
+      action: "coalesced",
+      status: "processing",
+    });
+
+    const outcome = await callLoader({ locale: "ko" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.languageFallback?.jobStatus).toBe("processing");
+  });
+
+  it("maps source_pending to a no-job pending status (no spinner)", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    mockEnqueue.mockResolvedValue({ action: "source_pending" });
+
+    const outcome = await callLoader({ locale: "ko" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.languageFallback?.jobStatus).toBe("source_pending");
+  });
+
+  it("degrades to a notice without job status when the enqueue throws", async () => {
+    // A transient enqueue failure must not 500 the page: the English fallback
+    // still renders, just without the on-demand progress banner (jobStatus
+    // null), and the read-only poller retries on the next view.
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    mockEnqueue.mockRejectedValue(new Error("db down"));
+
+    const outcome = await callLoader({ locale: "ko" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.lang).toBe("ENGLISH");
+    expect(outcome.data.languageFallback).toEqual({
+      requestedLocale: "ko",
+      shownLocale: "en",
+      jobStatus: null,
+    });
+  });
+
+  it("honors a pinned ?lang=ko even when the viewer locale is en", async () => {
+    availRows = [{ lang: "ENGLISH" }, { lang: "KOREAN" }];
+    resultRows = [resultRow("KOREAN")];
+
+    const outcome = await callLoader({ locale: "en", variant: { lang: "ko" } });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.requestedLocale).toBe("ko");
+    expect(outcome.data.lang).toBe("KOREAN");
+    expect(outcome.data.languageFallback).toBeNull();
+  });
+
+  it("treats a legacy enum-shaped ?lang=KOREAN as unpinned (viewer default)", async () => {
+    // Only `en`/`ko` are valid `?lang` values; `KOREAN` is dropped and the
+    // viewer-locale default (`en`) is used, so no fallback occurs and no
+    // job is enqueued — the regression the validate-before-map guard avoids.
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+
+    const outcome = await callLoader({
+      locale: "en",
+      variant: { lang: "KOREAN" },
+    });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.requestedLocale).toBe("en");
+    expect(outcome.data.lang).toBe("ENGLISH");
+    expect(outcome.data.languageFallback).toBeNull();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("returns pending when no variant exists for the bucket yet", async () => {
+    availRows = [];
+    resultRows = [];
+
+    const outcome = await callLoader({ locale: "ko" });
+    expect(outcome.kind).toBe("pending");
+    // No per-language job is enqueued while the bucket's first generation is
+    // still in flight (the pending case, not a spinner).
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("returns not_found for an archived bucket", async () => {
+    stateRows = [{ status: "archived" }];
+    const outcome = await callLoader({ locale: "ko" });
+    expect(outcome.kind).toBe("not_found");
+  });
+
+  it("returns unauthorized when the auth cookie is missing", async () => {
+    mockGetAuthCookie.mockResolvedValue(null);
+    const outcome = await callLoader({ locale: "ko" });
+    expect(outcome.kind).toBe("unauthorized");
+  });
+});

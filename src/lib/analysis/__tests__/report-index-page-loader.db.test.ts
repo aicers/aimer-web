@@ -279,6 +279,38 @@ describe.skipIf(!hasPostgres)("report index loader (cross-DB)", () => {
     expect(weekly?.items[0].result?.priorityTier).toBe("MEDIUM");
   });
 
+  it("resolves the result to the viewer's language per bucket", async () => {
+    // A KOREAN viewer sees the KOREAN result (gen 5, CRITICAL) for the bucket
+    // that has one, instead of silently falling back to the English tier.
+    const groups = await discoverReportBuckets(
+      authPool,
+      customerPool,
+      CUSTOMER_ID,
+      "KOREAN",
+    );
+    const daily = groups.find((g) => g.period === "DAILY");
+    const may27 = daily?.items.find((i) => i.bucketDate === "2026-05-27");
+    expect(may27?.result?.priorityTier).toBe("CRITICAL");
+    expect(may27?.resolvedLocale).toBe("ko");
+    // Both languages are surfaced as available for the switcher / hint.
+    expect(may27?.availableLocales).toEqual(["en", "ko"]);
+  });
+
+  it("falls back to English for a viewer language with no result", async () => {
+    // WEEKLY 2026-05-25 only has an English (MEDIUM) result; a KOREAN viewer
+    // falls back to it rather than seeing nothing.
+    const groups = await discoverReportBuckets(
+      authPool,
+      customerPool,
+      CUSTOMER_ID,
+      "KOREAN",
+    );
+    const weekly = groups.find((g) => g.period === "WEEKLY");
+    expect(weekly?.items[0].result?.priorityTier).toBe("MEDIUM");
+    expect(weekly?.items[0].resolvedLocale).toBe("en");
+    expect(weekly?.items[0].availableLocales).toEqual(["en"]);
+  });
+
   it("returns an empty array for a customer with no tracked buckets", async () => {
     const groups = await discoverReportBuckets(
       authPool,

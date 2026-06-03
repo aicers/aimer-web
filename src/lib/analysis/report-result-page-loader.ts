@@ -12,6 +12,13 @@
 
 import "server-only";
 
+import {
+  type AppLocale,
+  appLocaleToReportLanguage,
+  isSupportedLocale,
+  type ReportLanguage,
+  reportLanguageToAppLocale,
+} from "@/i18n/locale";
 import { authorize } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
@@ -24,10 +31,28 @@ import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { buildReportTokenMap } from "./report-token";
 import { restoreReportAnalysisTokens } from "./report-token-restore";
+import { enqueueOnDemandReportJob } from "./report-worker";
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// English is the guaranteed baseline language (parent #386): the worker
+// always seeds it, so it is the second link in the fallback chain
+// (requested → English → any available). This is NOT `ANALYSIS_DEFAULT_LANG`:
+// L2 defaults the report language to the *viewer's* locale, not the
+// deployment's configured generation default (#388 scope).
+const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
 const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
+
+/**
+ * Phase-2 on-demand status for the requested (not-yet-available) language,
+ * surfaced from `periodic_report_job.status` (with `source_pending` for a
+ * bucket whose settle window has not elapsed, so no job was created).
+ */
+export type LanguageJobStatus =
+  | "queued"
+  | "processing"
+  | "done"
+  | "failed"
+  | "source_pending";
 
 const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/;
 const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/;
@@ -79,6 +104,29 @@ export interface ReportResultPageData {
   topEventCount: number;
   requestedBy: string | null;
   requestedAt: Date;
+  /**
+   * The language the viewer asked for (their locale, or a pinned `?lang`),
+   * as an app-locale code. Equals `reportLanguageToAppLocale(data.lang)` when
+   * the requested variant exists; differs when a fallback occurred.
+   */
+  requestedLocale: AppLocale;
+  /**
+   * Languages with a stored result for this `(tz, model_name, model)` variant,
+   * as app-locale codes, for the language switcher. Always includes the shown
+   * language.
+   */
+  availableLocales: AppLocale[];
+  /**
+   * Present only when the shown report fell back from the requested language
+   * (requested variant not yet generated). Describes the fallback for the
+   * notice and carries the phase-2 on-demand job status for the requested
+   * language (null when no job applies).
+   */
+  languageFallback: {
+    requestedLocale: AppLocale;
+    shownLocale: AppLocale;
+    jobStatus: LanguageJobStatus | null;
+  } | null;
 }
 
 export interface ReportResultPageInput {
@@ -86,10 +134,20 @@ export interface ReportResultPageInput {
   period: string;
   bucketDate: string;
   /**
-   * Optional report-variant selectors from the page's search params. When
-   * omitted, each falls back to its default (customer-timezone snapshot
-   * for `tz`; env defaults for `lang`/`model_name`/`model`), preserving the
-   * original default-variant behavior.
+   * The viewer's resolved app locale (the page's `[locale]` route param,
+   * already L1-resolved: saved → browser → default). This is the DEFAULT
+   * report language when `?lang` is not pinned — converted to the aimer enum
+   * via the canonical locale↔language mapper, NOT `ANALYSIS_DEFAULT_LANG`.
+   */
+  locale: string;
+  /**
+   * Optional report-variant selectors from the page's search params.
+   *   - `lang` is now an **app-locale code** (`en` / `ko`), NOT the raw enum
+   *     (#388 reinterpretation). It is validated to `{en, ko}` here; any other
+   *     value — including a legacy enum-shaped `KOREAN` — is treated as
+   *     unpinned and falls through to the viewer-locale default.
+   *   - `tz` defaults to the customer-timezone snapshot; `model_name`/`model`
+   *     default to the env-configured variant.
    */
   variant?: {
     tz?: string;
@@ -160,7 +218,7 @@ export async function loadReportResultPage(
 
   // Variant resolution: each selector falls back to its default when the
   // caller did not pin it. Default tz = the customer's current timezone
-  // snapshot; lang/model_name/model default to the env-configured variant.
+  // snapshot; model_name/model default to the env-configured variant.
   let tz: string;
   if (input.variant?.tz) {
     tz = input.variant.tz;
@@ -171,9 +229,22 @@ export async function loadReportResultPage(
     );
     tz = tzRow.rows[0]?.timezone ?? "UTC";
   }
-  const lang = input.variant?.lang ?? DEFAULT_LANG;
   const modelName = input.variant?.model_name ?? DEFAULT_MODEL_NAME;
   const model = input.variant?.model ?? DEFAULT_MODEL;
+
+  // Requested language = pinned `?lang` (validated to a real app locale) →
+  // else the viewer's locale (validated) → else the English baseline. The
+  // pinned value MUST be validated to `{en, ko}` BEFORE mapping: a legacy
+  // enum-shaped `?lang=KOREAN` is not a supported locale, so it is treated as
+  // unpinned and falls through to the viewer default rather than being mapped
+  // (#388 — only `en`/`ko` are valid `?lang` values).
+  const pinnedLang = input.variant?.lang;
+  const requestedLocale: AppLocale = isSupportedLocale(pinnedLang)
+    ? pinnedLang
+    : isSupportedLocale(input.locale)
+      ? input.locale
+      : "en";
+  const requestedLang = appLocaleToReportLanguage(requestedLocale);
 
   const stateRows = await authPool.query<{ status: string }>(
     `SELECT status FROM periodic_report_state
@@ -185,6 +256,62 @@ export async function loadReportResultPage(
   if (stateRows.rows[0].status === "archived") return { kind: "not_found" };
 
   const customerPool = getCustomerRuntimePool(input.customerId);
+
+  // The bucket's available-language set for this `(tz, model_name, model)`
+  // variant — drives both the switcher and the fallback chain. Scoped to
+  // non-superseded rows so it matches what the result query below can fetch.
+  const availLangRows = await customerPool.query<{ lang: string }>(
+    `SELECT DISTINCT lang FROM periodic_report_result
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND model_name = $5 AND model = $6
+        AND superseded_at IS NULL`,
+    [input.customerId, input.period, input.bucketDate, tz, modelName, model],
+  );
+  const availableLangs = availLangRows.rows.map((r) => r.lang);
+
+  // Fallback chain: requested → English (guaranteed baseline) → any available.
+  // `null` only when no variant exists at all (the bucket has no result yet).
+  let shownLang: string | null;
+  if (availableLangs.includes(requestedLang)) {
+    shownLang = requestedLang;
+  } else if (availableLangs.includes(ENGLISH_BASELINE)) {
+    shownLang = ENGLISH_BASELINE;
+  } else {
+    // Deterministic pick of "any available" so a shareable link is stable.
+    shownLang = [...availableLangs].sort()[0] ?? null;
+  }
+
+  if (shownLang === null) {
+    // No result for any language yet — the bucket's first generation is still
+    // in flight. Surface the existing pending state (state #5): the worker is
+    // already producing the English baseline, so do NOT enqueue an on-demand
+    // job here (an unavailable language while nothing exists is the pending
+    // case, not a spinner tied to a per-language job).
+    return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
+  }
+
+  // A fallback occurred when the shown language is not the requested one. In
+  // that case (phase 2) enqueue the requested variant on-demand and surface
+  // its job status; repeated views coalesce (no generation bump).
+  let languageFallback: ReportResultPageData["languageFallback"] = null;
+  if (shownLang !== requestedLang) {
+    const jobStatus = await enqueueRequestedLanguage(authPool, {
+      customerId: input.customerId,
+      period: input.period,
+      bucketDate: input.bucketDate,
+      tz,
+      lang: requestedLang,
+      modelName,
+      model,
+    });
+    languageFallback = {
+      requestedLocale,
+      shownLocale: reportLanguageToAppLocale(shownLang as ReportLanguage),
+      jobStatus,
+    };
+  }
+
   const resultRow = await customerPool.query<{
     model_actual_version: string;
     prompt_version: string;
@@ -221,12 +348,14 @@ export async function loadReportResultPage(
       input.period,
       input.bucketDate,
       tz,
-      lang,
+      shownLang,
       modelName,
       model,
     ],
   );
   if (resultRow.rows.length === 0) {
+    // `shownLang` came from the available-language set, so a row should
+    // exist; treat a vanished row (e.g. just superseded) as still pending.
     return { kind: "pending", stateStatus: stateRows.rows[0].status, tz };
   }
   const row = resultRow.rows[0];
@@ -306,8 +435,64 @@ export async function loadReportResultPage(
       topEventCount: eventRefs.length,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
+      requestedLocale,
+      // Map the stored enums to app-locale codes for the switcher, dropping
+      // any unrecognized value defensively (the column is enum-constrained).
+      availableLocales: availableLangs
+        .filter((l): l is ReportLanguage => l === "ENGLISH" || l === "KOREAN")
+        .map(reportLanguageToAppLocale),
+      languageFallback,
     },
   };
+}
+
+/**
+ * Enqueue an on-demand job for the requested (not-yet-available) language and
+ * map the coalescing helper's result to a UI status (#388 phase 2 / #389 Part
+ * A). The helper never bumps `generation` and coalesces onto any in-flight or
+ * completed job, so calling it on repeated views is safe.
+ *
+ *   - `seeded` / `requeued` → `queued`
+ *   - `coalesced` → the existing job's status (`queued` | `processing` | `done`)
+ *   - `source_pending` → the bucket's settle window has not elapsed; no job
+ *   - `state_not_found` / `source_unavailable` → no job applies (null)
+ *
+ * The transient `queued`/`processing` states are then polled to `done`/`failed`
+ * by the page's status endpoint; this initial value just seeds the UI.
+ */
+async function enqueueRequestedLanguage(
+  authPool: ReturnType<typeof getAuthPool>,
+  variant: {
+    customerId: string;
+    period: string;
+    bucketDate: string;
+    tz: string;
+    lang: string;
+    modelName: string;
+    model: string;
+  },
+): Promise<LanguageJobStatus | null> {
+  // Best-effort: the English fallback content is already in hand, so a
+  // transient enqueue failure must NOT 500 the page — it degrades to "no job
+  // status" (the fallback notice still shows, just without the on-demand
+  // progress banner). The read-only status poller retries the next view.
+  let result: Awaited<ReturnType<typeof enqueueOnDemandReportJob>>;
+  try {
+    result = await enqueueOnDemandReportJob(authPool, variant);
+  } catch {
+    return null;
+  }
+  switch (result.action) {
+    case "seeded":
+    case "requeued":
+      return "queued";
+    case "coalesced":
+      return result.status as LanguageJobStatus;
+    case "source_pending":
+      return "source_pending";
+    default:
+      return null;
+  }
 }
 
 /**

@@ -25,6 +25,11 @@
 
 import type { NextRequest } from "next/server";
 import {
+  appLocaleToReportLanguage,
+  isSupportedLocale,
+  type ReportLanguage,
+} from "@/i18n/locale";
+import {
   isValidBucketDate,
   LIVE_BUCKET_DATE,
 } from "@/lib/analysis/report-bucket-date";
@@ -37,7 +42,12 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// This is an API route, NOT a `[locale]` page, so it has no viewer locale to
+// resolve a default language from. When `?lang=` is absent (or not a valid
+// app-locale code) it falls back to the English guaranteed baseline — NOT
+// `ANALYSIS_DEFAULT_LANG` — keeping the endpoint locale-stateless (#388).
+// Viewer-aware callers pass the resolved locale-code `?lang=`.
+const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
 const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
@@ -149,7 +159,13 @@ export const GET = withAuth(
       return Response.json({ exists: false });
     }
 
-    const lang = req.nextUrl.searchParams.get("lang") ?? DEFAULT_LANG;
+    // `?lang=` is an app-locale code (`en`/`ko`), validated then mapped to the
+    // aimer enum here at the boundary; an absent / unrecognized value (e.g. a
+    // legacy enum-shaped `KOREAN`) falls back to the English baseline.
+    const langParam = req.nextUrl.searchParams.get("lang");
+    const lang = isSupportedLocale(langParam)
+      ? appLocaleToReportLanguage(langParam)
+      : ENGLISH_BASELINE;
     const modelName =
       req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
     const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
@@ -179,11 +195,15 @@ export const GET = withAuth(
     // Forward only the variant params the caller actually requested so the
     // deep link opens the same variant. Omitted selectors stay implicit and
     // resolve to the page's defaults, matching pre-existing link behavior.
+    // `lang` is kept in the locale-code vocabulary (the page reinterprets
+    // `?lang=` as `en`/`ko`), so only a valid locale code is forwarded; an
+    // unrecognized value is dropped rather than leaking an enum into the URL.
     const linkQuery = new URLSearchParams();
-    for (const key of ["tz", "lang", "model_name", "model"] as const) {
+    for (const key of ["tz", "model_name", "model"] as const) {
       const value = req.nextUrl.searchParams.get(key);
       if (value) linkQuery.set(key, value);
     }
+    if (isSupportedLocale(langParam)) linkQuery.set("lang", langParam);
     const linkQs = linkQuery.toString();
     return Response.json({
       exists: true,

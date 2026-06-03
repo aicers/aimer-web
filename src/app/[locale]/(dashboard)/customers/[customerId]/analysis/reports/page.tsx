@@ -23,7 +23,10 @@ interface PageProps {
 export default async function ReportIndexPage({ params }: PageProps) {
   const { locale, customerId } = await params;
 
-  const outcome = await loadReportIndexPage({ customerId });
+  // Pass the viewer's locale so each bucket's metadata resolves to the
+  // viewer's language (viewer → English → any), never silently showing an
+  // English tier where the viewer's language exists (#388).
+  const outcome = await loadReportIndexPage({ customerId, locale });
 
   // Same status mapping as the detail page: non-member / non-existent → 404
   // (existence-hiding); permission- or bridge-denied → real 403 via the
@@ -144,9 +147,27 @@ function BucketCard({
         <div className="truncate text-sm font-medium text-foreground">
           {bucketLabel(item)}
         </div>
-        <div className="mt-0.5 text-xs text-muted-foreground">
-          {item.tz}
-          {item.result ? ` • generation ${item.result.generation}` : ""}
+        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <span>
+            {item.tz}
+            {item.result ? ` • generation ${item.result.generation}` : ""}
+          </span>
+          {item.availableLocales.length > 0 && (
+            <span
+              data-testid={`report-langs-${item.period}-${item.bucketDate}`}
+              className="inline-flex items-center gap-1"
+            >
+              {item.availableLocales.map((loc) => (
+                <span
+                  key={loc}
+                  data-locale={loc}
+                  className="inline-flex items-center rounded border border-border px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                >
+                  {loc}
+                </span>
+              ))}
+            </span>
+          )}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">

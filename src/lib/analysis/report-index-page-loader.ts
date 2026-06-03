@@ -22,6 +22,13 @@
 import "server-only";
 
 import type { Pool } from "pg";
+import {
+  type AppLocale,
+  appLocaleToReportLanguage,
+  isSupportedLocale,
+  type ReportLanguage,
+  reportLanguageToAppLocale,
+} from "@/i18n/locale";
 import { authorize } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
@@ -32,7 +39,9 @@ import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import type { PriorityTier } from "./priority-tier";
 import type { PeriodKind } from "./report-bucket-date";
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// English is the guaranteed baseline (parent #386), the second link in the
+// per-bucket fallback chain (viewer language → English → any available).
+const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
 const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
@@ -80,8 +89,20 @@ export interface ReportBucketItem {
   /** The state row's bucket tz — pinned on the detail link (`?tz=`). */
   tz: string;
   stateStatus: StateStatus;
-  /** Latest non-superseded default-variant result, or null when none yet. */
+  /**
+   * Latest non-superseded result for this bucket resolved to the viewer's
+   * language (viewer language → English → any available), or null when no
+   * result exists yet. Resolved per bucket so a `ko` viewer never silently
+   * sees an English tier where a `ko` result exists (#388).
+   */
   result: ReportBucketResult | null;
+  /**
+   * The languages with a stored result for this bucket's default-model
+   * variant, as app-locale codes (for a per-bucket availability hint).
+   */
+  availableLocales: AppLocale[];
+  /** Language `result` was resolved to, as an app-locale code; null when none. */
+  resolvedLocale: AppLocale | null;
 }
 
 export interface ReportPeriodGroup {
@@ -96,6 +117,12 @@ export type ReportIndexPageOutcome =
 
 export interface ReportIndexPageInput {
   customerId: string;
+  /**
+   * The viewer's resolved app locale (the page's `[locale]` route param).
+   * Drives the per-bucket viewer-language fallback. Defaults to the English
+   * baseline when absent / unrecognized.
+   */
+  locale?: string;
 }
 
 interface StateRow {
@@ -154,10 +181,14 @@ export async function loadReportIndexPage(
     return { kind: "unauthorized" };
   }
 
+  const viewerLanguage = isSupportedLocale(input.locale)
+    ? appLocaleToReportLanguage(input.locale)
+    : ENGLISH_BASELINE;
   const groups = await discoverReportBuckets(
     authPool,
     getCustomerRuntimePool(input.customerId),
     input.customerId,
+    viewerLanguage,
   );
   return { kind: "ok", groups };
 }
@@ -167,11 +198,17 @@ export async function loadReportIndexPage(
  * preamble — exported so the staged cross-DB query path can be exercised
  * by a db test (the auth path needs a real cookie/JWT/session and is
  * covered by the page unit test instead).
+ *
+ * `viewerLanguage` selects which language's result enriches each bucket via
+ * the per-bucket fallback chain (viewer language → English → any available);
+ * it defaults to the English baseline so callers that don't care (and the
+ * existing db test) keep the prior English-default behavior.
  */
 export async function discoverReportBuckets(
   authPool: Pool,
   customerPool: Pool,
   customerId: string,
+  viewerLanguage: ReportLanguage = ENGLISH_BASELINE,
 ): Promise<ReportPeriodGroup[]> {
   // --- Discovery (auth DB): non-archived state rows, capped per period --
   // The cap is applied in SQL (ROW_NUMBER per period) so the index never
@@ -211,14 +248,20 @@ export async function discoverReportBuckets(
     tz: r.tz,
     stateStatus: r.status,
     result: null,
+    availableLocales: [],
+    resolvedLocale: null,
   }));
 
-  // --- Enrichment (customer DB): latest default-variant result per bucket.
-  // The default variant matches `tz = state.tz` (the row's bucket tz, NOT
-  // the customer's current timezone — those differ after a tz change) and
-  // the env-default `(lang, model_name, model)`. Best-effort: discovery is
-  // the source of truth, so an enrichment failure (e.g. customer DB
-  // unavailable) degrades to links-only rather than failing the page.
+  // --- Enrichment (customer DB): latest non-superseded result per bucket AND
+  // language, at the default model variant. The default variant matches
+  // `tz = state.tz` (the row's bucket tz, NOT the customer's current timezone
+  // — those differ after a tz change) and the env-default `(model_name,
+  // model)`. Unlike the prior pass this is NOT pinned to a single language:
+  // it returns every available language per bucket so the result can be
+  // resolved to the viewer's language with the fallback chain (#388), and the
+  // available-language set can drive the per-bucket hint + switcher. Best-
+  // effort: discovery is the source of truth, so an enrichment failure (e.g.
+  // customer DB unavailable) degrades to links-only rather than failing.
   if (items.length > 0) {
     try {
       const periods = items.map((i) => i.period);
@@ -228,6 +271,7 @@ export async function discoverReportBuckets(
         period: PeriodKind;
         bucket_date: string;
         tz: string;
+        lang: string;
         priority_tier: PriorityTier;
         generation: number;
         requested_by: string | null;
@@ -237,8 +281,8 @@ export async function discoverReportBuckets(
            SELECT p, d::date, z
              FROM unnest($1::text[], $2::date[], $3::text[]) AS u(p, d, z)
          )
-         SELECT DISTINCT ON (r.period, r.bucket_date, r.tz)
-                r.period, r.bucket_date::text AS bucket_date, r.tz,
+         SELECT DISTINCT ON (r.period, r.bucket_date, r.tz, r.lang)
+                r.period, r.bucket_date::text AS bucket_date, r.tz, r.lang,
                 r.priority_tier, r.generation,
                 r.requested_by::text AS requested_by, r.requested_at
            FROM periodic_report_result r
@@ -247,22 +291,29 @@ export async function discoverReportBuckets(
             AND w.bucket_date = r.bucket_date
             AND w.tz = r.tz
           WHERE r.customer_id = $4
-            AND r.lang = $5 AND r.model_name = $6 AND r.model = $7
+            AND r.model_name = $5 AND r.model = $6
             AND r.superseded_at IS NULL
-          ORDER BY r.period, r.bucket_date, r.tz, r.generation DESC`,
+          ORDER BY r.period, r.bucket_date, r.tz, r.lang, r.generation DESC`,
         [
           periods,
           bucketDates,
           tzs,
           customerId,
-          DEFAULT_LANG,
           DEFAULT_MODEL_NAME,
           DEFAULT_MODEL,
         ],
       );
-      const byKey = new Map<string, ReportBucketResult>();
+      // Group the per-(bucket, language) winners by bucket so each bucket can
+      // resolve its own viewer-language fallback.
+      const byBucket = new Map<string, Map<string, ReportBucketResult>>();
       for (const row of resultRows.rows) {
-        byKey.set(`${row.period}|${row.bucket_date}|${row.tz}`, {
+        const key = `${row.period}|${row.bucket_date}|${row.tz}`;
+        let langs = byBucket.get(key);
+        if (!langs) {
+          langs = new Map();
+          byBucket.set(key, langs);
+        }
+        langs.set(row.lang, {
           priorityTier: row.priority_tier,
           generation: row.generation,
           requestedBy: row.requested_by,
@@ -270,11 +321,29 @@ export async function discoverReportBuckets(
         });
       }
       for (const item of items) {
-        item.result =
-          byKey.get(`${item.period}|${item.bucketDate}|${item.tz}`) ?? null;
+        const langs = byBucket.get(
+          `${item.period}|${item.bucketDate}|${item.tz}`,
+        );
+        if (!langs) continue;
+        item.availableLocales = [...langs.keys()]
+          .filter((l): l is ReportLanguage => l === "ENGLISH" || l === "KOREAN")
+          .map(reportLanguageToAppLocale)
+          .sort();
+        // Fallback chain: viewer language → English → any available.
+        const resolvedLang =
+          (langs.has(viewerLanguage) && viewerLanguage) ||
+          (langs.has(ENGLISH_BASELINE) && ENGLISH_BASELINE) ||
+          [...langs.keys()].sort()[0];
+        if (resolvedLang) {
+          item.result = langs.get(resolvedLang) ?? null;
+          item.resolvedLocale =
+            resolvedLang === "ENGLISH" || resolvedLang === "KOREAN"
+              ? reportLanguageToAppLocale(resolvedLang)
+              : null;
+        }
       }
     } catch {
-      // Leave `result` null on every item — links-only fallback.
+      // Leave every item links-only on failure.
     }
   }
 

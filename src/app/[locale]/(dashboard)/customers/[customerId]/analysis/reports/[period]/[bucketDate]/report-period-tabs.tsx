@@ -3,6 +3,7 @@ import {
   type PeriodKind,
   periodBucketDate,
 } from "@/lib/analysis/report-bucket-date";
+import { mergeQuery } from "@/lib/navigation/query";
 
 interface Props {
   locale: string;
@@ -17,15 +18,12 @@ interface Props {
    */
   referenceDate: string;
   /**
-   * Active report variant — forwarded on each tab link so a non-default
-   * report (pinned tz / lang / model) stays on that variant across tabs.
+   * The page's current query string — forwarded on each tab link so a
+   * non-default report (pinned tz / lang / model) stays on that variant
+   * across tabs. Carried via the shared {@link mergeQuery} helper so tabs
+   * and the language switcher preserve params identically (#388).
    */
-  variant?: {
-    tz?: string;
-    lang?: string;
-    model_name?: string;
-    model?: string;
-  };
+  currentQuery?: string;
 }
 
 const TABS: ReadonlyArray<{ period: PeriodKind; label: string }> = [
@@ -34,16 +32,6 @@ const TABS: ReadonlyArray<{ period: PeriodKind; label: string }> = [
   { period: "WEEKLY", label: "Weekly" },
   { period: "MONTHLY", label: "Monthly" },
 ];
-
-function variantQuery(variant: Props["variant"]): string {
-  const q = new URLSearchParams();
-  if (variant?.tz) q.set("tz", variant.tz);
-  if (variant?.lang) q.set("lang", variant.lang);
-  if (variant?.model_name) q.set("model_name", variant.model_name);
-  if (variant?.model) q.set("model", variant.model);
-  const s = q.toString();
-  return s ? `?${s}` : "";
-}
 
 /**
  * RFC 0002 Phase 3 (#298) — period tab bar for the report detail view.
@@ -58,9 +46,11 @@ export function ReportPeriodTabs({
   customerId,
   activePeriod,
   referenceDate,
-  variant,
+  currentQuery,
 }: Props) {
-  const query = variantQuery(variant);
+  // Preserve (and normalize) the current variant params on every tab link.
+  const qs = mergeQuery(currentQuery, {});
+  const query = qs ? `?${qs}` : "";
   const base = `/${locale}/customers/${customerId}/analysis/reports`;
   return (
     <nav aria-label="report-period-tabs" data-testid="report-period-tabs">

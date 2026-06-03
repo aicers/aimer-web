@@ -1353,6 +1353,29 @@ base.describe.serial("Manual screenshots", () => {
     });
   }
 
+  for (const locale of LOCALES) {
+    base(`report-language-switcher.${locale}.png`, async () => {
+      // #388 — the per-report language switcher + fallback notice + on-demand
+      // status. The fixture seeds only the English variant, so opening the
+      // report with `?lang=ko` exercises the full surface: the switcher (en
+      // active, ko offered), the English-fallback notice naming Korean, and
+      // the on-demand generation status the request enqueues.
+      await ensureReportFixtures();
+      await mgrPage.setViewportSize({ width: 1280, height: 720 });
+      await mgrPage.goto(`${reportUrl(locale)}?lang=ko`);
+      await settle(mgrPage);
+      await expect(
+        mgrPage.locator('[data-testid="report-language-switcher"]'),
+      ).toBeVisible();
+      await expect(
+        mgrPage.locator('[data-testid="report-language-fallback"]'),
+      ).toBeVisible();
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `report-language-switcher.${locale}.png`),
+      });
+    });
+  }
+
   base("analysis-result cleanup", async () => {
     // Captures above leave the per-customer DB behind so subsequent
     // reruns are cheap; explicit cleanup here means a fresh capture
