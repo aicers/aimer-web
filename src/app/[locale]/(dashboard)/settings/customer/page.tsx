@@ -11,7 +11,7 @@ import { RetentionSection } from "./retention-section";
 export default function CustomerSettingsPage() {
   const t = useTranslations("nav");
   const tCommon = useTranslations("common");
-  const { selectedCustomerId } = useCustomerContext();
+  const { singleCustomerId } = useCustomerContext();
   const {
     canViewCustomerSettings,
     canViewRedactionRanges,
@@ -20,7 +20,20 @@ export default function CustomerSettingsPage() {
     canWriteRetention,
   } = usePermissions();
 
-  if (!canViewCustomerSettings || !selectedCustomerId) {
+  // Customer Settings renders against a single customer. Under a multi-/
+  // all-scope there is no single target — show a scope-required state
+  // rather than a permission error (#390).
+  if (!singleCustomerId) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-sm text-muted-foreground">
+          {tCommon("scopeRequired")}
+        </p>
+      </div>
+    );
+  }
+
+  if (!canViewCustomerSettings) {
     return (
       <div className="flex h-full items-center justify-center">
         <p className="text-sm text-destructive">{tCommon("forbidden")}</p>
@@ -36,14 +49,14 @@ export default function CustomerSettingsPage() {
 
       {canViewRedactionRanges && (
         <RedactionRangesSection
-          customerId={selectedCustomerId}
+          customerId={singleCustomerId}
           canWrite={canWriteRedactionRanges}
         />
       )}
 
       {canViewRetention && (
         <RetentionSection
-          customerId={selectedCustomerId}
+          customerId={singleCustomerId}
           canWrite={canWriteRetention}
         />
       )}

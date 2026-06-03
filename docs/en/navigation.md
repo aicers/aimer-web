@@ -20,7 +20,7 @@ page. It contains:
 ## Sidebar
 
 The sidebar is displayed on the left side of every dashboard page.
-It contains the customer/environment selector and navigation links.
+It contains the customer scope selector and navigation links.
 
 ![Sidebar expanded](../assets/sidebar-expanded.png)
 
@@ -39,13 +39,16 @@ All users see a personal settings item:
 - **Account Settings** — set your personal language and timezone
     preferences (see [Account Preferences](account-preferences.md)).
 
-Users with the Manager role see two additional items under
-settings:
+Two additional items appear **only when the active scope resolves to a
+single customer** (see the customer scope selector below):
 
 - **Members** — manage workspace members and invitations
-    (see [Members](members.md)).
-- **Customer Settings** — customer workspace configuration
-    (coming soon).
+    (see [Members](members.md)); visible to Managers.
+- **Customer Settings** — customer workspace configuration.
+
+These pages render against one customer, so under an "all customers" or
+multi-customer scope their links are hidden and visiting them directly
+shows a "select a single customer" notice.
 
 ### Collapsed mode
 
@@ -57,26 +60,43 @@ saved in the browser and persists across sessions.
 
 ![Sidebar collapsed](../assets/sidebar-collapsed.png)
 
-## Customer and environment selector
+## Customer scope selector
 
-At the top of the sidebar, two dropdowns let you choose the active
-customer workspace and AICE environment.
+At the top of the sidebar, the **Customer scope** selector controls
+which customers the cross-customer views cover. The default vantage is
+**all customers you can access**; you can narrow it to a subset or to a
+single customer by checking the customers you want.
 
-![Customer and environment selector](../assets/customer-selector.png)
+- Every accessible customer is listed with a checkbox. When all are
+    checked, the scope is **All customers** (the default).
+- Unchecking customers narrows the scope to the remaining selection;
+    the summary line shows how many of the total are selected.
+- The active scope is encoded in the page URL (`?scope=…`), so a
+    narrowed view is deep-linkable and shareable. Changing the scope
+    preserves other query parameters already on the URL.
+- The active scope follows you as you move between sidebar
+    destinations, so a narrowed view stays narrowed across navigation.
+- Cross-customer pages canonicalize the scope: a shared or hand-typed
+    link with a non-canonical value (unsorted, duplicated, or
+    inaccessible ids; a garbled or empty value; an explicit full set)
+    is redirected to the sorted, deduped canonical form so shared links
+    stay stable. Bridge sessions cannot open these cross-customer
+    surfaces.
 
-- **Customer** — lists all customer workspaces you have access to.
-    Switching the customer reloads workspace-specific data such as
-    members, events, and configurations.
-- **Environment** — lists AICE environments associated with the
-    selected customer. If no environments are available, this
-    dropdown is disabled.
+The selector is **customer-only**. There is no global AICE environment
+selector: an environment (`aiceId`) is chosen only inside a specific
+customer's deep routes, never as an app-wide control.
+
+> **Screenshot pending.** A representative capture needs a stack loaded
+> with multiple customers, which is not available yet. The real
+> screenshot is tracked in issue #403.
 
 ### Bridge sessions
 
-When you access Clumit Insight through a bridge session, the customer
-and environment selectors are locked and cannot be changed. A lock
-icon and a "Locked to bridge session" label indicate the
-locked state.
+When you access Clumit Insight through a bridge session, the scope is
+pinned to the bridge's fixed customer set and cannot be changed. The
+scope selector is replaced by a lock icon and a "Locked to bridge
+session" label.
 
 ## User section
 

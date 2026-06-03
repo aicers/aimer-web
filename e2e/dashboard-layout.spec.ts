@@ -51,27 +51,21 @@ test.describe("Dashboard sidebar", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sidebar — customer/environment selector
+// Sidebar — customer scope selector
 // ---------------------------------------------------------------------------
 
-test.describe("Dashboard customer selector", () => {
-  test("renders customer selector with accessible customers", async ({
+test.describe("Dashboard customer scope", () => {
+  test("renders scope selector with accessible customers", async ({
     managerPage,
     testData,
   }) => {
     await managerPage.goto("/en");
 
-    const select = managerPage.getByLabel("Customer");
-    await expect(select).toBeVisible();
-    await expect(select).toBeEnabled();
-    await expect(select.getByText(testData.customer.name)).toBeAttached();
-  });
-
-  test("renders environment selector", async ({ managerPage }) => {
-    await managerPage.goto("/en");
-
-    const select = managerPage.getByLabel("Environment");
-    await expect(select).toBeVisible();
+    const scope = managerPage.getByRole("list", { name: "Customer scope" });
+    await expect(scope).toBeVisible();
+    await expect(
+      scope.getByRole("checkbox", { name: testData.customer.name }),
+    ).toBeVisible();
   });
 });
 
@@ -92,8 +86,10 @@ test.describe("Dashboard sidebar collapse", () => {
 
     await managerPage.getByRole("button", { name: "Collapse sidebar" }).click();
 
-    // Customer selector should be hidden
-    await expect(managerPage.getByLabel("Customer")).toBeHidden();
+    // Scope selector should be hidden
+    await expect(
+      managerPage.getByRole("list", { name: "Customer scope" }),
+    ).toBeHidden();
 
     // Expand button should appear
     await expect(
@@ -121,13 +117,17 @@ test.describe("Dashboard sidebar collapse", () => {
     await managerPage.getByRole("button", { name: "Collapse sidebar" }).click();
 
     // Wait for collapse transition to settle
-    await expect(managerPage.getByLabel("Customer")).toBeHidden();
+    await expect(
+      managerPage.getByRole("list", { name: "Customer scope" }),
+    ).toBeHidden();
 
     // Expand
     await managerPage.getByRole("button", { name: "Expand sidebar" }).click();
 
-    // Labels and customer selector should be visible again
-    await expect(managerPage.getByLabel("Customer")).toBeVisible();
+    // Labels and scope selector should be visible again
+    await expect(
+      managerPage.getByRole("list", { name: "Customer scope" }),
+    ).toBeVisible();
     await expect(
       managerPage.getByRole("button", { name: "Collapse sidebar" }),
     ).toBeVisible();
@@ -147,13 +147,17 @@ test.describe("Dashboard sidebar collapse", () => {
 
     // Collapse
     await managerPage.getByRole("button", { name: "Collapse sidebar" }).click();
-    await expect(managerPage.getByLabel("Customer")).toBeHidden();
+    await expect(
+      managerPage.getByRole("list", { name: "Customer scope" }),
+    ).toBeHidden();
 
     // Navigate to a different page
     await managerPage.goto("/en/events");
 
     // Sidebar should still be collapsed
-    await expect(managerPage.getByLabel("Customer")).toBeHidden();
+    await expect(
+      managerPage.getByRole("list", { name: "Customer scope" }),
+    ).toBeHidden();
     await expect(
       managerPage.getByRole("button", { name: "Expand sidebar" }),
     ).toBeVisible();

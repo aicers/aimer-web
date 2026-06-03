@@ -23,13 +23,17 @@ export interface Permissions {
 /**
  * Derives effective permissions for a customer.
  *
- * @param customerId - Override customer ID. When omitted the currently
- *   selected customer from {@link useCustomerContext} is used.
+ * @param customerId - Override customer ID. When omitted, permissions
+ *   resolve against the single customer in the active scope
+ *   ({@link useCustomerContext}'s `singleCustomerId`). Under a multi- or
+ *   all-scope that resolves to more than one customer there is no single
+ *   target, so every permission is denied — Members and Customer Settings
+ *   are single-customer surfaces (#390).
  */
 export function usePermissions(customerId?: string): Permissions {
-  const { customers, selectedCustomerId } = useCustomerContext();
+  const { customers, singleCustomerId } = useCustomerContext();
 
-  const resolvedId = customerId ?? selectedCustomerId;
+  const resolvedId = customerId ?? singleCustomerId;
 
   return useMemo(() => {
     const entry = customers.find((c) => c.id === resolvedId);

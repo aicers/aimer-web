@@ -17,7 +17,6 @@ import { usePathname } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
-import { Select } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import {
   Tooltip,
@@ -27,6 +26,8 @@ import {
 } from "@/components/ui/tooltip";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
+import { mergeQuery } from "@/lib/navigation/query";
+import { SCOPE_PARAM } from "@/lib/navigation/scope";
 import { cn } from "@/lib/utils";
 
 import {
@@ -42,6 +43,12 @@ export interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
   visible?: boolean;
   exact?: boolean;
+  /**
+   * Query string (without the leading `?`) carried on the link, kept
+   * separate from {@link href} so active-item matching stays path-only.
+   * Used to preserve the active customer scope across sidebar navigation.
+   */
+  query?: string;
 }
 
 export function useSidebarCollapsed() {
@@ -67,6 +74,25 @@ function useNavItems(): NavItem[] {
   const t = useTranslations("nav");
   const locale = useLocale();
   const permissions = usePermissions();
+  const { singleCustomerId, scope } = useCustomerContext();
+
+  // Members and Customer Settings render against a single customer. They are
+  // reachable only when the active scope resolves to exactly one customer;
+  // under a multi-/all-scope their links are hidden (#390). `usePermissions`
+  // already returns false here when there is no single customer, but gate
+  // explicitly so the intent is clear.
+  const singleScope = singleCustomerId !== null;
+
+  // Preserve the active scope as the user navigates between sidebar
+  // destinations (#390). The all-scope is represented as an absent param
+  // (clean URLs), so only a narrowed scope carries a query. This is what
+  // keeps the single-customer settings links valid: clicking them under a
+  // `?scope=c1` subset must arrive at the page WITH that scope, otherwise
+  // the page re-normalizes to all customers and renders the scope-required
+  // state. Kept off `href` so active-item matching stays path-only.
+  const scopeQuery = scope.isAll
+    ? undefined
+    : mergeQuery(null, { [SCOPE_PARAM]: scope.canonical });
 
   return [
     { href: `/${locale}`, label: t("home"), icon: Home, exact: true },
@@ -74,21 +100,25 @@ function useNavItems(): NavItem[] {
       href: `/${locale}/events`,
       label: t("events"),
       icon: Shield,
+      query: scopeQuery,
     },
     {
       href: `/${locale}/analysis`,
       label: t("analysis"),
       icon: Search,
+      query: scopeQuery,
     },
     {
       href: `/${locale}/reports`,
       label: t("reports"),
       icon: FileText,
+      query: scopeQuery,
     },
     {
       href: `/${locale}/dashboard`,
       label: t("dashboard"),
       icon: LayoutDashboard,
+      query: scopeQuery,
     },
     {
       href: `/${locale}/settings/account`,
@@ -99,85 +129,91 @@ function useNavItems(): NavItem[] {
       href: `/${locale}/settings/members`,
       label: t("members"),
       icon: Users,
-      visible: permissions.canViewMembers,
+      visible: singleScope && permissions.canViewMembers,
+      query: scopeQuery,
     },
     {
       href: `/${locale}/settings/customer`,
       label: t("customerSettings"),
       icon: Settings,
-      visible: permissions.canViewCustomerSettings,
+      visible: singleScope && permissions.canViewCustomerSettings,
+      query: scopeQuery,
     },
   ];
 }
 
-function CustomerSelector({ collapsed }: { collapsed: boolean }) {
+function ScopeSelector({ collapsed }: { collapsed: boolean }) {
   const tSidebar = useTranslations("sidebar");
-  const {
-    customers,
-    selectedCustomerId,
-    setSelectedCustomerId,
-    environments,
-    selectedEnvironmentId,
-    setSelectedEnvironmentId,
-    isBridgeSession,
-  } = useCustomerContext();
+  const { customers, scope, setScope, isBridgeSession } = useCustomerContext();
 
   if (collapsed) return null;
 
-  return (
-    <div className="border-b border-[var(--sidebar-border)] p-3">
-      <div className="mb-2">
-        <label
-          htmlFor="customer-select"
-          className="mb-1 flex items-center text-xs font-medium text-[var(--sidebar-muted)]"
-        >
-          {isBridgeSession && <Lock className="mr-1 h-3 w-3" />}
-          {tSidebar("selectCustomer")}
-        </label>
-        <Select
-          id="customer-select"
-          value={selectedCustomerId ?? ""}
-          onChange={(e) => setSelectedCustomerId(e.target.value)}
-          disabled={isBridgeSession}
-          className="w-full"
-        >
-          {customers.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </Select>
-      </div>
-
-      <div>
-        <label
-          htmlFor="environment-select"
-          className="mb-1 flex items-center text-xs font-medium text-[var(--sidebar-muted)]"
-        >
-          {isBridgeSession && <Lock className="mr-1 h-3 w-3" />}
-          {tSidebar("selectEnvironment")}
-        </label>
-        <Select
-          id="environment-select"
-          value={selectedEnvironmentId ?? ""}
-          onChange={(e) => setSelectedEnvironmentId(e.target.value)}
-          disabled={isBridgeSession || environments.length === 0}
-          className="w-full"
-        >
-          {environments.map((e) => (
-            <option key={e.aiceId} value={e.aiceId}>
-              {e.name}
-            </option>
-          ))}
-        </Select>
-      </div>
-
-      {isBridgeSession && (
-        <p className="mt-2 flex items-center text-xs text-[var(--sidebar-muted)]">
+  // Bridge sessions are pinned to a fixed bridge scope and cannot read
+  // cross-customer surfaces — short-circuit the control (not just disable
+  // it) and show the locked notice.
+  if (isBridgeSession) {
+    return (
+      <div className="border-b border-[var(--sidebar-border)] p-3">
+        <div className="mb-1 flex items-center text-xs font-medium text-[var(--sidebar-muted)]">
+          <Lock className="mr-1 h-3 w-3" />
+          {tSidebar("scopeLabel")}
+        </div>
+        <p className="flex items-center text-xs text-[var(--sidebar-muted)]">
           <Lock className="mr-1 h-3 w-3" />
           {tSidebar("bridgeLocked")}
         </p>
-      )}
+      </div>
+    );
+  }
+
+  // When the scope is `all`, every accessible customer is checked. Toggling
+  // one off narrows to the remaining subset; re-checking the last one (or
+  // checking every box) collapses back to `all` via `normalizeScope`.
+  const checked = new Set(
+    scope.isAll ? customers.map((c) => c.id) : scope.customerIds,
+  );
+
+  function toggle(id: string) {
+    const next = new Set(checked);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    setScope([...next]);
+  }
+
+  return (
+    <div className="border-b border-[var(--sidebar-border)] p-3">
+      <div
+        id="scope-label"
+        className="mb-2 text-xs font-medium text-[var(--sidebar-muted)]"
+      >
+        {tSidebar("scopeLabel")}
+      </div>
+      <ul aria-labelledby="scope-label" className="space-y-1">
+        {customers.map((c) => (
+          <li key={c.id}>
+            <label className="flex items-center gap-2 text-sm text-[var(--sidebar-fg)]">
+              <input
+                type="checkbox"
+                checked={checked.has(c.id)}
+                onChange={() => toggle(c.id)}
+                className="h-4 w-4 shrink-0 rounded border-border"
+              />
+              <span className="truncate">{c.name}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-[var(--sidebar-muted)]">
+        {scope.isAll
+          ? tSidebar("scopeAll")
+          : tSidebar("scopeSelected", {
+              count: scope.customerIds.length,
+              total: customers.length,
+            })}
+      </p>
     </div>
   );
 }
@@ -205,9 +241,15 @@ export function NavList({
             ? pathname === item.href
             : pathname.startsWith(item.href);
 
+          // Active matching is path-only (above); the scope query is added
+          // here so navigating between sidebar destinations carries it.
+          const linkHref = item.query
+            ? `${item.href}?${item.query}`
+            : item.href;
+
           const link = (
             <Link
-              href={item.href}
+              href={linkHref}
               onClick={onNavigate ?? undefined}
               aria-current={isActive ? "page" : undefined}
               className={cn(
@@ -260,7 +302,7 @@ function SidebarContent({
 
   return (
     <>
-      <CustomerSelector collapsed={collapsed} />
+      <ScopeSelector collapsed={collapsed} />
       <NavList items={navItems} collapsed={collapsed} onNavigate={onNavigate} />
     </>
   );

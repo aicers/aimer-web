@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   createContext,
   type ReactNode,
@@ -11,20 +12,36 @@ import {
 } from "react";
 
 import { ApiError, apiFetch } from "@/lib/api/client";
-import type {
-  CustomerEntry,
-  EnvironmentEntry,
-  MeResponse,
-} from "@/lib/api/types";
+import type { CustomerEntry, MeResponse } from "@/lib/api/types";
+import { mergeQuery } from "@/lib/navigation/query";
+import {
+  type NormalizedScope,
+  normalizeScope,
+  SCOPE_PARAM,
+} from "@/lib/navigation/scope";
 
 interface CustomerContextValue {
   me: MeResponse | null;
+  /** Ambient set: the customers this account can access. */
   customers: CustomerEntry[];
-  selectedCustomerId: string | null;
-  setSelectedCustomerId: (id: string) => void;
-  environments: EnvironmentEntry[];
-  selectedEnvironmentId: string | null;
-  setSelectedEnvironmentId: (id: string) => void;
+  /**
+   * Active customer scope, derived from the URL `scope` param against the
+   * ambient set. `all` (default) ⇒ the full accessible set; `c1,c2` ⇒ that
+   * subset. See {@link normalizeScope}.
+   */
+  scope: NormalizedScope;
+  /**
+   * The single customer id when the active scope resolves to exactly one
+   * customer, else `null`. Drives single-customer gating (Members,
+   * Customer Settings, and {@link usePermissions}).
+   */
+  singleCustomerId: string | null;
+  /**
+   * Rewrite the URL `scope` param, merging (not replacing) the other query
+   * params already on the URL. Pass `"all"` or a list of customer ids; the
+   * value is normalized before it is written. No-op in a bridge session.
+   */
+  setScope: (next: "all" | string[]) => void;
   isBridgeSession: boolean;
   loading: boolean;
 }
@@ -34,36 +51,45 @@ const CustomerContext = createContext<CustomerContextValue | null>(null);
 export function CustomerContextProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [customers, setCustomers] = useState<CustomerEntry[]>([]);
-  const [selectedCustomerId, setSelectedCustomerIdState] = useState<
-    string | null
-  >(null);
-  const [environments, setEnvironments] = useState<EnvironmentEntry[]>([]);
-  const [selectedEnvironmentId, setSelectedEnvironmentIdState] = useState<
-    string | null
-  >(null);
   const [loading, setLoading] = useState(true);
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   const isBridgeSession = me?.bridge.active ?? false;
 
-  const setSelectedCustomerId = useCallback(
-    (id: string) => {
-      if (!isBridgeSession) {
-        setSelectedCustomerIdState(id);
-      }
-    },
-    [isBridgeSession],
+  const accessibleIds = useMemo(() => customers.map((c) => c.id), [customers]);
+
+  // Current scope is derived from the URL, not client state.
+  const rawScope = searchParams.get(SCOPE_PARAM);
+  const scope = useMemo(
+    () => normalizeScope(rawScope, accessibleIds),
+    [rawScope, accessibleIds],
   );
 
-  const setSelectedEnvironmentId = useCallback(
-    (id: string) => {
-      if (!isBridgeSession) {
-        setSelectedEnvironmentIdState(id);
-      }
+  const singleCustomerId =
+    scope.customerIds.length === 1 ? scope.customerIds[0] : null;
+
+  const setScope = useCallback(
+    (next: "all" | string[]) => {
+      // Bridge sessions are pinned to a fixed bridge scope — short-circuit.
+      if (isBridgeSession) return;
+      const norm = normalizeScope(
+        next === "all" ? "all" : next.join(","),
+        accessibleIds,
+      );
+      // Represent the all-scope as an absent param to keep URLs clean
+      // (absence ⇔ all). Merge so report-variant params are preserved.
+      const scopeValue = norm.isAll ? null : norm.canonical;
+      const qs = mergeQuery(searchParams, { [SCOPE_PARAM]: scopeValue });
+      router.push(qs ? `${pathname}?${qs}` : pathname);
     },
-    [isBridgeSession],
+    [accessibleIds, isBridgeSession, pathname, router, searchParams],
   );
 
-  // Fetch /api/auth/me and /api/auth/customers in parallel on mount
+  // Fetch /api/auth/me and /api/auth/customers in parallel on mount. The
+  // accessible customer set is the ambient set the scope normalizes against.
   useEffect(() => {
     let cancelled = false;
 
@@ -78,14 +104,6 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
 
         setMe(meData);
         setCustomers(customersData.customers);
-
-        // Auto-select: bridge customer or first available
-        const firstId = customersData.customers[0]?.id ?? null;
-        if (meData.bridge.active && meData.bridge.customerIds?.length) {
-          setSelectedCustomerIdState(meData.bridge.customerIds[0]);
-        } else {
-          setSelectedCustomerIdState(firstId);
-        }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           window.location.href = "/api/auth/sign-in";
@@ -101,69 +119,22 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Fetch environments when selected customer changes
-  useEffect(() => {
-    if (!selectedCustomerId) {
-      setEnvironments([]);
-      setSelectedEnvironmentIdState(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadEnvironments() {
-      try {
-        const data = await apiFetch<{ environments: EnvironmentEntry[] }>(
-          `/api/auth/environments?customer_id=${selectedCustomerId}`,
-        );
-
-        if (cancelled) return;
-
-        setEnvironments(data.environments);
-
-        // Auto-select: bridge environment or first available
-        if (me?.bridge.active && me.bridge.aiceId) {
-          const match = data.environments.find(
-            (e) => e.aiceId === me.bridge.aiceId,
-          );
-          setSelectedEnvironmentIdState(match?.aiceId ?? null);
-        } else {
-          setSelectedEnvironmentIdState(data.environments[0]?.aiceId ?? null);
-        }
-      } catch {
-        if (!cancelled) {
-          setEnvironments([]);
-          setSelectedEnvironmentIdState(null);
-        }
-      }
-    }
-
-    loadEnvironments();
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedCustomerId, me?.bridge.active, me?.bridge.aiceId]);
-
   const value = useMemo<CustomerContextValue>(
     () => ({
       me,
       customers,
-      selectedCustomerId,
-      setSelectedCustomerId,
-      environments,
-      selectedEnvironmentId,
-      setSelectedEnvironmentId,
+      scope,
+      singleCustomerId,
+      setScope,
       isBridgeSession,
       loading,
     }),
     [
       me,
       customers,
-      selectedCustomerId,
-      setSelectedCustomerId,
-      environments,
-      selectedEnvironmentId,
-      setSelectedEnvironmentId,
+      scope,
+      singleCustomerId,
+      setScope,
       isBridgeSession,
       loading,
     ],
