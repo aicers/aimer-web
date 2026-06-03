@@ -1540,6 +1540,94 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].translation_prompt_version).toBe("translate-pv-1");
   });
 
+  it("aborts the translate write when the watchdog requeues mid-call (audit not lost)", async () => {
+    // A slow translate attempt overruns the watchdog timeout:
+    // `recoverStuckReportJobs` returns the row to `queued` and clears
+    // `processing_started_at` while the attempt still holds the advisory
+    // lock. When the late attempt resumes, the claim-marker-guarded
+    // `recordTranslationAudit` matches ZERO rows. It must ABORT before the
+    // customer-DB insert — otherwise it would write a durable translated
+    // result row whose audit columns never landed, and the next retry's
+    // result probe would `preserve` them as NULL, re-introducing the
+    // audit-loss class via the watchdog/late-return path (#412 item 6 /
+    // round 5).
+    aimerCalls = 0;
+    const bucket = "2026-06-18";
+    const eventKey = "5004";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        // Simulate the watchdog timing out this attempt mid-call: return the
+        // row to `queued` and clear the claim marker, exactly as
+        // `recoverStuckReportJobs` does.
+        await authPool.query(
+          `UPDATE periodic_report_job
+              SET status = 'queued', processing_started_at = NULL,
+                  next_due_at = NULL, updated_at = NOW()
+            WHERE customer_id = $1 AND period = 'DAILY'
+              AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+          [CUSTOMER_ID, bucket, TZ],
+        );
+        return TRANSLATED;
+      },
+    });
+
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    // No translated result row was written — the attempt aborted at the
+    // authoritative pre-write audit check.
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(result).toHaveLength(0);
+
+    // The job is back in `queued` (left by the watchdog) with NO audit
+    // columns persisted — nothing to preserve as NULL on the next retry.
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+      translation_model: string | null;
+      translation_prompt_version: string | null;
+    }>(
+      `SELECT status, translation_model_name, translation_model,
+              translation_prompt_version
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("queued");
+    expect(job[0].translation_model_name).toBeNull();
+    expect(job[0].translation_model).toBeNull();
+    expect(job[0].translation_prompt_version).toBeNull();
+  });
+
   it("loads a SAME-generation English canonical even after it is superseded", async () => {
     // A non-English job at generation N must still derive from the
     // generation-N English canonical even once that row has been superseded by

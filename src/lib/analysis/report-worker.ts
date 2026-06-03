@@ -972,12 +972,36 @@ async function runTranslation(args: {
   // crash between the insert and finalize cannot lose it — the crash-recovery
   // probe then preserves these columns rather than NULLing them (#412 item 6 /
   // round 4).
-  await recordTranslationAudit(
+  //
+  // This pre-write update is also the authoritative claim re-check: if the
+  // watchdog (`recoverStuckReportJobs`) returned this row to `queued` and
+  // cleared `processing_started_at` while a slow translate attempt was still
+  // running, the claim-marker guard matches zero rows. We must then ABORT
+  // before the customer-DB insert — otherwise the late attempt would write a
+  // durable translated result row whose audit columns never landed, and the
+  // next retry's result probe would `preserve` them as NULL, re-introducing
+  // the audit-loss class via the watchdog/late-return path (#412 item 6 /
+  // round 5).
+  const auditRows = await recordTranslationAudit(
     opts.authPool,
     job,
     claimMarker,
     translationAudit,
   );
+  if (auditRows === 0) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.report_translation_claim_lost",
+        customer_id: job.customer_id,
+        period: job.period,
+        bucket_date: job.bucket_date,
+        tz: job.tz,
+        generation: job.generation,
+      }),
+    );
+    return;
+  }
 
   // Step 1 — customer-DB INSERT. The translated row copies the canonical's
   // refs and audit metadata verbatim (`model_name`/`model`/`prompt_version`/
@@ -1522,8 +1546,8 @@ async function recordTranslationAudit(
   job: JobPickup,
   claimMarker: string,
   audit: TranslationAudit,
-): Promise<void> {
-  await authPool.query(
+): Promise<number> {
+  const res = await authPool.query(
     `UPDATE periodic_report_job
         SET translation_model_name = $8,
             translation_model = $9,
@@ -1550,6 +1574,7 @@ async function recordTranslationAudit(
       claimMarker,
     ],
   );
+  return res.rowCount ?? 0;
 }
 
 async function failJob(
