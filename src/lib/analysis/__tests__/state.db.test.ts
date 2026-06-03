@@ -774,6 +774,94 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(jobs.count).toBe(0);
   });
 
+  it("unarchiveStoryStateIfArchived clears denormalized priority/scores (WS3 #392)", async () => {
+    // A reinserted historical story starts a fresh narrative, so the prior
+    // generation's denormalized canonical priority/scores no longer apply —
+    // they must be cleared to NULL (the Threat Stories list excludes
+    // NULL-priority rows until the next result finalizes).
+    const customer = "00000000-0000-0000-0000-0000000000e1";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-e1', 'E1')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, priority_tier, severity_score,
+          likelihood_score, last_ready_at)
+       VALUES ($1, $2::bigint, 'archived', 'CRITICAL', 0.9, 0.8,
+               TIMESTAMPTZ '2026-05-20T12:00:00Z')`,
+      [customer, "70010"],
+    );
+
+    const client = await pool.connect();
+    try {
+      await unarchiveStoryStateIfArchived(client, customer, "70010");
+    } finally {
+      client.release();
+    }
+
+    const row = await pool.query<{
+      status: string;
+      priority_tier: string | null;
+      severity_score: number | null;
+      likelihood_score: number | null;
+    }>(
+      `SELECT status, priority_tier, severity_score, likelihood_score
+         FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = $2::bigint`,
+      [customer, "70010"],
+    );
+    expect(row.rows[0].status).toBe("pending");
+    expect(row.rows[0].priority_tier).toBeNull();
+    expect(row.rows[0].severity_score).toBeNull();
+    expect(row.rows[0].likelihood_score).toBeNull();
+  });
+
+  it("recordStoryMemberArrival clears denormalized priority/scores on archived → pending (WS3 #392)", async () => {
+    // The member-arrival hook also unarchives in place (archived → pending);
+    // it must clear the denormalized columns on that branch, while leaving
+    // them untouched on non-archive branches.
+    const customer = "00000000-0000-0000-0000-0000000000e2";
+    await pool.query(
+      `INSERT INTO customers (id, external_key, name)
+       VALUES ($1, 'ck-e2', 'E2')
+       ON CONFLICT (id) DO NOTHING`,
+      [customer],
+    );
+    await pool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, priority_tier, severity_score,
+          likelihood_score)
+       VALUES ($1, $2::bigint, 'archived', 'HIGH', 0.7, 0.6)`,
+      [customer, "70011"],
+    );
+
+    const client = await pool.connect();
+    try {
+      await recordStoryMemberArrival(client, customer, "70011", new Date());
+    } finally {
+      client.release();
+    }
+
+    const row = await pool.query<{
+      status: string;
+      priority_tier: string | null;
+      severity_score: number | null;
+      likelihood_score: number | null;
+    }>(
+      `SELECT status, priority_tier, severity_score, likelihood_score
+         FROM story_analysis_state
+        WHERE customer_id = $1 AND story_id = $2::bigint`,
+      [customer, "70011"],
+    );
+    expect(row.rows[0].status).toBe("pending");
+    expect(row.rows[0].priority_tier).toBeNull();
+    expect(row.rows[0].severity_score).toBeNull();
+    expect(row.rows[0].likelihood_score).toBeNull();
+  });
+
   it("applyWindowReplaceStoryHook unarchives a previously archived story on re-insertion (round-3 review item 1)", async () => {
     // End-to-end version of the unarchive case through the hook the
     // route handler actually calls — refresh-window/backfill receives

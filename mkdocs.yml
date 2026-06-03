@@ -28,7 +28,10 @@ plugins:
             - Configuration: configuration.md
             - Usage: usage.md
             - Analysis Result: analysis-result.md
+            - Customer Hub: analysis/customer-hub.md
             - Story Analysis: analysis/story.md
+            - Threat Stories: analysis/threat-stories.md
+            - Suspicious Events: analysis/suspicious-events.md
             - Periodic Security Reports: analysis/reports.md
             - Authentication: authentication.md
             - Navigation: navigation.md
@@ -55,7 +58,10 @@ plugins:
             - Configuration: configuration.md
             - Usage: usage.md
             - Analysis Result: analysis-result.md
+            - Customer Hub: analysis/customer-hub.md
             - Story Analysis: analysis/story.md
+            - Threat Stories: analysis/threat-stories.md
+            - Suspicious Events: analysis/suspicious-events.md
             - Periodic Security Reports: analysis/reports.md
             - Authentication: authentication.md
             - Navigation: navigation.md
@@ -79,7 +85,10 @@ plugins:
             Configuration: 설정
             Usage: 사용법
             Analysis Result: 분석 결과
+            Customer Hub: 고객 허브
             Story Analysis: 스토리 분석
+            Threat Stories: 위협 스토리
+            Suspicious Events: 의심 이벤트
             Periodic Security Reports: 주기 보안 리포트
             Authentication: 인증
             Navigation: 내비게이션

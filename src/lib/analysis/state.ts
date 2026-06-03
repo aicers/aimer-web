@@ -92,6 +92,25 @@ export async function recordStoryMemberArrival(
              WHEN story_analysis_state.status = 'archived' THEN NULL
              ELSE story_analysis_state.last_ready_at
            END,
+           -- WS3 (#392): archived → pending starts a fresh narrative, so
+           -- the denormalized canonical priority/scores no longer apply —
+           -- clear them to NULL (the list loader excludes NULL-priority
+           -- rows until the next result finalizes). Non-archive branches
+           -- (dirty/late member on a ready story) keep the last-known
+           -- values so a refresh-in-flight row still sorts by its prior
+           -- priority.
+           priority_tier = CASE
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE story_analysis_state.priority_tier
+           END,
+           severity_score = CASE
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE story_analysis_state.severity_score
+           END,
+           likelihood_score = CASE
+             WHEN story_analysis_state.status = 'archived' THEN NULL
+             ELSE story_analysis_state.likelihood_score
+           END,
            -- Archived → pending takes priority over the dirty trigger
            -- (decision 1: unarchive in place starts a fresh narrative).
            -- Late member on a ready story with at least one processing/
@@ -199,11 +218,16 @@ export async function unarchiveStoryStateIfArchived(
 ): Promise<void> {
   const { rowCount } = await client.query(
     `UPDATE story_analysis_state
-        SET status         = 'pending',
-            first_member_at = NULL,
-            last_member_at  = NULL,
-            last_ready_at   = NULL,
-            updated_at      = NOW()
+        SET status           = 'pending',
+            first_member_at  = NULL,
+            last_member_at   = NULL,
+            last_ready_at    = NULL,
+            -- WS3 (#392): a reinserted historical story starts fresh; the
+            -- prior generation's denormalized priority/scores are gone.
+            priority_tier    = NULL,
+            severity_score   = NULL,
+            likelihood_score = NULL,
+            updated_at       = NOW()
       WHERE customer_id = $1
         AND story_id    = $2::bigint
         AND status      = 'archived'`,

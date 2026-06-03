@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(39);
+    expect(rows).toHaveLength(40);
   });
 
   // -- Built-in roles --
@@ -479,6 +479,32 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       const checks = rows.map((r) => r.pg_get_constraintdef).join(" | ");
       for (const status of ["pending", "ready", "dirty", "archived"]) {
         expect(checks).toContain(status);
+      }
+    });
+
+    it("story_analysis_state has the WS3 denormalized priority columns (nullable)", async () => {
+      // #392 — the canonical variant's priority/scores are denormalized
+      // here so the Threat Stories list can order priority-first and
+      // keyset-paginate in a single auth-DB query. They are nullable:
+      // pending rows have no result yet.
+      const { rows } = await pool.query<{
+        column_name: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, is_nullable
+           FROM information_schema.columns
+          WHERE table_name = 'story_analysis_state'
+            AND column_name IN
+                ('priority_tier', 'severity_score', 'likelihood_score')
+          ORDER BY column_name`,
+      );
+      expect(rows.map((r) => r.column_name)).toEqual([
+        "likelihood_score",
+        "priority_tier",
+        "severity_score",
+      ]);
+      for (const r of rows) {
+        expect(r.is_nullable).toBe("YES");
       }
     });
 
