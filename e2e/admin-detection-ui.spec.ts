@@ -95,7 +95,7 @@ test.describe("Suspicious activity page — rendering", () => {
   test("shows page title and description", async ({ adminPage }) => {
     await adminPage.goto("/en/admin/suspicious-activity");
     await expect(
-      adminPage.getByRole("heading", { name: "Suspicious Activity" }),
+      adminPage.getByRole("heading", { name: "Account Anomalies" }),
     ).toBeVisible();
   });
 
@@ -131,7 +131,7 @@ test.describe("Suspicious activity page — rendering", () => {
   test("renders in Korean locale", async ({ adminPage }) => {
     await adminPage.goto("/ko/admin/suspicious-activity");
     await expect(
-      adminPage.getByRole("heading", { name: "의심스러운 활동" }),
+      adminPage.getByRole("heading", { name: "계정 이상징후" }),
     ).toBeVisible();
   });
 });
@@ -141,19 +141,19 @@ test.describe("Suspicious activity page — rendering", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Suspicious activity — sidebar navigation", () => {
-  test("sidebar contains Suspicious Activity link", async ({ adminPage }) => {
+  test("sidebar contains Account Anomalies link", async ({ adminPage }) => {
     await adminPage.goto("/en/admin/suspicious-activity");
     const sidebar = adminPage.locator("aside");
-    await expect(sidebar.getByText("Suspicious Activity")).toBeVisible();
+    await expect(sidebar.getByText("Account Anomalies")).toBeVisible();
   });
 
-  test("Suspicious Activity link is active when on the page", async ({
+  test("Account Anomalies link is active when on the page", async ({
     adminPage,
   }) => {
     await adminPage.goto("/en/admin/suspicious-activity");
     const link = adminPage
       .locator("aside")
-      .getByRole("link", { name: "Suspicious Activity" });
+      .getByRole("link", { name: "Account Anomalies" });
     await expect(link).toHaveAttribute("aria-current", "page");
   });
 });
@@ -234,7 +234,7 @@ test.describe("Suspicious activity — empty state", () => {
   test("shows empty message when no alerts", async ({ adminPage }) => {
     await adminPage.goto("/en/admin/suspicious-activity");
     await expect(
-      adminPage.getByText("No suspicious activity alerts found."),
+      adminPage.getByText("No account anomaly alerts found."),
     ).toBeVisible();
   });
 });
