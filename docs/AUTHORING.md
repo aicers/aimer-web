@@ -19,11 +19,22 @@ AI agent alike — must follow these rules.
 
 ## Content requirements
 
-### UI screenshots are mandatory
+### UI screenshots
 
-Every feature description must include actual UI screenshots. Text
-alone is not sufficient. Screenshots help readers who are not yet
-familiar with the interface.
+Feature descriptions should include UI screenshots. Text alone is
+usually not sufficient — screenshots help readers who are not yet
+familiar with the interface. How to source a screenshot depends on
+whether the feature relies on data from `aice-web-next`:
+
+- **No `aice-web-next` data needed**: capture a real screenshot of the
+  feature.
+- **Shows data received from `aice-web-next`**: capture the screenshot
+  from a stack that has real data loaded, rather than fabricating or
+  hand-processing the data. A capture of realistic, genuinely loaded
+  data is far more useful than a doctored one.
+- **Real-data capture not available**: leave a placeholder instead of
+  a fabricated screenshot, and replace it once a real-data capture can
+  be taken.
 
 - Place screenshots in `docs/assets/`.
 - Use PNG for screenshots, SVG for diagrams.
@@ -172,4 +183,7 @@ Before submitting a docs PR, verify:
 - [ ] EN/KR pages are in sync (same structure, same filenames)
 - [ ] New pages are listed in `mkdocs.yml` nav for both languages
 - [ ] No broken links or missing images
-- [ ] UI screenshots are included for new or changed features
+- [ ] UI screenshots are included for new or changed features (real
+      data captured from a loaded stack when the feature shows
+      `aice-web-next` data; placeholder when no real-data capture is
+      available)

@@ -47,6 +47,13 @@
 - Do not write docs for features still under active development.
 - Keep the manual in sync with code — update docs whenever user-facing
   behavior changes.
-- Every feature description must include UI screenshots.
+- Feature descriptions should include UI screenshots, per these rules:
+    - If the feature does not depend on data from aice-web-next,
+      capture a real screenshot.
+    - If the feature shows data received from aice-web-next, capture it
+      from a stack with real data loaded rather than fabricated or
+      hand-processed data.
+    - If a real-data capture is not available, leave a placeholder
+      instead of a fabricated screenshot.
 - EN/KR pages must stay in sync (same structure, same filenames).
 - See `docs/AUTHORING.md` for the full authoring guide.
