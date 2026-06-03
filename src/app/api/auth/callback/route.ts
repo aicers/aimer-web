@@ -1,4 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { setNextLocaleCookie } from "@/i18n/locale-cookie";
 import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
@@ -15,6 +16,7 @@ import {
 import { generateCsrf } from "@/lib/auth/csrf";
 import { acceptInvitation } from "@/lib/auth/invitations";
 import { signJwt } from "@/lib/auth/jwt";
+import { reconcileSignInLocale } from "@/lib/auth/locale-sync";
 import { exchangeCodeForTokens, getIssuerUrl } from "@/lib/auth/oidc";
 import { getOidcDiscovery } from "@/lib/auth/oidc-discovery";
 import { validateIdToken } from "@/lib/auth/oidc-validate";
@@ -140,6 +142,22 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         },
       });
       return denyRedirect(request, "account_inactive");
+    }
+
+    // Locale sync (#387): reconcile saved `accounts.locale` with any
+    // pre-existing NEXT_LOCALE cookie. A saved preference wins and is
+    // mirrored to the cookie; a NULL DB locale with a valid cookie
+    // promotes the cookie to the account. The cookie then drives locale
+    // resolution in the next-intl middleware (no per-request DB lookup).
+    const cookieLocale = request.cookies.get("NEXT_LOCALE")?.value;
+    const resolvedLocale = await reconcileSignInLocale(
+      pool,
+      account.id,
+      account.locale,
+      cookieLocale,
+    );
+    if (resolvedLocale) {
+      await setNextLocaleCookie(resolvedLocale);
     }
 
     // Invitation processing (#77): accept invitation if token cookie exists

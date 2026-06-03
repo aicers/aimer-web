@@ -53,6 +53,8 @@ const PRODUCED: Record<string, string> = {
   // Membership (guard-level: role_changed, removed)
   "membership.role_changed": "src/app/api/members/[accountId]/route.ts",
   "membership.removed": "src/app/api/members/[accountId]/route.ts",
+  // Account (self-service preferences — guard-level)
+  "account.preferences_updated": "src/app/api/account/preferences/route.ts",
   // Customer (guard-level: created, deleted)
   "customer.created": "src/app/api/admin/customers/route.ts",
   "customer.deleted": "src/app/api/admin/customers/[customerId]/route.ts",

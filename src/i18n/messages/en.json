@@ -45,6 +45,7 @@
     "reports": "Reports",
     "dashboard": "Dashboard",
     "members": "Members",
+    "accountSettings": "Account Settings",
     "customerSettings": "Customer Settings",
     "settings": "Settings",
     "admin": "Admin"
@@ -420,5 +421,18 @@
     "retentionShortenConfirm": "Yes, apply",
     "retentionConfirmShortenFinite": "Reducing the retention window will cause rows beyond the new window to be deleted on the next sweep. Continue?",
     "retentionConfirmShortenUnlimited": "Switching from unlimited to a finite window will cause analysis rows beyond the new window to be deleted on the next sweep. Continue?"
+  },
+  "accountSettings": {
+    "title": "Account Settings",
+    "description": "Set your preferred language and timezone. These preferences are saved to your account and apply across devices.",
+    "languageLabel": "Language",
+    "languageHelp": "The language used across the app. Takes effect on your next navigation.",
+    "timezoneLabel": "Timezone",
+    "timezoneAuto": "Automatic (browser timezone)",
+    "timezoneHelp": "Your preferred timezone, saved to your account. It does not change how timestamps are displayed yet — the preference is stored for an upcoming release.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Preferences saved.",
+    "error": "Could not save preferences."
   }
 }
