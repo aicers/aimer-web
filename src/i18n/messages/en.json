@@ -429,7 +429,7 @@
     "languageHelp": "The language used across the app. Takes effect on your next navigation.",
     "timezoneLabel": "Timezone",
     "timezoneAuto": "Automatic (browser timezone)",
-    "timezoneHelp": "The timezone used to display timestamps. Choose Automatic to follow your browser.",
+    "timezoneHelp": "Your preferred timezone, saved to your account. It does not change how timestamps are displayed yet — the preference is stored for an upcoming release.",
     "save": "Save",
     "saving": "Saving…",
     "saved": "Preferences saved.",

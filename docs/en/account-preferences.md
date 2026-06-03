@@ -44,14 +44,17 @@ no longer silently overrides your browser language afterwards.
 
 ## Timezone
 
-The **Timezone** control sets the timezone used to display timestamps.
-Choose **Automatic** to follow your browser's timezone, or pick a
+The **Timezone** control records your preferred timezone on your
+account. Choose **Automatic** to store no specific zone, or pick a
 specific IANA timezone (for example `Asia/Seoul`). Only valid IANA
 timezones are accepted.
 
-This setting affects how timestamps are *displayed* to you. It does not
-change report bucketing boundaries, which are defined per customer and
-are independent of your personal preference.
+This release only *stores* the preference; it does not yet change how
+timestamps are displayed. Visible timestamps continue to use the
+browser/default timezone until a later release wires the saved zone
+into date/time formatting. The setting never changes report bucketing
+boundaries, which are defined per customer and are independent of your
+personal preference.
 
 ## Saving
 
