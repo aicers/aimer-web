@@ -82,6 +82,4 @@ the active scope and any report parameters on the URL:
 - `/analysis` → `/overview`
 - `/events` → `/suspicious-events`
 
-> **Screenshot pending.** A representative capture needs a stack loaded
-> with multiple customers, which is not available yet. The real
-> screenshots are tracked in issue #403.
+![The cross-customer Overview page under a multi-customer scope: the sidebar scope selector on the left and the Reports, Threat Stories, and Suspicious Events sections, each with a "View all" link into its dedicated cross-customer page](../assets/cross-customer-overview.en.png)

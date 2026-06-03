@@ -10,9 +10,7 @@ to your account while you are signed in (it only affects the current
 browser when signed out); this page adds a **Timezone** control, which
 the switcher does not provide.
 
-<!-- Screenshot placeholder (#402): account settings page. -->
-> **Screenshot pending.** A real capture requires seeded account-preference
-> data, which is not yet available. The image will be added under #402.
+![The Account Settings page with the Language control set to English, the Timezone control set to Asia/Seoul, the help text under each control, and the Save button](../assets/account-preferences.en.png)
 
 ## Language
 
