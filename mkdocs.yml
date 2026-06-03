@@ -44,6 +44,7 @@ plugins:
             - Cross-System Customer Identification: cross-system-customer-identification.md
             - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
+            - Account Anomalies: account-anomalies.md
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
@@ -74,6 +75,7 @@ plugins:
             - Cross-System Customer Identification: cross-system-customer-identification.md
             - Environment Management: environment-management.md
             - Audit Logs: audit-logs.md
+            - Account Anomalies: account-anomalies.md
             - Backup & Restore: backup-restore.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
@@ -96,6 +98,7 @@ plugins:
             Account Preferences: 계정 환경설정
             Members: 멤버
             Account Management: 계정 관리
+            Account Anomalies: 계정 이상징후
             Admin Designation: 관리자 지정
             Customer Management: 고객 관리
             Cross-System Customer Identification: 시스템 간 고객 식별

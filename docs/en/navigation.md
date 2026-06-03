@@ -90,9 +90,9 @@ The selector is **customer-only**. There is no global AICE environment
 selector: an environment (`aiceId`) is chosen only inside a specific
 customer's deep routes, never as an app-wide control.
 
-> **Screenshot pending.** A representative capture needs a stack loaded
-> with multiple customers, which is not available yet. The real
-> screenshot is tracked in issue #403.
+![The sidebar customer-scope selector with every accessible customer checked — the default "all customers" state](../assets/navigation-scope-all.en.png)
+
+![The scope narrowed to a subset: two of three customers checked, the selector summary reads "2 of 3 customers", the URL carries `?scope=<id>,<id>`, and the active sidebar item stays highlighted](../assets/navigation-scope-narrowed.en.png)
 
 ### Bridge sessions
 

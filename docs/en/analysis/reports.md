@@ -139,6 +139,10 @@ to the period tabs lets you change the report language; the choice is
 encoded in the URL as a locale code (`?lang=ko`) and, like the other
 variant selectors, is preserved as you move across the period tabs.
 
+![A weekly report rendered in its native English generation: the language switcher beside the period tabs shows English active and Korean offered, and the metadata row names the language (English), provider, and model](../../assets/report-language-native.en.png)
+
+![The same weekly report viewed in the translated Korean variant: the switcher shows Korean active, and the restored executive summary reads as language-neutral plaintext (IP addresses, file paths, malware names) with no leaked redaction tokens](../../assets/report-language-translated.en.png)
+
 When the language you ask for has not been generated yet, the report does
 **not** error. It falls back along a fixed chain:
 
