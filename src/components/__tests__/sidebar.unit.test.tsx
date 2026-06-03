@@ -26,11 +26,11 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("next-intl", () => {
   const navMap: Record<string, string> = {
-    home: "Home",
-    events: "Events",
-    analysis: "Analysis",
+    overview: "Overview",
     reports: "Reports",
-    dashboard: "Dashboard",
+    threatStories: "Threat Stories",
+    suspiciousEvents: "Suspicious Events",
+    accountSettings: "Account Settings",
     members: "Members",
     customerSettings: "Customer Settings",
   };
@@ -206,11 +206,11 @@ describe("Sidebar", () => {
     assertDefined(nav);
     const text = nav.textContent ?? "";
 
-    expect(text).toContain("Home");
-    expect(text).toContain("Events");
-    expect(text).toContain("Analysis");
+    expect(text).toContain("Overview");
     expect(text).toContain("Reports");
-    expect(text).toContain("Dashboard");
+    expect(text).toContain("Threat Stories");
+    expect(text).toContain("Suspicious Events");
+    expect(text).toContain("Account Settings");
   });
 
   it("renders single-customer items when a single customer is in scope", () => {
@@ -345,8 +345,10 @@ describe("Sidebar", () => {
     expect(href("Members")).toBe("/en/settings/members?scope=c1");
     expect(href("Customer Settings")).toBe("/en/settings/customer?scope=c1");
     expect(href("Reports")).toBe("/en/reports?scope=c1");
-    // Home stays unscoped (app root, not a cross-customer surface).
-    expect(href("Home")).toBe("/en");
+    // Overview is a cross-customer surface, so it carries the active scope.
+    expect(href("Overview")).toBe("/en/overview?scope=c1");
+    // Account Settings is a personal page, not scoped.
+    expect(href("Account Settings")).toBe("/en/settings/account");
   });
 
   it("leaves links unscoped under the default all-scope", () => {
@@ -358,7 +360,7 @@ describe("Sidebar", () => {
   });
 
   it("marks active nav item with aria-current=page", () => {
-    mockedUsePathname.mockReturnValue("/en/events");
+    mockedUsePathname.mockReturnValue("/en/suspicious-events");
 
     const { container } = render(<Sidebar collapsed={false} />);
 
@@ -366,7 +368,7 @@ describe("Sidebar", () => {
       'a[aria-current="page"]',
     ) as HTMLAnchorElement;
     expect(activeLink).not.toBeNull();
-    expect(activeLink.getAttribute("href")).toBe("/en/events");
+    expect(activeLink.getAttribute("href")).toBe("/en/suspicious-events");
   });
 
   it("hides scope selector when collapsed", () => {
@@ -402,11 +404,10 @@ describe("MobileSidebarTrigger", () => {
     expect(sheetContents.length).toBe(1);
 
     const text = sheetContents[0].textContent ?? "";
-    expect(text).toContain("Home");
-    expect(text).toContain("Events");
-    expect(text).toContain("Analysis");
+    expect(text).toContain("Overview");
     expect(text).toContain("Reports");
-    expect(text).toContain("Dashboard");
+    expect(text).toContain("Threat Stories");
+    expect(text).toContain("Suspicious Events");
   });
 
   it("renders scope selector inside sheet", () => {

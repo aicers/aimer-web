@@ -15,8 +15,9 @@ interface PageProps {
 // query string (scope + any report-variant params) per the parent
 // query-preservation contract — a naive `redirect("/overview")` would
 // silently reset the active scope. The target page canonicalizes the scope
-// itself via `loadScopePage`. The sidebar still points here until WS5 (#394)
-// restructures it; this redirect keeps that link working.
+// itself via `loadScopePage`. WS5 (#394) repointed the sidebar at `/overview`
+// directly; this redirect is kept so bookmarked/external `/dashboard` links
+// keep working.
 export default async function DashboardRedirect({
   params,
   searchParams,

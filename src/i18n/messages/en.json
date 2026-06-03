@@ -41,10 +41,7 @@
   },
   "nav": {
     "home": "Home",
-    "events": "Events",
-    "analysis": "Analysis",
     "reports": "Reports",
-    "dashboard": "Dashboard",
     "overview": "Overview",
     "threatStories": "Threat Stories",
     "suspiciousEvents": "Suspicious Events",

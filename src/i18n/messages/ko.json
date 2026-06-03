@@ -41,10 +41,7 @@
   },
   "nav": {
     "home": "홈",
-    "events": "이벤트",
-    "analysis": "분석",
     "reports": "보고서",
-    "dashboard": "대시보드",
     "overview": "개요",
     "threatStories": "위협 스토리",
     "suspiciousEvents": "의심 이벤트",
