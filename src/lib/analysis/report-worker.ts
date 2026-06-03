@@ -29,7 +29,7 @@ import "server-only";
 
 import { ClientError } from "graphql-request";
 import type { Pool, PoolClient } from "pg";
-import { localeToLanguage } from "@/i18n/language";
+import { appLocaleToReportLanguage, isSupportedLocale } from "@/i18n/locale";
 import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
@@ -161,7 +161,12 @@ const DEFAULT_LOCALE = process.env.DEFAULT_LOCALE ?? "ko";
 export const EAGER_LANGS = Array.from(
   new Set<string>([
     DEFAULT_LANG,
-    localeToLanguage(DEFAULT_LOCALE),
+    // The canonical locale↔language mapper is typed (`AppLocale`), so a
+    // garbled `DEFAULT_LOCALE` env value is validated to the English baseline
+    // here rather than folded silently inside the mapper (#388 consolidation).
+    isSupportedLocale(DEFAULT_LOCALE)
+      ? appLocaleToReportLanguage(DEFAULT_LOCALE)
+      : DEFAULT_LANG,
     WORKER_LANG,
   ]),
 );

@@ -438,5 +438,16 @@
     "saving": "Saving…",
     "saved": "Preferences saved.",
     "error": "Could not save preferences."
+  },
+  "reports": {
+    "languageSwitcherLabel": "Language",
+    "languageName": {
+      "en": "English",
+      "ko": "Korean"
+    },
+    "fallbackNotice": "The {language} report isn't available yet — showing the English version.",
+    "jobPreparing": "Preparing the {language} report… this page updates automatically when it's ready.",
+    "jobFailed": "Could not prepare the {language} report. Showing the English version for now.",
+    "jobPendingSource": "This report is still being generated. The {language} version will be available once the base report is ready."
   }
 }

@@ -29,7 +29,17 @@ export function isSupportedLocale(value: unknown): value is AppLocale {
   );
 }
 
-/** Map an app locale (`en`/`ko`) to a report language (`ENGLISH`/`KOREAN`). */
+/**
+ * Map an app locale (`en`/`ko`) to a report language (`ENGLISH`/`KOREAN`).
+ *
+ * This is the single canonical forward mapper for the locale↔language
+ * boundary (#388 consolidation — the duplicated `localeToLanguage` in the
+ * former `i18n/language.ts` has been removed). It is intentionally TYPED on
+ * `AppLocale` rather than `string`, so it never silently folds an unknown
+ * value to English: callers that hold an untrusted string (a `?lang` query
+ * value, a `DEFAULT_LOCALE` env value) must validate with
+ * {@link isSupportedLocale} first and choose the English baseline themselves.
+ */
 export function appLocaleToReportLanguage(locale: AppLocale): ReportLanguage {
   return LOCALE_TO_REPORT_LANGUAGE[locale];
 }

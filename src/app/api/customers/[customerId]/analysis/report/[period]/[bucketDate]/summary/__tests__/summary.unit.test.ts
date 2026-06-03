@@ -137,11 +137,13 @@ describe("periodic report summary endpoint", () => {
     const { GET } = await import("../route");
     // The request pins a non-default variant; the deep link must forward it
     // so opening the link shows the same variant the summary described.
+    // `?lang=` is now an app-locale code (`ko`), mapped to the KOREAN enum for
+    // the DB lookup and kept as `ko` in the forwarded deep link.
     const res = await GET(
       summaryRequest(
         "DAILY",
         "2026-05-26",
-        "?tz=Asia/Seoul&lang=KOREAN&model_name=anthropic&model=claude-3",
+        "?tz=Asia/Seoul&lang=ko&model_name=anthropic&model=claude-3",
       ),
     );
     expect(res.status).toBe(200);
@@ -151,16 +153,44 @@ describe("periodic report summary endpoint", () => {
     expect(body.severity_score).toBe(0.85);
     expect(body.likelihood_score).toBe(0.7);
     expect(body.score_kind).toBe("aggregate");
+    // The result lookup queried the KOREAN enum (mapped from the `ko` locale).
+    expect(mockCustomerQuery.mock.calls[0][1]).toContain("KOREAN");
     const linkUrl = new URL(`http://localhost${body.link}`);
     expect(linkUrl.pathname).toBe(
       `/customers/${CUSTOMER_ID}/analysis/reports/DAILY/2026-05-26`,
     );
     expect(linkUrl.searchParams.get("tz")).toBe("Asia/Seoul");
-    expect(linkUrl.searchParams.get("lang")).toBe("KOREAN");
+    // URL stays in the locale-code vocabulary — `ko`, never the `KOREAN` enum.
+    expect(linkUrl.searchParams.get("lang")).toBe("ko");
     expect(linkUrl.searchParams.get("model_name")).toBe("anthropic");
     expect(linkUrl.searchParams.get("model")).toBe("claude-3");
     // The period in the link is UPPERCASE (case lock) — never `/daily/`.
     expect(body.link).not.toContain("/daily/");
+  });
+
+  it("drops a legacy enum-shaped ?lang and falls back to the English baseline", async () => {
+    mockCustomerQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          priority_tier: "LOW",
+          aggregate_severity_score: 0.1,
+          aggregate_likelihood_score: 0.1,
+        },
+      ],
+    });
+    const { GET } = await import("../route");
+    // A stale `?lang=KOREAN` is not a valid app-locale code: treated as
+    // unpinned, the DB lookup uses the English baseline and the link omits
+    // `lang` rather than leaking the enum.
+    const res = await GET(
+      summaryRequest("DAILY", "2026-05-26", "?tz=Asia/Seoul&lang=KOREAN"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.exists).toBe(true);
+    expect(mockCustomerQuery.mock.calls[0][1]).toContain("ENGLISH");
+    const linkUrl = new URL(`http://localhost${body.link}`);
+    expect(linkUrl.searchParams.get("lang")).toBeNull();
   });
 
   it("omits variant query params from the link when none were requested", async () => {

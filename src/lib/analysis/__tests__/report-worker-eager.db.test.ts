@@ -2,7 +2,8 @@
 //
 // Covers the acceptance criteria:
 //   - every report bucket is seeded with the eager language set
-//     ({ ENGLISH, localeToLanguage(DEFAULT_LOCALE), WORKER_LANG }), so the
+//     ({ ENGLISH, appLocaleToReportLanguage(DEFAULT_LOCALE), WORKER_LANG }),
+//     so the
 //     default-locale language is seeded eagerly even when English exists;
 //   - the on-demand enqueue helper coalesces onto any in-flight/completed
 //     job (no generation bump), seeds a fresh row only on a first request,

@@ -24,6 +24,14 @@ vi.mock("next/navigation", () => ({
   forbidden: () => {
     throw new Error("NEXT_FORBIDDEN");
   },
+  // The phase-2 status poller is a client component that calls useRouter.
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
+
+// Server-component translations: echo the key so assertions can target
+// testids rather than localized copy (mirrors other dashboard page tests).
+vi.mock("next-intl/server", () => ({
+  getTranslations: async () => (key: string) => key,
 }));
 
 vi.mock("../regenerate-button", () => ({
@@ -89,11 +97,18 @@ function okFixture(): ReportResultPageOutcome {
       topEventCount: 1,
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),
+      requestedLocale: "en",
+      availableLocales: ["en"],
+      languageFallback: null,
     },
   };
 }
 
-async function renderPage(period: string, bucketDate: string): Promise<void> {
+async function renderPage(
+  period: string,
+  bucketDate: string,
+  searchParams?: Record<string, string | string[] | undefined>,
+): Promise<void> {
   const jsx = await ReportDetailPage({
     params: Promise.resolve({
       locale: "en",
@@ -101,6 +116,7 @@ async function renderPage(period: string, bucketDate: string): Promise<void> {
       period,
       bucketDate,
     }),
+    searchParams: searchParams ? Promise.resolve(searchParams) : undefined,
   });
   render(jsx);
 }
@@ -146,6 +162,75 @@ describe("report detail page", () => {
     expect(
       screen.getByTestId("report-tab-LIVE").getAttribute("href"),
     ).toContain("/reports/LIVE/1970-01-01");
+  });
+
+  it("renders the language switcher marking available vs unavailable locales", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, availableLocales: ["en"] },
+    });
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.getByTestId("report-language-switcher")).toBeTruthy();
+    // English is shown + available; Korean is offered but not yet available.
+    expect(
+      screen.getByTestId("report-lang-en").getAttribute("data-active"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("report-lang-ko").getAttribute("data-available"),
+    ).toBe("false");
+    // The Korean option deep-links with ?lang=ko, preserving variant params.
+    expect(screen.getByTestId("report-lang-ko").getAttribute("href")).toContain(
+      "lang=ko",
+    );
+  });
+
+  it("shows the fallback notice + on-demand status when the requested language is unavailable", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    // Korean requested, English shown — a fallback with a queued on-demand job.
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: {
+        ...base.data,
+        lang: "ENGLISH",
+        requestedLocale: "ko",
+        availableLocales: ["en"],
+        languageFallback: {
+          requestedLocale: "ko",
+          shownLocale: "en",
+          jobStatus: "queued",
+        },
+      },
+    });
+    await renderPage("DAILY", "2026-05-26", { lang: "ko" });
+    expect(screen.getByTestId("report-language-fallback")).toBeTruthy();
+    const status = screen.getByTestId("report-language-status");
+    expect(status.getAttribute("data-status")).toBe("queued");
+  });
+
+  it("surfaces a failed on-demand job as a non-blocking error, not a spinner", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: {
+        ...base.data,
+        lang: "ENGLISH",
+        requestedLocale: "ko",
+        availableLocales: ["en"],
+        languageFallback: {
+          requestedLocale: "ko",
+          shownLocale: "en",
+          jobStatus: "failed",
+        },
+      },
+    });
+    await renderPage("DAILY", "2026-05-26", { lang: "ko" });
+    const status = screen.getByTestId("report-language-status");
+    expect(status.getAttribute("data-status")).toBe("failed");
+    expect(status.getAttribute("role")).toBe("alert");
   });
 
   it("shows the pending banner when the report is still generating", async () => {
