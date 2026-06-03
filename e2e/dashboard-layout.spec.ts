@@ -41,12 +41,15 @@ test.describe("Dashboard sidebar", () => {
   });
 
   test("highlights active navigation item", async ({ managerPage }) => {
-    await managerPage.goto("/en/events");
+    // Use a top-level route that renders in place (`/reports`) rather than a
+    // stub that redirects elsewhere (e.g. `/events` → `/suspicious-events`),
+    // so the active-item assertion runs against a stable pathname.
+    await managerPage.goto("/en/reports");
 
     const nav = managerPage.getByRole("navigation", { name: "Main" });
     const activeLink = nav.locator('a[aria-current="page"]');
     await expect(activeLink).toBeVisible();
-    await expect(activeLink).toHaveAttribute("href", /\/events$/);
+    await expect(activeLink).toHaveAttribute("href", /\/reports$/);
   });
 });
 
@@ -169,14 +172,17 @@ test.describe("Dashboard sidebar collapse", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Dashboard breadcrumbs", () => {
-  test("shows breadcrumbs for events page", async ({ managerPage }) => {
-    await managerPage.goto("/en/events");
+  test("shows breadcrumbs for reports page", async ({ managerPage }) => {
+    // `/reports` renders in place and is a breadcrumb segment; the old
+    // `/events` stub now redirects to `/suspicious-events`, whose segment has
+    // no breadcrumb label yet (the relabel/restructure is WS4/WS5).
+    await managerPage.goto("/en/reports");
 
     const breadcrumb = managerPage.getByRole("navigation", {
       name: "Breadcrumb",
     });
     await expect(breadcrumb).toBeVisible();
-    await expect(breadcrumb.getByText("Events")).toBeVisible();
+    await expect(breadcrumb.getByText("Reports")).toBeVisible();
   });
 
   test("shows nested breadcrumbs for settings/members", async ({
@@ -224,21 +230,19 @@ test.describe("Dashboard user section", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Placeholder pages
+// Top-level pages — cross-customer overviews (WS2, #391)
+//
+// The old stubs (`/dashboard`, `/events`, `/analysis`) are now query-preserving
+// redirects into the cross-customer overview routes (`/overview`,
+// `/suspicious-events`); `/reports` was built out in place. The sidebar still
+// links to the old paths until WS5, so these redirects keep those links live.
 // ---------------------------------------------------------------------------
 
-test.describe("Dashboard placeholder pages", () => {
-  test("events page renders", async ({ managerPage }) => {
-    await managerPage.goto("/en/events");
+test.describe("Dashboard top-level pages", () => {
+  test("overview page renders", async ({ managerPage }) => {
+    await managerPage.goto("/en/overview");
     await expect(
-      managerPage.getByRole("heading", { name: "Events", level: 1 }),
-    ).toBeVisible();
-  });
-
-  test("analysis page renders", async ({ managerPage }) => {
-    await managerPage.goto("/en/analysis");
-    await expect(
-      managerPage.getByRole("heading", { name: "Analysis", level: 1 }),
+      managerPage.getByRole("heading", { name: "Overview", level: 1 }),
     ).toBeVisible();
   });
 
@@ -249,10 +253,43 @@ test.describe("Dashboard placeholder pages", () => {
     ).toBeVisible();
   });
 
-  test("dashboard page renders", async ({ managerPage }) => {
-    await managerPage.goto("/en/dashboard");
+  test("threat stories page renders", async ({ managerPage }) => {
+    await managerPage.goto("/en/threat-stories");
     await expect(
-      managerPage.getByRole("heading", { name: "Dashboard", level: 1 }),
+      managerPage.getByRole("heading", { name: "Threat Stories", level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("suspicious events page renders", async ({ managerPage }) => {
+    await managerPage.goto("/en/suspicious-events");
+    await expect(
+      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("events stub redirects to suspicious events overview", async ({
+    managerPage,
+  }) => {
+    await managerPage.goto("/en/events");
+    await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
+    await expect(
+      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("analysis stub redirects to overview", async ({ managerPage }) => {
+    await managerPage.goto("/en/analysis");
+    await expect(managerPage).toHaveURL(/\/en\/overview/);
+    await expect(
+      managerPage.getByRole("heading", { name: "Overview", level: 1 }),
+    ).toBeVisible();
+  });
+
+  test("dashboard stub redirects to overview", async ({ managerPage }) => {
+    await managerPage.goto("/en/dashboard");
+    await expect(managerPage).toHaveURL(/\/en\/overview/);
+    await expect(
+      managerPage.getByRole("heading", { name: "Overview", level: 1 }),
     ).toBeVisible();
   });
 });
@@ -265,16 +302,17 @@ test.describe("Dashboard navigation", () => {
   test("navigates between pages via sidebar links", async ({ managerPage }) => {
     await managerPage.goto("/en");
 
-    // Click Events link
+    // The sidebar still links to the old `/events` path (restructured in WS5);
+    // it redirects to the cross-customer Suspicious Events overview (WS2).
     await managerPage
       .getByRole("navigation", { name: "Main" })
       .getByText("Events")
       .click();
 
     await expect(
-      managerPage.getByRole("heading", { name: "Events", level: 1 }),
+      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
     ).toBeVisible();
-    await expect(managerPage).toHaveURL(/\/en\/events/);
+    await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
   });
 
   test("logo links to home page", async ({ managerPage }) => {
