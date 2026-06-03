@@ -1,0 +1,154 @@
+// @vitest-environment jsdom
+//
+// Page test for the cross-customer Suspicious Events overview (WS2, #391).
+// Verifies the WS1 scope-outcome mapping (unauthorized → sign-in redirect,
+// non-canonical scope → canonical redirect, bridge → 403) and that the
+// aggregated rows render with the count, deep links, scores, and the partial-
+// failure notice. The aggregator itself is mocked; its logic is covered by
+// `cross-customer-overview.unit.test.ts`.
+
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CrossCustomerOverviewOutcome } from "@/lib/analysis/cross-customer-overview";
+import type { ScopePageOutcome } from "@/lib/navigation/scope-page-loader";
+
+const mockLoadScope = vi.fn<() => Promise<ScopePageOutcome>>();
+const mockLoadOverview = vi.fn<() => Promise<CrossCustomerOverviewOutcome>>();
+const redirectMock = vi.fn((t: string) => {
+  throw new Error(`REDIRECT:${t}`);
+});
+const forbiddenMock = vi.fn(() => {
+  throw new Error("FORBIDDEN");
+});
+
+vi.mock("@/lib/navigation/scope-page-loader", () => ({
+  loadScopePage: () => mockLoadScope(),
+}));
+vi.mock("@/lib/analysis/cross-customer-overview", () => ({
+  loadCrossCustomerOverview: () => mockLoadOverview(),
+}));
+vi.mock("next/navigation", () => ({
+  redirect: (t: string) => redirectMock(t),
+  forbidden: () => forbiddenMock(),
+}));
+vi.mock("next-intl/server", () => ({
+  getTranslations: async () => (key: string) => key,
+}));
+vi.mock("next/link", () => ({
+  default: ({
+    href,
+    children,
+    ...props
+  }: {
+    href: string;
+    children: React.ReactNode;
+  }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+
+import SuspiciousEventsPage from "../page";
+
+function okScope(): ScopePageOutcome {
+  return {
+    kind: "ok",
+    scope: { isAll: true, customerIds: ["c1", "c2"], canonical: "all" },
+  };
+}
+
+async function renderPage() {
+  const jsx = await SuspiciousEventsPage({
+    params: Promise.resolve({ locale: "en" }),
+    searchParams: Promise.resolve({}),
+  });
+  render(jsx);
+}
+
+describe("suspicious events overview page", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadScope.mockResolvedValue(okScope());
+    mockLoadOverview.mockResolvedValue({
+      kind: "ok",
+      events: {
+        items: [
+          {
+            customerId: "c1",
+            customerName: "Acme",
+            aiceId: "aice-1",
+            eventKey: "42",
+            priorityTier: "CRITICAL",
+            severityScore: 0.91,
+            likelihoodScore: 0.77,
+            requestedAt: new Date("2026-06-01T00:00:00Z"),
+            lang: "ENGLISH",
+            modelName: "openai",
+            model: "gpt-4o",
+          },
+        ],
+        totalCount: 1,
+        failedCustomers: [],
+      },
+    });
+  });
+  afterEach(() => cleanup());
+
+  it("redirects unauthenticated users to sign-in", async () => {
+    mockLoadScope.mockResolvedValue({ kind: "unauthorized" });
+    await expect(renderPage()).rejects.toThrow("REDIRECT:/api/auth/sign-in");
+  });
+
+  it("redirects to the canonical scope target", async () => {
+    mockLoadScope.mockResolvedValue({
+      kind: "redirect",
+      target: "/en/suspicious-events?scope=c1,c2",
+    });
+    await expect(renderPage()).rejects.toThrow(
+      "REDIRECT:/en/suspicious-events?scope=c1,c2",
+    );
+  });
+
+  it("403s for a bridge session", async () => {
+    mockLoadScope.mockResolvedValue({ kind: "bridge" });
+    await expect(renderPage()).rejects.toThrow("FORBIDDEN");
+  });
+
+  it("renders the event row with the count and a variant-pinned deep link", async () => {
+    await renderPage();
+    expect(
+      screen.getByTestId("overview-count").getAttribute("data-count"),
+    ).toBe("1");
+    const row = screen.getByTestId("overview-event-row");
+    expect(row.getAttribute("href")).toBe(
+      "/en/customers/c1/aice/aice-1/events/42/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o",
+    );
+    expect(
+      screen.getByTestId("priority-tier-badge").getAttribute("data-tier"),
+    ).toBe("CRITICAL");
+  });
+
+  it("shows the empty state when no events are in scope", async () => {
+    mockLoadOverview.mockResolvedValue({
+      kind: "ok",
+      events: { items: [], totalCount: 0, failedCustomers: [] },
+    });
+    await renderPage();
+    expect(screen.getByTestId("suspicious-events-empty")).toBeTruthy();
+  });
+
+  it("surfaces a partial-failure notice naming the unreachable customer", async () => {
+    mockLoadOverview.mockResolvedValue({
+      kind: "ok",
+      events: {
+        items: [],
+        totalCount: 0,
+        failedCustomers: [{ id: "c2", name: "Globex" }],
+      },
+    });
+    await renderPage();
+    const notice = screen.getByTestId("overview-partial-failure");
+    expect(notice.textContent).toContain("Globex");
+  });
+});

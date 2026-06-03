@@ -98,6 +98,15 @@ pinned to the bridge's fixed customer set and cannot be changed. The
 scope selector is replaced by a lock icon and a "Locked to bridge
 session" label.
 
+## Cross-customer overview surfaces
+
+The top-level **Overview**, **Reports**, **Threat Stories**, and
+**Suspicious Events** pages merge the highest-risk and most recent items
+from every customer in the active scope into one ranked list. See
+[Cross-Customer Overview](cross-customer-overview.md) for how they work.
+The earlier placeholder routes (`/dashboard`, `/analysis`, `/events`)
+redirect to these pages while preserving the active scope.
+
 ## User section
 
 The user section is located on the right side of the header bar.

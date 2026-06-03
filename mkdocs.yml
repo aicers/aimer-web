@@ -32,6 +32,7 @@ plugins:
             - Periodic Security Reports: analysis/reports.md
             - Authentication: authentication.md
             - Navigation: navigation.md
+            - Cross-Customer Overview: cross-customer-overview.md
             - Account Preferences: account-preferences.md
             - Members: members.md
             - Account Management: account-management.md
@@ -58,6 +59,7 @@ plugins:
             - Periodic Security Reports: analysis/reports.md
             - Authentication: authentication.md
             - Navigation: navigation.md
+            - Cross-Customer Overview: cross-customer-overview.md
             - Account Preferences: account-preferences.md
             - Members: members.md
             - Account Management: account-management.md
@@ -81,6 +83,7 @@ plugins:
             Periodic Security Reports: 주기 보안 리포트
             Authentication: 인증
             Navigation: 내비게이션
+            Cross-Customer Overview: 고객 통합 개요
             Account Preferences: 계정 환경설정
             Members: 멤버
             Account Management: 계정 관리

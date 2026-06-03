@@ -1,0 +1,334 @@
+// DB tests for the cross-customer overview per-customer fetchers (WS2, #391).
+//
+// Exercises the SQL the unit test cannot (it fakes the pools):
+//   - events: canonical row per (aice_id, event_key) — latest generation,
+//     not superseded, default variant only; tier-rank ordering; window count
+//   - stories: `story_analysis_state` lifecycle exclusion (archived + pending
+//     dropped, ready/dirty kept) with customer-DB score enrichment; the
+//     disclosure count is the full ready/dirty set
+//   - reports: canonical dedup + tier-rank ordering + window count
+//
+// The auth preamble (cookie / JWT / session) is not exercised here — these
+// fetchers take pools directly — so those modules are stubbed only so the
+// module imports cleanly in the node test env.
+
+import { join } from "node:path";
+import type { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  closeAdminPool,
+  createTestDatabase,
+  dropTestDatabase,
+  hasPostgres,
+} from "@/lib/db/__tests__/db-test-helpers";
+import { runMigrations } from "@/lib/db/migrate";
+
+vi.mock("server-only", () => ({}));
+vi.mock("@/lib/auth/cookies", () => ({ getAuthCookie: vi.fn() }));
+vi.mock("@/lib/auth/jwt", () => ({ verifyJwtFull: vi.fn() }));
+vi.mock("@/lib/auth/session-policy", () => ({ getSessionPolicy: vi.fn() }));
+vi.mock("@/lib/auth/session-validator", () => ({ validateSession: vi.fn() }));
+vi.mock("@/lib/auth/authorization", () => ({
+  listAccessibleCustomersDetailed: vi.fn(),
+}));
+vi.mock("@/lib/db/client", () => ({
+  getAuthPool: vi.fn(),
+  withTransaction: vi.fn(),
+}));
+vi.mock("@/lib/db/customer-runtime-pool", () => ({
+  getCustomerRuntimePool: vi.fn(),
+}));
+
+const { fetchCustomerEvents, fetchCustomerStories, fetchCustomerReports } =
+  await import("../cross-customer-overview");
+
+const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
+const AUTH_LOCK_ID = 3693;
+const CUSTOMER_LOCK_ID = 3694;
+const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004a1";
+const NAME = "XC Customer";
+
+describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
+  let authDbName: string;
+  let authPool: Pool;
+  let customerDbName: string;
+  let customerPool: Pool;
+
+  async function seedEvent(args: {
+    aiceId: string;
+    eventKey: string;
+    lang?: string;
+    modelName?: string;
+    model?: string;
+    generation: number;
+    tier: string;
+    severity?: number;
+    likelihood?: number;
+    superseded?: boolean;
+  }): Promise<void> {
+    await customerPool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, redaction_policy_version,
+          requested_by, generation, superseded_at)
+       VALUES ($1, $2::numeric, $3, $4, $5,
+               'mv', 'pv',
+               $6, $7,
+               '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+               $8, 'text', 'baseline-only',
+               '00000000-0000-0000-0000-0000000000aa'::uuid, $9,
+               CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
+      [
+        args.aiceId,
+        args.eventKey,
+        args.lang ?? "ENGLISH",
+        args.modelName ?? "openai",
+        args.model ?? "gpt-4o",
+        args.severity ?? 0.5,
+        args.likelihood ?? 0.5,
+        args.tier,
+        args.generation,
+        args.superseded ?? false,
+      ],
+    );
+  }
+
+  async function seedStoryState(
+    storyId: string,
+    status: string,
+    lastReadyAt?: string,
+  ): Promise<void> {
+    await authPool.query(
+      `INSERT INTO story_analysis_state
+         (customer_id, story_id, status, last_ready_at, updated_at)
+       VALUES ($1, $2::bigint, $3, $4::timestamptz, NOW())`,
+      [CUSTOMER_ID, storyId, status, lastReadyAt ?? null],
+    );
+  }
+
+  async function seedStoryResult(args: {
+    storyId: string;
+    lang?: string;
+    modelName?: string;
+    model?: string;
+    generation: number;
+    tier: string;
+    severity?: number;
+    likelihood?: number;
+    superseded?: boolean;
+  }): Promise<void> {
+    await customerPool.query(
+      `INSERT INTO story_analysis_result
+         (customer_id, story_id, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, input_event_refs, input_hash,
+          redaction_policy_version, requested_by, superseded_at)
+       VALUES ($1, $2::bigint, $3, $4, $5,
+               'mv', 'pv', $6,
+               $7, $8,
+               '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
+               $9, 'text', '[]'::jsonb, 'h',
+               'baseline-only', NULL,
+               CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
+      [
+        CUSTOMER_ID,
+        args.storyId,
+        args.lang ?? "ENGLISH",
+        args.modelName ?? "openai",
+        args.model ?? "gpt-4o",
+        args.generation,
+        args.severity ?? 0.5,
+        args.likelihood ?? 0.5,
+        args.tier,
+        args.superseded ?? false,
+      ],
+    );
+  }
+
+  async function seedReport(args: {
+    period: string;
+    bucketDate: string;
+    tz?: string;
+    generation: number;
+    tier: string;
+    severity?: number;
+    likelihood?: number;
+    superseded?: boolean;
+  }): Promise<void> {
+    await customerPool.query(
+      `INSERT INTO periodic_report_result
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          aggregate_severity_score, aggregate_likelihood_score,
+          aggregate_ttp_tags, priority_tier, sections_jsonb,
+          input_event_refs, input_story_refs, input_hash,
+          redaction_policy_version, requested_by, superseded_at)
+       VALUES ($1, $2, $3::date, $4, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', $5,
+               $6, $7,
+               '[]'::jsonb, $8, '{}'::jsonb,
+               '[]'::jsonb, '[]'::jsonb, 'h',
+               'baseline-only', NULL,
+               CASE WHEN $9::boolean THEN NOW() ELSE NULL END)`,
+      [
+        CUSTOMER_ID,
+        args.period,
+        args.bucketDate,
+        args.tz ?? "UTC",
+        args.generation,
+        args.severity ?? 0,
+        args.likelihood ?? 0,
+        args.tier,
+        args.superseded ?? false,
+      ],
+    );
+  }
+
+  beforeAll(async () => {
+    const auth = await createTestDatabase("xc_overview_auth");
+    authDbName = auth.dbName;
+    authPool = auth.pool;
+    await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
+
+    const cust = await createTestDatabase("xc_overview_cust");
+    customerDbName = cust.dbName;
+    customerPool = cust.pool;
+    await runMigrations(
+      customerPool,
+      CUSTOMER_MIGRATIONS_DIR,
+      CUSTOMER_LOCK_ID,
+    );
+
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'xc-1', $2, 'active', 'UTC')`,
+      [CUSTOMER_ID, NAME],
+    );
+
+    // --- Events: canonical dedup + non-default variant exclusion. ---
+    // (aice1, ev1): gen1 default LOW superseded, gen2 default CRITICAL live.
+    await seedEvent({
+      aiceId: "aice1",
+      eventKey: "1",
+      generation: 1,
+      tier: "LOW",
+      superseded: true,
+    });
+    await seedEvent({
+      aiceId: "aice1",
+      eventKey: "1",
+      generation: 2,
+      tier: "CRITICAL",
+    });
+    // Non-default KOREAN variant for the same event — must be ignored.
+    await seedEvent({
+      aiceId: "aice1",
+      eventKey: "1",
+      lang: "KOREAN",
+      generation: 1,
+      tier: "CRITICAL",
+    });
+    // (aice2, ev2): single default MEDIUM.
+    await seedEvent({
+      aiceId: "aice2",
+      eventKey: "2",
+      generation: 1,
+      tier: "MEDIUM",
+    });
+
+    // --- Stories: lifecycle exclusion. ---
+    await seedStoryState("100", "ready", "2026-06-01T00:00:00Z");
+    await seedStoryState("200", "dirty", "2026-06-02T00:00:00Z");
+    await seedStoryState("300", "archived", "2026-06-03T00:00:00Z");
+    await seedStoryState("400", "pending");
+    // Results: s100 HIGH (gen1 LOW superseded, gen2 HIGH live), s200 CRITICAL,
+    // s300 LOW (present but archived → excluded by the state filter).
+    await seedStoryResult({
+      storyId: "100",
+      generation: 1,
+      tier: "LOW",
+      superseded: true,
+    });
+    await seedStoryResult({ storyId: "100", generation: 2, tier: "HIGH" });
+    await seedStoryResult({ storyId: "200", generation: 1, tier: "CRITICAL" });
+    await seedStoryResult({ storyId: "300", generation: 1, tier: "LOW" });
+
+    // --- Reports: canonical dedup. ---
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-06-01",
+      generation: 1,
+      tier: "LOW",
+      superseded: true,
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-06-01",
+      generation: 2,
+      tier: "HIGH",
+    });
+    await seedReport({
+      period: "WEEKLY",
+      bucketDate: "2026-05-25",
+      generation: 1,
+      tier: "CRITICAL",
+    });
+  }, 30_000);
+
+  afterAll(async () => {
+    await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(customerDbName, customerPool);
+    await closeAdminPool();
+  }, 30_000);
+
+  it("events: one canonical row per (aice,event), tier-ranked, default-variant only", async () => {
+    const { rows, total } = await fetchCustomerEvents(
+      customerPool,
+      CUSTOMER_ID,
+      NAME,
+      25,
+    );
+    expect(total).toBe(2);
+    expect(rows.map((r) => `${r.aiceId}:${r.eventKey}`)).toEqual([
+      "aice1:1",
+      "aice2:2",
+    ]);
+    // CRITICAL (the live gen2) ranks before MEDIUM, not the superseded LOW.
+    expect(rows.map((r) => r.priorityTier)).toEqual(["CRITICAL", "MEDIUM"]);
+  });
+
+  it("stories: excludes archived + pending, enriches ready/dirty, tier-ranked", async () => {
+    const { rows, total } = await fetchCustomerStories(
+      authPool,
+      customerPool,
+      CUSTOMER_ID,
+      NAME,
+      25,
+    );
+    // Only ready (100) + dirty (200) count; archived (300) + pending (400) out.
+    expect(total).toBe(2);
+    expect(rows.map((r) => r.storyId)).toEqual(["200", "100"]); // CRITICAL > HIGH
+    expect(rows.map((r) => r.priorityTier)).toEqual(["CRITICAL", "HIGH"]);
+    // No archived story leaks in.
+    expect(rows.some((r) => r.storyId === "300")).toBe(false);
+  });
+
+  it("reports: canonical dedup + tier-rank ordering + window count", async () => {
+    const { rows, total } = await fetchCustomerReports(
+      customerPool,
+      CUSTOMER_ID,
+      NAME,
+      25,
+    );
+    expect(total).toBe(2); // two canonical buckets
+    expect(rows.map((r) => r.priorityTier)).toEqual(["CRITICAL", "HIGH"]);
+    // The superseded gen1 LOW is never the canonical row for the DAILY bucket.
+    expect(rows.some((r) => r.priorityTier === "LOW")).toBe(false);
+  });
+});

@@ -21,6 +21,25 @@ type CurrentQuery =
   | null
   | undefined;
 
+/**
+ * Build a `URLSearchParams` from Next's plain `searchParams` object (a value
+ * may be repeated as an array). Useful for feeding {@link mergeQuery} when
+ * preserving an inbound query string across a redirect.
+ */
+export function searchParamsToUrlSearchParams(
+  searchParams: Record<string, string | string[] | undefined>,
+): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (Array.isArray(value)) {
+      for (const v of value) params.append(key, v);
+    } else if (value != null) {
+      params.set(key, value);
+    }
+  }
+  return params;
+}
+
 export function mergeQuery(
   current: CurrentQuery,
   updates: Record<string, string | null | undefined>,
