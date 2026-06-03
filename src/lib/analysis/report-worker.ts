@@ -396,9 +396,15 @@ export async function processReportJob(
   const claimMarker = claim.rows[0].processing_started_at;
 
   // Result-row probe — a row at the captured PK means step 1 already
-  // landed before a crash; skip the LLM call and finalize only.
-  const existing = await customerPool.query<{ priority_tier: string }>(
-    `SELECT priority_tier FROM periodic_report_result
+  // landed before a crash; skip the LLM call and finalize only. A translated
+  // row (`restoration_lang IS NOT NULL`) carries its translation audit on the
+  // job row, written by `recordTranslationAudit` BEFORE this result insert, so
+  // the idempotent finalize must PRESERVE those columns; a native row clears
+  // them (#412 item 6 / round 4).
+  const existing = await customerPool.query<{
+    restoration_lang: string | null;
+  }>(
+    `SELECT restoration_lang FROM periodic_report_result
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
@@ -415,7 +421,13 @@ export async function processReportJob(
     ],
   );
   if (existing.rows.length > 0) {
-    await finalizeJob(opts.authPool, job, claimMarker);
+    const translated = existing.rows[0].restoration_lang !== null;
+    await finalizeJob(
+      opts.authPool,
+      job,
+      claimMarker,
+      translated ? { mode: "preserve" } : { mode: "clear" },
+    );
     return;
   }
 
@@ -950,6 +962,23 @@ async function runTranslation(args: {
     return;
   }
 
+  const translationAudit: TranslationAudit = {
+    translationModelName: TRANSLATION_MODEL_NAME,
+    translationModel: TRANSLATION_MODEL,
+    translationPromptVersion: aimerResponse.promptVersion,
+  };
+
+  // Persist the translation audit BEFORE the customer-DB result insert so a
+  // crash between the insert and finalize cannot lose it — the crash-recovery
+  // probe then preserves these columns rather than NULLing them (#412 item 6 /
+  // round 4).
+  await recordTranslationAudit(
+    opts.authPool,
+    job,
+    claimMarker,
+    translationAudit,
+  );
+
   // Step 1 — customer-DB INSERT. The translated row copies the canonical's
   // refs and audit metadata verbatim (`model_name`/`model`/`prompt_version`/
   // `model_actual_version`) so the variant key stays self-consistent, and
@@ -986,11 +1015,11 @@ async function runTranslation(args: {
     throw err;
   }
 
-  // Step 2 — auth-DB finalize, recording the translation audit metadata.
+  // Step 2 — auth-DB finalize, re-asserting the translation audit metadata
+  // (already persisted above) and flipping the job to `done`.
   await finalizeJob(opts.authPool, job, claimMarker, {
-    translationModelName: TRANSLATION_MODEL_NAME,
-    translationModel: TRANSLATION_MODEL,
-    translationPromptVersion: aimerResponse.promptVersion,
+    mode: "set",
+    audit: translationAudit,
   });
 
   void auditLog({
@@ -1018,14 +1047,24 @@ async function runTranslation(args: {
 
 /**
  * The English canonical `periodic_report_result` row a non-English variant
- * derives from: the non-superseded English row at the SAME
- * `(model_name, model, generation)` as the job. The `generation` match is
- * load-bearing — a prior generation's English row stays `superseded_at IS
- * NULL` until the current generation is written, so without it a non-English
- * job bumped to generation N (dirty / force regenerate) could read the stale
- * generation N-1 refs/sections instead of deferring, breaking the
- * canonical-first contract. `null` when no such row exists yet — the caller
- * defers (the canonical for THIS generation is not ready).
+ * derives from: the English row at the SAME `(model_name, model, generation)`
+ * as the job. The `generation` match is load-bearing AND sufficient — because
+ * the result table's PK includes `generation`, it already identifies exactly
+ * one English row, so a non-English job bumped to generation N (dirty / force
+ * regenerate) cannot read the stale generation N-1 refs/sections; it matches
+ * gen N or defers.
+ *
+ * We deliberately do NOT also require `superseded_at IS NULL`. A
+ * same-generation English row can be superseded by a LATER English-only
+ * generation while the non-English job stays behind — e.g. the LIVE cadence
+ * bump (`requeueLiveReportJobs`) only advances `done` variants, so a still
+ * `queued`/deferred non-English job remains at gen N while English advances to
+ * N+1 and supersedes the gen-N English row (an operator force-regenerating
+ * only English does the same). That superseded row's stored refs/sections are
+ * still the correct canonical for a non-English job at the SAME generation, so
+ * hiding it would strand the job on the non-terminal canonical defer path
+ * forever (#412 round 4). `null` when no English row exists at this generation
+ * yet — the caller defers (the canonical for THIS generation is not ready).
  */
 interface EnglishCanonical {
   /** JSON string of the stored sections, for the translate mutation input. */
@@ -1076,7 +1115,6 @@ async function loadEnglishCanonical(
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
-        AND superseded_at IS NULL
       LIMIT 1`,
     [
       job.customer_id,
@@ -1392,12 +1430,61 @@ interface TranslationAudit {
   translationPromptVersion: string;
 }
 
+/**
+ * How `finalizeJob` treats the `periodic_report_job` translation audit
+ * columns:
+ *   - `set`      — the translate path: write the actual translation
+ *                  model/prompt onto the row.
+ *   - `clear`    — the native path: NULL the columns so a variant that flips
+ *                  translate→native across generations does not carry a stale
+ *                  audit trail.
+ *   - `preserve` — the crash-recovery idempotent probe for a translated row:
+ *                  leave the columns untouched. They were already persisted by
+ *                  `recordTranslationAudit` BEFORE the customer-DB result
+ *                  insert, so re-deriving the (unrecoverable)
+ *                  `translation_prompt_version` is unnecessary; clearing them
+ *                  would drop the audit trail for the exact commit-ordering
+ *                  crash this probe exists to handle (#412 item 6 / round 4).
+ */
+type FinalizeAudit =
+  | { mode: "set"; audit: TranslationAudit }
+  | { mode: "clear" }
+  | { mode: "preserve" };
+
 async function finalizeJob(
   authPool: Pool,
   job: JobPickup,
   claimMarker: string,
-  translation?: TranslationAudit,
+  audit: FinalizeAudit = { mode: "clear" },
 ): Promise<void> {
+  // `preserve` omits the audit-column assignments entirely; `set`/`clear`
+  // assign the values / NULL respectively.
+  const auditAssignment =
+    audit.mode === "preserve"
+      ? ""
+      : `
+            translation_model_name = $11,
+            translation_model = $12,
+            translation_prompt_version = $13,`;
+  const params: unknown[] = [
+    job.customer_id,
+    job.period,
+    job.bucket_date,
+    job.tz,
+    job.lang,
+    job.model_name,
+    job.model,
+    LIVE_REFRESH_MINUTES,
+    job.generation,
+    claimMarker,
+  ];
+  if (audit.mode !== "preserve") {
+    params.push(
+      audit.mode === "set" ? audit.audit.translationModelName : null,
+      audit.mode === "set" ? audit.audit.translationModel : null,
+      audit.mode === "set" ? audit.audit.translationPromptVersion : null,
+    );
+  }
   await authPool.query(
     `UPDATE periodic_report_job
         SET status = 'done',
@@ -1406,13 +1493,7 @@ async function finalizeJob(
                                THEN NOW() + ($8 || ' minutes')::interval
                                ELSE NULL END,
             last_error = NULL,
-            dry_run = FALSE,
-            -- Audit columns: set on the translate path, cleared (NULL) on
-            -- the native path so a variant that flips translate→native
-            -- across generations does not carry a stale audit trail.
-            translation_model_name = $11,
-            translation_model = $12,
-            translation_prompt_version = $13,
+            dry_run = FALSE,${auditAssignment}
             updated_at = NOW()
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
@@ -1420,6 +1501,40 @@ async function finalizeJob(
         AND generation = $9
         AND status = 'processing'
         AND processing_started_at::text = $10`,
+    params,
+  );
+}
+
+/**
+ * Persist the translation audit columns on the `periodic_report_job` row
+ * while it is still `processing`, BEFORE the customer-DB result-row insert.
+ *
+ * The result row (customer DB) and the audit columns (auth DB) cannot share a
+ * transaction, so a crash between the insert and `finalizeJob` would leave a
+ * durable translated row whose job audit trail is then re-finalized as NULL by
+ * the crash-recovery idempotent probe. Writing the audit first means that
+ * probe only has to PRESERVE these columns (it cannot reconstruct the
+ * translation `prompt_version`, which only the live mutation response carried)
+ * (#412 item 6 / round 4).
+ */
+async function recordTranslationAudit(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string,
+  audit: TranslationAudit,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE periodic_report_job
+        SET translation_model_name = $8,
+            translation_model = $9,
+            translation_prompt_version = $10,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $11
+        AND status = 'processing'
+        AND processing_started_at::text = $12`,
     [
       job.customer_id,
       job.period,
@@ -1428,12 +1543,11 @@ async function finalizeJob(
       job.lang,
       job.model_name,
       job.model,
-      LIVE_REFRESH_MINUTES,
+      audit.translationModelName,
+      audit.translationModel,
+      audit.translationPromptVersion,
       job.generation,
       claimMarker,
-      translation?.translationModelName ?? null,
-      translation?.translationModel ?? null,
-      translation?.translationPromptVersion ?? null,
     ],
   );
 }

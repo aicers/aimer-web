@@ -425,13 +425,97 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     // No second LLM call; the job is finalized from the probe path.
     expect(aimerCalls).toBe(0);
-    const { rows: job } = await authPool.query<{ status: string }>(
-      `SELECT status FROM periodic_report_job
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+    }>(
+      `SELECT status, translation_model_name FROM periodic_report_job
         WHERE customer_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-27' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
     expect(job[0].status).toBe("done");
+    // Native existing row (restoration_lang NULL): the idempotent finalize
+    // clears any stale translation audit.
+    expect(job[0].translation_model_name).toBeNull();
+  });
+
+  it("crash recovery: a translated existing row keeps its translation audit", async () => {
+    // The translate path writes the customer-DB result row (step 1) and only
+    // then writes the auth-DB `translation_*` audit + flips the job to done
+    // (step 2). If the worker crashes after step 1, the next attempt hits the
+    // result-row probe and finalizes idempotently — and must NOT NULL the
+    // audit columns that `recordTranslationAudit` persisted BEFORE step 1
+    // (#412 item 6 / round 4). Model that state directly: a translated result
+    // row (restoration_lang = ENGLISH) already exists and the job row already
+    // carries its translation audit, status back to queued.
+    aimerCalls = 0;
+    const bucket = "2026-06-30";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await customerPool.query(
+      `INSERT INTO periodic_report_result
+         (customer_id, period, bucket_date, tz, lang, restoration_lang,
+          model_name, model, model_actual_version, prompt_version, generation,
+          aggregate_severity_score, aggregate_likelihood_score,
+          aggregate_ttp_tags, priority_tier, sections_jsonb,
+          input_event_refs, input_story_refs, input_hash,
+          redaction_policy_version)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'ENGLISH',
+               'openai', 'gpt-4o', 'canon-mv', 'canon-pv', 1,
+               0.6, 0.6,
+               '[]'::jsonb, 'MEDIUM', $4::jsonb,
+               '[]'::jsonb, '[]'::jsonb, 'canon-hash',
+               'v1')`,
+      [CUSTOMER_ID, bucket, TZ, JSON.stringify(AIMER_SECTIONS)],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run,
+          translation_model_name, translation_model, translation_prompt_version)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 1, FALSE,
+               'openai', 'gpt-4o', 'translate-pv-1')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // No LLM call of either kind — finalized from the probe.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    // Done, with the translation audit columns preserved (not NULLed).
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+      translation_model: string | null;
+      translation_prompt_version: string | null;
+    }>(
+      `SELECT status, translation_model_name, translation_model,
+              translation_prompt_version
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+    expect(job[0].translation_model_name).toBe("openai");
+    expect(job[0].translation_model).toBe("gpt-4o");
+    expect(job[0].translation_prompt_version).toBe("translate-pv-1");
   });
 
   it("requeues (attempts++) on a retryable 5xx, no result row written", async () => {
@@ -1454,6 +1538,86 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].translation_model_name).toBe("openai");
     expect(job[0].translation_model).toBe("gpt-4o");
     expect(job[0].translation_prompt_version).toBe("translate-pv-1");
+  });
+
+  it("loads a SAME-generation English canonical even after it is superseded", async () => {
+    // A non-English job at generation N must still derive from the
+    // generation-N English canonical even once that row has been superseded by
+    // a LATER English-only generation. Reachable without an operator: the LIVE
+    // cadence bump only advances `done` variants, so a still-deferred Korean
+    // gen-1 job stays at gen 1 while English advances to gen 2 and supersedes
+    // the gen-1 English row. The lookup pins `generation = job.generation`
+    // (unique by PK), so dropping the stale `superseded_at IS NULL` predicate
+    // lets the gen-1 job translate instead of deferring forever (#412 round 4).
+    aimerCalls = 0;
+    const bucket = "2026-06-24";
+    const eventKey = "9001";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // English leaf exists (canonical refs resolve), but NO Korean leaf → the
+    // completeness gate misses and the job routes to translation.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // English advanced to gen 2, superseding the gen-1 canonical the Korean
+    // gen-1 job still depends on.
+    await customerPool.query(
+      `UPDATE periodic_report_result SET superseded_at = NOW()
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'
+          AND generation = 1`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    // Translated off the superseded same-generation canonical — NOT deferred.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+    expect(job[0].last_error).not.toBe("english_canonical_not_ready");
+
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+    }>(
+      `SELECT restoration_lang FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBe("ENGLISH");
   });
 
   it("generates natively when every cited leaf exists in the target lang", async () => {
