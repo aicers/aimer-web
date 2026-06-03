@@ -186,6 +186,11 @@ export const POST = withAuth(
            attempts           = 0,
            last_error         = NULL,
            processing_started_at = NULL,
+           -- Reset the cadence gate: a force-regenerate must process
+           -- immediately, but the picker now honors next_due_at for queued
+           -- rows, so a leftover future LIVE cadence value would stall it
+           -- (#412 item 4).
+           next_due_at        = NULL,
            updated_at         = NOW()
          RETURNING generation, (xmax = 0) AS inserted`,
         [

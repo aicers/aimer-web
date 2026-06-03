@@ -190,6 +190,7 @@ export async function loadReportResultPage(
     prompt_version: string;
     generation: number;
     lang: string;
+    restoration_lang: string | null;
     model_name: string;
     model: string;
     priority_tier: PriorityTier;
@@ -203,7 +204,7 @@ export async function loadReportResultPage(
     requested_at: Date;
   }>(
     `SELECT model_actual_version, prompt_version, generation,
-            lang, model_name, model,
+            lang, restoration_lang, model_name, model,
             priority_tier, aggregate_severity_score, aggregate_likelihood_score,
             aggregate_ttp_tags, sections_jsonb,
             input_story_refs, input_event_refs,
@@ -237,12 +238,19 @@ export async function loadReportResultPage(
     ? row.input_event_refs
     : [];
 
+  // `restoration_lang` pins the language whose cited leaves are replayed to
+  // restore the report-scope tokens: NULL replays at the row's own `lang`
+  // (native), a non-null enum (e.g. ENGLISH for a translated row) replays
+  // the canonical's leaves, which the translated row's copied `input_*_refs`
+  // point at (#412 item 5). `model_name` / `model` are the canonical's on a
+  // translated row (copied verbatim), so the pinned leaves resolve.
+  const replayLang = row.restoration_lang ?? row.lang;
   const plaintextByReportToken = await buildReportTokenPlaintext(
     customerPool,
     input.customerId,
     storyRefs,
     eventRefs,
-    { lang: row.lang, modelName: row.model_name, model: row.model },
+    { lang: replayLang, modelName: row.model_name, model: row.model },
   );
 
   const restoreOne = (s: unknown) =>

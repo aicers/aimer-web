@@ -37,15 +37,23 @@ import {
   PeriodicReportDocument,
   type PeriodicReportInputs,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
+import { TranslateReportDocument } from "@/lib/graphql/__generated__/translate-report";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
+  buildCanonicalPinnedReportInput,
   buildPeriodicReportInput,
+  buildPinnedTokenRefs,
+  type EventRef,
   type PeriodicPeriod,
   type ReportVariant,
+  type StoryRef,
 } from "./report-input-builder";
-import { scanReportAnalysisForLeaks } from "./report-token";
+import {
+  type ReportTokenRef,
+  scanReportAnalysisForLeaks,
+} from "./report-token";
 
 // ---------------------------------------------------------------------------
 // Configuration (env-driven, read at module init) — shared with Phase 1.
@@ -112,6 +120,28 @@ const WORKER_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? DEFAULT_LANG;
 const WORKER_MODEL_NAME =
   process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? DEFAULT_MODEL_NAME;
 const WORKER_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? DEFAULT_MODEL;
+
+// The LLM server `name` / `model` used on the translate path (#412 item 6).
+// They default to the worker's generation defaults but are independently
+// configurable, and are recorded as the `periodic_report_job` translation
+// audit columns — the translated `periodic_report_result` row keeps the
+// English canonical's `model_name`/`model` so the variant key stays
+// self-consistent.
+const TRANSLATION_MODEL_NAME =
+  process.env.ANALYSIS_TRANSLATION_MODEL_NAME ?? WORKER_MODEL_NAME;
+const TRANSLATION_MODEL =
+  process.env.ANALYSIS_TRANSLATION_MODEL ?? WORKER_MODEL;
+
+// Backoff applied when a non-English job defers because its English
+// canonical is not yet available. This is a NON-TERMINAL wait, not a
+// failure: the defer leaves `attempts` untouched (never counts toward
+// `MAX_ATTEMPTS` / `failed`) and only sets `next_due_at` so the picker
+// does not hot-spin (#412 item 4).
+const DEFAULT_CANONICAL_DEFER_MS = 30_000;
+export const CANONICAL_DEFER_MS = resolveInt(
+  process.env.ANALYSIS_CANONICAL_DEFER_MS,
+  DEFAULT_CANONICAL_DEFER_MS,
+);
 
 // `DEFAULT_LOCALE` is the global app UI locale (`en` / `ko`), mirrored from
 // `src/i18n/routing.ts` (same `?? "ko"` fallback). It is read directly here
@@ -249,6 +279,14 @@ async function pickQueuedReportJobs(
         -- result write (#297 review round 2, item 2). The claim step
         -- re-checks this to close the pickup→claim archive window.
         AND s.status <> 'archived'
+        -- Honor a per-variant next_due_at for queued rows (#412 item 4):
+        -- the non-terminal canonical-defer path sets a future next_due_at
+        -- WITHOUT touching attempts, so without this gate the row would be
+        -- re-picked on the very next tick (hot spin). Immediate-queue paths
+        -- (dirty bump, regenerate, on-demand requeue, stuck recovery) reset
+        -- next_due_at = NULL so they are not stalled by a leftover future
+        -- value left over from the LIVE cadence.
+        AND (j.next_due_at IS NULL OR j.next_due_at <= NOW())
         AND (
           j.attempts = 0
           OR j.updated_at
@@ -270,6 +308,7 @@ async function pickQueuedReportJobs(
 interface ProcessOptions {
   authPool: Pool;
   callGenerateReport?: typeof callGenerateReport;
+  callTranslateReport?: typeof callTranslateReport;
   resolveCustomerPool?: (customerId: string) => Pool;
   loadRanges?: typeof loadCustomerRanges;
 }
@@ -375,18 +414,6 @@ export async function processReportJob(
   };
   const nowIso = getCurrentTimestamp().toISOString();
 
-  const built = await buildPeriodicReportInput({
-    authPool: opts.authPool,
-    customerPool,
-    customerId: job.customer_id,
-    period: job.period,
-    bucketDate: job.bucket_date,
-    variant,
-    nowIso,
-    topStoriesK: TOP_STORIES_K,
-    topEventsK: TOP_EVENTS_K,
-  });
-
   const auditBase: AuditEmissionBase = {
     actorId: WORKER_ACCOUNT_ID,
     authContext: "general",
@@ -394,6 +421,125 @@ export async function processReportJob(
     customerId: job.customer_id,
     aiceId: PERIODIC_WORKER_AICE_ID,
   };
+
+  // --- Native-vs-translate routing (#389 PR #3 / #412) ---------------
+  // The English variant IS the canonical: report-scope `R{j}` tokens are
+  // numbered from its leaf ordering, so it is always generated natively
+  // from the top-K selection. Every non-English variant must be
+  // consistent with that ordering — either generated natively from the
+  // EXACT same cited leaves (when they all exist in the target lang) or
+  // translated from the canonical's stored `sections`.
+  if (job.lang === DEFAULT_LANG) {
+    const built = await buildPeriodicReportInput({
+      authPool: opts.authPool,
+      customerPool,
+      customerId: job.customer_id,
+      period: job.period,
+      bucketDate: job.bucket_date,
+      variant,
+      nowIso,
+      topStoriesK: TOP_STORIES_K,
+      topEventsK: TOP_EVENTS_K,
+    });
+    await runNativeGeneration({
+      job,
+      opts,
+      customerPool,
+      claimMarker,
+      built,
+      auditBase,
+      callLlm,
+    });
+    return;
+  }
+
+  // Non-English: the English canonical must already exist (its result row
+  // is the source of both the pinned ref set and the translate input). If
+  // it is absent / not yet done, defer WITHOUT consuming the retry/failure
+  // budget — "canonical not ready" is a normal wait, not a failure (#412
+  // item 4). The defer sets `next_due_at` (honored by the picker) so the
+  // job does not hot-spin, and leaves `attempts` untouched.
+  const canonical = await loadEnglishCanonical(customerPool, job);
+  if (canonical === null) {
+    await deferJobForCanonical(opts.authPool, job, claimMarker);
+    // Operational signal only (parity with `report_pickup_race_lost`): a
+    // defer is a normal wait, not an analysis event, so it does not emit an
+    // `ai_analysis.*` audit entry.
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.report_canonical_defer",
+        customer_id: job.customer_id,
+        period: job.period,
+        bucket_date: job.bucket_date,
+        tz: job.tz,
+        lang: job.lang,
+        model_name: job.model_name,
+        model: job.model,
+        generation: job.generation,
+        reason: "english_canonical_not_ready",
+      }),
+    );
+    return;
+  }
+
+  // Completeness gate: build the input pinned to the canonical's exact
+  // refs in the target lang. If every cited leaf exists there, generate
+  // natively (same `R{j}` numbering as English); otherwise translate.
+  const pinned = await buildCanonicalPinnedReportInput({
+    customerPool,
+    period: job.period,
+    bucketDate: job.bucket_date,
+    variant,
+    nowIso,
+    storyRefs: canonical.storyRefs,
+    eventRefs: canonical.eventRefs,
+  });
+  if (pinned.complete) {
+    await runNativeGeneration({
+      job,
+      opts,
+      customerPool,
+      claimMarker,
+      built: pinned.built,
+      auditBase,
+      callLlm,
+    });
+    return;
+  }
+  await runTranslation({
+    job,
+    opts,
+    customerPool,
+    claimMarker,
+    canonical,
+    auditBase,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Native generation (English canonical + completeness-satisfied non-English)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run the redaction precondition → LLM generate → leak scan → result
+ * write → finalize sequence for a natively-generated variant. Shared by
+ * the English canonical path and the canonical-ref-pinned non-English path
+ * (the only difference between them is how `built` was assembled). A
+ * natively-generated row sets `restoration_lang = NULL` — its cited leaves
+ * exist in its own language, so the loader replays them at the row's lang.
+ */
+async function runNativeGeneration(args: {
+  job: JobPickup;
+  opts: ProcessOptions;
+  customerPool: Pool;
+  claimMarker: string;
+  built: Awaited<ReturnType<typeof buildPeriodicReportInput>>;
+  auditBase: AuditEmissionBase;
+  callLlm: typeof callGenerateReport;
+}): Promise<void> {
+  const { job, opts, customerPool, claimMarker, built, auditBase, callLlm } =
+    args;
 
   // Redaction-policy precondition across the consumed leaves. A
   // baseline-only report (zero leaves) stamps the reserved sentinel.
@@ -545,9 +691,6 @@ export async function processReportJob(
     return;
   }
 
-  // Persist aimer's structured sections verbatim (already redaction-scanned
-  // above); the page loader restores tokens and reads sections by name.
-  const sections = parsedSections;
   const inputWatermark =
     job.cursor_watermark_quality === "strict" ? job.cursor_watermark : null;
 
@@ -566,14 +709,23 @@ export async function processReportJob(
 
   // Step 1 — customer-DB INSERT + supersede prior.
   try {
-    await writeResultRow(customerPool, {
-      job,
-      built,
-      aimerResponse,
-      sections,
-      redactionPolicyVersion,
+    await writeResultRow(customerPool, job, {
+      modelActualVersion: aimerResponse.modelActualVersion,
+      promptVersion: aimerResponse.promptVersion,
+      aggregateSeverityScore: built.aggregateSeverityScore,
+      aggregateLikelihoodScore: built.aggregateLikelihoodScore,
+      aggregateTtpTags: built.aggregateTtpTags,
+      priorityTier: built.priorityTier,
+      sections: parsedSections,
+      eventRefs: built.eventRefs,
+      storyRefs: built.storyRefs,
+      inputHash: built.inputHash,
       inputWatermark,
+      redactionPolicyVersion,
       requestedBy: force ? job.force_requested_by : null,
+      // Native: the cited leaves exist in this row's own language, so the
+      // loader replays them at `lang` (no restoration language pin).
+      restorationLang: null,
     });
   } catch (err) {
     void auditLog({
@@ -604,8 +756,338 @@ export async function processReportJob(
       top_event_count: built.eventRefs.length,
       baseline_drift_severity: built.drift.severity,
       baseline_drift_likelihood: built.drift.likelihood,
+      native: true,
     },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Translate path (non-English, canonical cited-leaf set incomplete)
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate the English canonical's stored `sections` into the job's
+ * target language via aimer's `translatePeriodicSecurityReport`, leak-scan
+ * the result against the canonical's report-scope tokens, and persist a
+ * row that copies the canonical's refs / metadata verbatim with
+ * `restoration_lang = ENGLISH` (so the loader replays the English leaves).
+ * The model / prompt actually used to translate go to the
+ * `periodic_report_job` audit columns, NOT the result row's variant key.
+ */
+async function runTranslation(args: {
+  job: JobPickup;
+  opts: ProcessOptions;
+  customerPool: Pool;
+  claimMarker: string;
+  canonical: EnglishCanonical;
+  auditBase: AuditEmissionBase;
+}): Promise<void> {
+  const { job, opts, customerPool, claimMarker, canonical, auditBase } = args;
+  const callTranslate = opts.callTranslateReport ?? callTranslateReport;
+
+  // Reconstruct the canonical's report-scope token refs from the English
+  // cited leaves so the leak scan has the exact `allowedTokens` set. If the
+  // English leaves are unexpectedly gone, refuse to persist (the scan
+  // cannot validate) and fail loudly rather than store an unverifiable row.
+  const englishVariant: ReportVariant = {
+    tz: job.tz,
+    lang: DEFAULT_LANG,
+    modelName: canonical.modelName,
+    model: canonical.model,
+  };
+  const tokenRefs: ReportTokenRef[] | null = await buildPinnedTokenRefs(
+    customerPool,
+    englishVariant,
+    canonical.storyRefs,
+    canonical.eventRefs,
+  );
+  if (tokenRefs === null) {
+    await failJob(opts.authPool, job, "canonical_leaves_missing", claimMarker, {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
+  // Re-check the parent state immediately before the LLM call (parity with
+  // the native path's claim→call barrier).
+  if (await parentStateArchived(opts.authPool, job)) {
+    await releaseArchivedJob(opts.authPool, job, claimMarker);
+    return;
+  }
+
+  const force = job.force_requested_at !== null;
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.request_issued",
+    targetId: reportTargetId(job),
+    details: {
+      customer_id: job.customer_id,
+      period: job.period,
+      bucket_date: job.bucket_date,
+      tz: job.tz,
+      lang: job.lang,
+      model_name: job.model_name,
+      model: job.model,
+      generation: job.generation,
+      force,
+      translate: true,
+      translation_model_name: TRANSLATION_MODEL_NAME,
+      translation_model: TRANSLATION_MODEL,
+      actor_aice_id: PERIODIC_WORKER_AICE_ID,
+    },
+  });
+
+  let aimerResponse: ReportAimerResponse;
+  try {
+    aimerResponse = await callTranslate({
+      customerId: job.customer_id,
+      sections: canonical.sectionsString,
+      targetLang: job.lang,
+      modelName: TRANSLATION_MODEL_NAME,
+      model: TRANSLATION_MODEL,
+    });
+  } catch (err) {
+    const classification = classifyAimerError(err);
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "translate",
+        code: classification.code,
+        retryable: classification.retryable,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    if (!classification.retryable) {
+      await failJob(opts.authPool, job, classification.code, claimMarker, {
+        attempts: job.attempts + 1,
+      });
+      return;
+    }
+    await requeueWithBackoff(
+      opts.authPool,
+      job,
+      classification.code,
+      claimMarker,
+    );
+    return;
+  }
+
+  let parsedSections: ReportSectionsJson;
+  try {
+    parsedSections = parseReportSections(aimerResponse.sections);
+  } catch (err) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "translate",
+        code: "report_sections_parse_failed",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    await failJob(
+      opts.authPool,
+      job,
+      "report_sections_parse_failed",
+      claimMarker,
+      { attempts: job.attempts + 1 },
+    );
+    return;
+  }
+
+  // Leak scan on the translated output: aimer's translate mutation
+  // preserves every redaction token verbatim, so the same `allowedTokens`
+  // derived from the English leaves must cover the translated text. Any
+  // residual / leaked token fails the job BEFORE the row is written (#412
+  // item 7).
+  const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
+    opts.authPool,
+    job.customer_id,
+  );
+  const reportText = collectSectionStrings(parsedSections).join("\n\n");
+  const leakScan = scanReportAnalysisForLeaks(reportText, tokenRefs, ranges);
+  if (leakScan.hasLeak) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "translate",
+        leaks: leakScan.leaks.slice(0, 20),
+      },
+    });
+    await failJob(opts.authPool, job, "hallucination_detected", claimMarker, {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
+  // Final archived re-check before the customer-DB write (parity with the
+  // native path).
+  if (await parentStateArchived(opts.authPool, job)) {
+    await releaseArchivedJob(opts.authPool, job, claimMarker);
+    return;
+  }
+
+  // Step 1 — customer-DB INSERT. The translated row copies the canonical's
+  // refs and audit metadata verbatim (`model_name`/`model`/`prompt_version`/
+  // `model_actual_version`) so the variant key stays self-consistent, and
+  // pins `restoration_lang = ENGLISH` so the loader replays the English
+  // cited leaves (#412 items 5 + 6).
+  try {
+    await writeResultRow(customerPool, job, {
+      modelActualVersion: canonical.modelActualVersion,
+      promptVersion: canonical.promptVersion,
+      aggregateSeverityScore: canonical.aggregateSeverityScore,
+      aggregateLikelihoodScore: canonical.aggregateLikelihoodScore,
+      aggregateTtpTags: canonical.aggregateTtpTags,
+      priorityTier: canonical.priorityTier,
+      sections: parsedSections,
+      eventRefs: canonical.eventRefs,
+      storyRefs: canonical.storyRefs,
+      inputHash: canonical.inputHash,
+      inputWatermark: canonical.inputWatermark,
+      redactionPolicyVersion: canonical.redactionPolicyVersion,
+      requestedBy: force ? job.force_requested_by : null,
+      restorationLang: DEFAULT_LANG,
+    });
+  } catch (err) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "result_insert",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw err;
+  }
+
+  // Step 2 — auth-DB finalize, recording the translation audit metadata.
+  await finalizeJob(opts.authPool, job, claimMarker, {
+    translationModelName: TRANSLATION_MODEL_NAME,
+    translationModel: TRANSLATION_MODEL,
+    translationPromptVersion: aimerResponse.promptVersion,
+  });
+
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.result_stored",
+    targetId: reportTargetId(job),
+    details: {
+      prompt_version: canonical.promptVersion,
+      model_actual_version: canonical.modelActualVersion,
+      priority_tier: canonical.priorityTier,
+      top_story_count: canonical.storyRefs.length,
+      top_event_count: canonical.eventRefs.length,
+      translate: true,
+      restoration_lang: DEFAULT_LANG,
+      translation_model_name: TRANSLATION_MODEL_NAME,
+      translation_model: TRANSLATION_MODEL,
+      translation_prompt_version: aimerResponse.promptVersion,
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// English canonical lookup (translate / native-pin source)
+// ---------------------------------------------------------------------------
+
+/**
+ * The English canonical `periodic_report_result` row a non-English variant
+ * derives from: the latest non-superseded English row at the SAME
+ * `(model_name, model)` as the job. `null` when no such row exists yet —
+ * the caller defers (the canonical is not ready).
+ */
+interface EnglishCanonical {
+  /** JSON string of the stored sections, for the translate mutation input. */
+  sectionsString: string;
+  storyRefs: StoryRef[];
+  eventRefs: EventRef[];
+  modelName: string;
+  model: string;
+  modelActualVersion: string;
+  promptVersion: string;
+  aggregateSeverityScore: number;
+  aggregateLikelihoodScore: number;
+  aggregateTtpTags: string[];
+  priorityTier: string;
+  inputHash: string;
+  inputWatermark: Date | null;
+  redactionPolicyVersion: string;
+}
+
+async function loadEnglishCanonical(
+  customerPool: Pool,
+  job: JobPickup,
+): Promise<EnglishCanonical | null> {
+  const { rows } = await customerPool.query<{
+    sections_jsonb: ReportSectionsJson;
+    input_story_refs: StoryRef[] | null;
+    input_event_refs: EventRef[] | null;
+    model_name: string;
+    model: string;
+    model_actual_version: string;
+    prompt_version: string;
+    aggregate_severity_score: number;
+    aggregate_likelihood_score: number;
+    aggregate_ttp_tags: string[] | null;
+    priority_tier: string;
+    input_hash: string;
+    input_watermark: Date | null;
+    redaction_policy_version: string;
+  }>(
+    `SELECT sections_jsonb,
+            input_story_refs, input_event_refs,
+            model_name, model, model_actual_version, prompt_version,
+            aggregate_severity_score, aggregate_likelihood_score,
+            aggregate_ttp_tags, priority_tier,
+            input_hash, input_watermark, redaction_policy_version
+       FROM periodic_report_result
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND superseded_at IS NULL
+      ORDER BY generation DESC
+      LIMIT 1`,
+    [
+      job.customer_id,
+      job.period,
+      job.bucket_date,
+      job.tz,
+      DEFAULT_LANG,
+      job.model_name,
+      job.model,
+    ],
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    sectionsString: JSON.stringify(r.sections_jsonb ?? {}),
+    storyRefs: Array.isArray(r.input_story_refs) ? r.input_story_refs : [],
+    eventRefs: Array.isArray(r.input_event_refs) ? r.input_event_refs : [],
+    modelName: r.model_name,
+    model: r.model,
+    modelActualVersion: r.model_actual_version,
+    promptVersion: r.prompt_version,
+    aggregateSeverityScore: r.aggregate_severity_score,
+    aggregateLikelihoodScore: r.aggregate_likelihood_score,
+    aggregateTtpTags: Array.isArray(r.aggregate_ttp_tags)
+      ? r.aggregate_ttp_tags
+      : [],
+    priorityTier: r.priority_tier,
+    inputHash: r.input_hash,
+    inputWatermark: r.input_watermark,
+    redactionPolicyVersion: r.redaction_policy_version,
+  };
 }
 
 function reportTargetId(job: JobPickup): string {
@@ -643,6 +1125,30 @@ async function callGenerateReport(args: {
   return result.generatePeriodicSecurityReport;
 }
 
+// Translate-path call wrapper — aimer's stateless, token-preserving
+// `translatePeriodicSecurityReport` mutation (#412 / aimer #459). Returns
+// the same `PeriodicSecurityReportResult` shape as the generate path.
+async function callTranslateReport(args: {
+  customerId: string;
+  sections: string;
+  targetLang: string;
+  modelName: string;
+  model: string;
+}): Promise<ReportAimerResponse> {
+  const result = await graphqlRequest(
+    TranslateReportDocument,
+    {
+      customerId: args.customerId,
+      sections: args.sections,
+      targetLang: args.targetLang as "KOREAN" | "ENGLISH",
+      model: args.model,
+      name: args.modelName,
+    },
+    { accountId: WORKER_ACCOUNT_ID, aiceId: PERIODIC_WORKER_AICE_ID },
+  );
+  return result.translatePeriodicSecurityReport;
+}
+
 function classifyAimerError(err: unknown): {
   code: string;
   retryable: boolean;
@@ -664,57 +1170,75 @@ function classifyAimerError(err: unknown): {
 // Customer-DB write
 // ---------------------------------------------------------------------------
 
+// Column values for a `periodic_report_result` row, supplied explicitly so
+// the native path (sources them from `built` + the generate response) and
+// the translate path (copies the canonical's metadata, with translated
+// `sections` and `restoration_lang = ENGLISH`) share one writer.
+interface ResultRowValues {
+  modelActualVersion: string;
+  promptVersion: string;
+  aggregateSeverityScore: number;
+  aggregateLikelihoodScore: number;
+  aggregateTtpTags: string[];
+  priorityTier: string;
+  sections: ReportSectionsJson;
+  eventRefs: EventRef[];
+  storyRefs: StoryRef[];
+  inputHash: string;
+  inputWatermark: Date | null;
+  redactionPolicyVersion: string;
+  requestedBy: string | null;
+  /** NULL = replay leaves at the row's own `lang`; an enum pins the replay. */
+  restorationLang: string | null;
+}
+
 async function writeResultRow(
   customerPool: Pool,
-  args: {
-    job: JobPickup;
-    built: Awaited<ReturnType<typeof buildPeriodicReportInput>>;
-    aimerResponse: ReportAimerResponse;
-    sections: ReportSectionsJson;
-    redactionPolicyVersion: string;
-    inputWatermark: Date | null;
-    requestedBy: string | null;
-  },
+  job: JobPickup,
+  values: ResultRowValues,
 ): Promise<void> {
   const client = await customerPool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (customer_id, period, bucket_date, tz, lang, restoration_lang,
+          model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
           input_event_refs, input_story_refs, input_hash, input_watermark,
           redaction_policy_version, requested_by)
-       VALUES ($1, $2, $3::date, $4, $5, $6, $7,
-               $8, $9, $10,
-               $11, $12,
-               $13::jsonb, $14, $15::jsonb,
-               $16::jsonb, $17::jsonb, $18, $19,
-               $20, $21::uuid)`,
+       VALUES ($1, $2, $3::date, $4, $5, $6,
+               $7, $8,
+               $9, $10, $11,
+               $12, $13,
+               $14::jsonb, $15, $16::jsonb,
+               $17::jsonb, $18::jsonb, $19, $20,
+               $21, $22::uuid)`,
       [
-        args.job.customer_id,
-        args.job.period,
-        args.job.bucket_date,
-        args.job.tz,
-        args.job.lang,
-        args.job.model_name,
-        args.job.model,
-        args.aimerResponse.modelActualVersion,
-        args.aimerResponse.promptVersion,
-        args.job.generation,
-        args.built.aggregateSeverityScore,
-        args.built.aggregateLikelihoodScore,
-        JSON.stringify(args.built.aggregateTtpTags),
-        args.built.priorityTier,
-        JSON.stringify(args.sections),
-        JSON.stringify(args.built.eventRefs),
-        JSON.stringify(args.built.storyRefs),
-        args.built.inputHash,
-        args.inputWatermark,
-        args.redactionPolicyVersion,
-        args.requestedBy,
+        job.customer_id,
+        job.period,
+        job.bucket_date,
+        job.tz,
+        job.lang,
+        values.restorationLang,
+        job.model_name,
+        job.model,
+        values.modelActualVersion,
+        values.promptVersion,
+        job.generation,
+        values.aggregateSeverityScore,
+        values.aggregateLikelihoodScore,
+        JSON.stringify(values.aggregateTtpTags),
+        values.priorityTier,
+        JSON.stringify(values.sections),
+        JSON.stringify(values.eventRefs),
+        JSON.stringify(values.storyRefs),
+        values.inputHash,
+        values.inputWatermark,
+        values.redactionPolicyVersion,
+        values.requestedBy,
       ],
     );
     await client.query(
@@ -726,14 +1250,14 @@ async function writeResultRow(
           AND generation < $8
           AND superseded_at IS NULL`,
       [
-        args.job.customer_id,
-        args.job.period,
-        args.job.bucket_date,
-        args.job.tz,
-        args.job.lang,
-        args.job.model_name,
-        args.job.model,
-        args.job.generation,
+        job.customer_id,
+        job.period,
+        job.bucket_date,
+        job.tz,
+        job.lang,
+        job.model_name,
+        job.model,
+        job.generation,
       ],
     );
     await client.query("COMMIT");
@@ -780,6 +1304,7 @@ async function releaseArchivedJob(
     `UPDATE periodic_report_job
         SET status = 'queued',
             processing_started_at = NULL,
+            next_due_at = NULL,
             updated_at = NOW()
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
@@ -801,10 +1326,56 @@ async function releaseArchivedJob(
   );
 }
 
+// Defer a non-English job whose English canonical is not yet available.
+// NON-TERMINAL: leaves `status = 'queued'` and `attempts` UNCHANGED (never
+// counts toward `MAX_ATTEMPTS` / `failed`), and sets `next_due_at` so the
+// picker — which now honors `next_due_at` for queued rows — does not
+// re-pick it on the next tick (no hot spin). Keyed by the claim marker so a
+// stale timed-out attempt cannot defer a later re-claimed one (#412 item 4).
+async function deferJobForCanonical(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE periodic_report_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            next_due_at = NOW() + ($8::bigint * interval '1 millisecond'),
+            last_error = 'english_canonical_not_ready',
+            updated_at = NOW()
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $9
+        AND status = 'processing'
+        AND processing_started_at::text = $10`,
+    [
+      job.customer_id,
+      job.period,
+      job.bucket_date,
+      job.tz,
+      job.lang,
+      job.model_name,
+      job.model,
+      CANONICAL_DEFER_MS,
+      job.generation,
+      claimMarker,
+    ],
+  );
+}
+
+interface TranslationAudit {
+  translationModelName: string;
+  translationModel: string;
+  translationPromptVersion: string;
+}
+
 async function finalizeJob(
   authPool: Pool,
   job: JobPickup,
   claimMarker: string,
+  translation?: TranslationAudit,
 ): Promise<void> {
   await authPool.query(
     `UPDATE periodic_report_job
@@ -815,6 +1386,12 @@ async function finalizeJob(
                                ELSE NULL END,
             last_error = NULL,
             dry_run = FALSE,
+            -- Audit columns: set on the translate path, cleared (NULL) on
+            -- the native path so a variant that flips translate→native
+            -- across generations does not carry a stale audit trail.
+            translation_model_name = $11,
+            translation_model = $12,
+            translation_prompt_version = $13,
             updated_at = NOW()
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
@@ -833,6 +1410,9 @@ async function finalizeJob(
       LIVE_REFRESH_MINUTES,
       job.generation,
       claimMarker,
+      translation?.translationModelName ?? null,
+      translation?.translationModel ?? null,
+      translation?.translationPromptVersion ?? null,
     ],
   );
 }
@@ -882,11 +1462,16 @@ async function requeueWithBackoff(
   const nextAttempts = job.attempts + 1;
   const terminal = nextAttempts >= MAX_ATTEMPTS;
   await authPool.query(
+    // Reset next_due_at on the non-terminal requeue so retry timing is
+    // governed solely by the attempts-based backoff in the picker, not by
+    // a leftover future next_due_at (e.g. a LIVE cadence value). Terminal
+    // (failed) rows are not re-picked, so their next_due_at is irrelevant.
     `UPDATE periodic_report_job
         SET status = ${terminal ? "'failed'" : "'queued'"},
             attempts = $8,
             last_error = $9,
             processing_started_at = ${terminal ? "processing_started_at" : "NULL"},
+            next_due_at = ${terminal ? "next_due_at" : "NULL"},
             updated_at = NOW()
       WHERE customer_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
@@ -965,9 +1550,13 @@ export async function tickReportJobsOnce(
 // finalize/fail/requeue match zero rows (#297 review round 5, item 1).
 export async function recoverStuckReportJobs(authPool: Pool): Promise<void> {
   await authPool.query(
+    // Reset next_due_at too: a stuck row is being returned for IMMEDIATE
+    // reprocessing, so a leftover future cadence value must not stall it now
+    // that the picker honors next_due_at for queued rows (#412 item 4).
     `UPDATE periodic_report_job
         SET status = 'queued',
             processing_started_at = NULL,
+            next_due_at = NULL,
             updated_at = NOW()
       WHERE status = 'processing'
         AND dry_run = FALSE
@@ -1090,12 +1679,17 @@ export async function seedRealReportJobs(
       // via `generation < MAX_GENERATION`, so a capped variant is skipped
       // here (and was warned above).
       await authClient.query(
+        // Reset next_due_at: a dirty (source-driven) bump must process
+        // promptly, but now that the picker honors next_due_at for queued
+        // rows, a LIVE done variant carrying a future cadence next_due_at
+        // would otherwise be stalled past the bump (#412 item 4).
         `UPDATE periodic_report_job
             SET generation = generation + 1,
                 status = 'queued',
                 attempts = 0,
                 last_error = NULL,
                 processing_started_at = NULL,
+                next_due_at = NULL,
                 dry_run = FALSE,
                 force_requested_at = NULL,
                 force_requested_by = NULL,
@@ -1313,12 +1907,16 @@ export async function enqueueOnDemandReportJob(
       // `queued` at the SAME generation (no bump, no force) so the existing
       // retry/backoff machinery produces the report.
       await client.query(
+        // Reset next_due_at: an on-demand requeue is an immediate-process
+        // request, so a leftover future cadence value must not stall it now
+        // that the picker honors next_due_at for queued rows (#412 item 4).
         `UPDATE periodic_report_job
             SET status = 'queued',
                 dry_run = FALSE,
                 attempts = 0,
                 last_error = NULL,
                 processing_started_at = NULL,
+                next_due_at = NULL,
                 updated_at = $8::timestamptz
           WHERE customer_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
@@ -1423,6 +2021,10 @@ export async function requeueLiveReportJobs(
             attempts = 0,
             last_error = NULL,
             processing_started_at = NULL,
+            -- Clear the cadence gate so the bumped generation is picked up
+            -- immediately; the next finalize re-stamps a fresh LIVE
+            -- next_due_at (#412 item 4).
+            next_due_at = NULL,
             force_requested_at = NULL,
             force_requested_by = NULL,
             updated_at = $1::timestamptz

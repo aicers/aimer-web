@@ -70,6 +70,14 @@ CREATE TABLE periodic_report_job (
     force_requested_by    UUID,
     attempts              INT          NOT NULL DEFAULT 0,
     last_error            TEXT,
+    -- Audit trail for a translate-path variant (#389 PR #3 / #412). The
+    -- translated `periodic_report_result` row carries the English
+    -- canonical's `model_name`/`model`/`prompt_version`/`model_actual_version`
+    -- so the variant key stays self-consistent; the model/prompt actually
+    -- used to translate are recorded here instead. NULL for native jobs.
+    translation_model_name   TEXT,
+    translation_model        TEXT,
+    translation_prompt_version TEXT,
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (customer_id, period, bucket_date, tz, lang, model_name, model),
     FOREIGN KEY (customer_id, period, bucket_date, tz)

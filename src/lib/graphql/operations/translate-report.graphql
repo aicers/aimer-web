@@ -1,0 +1,19 @@
+mutation TranslateReport(
+  $customerId: ID!
+  $sections: String!
+  $targetLang: Language!
+  $model: String!
+  $name: String!
+) {
+  translatePeriodicSecurityReport(
+    customerId: $customerId
+    sections: $sections
+    targetLang: $targetLang
+    model: $model
+    name: $name
+  ) {
+    sections
+    promptVersion
+    modelActualVersion
+  }
+}

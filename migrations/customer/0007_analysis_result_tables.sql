@@ -49,6 +49,13 @@ CREATE TABLE periodic_report_result (
     bucket_date                 DATE             NOT NULL,
     tz                          TEXT             NOT NULL,
     lang                        TEXT             NOT NULL,
+    -- Language whose cited leaves the page loader replays to restore the
+    -- report-scope `<<REDACTED_*_R{j}_*>>` tokens to plaintext. NULL means
+    -- "replay leaves at this row's own `lang`" (the native path). A
+    -- translated row pins it to the English canonical's language (e.g.
+    -- ENGLISH) because it copies the canonical's `input_*_refs` verbatim and
+    -- the cited leaves only exist under that language (#389 PR #3 / #412).
+    restoration_lang            TEXT,
     model_name                  TEXT             NOT NULL,
     model                       TEXT             NOT NULL,
     model_actual_version        TEXT             NOT NULL,
