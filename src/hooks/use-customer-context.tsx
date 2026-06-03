@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 
+import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { ApiError, apiFetch } from "@/lib/api/client";
 import type { CustomerEntry, MeResponse } from "@/lib/api/types";
 import { mergeQuery } from "@/lib/navigation/query";
@@ -142,7 +143,9 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
 
   return (
     <CustomerContext.Provider value={value}>
-      {children}
+      <AccountTimezoneProvider timezone={me?.timezone ?? null}>
+        {children}
+      </AccountTimezoneProvider>
     </CustomerContext.Provider>
   );
 }

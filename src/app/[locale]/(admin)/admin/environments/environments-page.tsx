@@ -3,6 +3,7 @@
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -835,18 +836,11 @@ export function EnvironmentsPage() {
                             </Badge>
                           </TableCell>
                           <TableCell>
-                            <span
-                              className={`text-xs ${expiryClass}`}
-                              title={
-                                expiry.date
-                                  ? expiry.date.toISOString()
-                                  : undefined
-                              }
-                            >
+                            <span className={`text-xs ${expiryClass}`}>
                               {expiryText}
                               {expiry.date && (
                                 <span className="ml-2 text-muted-foreground">
-                                  ({expiry.date.toISOString().slice(0, 10)})
+                                  (<Timestamp at={expiry.date} />)
                                 </span>
                               )}
                             </span>

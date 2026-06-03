@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,18 +38,9 @@ interface Account {
   createdAt: string;
 }
 
-const DATE_TIME_FORMAT = {
-  year: "numeric" as const,
-  month: "2-digit" as const,
-  day: "2-digit" as const,
-  hour: "2-digit" as const,
-  minute: "2-digit" as const,
-};
-
 export function AccountsPage() {
   const t = useTranslations("adminAccounts");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
@@ -251,12 +243,11 @@ export function AccountsPage() {
                           : t("notEligible")}
                       </TableCell>
                       <TableCell className="text-muted-foreground">
-                        {account.lastSignInAt
-                          ? format.dateTime(
-                              new Date(account.lastSignInAt),
-                              DATE_TIME_FORMAT,
-                            )
-                          : t("never")}
+                        {account.lastSignInAt ? (
+                          <Timestamp at={account.lastSignInAt} />
+                        ) : (
+                          t("never")
+                        )}
                       </TableCell>
                       <TableCell>
                         {!isSelf && account.status === "active" && (

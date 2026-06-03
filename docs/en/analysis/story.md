@@ -150,7 +150,10 @@ two-column grid:
 - **Requested by** — the account id that triggered the latest
   generation, or `system` if the analysis was produced by the regular
   worker tick rather than a force-regenerate.
-- **Requested at** — ISO 8601 timestamp of the request.
+- **Requested at** — when the analysis was requested, shown in your
+  timezone with an explicit timezone label. See
+  [Account Preferences → Timezone](../account-preferences.md#timezone)
+  for the resolution order (saved → browser → UTC).
 
 ## Analysis body
 

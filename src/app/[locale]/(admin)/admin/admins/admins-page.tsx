@@ -1,8 +1,9 @@
 "use client";
 
-import { useFormatter, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,18 +46,9 @@ interface Account {
   adminEligible: boolean;
 }
 
-const DATE_TIME_FORMAT = {
-  year: "numeric" as const,
-  month: "2-digit" as const,
-  day: "2-digit" as const,
-  hour: "2-digit" as const,
-  minute: "2-digit" as const,
-};
-
 export function AdminsPage() {
   const t = useTranslations("adminAdmins");
   const tCommon = useTranslations("common");
-  const format = useFormatter();
 
   const [admins, setAdmins] = useState<Admin[]>([]);
   const [maxAdmins, setMaxAdmins] = useState(3);
@@ -325,12 +317,11 @@ export function AdminsPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-muted-foreground">
-                          {admin.lastSignInAt
-                            ? format.dateTime(
-                                new Date(admin.lastSignInAt),
-                                DATE_TIME_FORMAT,
-                              )
-                            : t("never")}
+                          {admin.lastSignInAt ? (
+                            <Timestamp at={admin.lastSignInAt} />
+                          ) : (
+                            t("never")
+                          )}
                         </TableCell>
                         <TableCell>
                           {!isSelf && (

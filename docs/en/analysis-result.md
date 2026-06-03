@@ -78,7 +78,10 @@ two-column grid:
 - **Prompt version** — the aimer prompt template version, if reported.
 - **Requested by** — the account id that triggered the analysis, as
   stored on the analysis row.
-- **Requested at** — ISO 8601 timestamp of the request.
+- **Requested at** — when the analysis was requested, shown in your
+  timezone with an explicit timezone label. See
+  [Account Preferences → Timezone](account-preferences.md#timezone) for
+  the resolution order (saved → browser → UTC).
 
 ## Analysis body
 

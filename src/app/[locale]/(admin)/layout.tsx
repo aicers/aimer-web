@@ -22,6 +22,7 @@ import {
 } from "@/components/sidebar";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { adminFetch, getAdminCsrfToken } from "@/lib/api/admin-client";
 
 function useAdminNavItems(): NavItem[] {
@@ -111,13 +112,16 @@ export default function AdminLayout({
   const [adminUser, setAdminUser] = useState<{
     displayName: string;
     email?: string | null;
+    timezone?: string | null;
   } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    adminFetch<{ displayName: string; email: string | null }>(
-      "/api/admin-auth/me",
-    )
+    adminFetch<{
+      displayName: string;
+      email: string | null;
+      timezone: string | null;
+    }>("/api/admin-auth/me")
       .then((data) => {
         if (!cancelled) setAdminUser(data);
       })
@@ -164,7 +168,9 @@ export default function AdminLayout({
           <NavList items={navItems} collapsed={collapsed} ariaLabel="Admin" />
         </SidebarShell>
         <main id="main-content" className="flex-1 overflow-y-auto">
-          {children}
+          <AccountTimezoneProvider timezone={adminUser?.timezone ?? null}>
+            {children}
+          </AccountTimezoneProvider>
         </main>
       </div>
     </div>

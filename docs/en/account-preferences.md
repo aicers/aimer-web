@@ -49,12 +49,27 @@ account. Choose **Automatic** to store no specific zone, or pick a
 specific IANA timezone (for example `Asia/Seoul`). Only valid IANA
 timezones are accepted.
 
-This release only *stores* the preference; it does not yet change how
-timestamps are displayed. Visible timestamps continue to use the
-browser/default timezone until a later release wires the saved zone
-into date/time formatting. The setting never changes report bucketing
-boundaries, which are defined per customer and are independent of your
-personal preference.
+This preference controls how user-facing timestamps are *displayed*.
+Each timestamp is shown in your chosen zone with an explicit timezone
+label (for example `2026-06-03 14:05 GMT+9`). The underlying instant is
+always stored in UTC; only the display is localized.
+
+### How the app decides which timezone to show
+
+The display timezone is resolved in this order:
+
+1. **Your saved account timezone.** When you have picked a specific zone,
+   timestamps are shown in it.
+2. **Your browser's timezone.** With **Automatic** selected (no saved
+   zone), the app uses the timezone reported by your browser.
+3. **UTC.** If neither is available, timestamps fall back to UTC.
+
+This mirrors the language resolution order (saved → browser → default).
+
+The setting never changes report **bucketing boundaries**
+(DAILY/WEEKLY/MONTHLY periods), which are defined per customer and are
+independent of your personal preference — only the display of individual
+timestamps follows your timezone.
 
 ## Saving
 

@@ -192,12 +192,17 @@ The trust registry keys table shows the expiration distance for
 each key:
 
 - **No expiry (soft)** — the field was left blank.
-- A specific date — when expiration is more than 30 days away
+- A specific timestamp — when expiration is more than 30 days away
     (neutral color).
 - **Yellow** — within 30 days of expiry.
 - **Red** — within 7 days of expiry.
 - **Gray "expired"** — past `expires_at`. The key is still
     listed but bridge calls signed with it are denied.
+
+The concrete expiry timestamp shown alongside each status is rendered in
+your timezone with an explicit timezone label (see
+[Account Preferences → Timezone](account-preferences.md#timezone) for the
+resolution order: saved → browser → UTC).
 
 ![Trust registry key expiry signals](../assets/admin-environments-expires-row.en.png)
 

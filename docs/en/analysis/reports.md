@@ -262,9 +262,13 @@ this view.
 Below the header the page shows the report metadata: language, provider
 / model, the provider-reported model snapshot, the prompt version, the
 account that triggered the latest generation (or `system` for a regular
-worker tick), and the request timestamp. The header line also names the
-period, the bucket (or "now" for LIVE), the customer timezone, and the
-generation.
+worker tick), and the request timestamp — shown in your timezone with an
+explicit timezone label (see
+[Account Preferences → Timezone](../account-preferences.md#timezone)).
+The header line also names the period, the bucket (or "now" for LIVE),
+the customer timezone, and the generation. The **customer timezone** in
+the header is the report's bucketing timezone (report identity), which is
+independent of your personal display timezone.
 
 ## Force regenerate
 
