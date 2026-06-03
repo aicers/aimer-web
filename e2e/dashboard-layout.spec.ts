@@ -314,13 +314,17 @@ test.describe("Dashboard navigation", () => {
     await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
   });
 
-  test("logo links to home page", async ({ managerPage }) => {
+  test("logo links home, which redirects to Overview", async ({
+    managerPage,
+  }) => {
     await managerPage.goto("/en/events");
 
-    // Click logo (the Clumit Insight link)
+    // Click logo (the Clumit Insight link). The header points it at the home
+    // route `/en`, which now redirects to the canonical `/en/overview`
+    // (WS5, #394), so the final URL after the redirect is the Overview page.
     await managerPage.getByRole("link", { name: "Clumit Insight" }).click();
 
-    await expect(managerPage).toHaveURL(/\/en$/);
+    await expect(managerPage).toHaveURL(/\/en\/overview/);
   });
 });
 
