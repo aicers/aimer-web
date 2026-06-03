@@ -7,21 +7,35 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ACCOUNT_ID = "00000000-0000-0000-0000-000000000001";
 
+// Controls whether each context's session is live. Cookie presence and
+// session liveness are independent: a cookie can linger past idle
+// timeout / revocation, in which case `withAuth` 401s before the handler.
+let generalSessionValid = true;
+let adminSessionValid = true;
+
 const mockWithAuth = vi.fn(
   // biome-ignore lint/complexity/noBannedTypes: test mock needs generic callable
   (handler: Function, opts?: { ctx?: "general" | "admin" }) =>
-    (req: NextRequest) =>
-      handler(req, {
+    (req: NextRequest) => {
+      const ctx = opts?.ctx ?? "general";
+      const valid = ctx === "general" ? generalSessionValid : adminSessionValid;
+      if (!valid) {
+        return Promise.resolve(
+          Response.json({ error: "Unauthorized" }, { status: 401 }),
+        );
+      }
+      return handler(req, {
         accountId: ACCOUNT_ID,
         sessionId: "sess-1",
-        authContext: opts?.ctx ?? "general",
+        authContext: ctx,
         tokenVersion: 1,
         iat: 1000,
         meta: { ipAddress: "127.0.0.1", userAgent: "test" },
         bridgeAiceId: null,
         bridgeCustomerIds: null,
         audit: {},
-      }),
+      });
+    },
 );
 
 const mockVerifyCsrf = vi.fn((_ctx: "general" | "admin") => null);
@@ -37,9 +51,10 @@ vi.mock("@/lib/auth/guards", () => ({
 // Controls which session the dispatcher authorizes. Default: a general
 // cookie is present (the common case).
 let generalCookie: string | null = "general-token";
+let adminCookie: string | null = "admin-token";
 vi.mock("@/lib/auth/cookies", () => ({
   getAuthCookie: (ctx: "general" | "admin") =>
-    Promise.resolve(ctx === "general" ? generalCookie : "admin-token"),
+    Promise.resolve(ctx === "general" ? generalCookie : adminCookie),
 }));
 
 const mockQuery = vi.fn();
@@ -74,6 +89,9 @@ beforeEach(() => {
   mockClearCookie.mockReset();
   mockVerifyCsrf.mockClear();
   generalCookie = "general-token";
+  adminCookie = "admin-token";
+  generalSessionValid = true;
+  adminSessionValid = true;
   mockQuery.mockResolvedValue([{ locale: "en", timezone: null }]);
 });
 
@@ -172,5 +190,40 @@ describe("PATCH /api/account/preferences", () => {
     expect(mockVerifyCsrf).toHaveBeenCalledWith("admin");
     const [, , params] = mockQuery.mock.calls[0];
     expect(params).toEqual(["ko", ACCOUNT_ID]);
+  });
+
+  it("falls through to admin when a lingering general cookie's session is stale", async () => {
+    // Common "working in admin after the general session idled out" case
+    // (#410 Round 2): the general cookie is still present but its session
+    // is no longer live, so the general handler 401s. The dispatcher must
+    // fall through to the live admin session rather than surfacing the 401.
+    generalCookie = "general-token";
+    adminCookie = "admin-token";
+    generalSessionValid = false;
+    adminSessionValid = true;
+    const res = await (await loadPatch())(patch({ locale: "ko" }));
+    expect(res.status).toBe(200);
+    expect(mockVerifyCsrf).toHaveBeenCalledWith("admin");
+    const [, , params] = mockQuery.mock.calls[0];
+    expect(params).toEqual(["ko", ACCOUNT_ID]);
+  });
+
+  it("returns 401 when the general session is stale and there is no admin session", async () => {
+    generalCookie = "general-token";
+    adminCookie = null;
+    generalSessionValid = false;
+    const res = await (await loadPatch())(patch({ locale: "ko" }));
+    expect(res.status).toBe(401);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("does not fall through to admin on a non-401 general response", async () => {
+    // A live general session that returns a 400 (validation) must own the
+    // request — the dispatcher must not retry under the admin context.
+    generalSessionValid = true;
+    const res = await (await loadPatch())(patch({ locale: "fr" }));
+    expect(res.status).toBe(400);
+    expect(mockVerifyCsrf).toHaveBeenCalledWith("general");
+    expect(mockVerifyCsrf).not.toHaveBeenCalledWith("admin");
   });
 });

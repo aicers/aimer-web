@@ -163,12 +163,32 @@ const patchAdmin = withAuth(handlePreferences, {
 /**
  * Authorize either the general or the admin session of the account.
  *
- * The body can only be read once, so the context is chosen up front by
- * cookie presence (general preferred when both are present — it is the
- * same account-level value either way). The client sends both CSRF
- * headers when available, so whichever context is chosen has its token.
+ * Cookie *presence* is not proof of a live session: auth cookies live until
+ * absolute expiry, but `withAuth` can still reject a session earlier (idle
+ * timeout / revocation), and admin activity does not refresh the general
+ * session. So we cannot pick the context from cookie presence alone — an
+ * admin working after the general session idled out would be forced down the
+ * general handler and 401, and the shared admin-header switcher would fall
+ * back to a cookie-only update without persisting `accounts.locale`.
+ *
+ * Instead we try the general context first and fall through to admin on a
+ * 401. `withAuth` returns 401 *before* the handler runs — and before the body
+ * is read — so the same request can be safely re-dispatched to the admin
+ * handler. Any non-401 response (success, 400 validation, 403 CSRF/origin)
+ * means the general session was live and owns the request, so we return it
+ * unchanged. The client sends both CSRF headers when available, so whichever
+ * context ends up handling the request has its token.
  */
 export async function PATCH(req: NextRequest): Promise<Response> {
   const hasGeneral = (await getAuthCookie("general")) !== null;
-  return hasGeneral ? patchGeneral(req) : patchAdmin(req);
+  const hasAdmin = (await getAuthCookie("admin")) !== null;
+
+  if (hasGeneral) {
+    const res = await patchGeneral(req);
+    if (res.status === 401 && hasAdmin) {
+      return patchAdmin(req);
+    }
+    return res;
+  }
+  return patchAdmin(req);
 }
