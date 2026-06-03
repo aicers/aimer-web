@@ -116,9 +116,12 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       CUSTOMER_LOCK_ID,
     );
 
-    // Event aice-9/777 is cited by a DAILY report (en + ko variants of the
-    // SAME bucket) and an older WEEKLY report; a superseded DAILY gen and a
-    // report that cites a different event must not appear.
+    // Event aice-9/777 at GENERATION 4 is cited by a DAILY report (en + ko
+    // variants of the SAME bucket) and an older WEEKLY report. Reports that
+    // must NOT appear when probing generation 4: a superseded DAILY gen, a
+    // report that cites a different event, and — critically — a report that
+    // cited a DIFFERENT generation (gen 3) of the same event (the
+    // generation pin must exclude it; review round 1).
     await seedReport({
       period: "DAILY",
       bucketDate: "2026-05-26",
@@ -143,7 +146,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "MEDIUM",
       requestedAt: "2026-05-24T09:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 3 }],
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
     });
     await seedReport({
       period: "DAILY",
@@ -151,7 +154,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "LOW",
       requestedAt: "2026-05-25T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 2 }],
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
       superseded: true,
     });
     await seedReport({
@@ -162,8 +165,20 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       requestedAt: "2026-05-23T08:00:00Z",
       eventRefs: [{ aice_id: "aice-other", event_key: "111", generation: 1 }],
     });
+    // Cites the SAME event id but generation 3 — excluded when probing
+    // generation 4, included when probing generation 3.
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-05-22",
+      generation: 1,
+      tier: "LOW",
+      requestedAt: "2026-05-22T08:00:00Z",
+      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 3 }],
+    });
 
-    // Story 555 is cited by one MONTHLY report.
+    // Story 555 at generation 2 is cited by one MONTHLY report. A second
+    // report cites generation 5 of the same story and must be excluded when
+    // probing generation 2.
     await seedReport({
       period: "MONTHLY",
       bucketDate: "2026-05-01",
@@ -171,6 +186,14 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       tier: "CRITICAL",
       requestedAt: "2026-05-31T00:00:00Z",
       storyRefs: [{ story_id: "555", generation: 2 }],
+    });
+    await seedReport({
+      period: "WEEKLY",
+      bucketDate: "2026-05-17",
+      generation: 1,
+      tier: "LOW",
+      requestedAt: "2026-05-17T00:00:00Z",
+      storyRefs: [{ story_id: "555", generation: 5 }],
     });
   });
 
@@ -180,13 +203,14 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
     await closeAdminPool();
   });
 
-  it("finds citing reports for an event, deduped per bucket, newest-first", async () => {
+  it("finds citing reports for an event at the probed generation, deduped per bucket, newest-first", async () => {
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777" },
+      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777", generation: 4 },
     });
     // DAILY 2026-05-26 (en/ko collapse to one) then WEEKLY 2026-05-24; the
-    // superseded DAILY 2026-05-25 and the aice-other report are excluded.
+    // superseded DAILY 2026-05-25, the aice-other report, and the report
+    // that cited generation 3 of the same event are all excluded.
     expect(trail.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
       "DAILY:2026-05-26",
       "WEEKLY:2026-05-24",
@@ -195,11 +219,25 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
     expect(trail[0]).toMatchObject({ generation: 2, locale: "en" });
   });
 
-  it("finds citing reports for a story via input_story_refs", async () => {
+  it("excludes reports that cited a different generation of the same event", async () => {
+    // Probing generation 3 surfaces only the report that cited gen 3 — the
+    // generation pin keeps the gen-4 citers out (review round 1).
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "story", storyId: "555" },
+      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777", generation: 3 },
     });
+    expect(trail.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-05-22",
+    ]);
+  });
+
+  it("finds citing reports for a story via input_story_refs at the probed generation", async () => {
+    const trail = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: { kind: "story", storyId: "555", generation: 2 },
+    });
+    // Only the MONTHLY report cited story generation 2; the WEEKLY report
+    // cited generation 5 and is excluded by the pin.
     expect(trail).toHaveLength(1);
     expect(trail[0]).toMatchObject({
       period: "MONTHLY",
@@ -212,7 +250,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   it("returns an empty trail for a leaf no report cites", async () => {
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "story", storyId: "999" },
+      leaf: { kind: "story", storyId: "999", generation: 1 },
     });
     expect(trail).toEqual([]);
   });

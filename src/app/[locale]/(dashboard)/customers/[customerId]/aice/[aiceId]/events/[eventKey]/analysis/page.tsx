@@ -105,7 +105,12 @@ export default async function AnalysisResultPage({
   // Permission-gated inside the loader; an empty trail renders nothing.
   const citedBy = await loadCitedByReports({
     customerId,
-    leaf: { kind: "event", aiceId: data.aiceId, eventKey: data.eventKey },
+    leaf: {
+      kind: "event",
+      aiceId: data.aiceId,
+      eventKey: data.eventKey,
+      generation: data.generation,
+    },
   });
 
   return (
@@ -222,9 +227,13 @@ function ParentStoryBacklink({
         {parentStories.map((s) => (
           <li key={s.storyId}>
             <Link
+              // Pin the generation whose membership actually contains this
+              // event (T2 #396): the story page resolves the default
+              // variant at this generation, so its member list lists the
+              // event — not whatever the latest generation regrouped to.
               href={`/${locale}/customers/${customerId}/analysis/story/${encodeURIComponent(
                 s.storyId,
-              )}`}
+              )}?generation=${s.generation}`}
               data-testid={`parent-story-${s.storyId}`}
               className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:border-foreground"
             >

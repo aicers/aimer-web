@@ -216,9 +216,13 @@ If one or more periodic reports cite this story, the page shows a **Cited
 by** trail listing those reports, newest first. Each entry links back up
 to the **exact report generation** that consumed the story — the link is
 generation-pinned, so it opens the version the report was built from
-rather than the latest. A story may be cited across several periods; the
-trail lists one entry per report bucket, and a story cited by no report
-shows no trail (a normal state, not an error).
+rather than the latest. The trail is also scoped to the **evidence
+generation you are viewing**: it lists the reports that cited *this*
+generation of the story, so an older pinned generation shows the reports
+that cited it rather than ones that cited a different generation. A story
+may be cited across several periods; the trail lists one entry per report
+bucket, and a story cited by no report shows no trail (a normal state, not
+an error).
 
 The trail is permission-gated on `reports:read`: a viewer who cannot read
 the customer's reports sees no trail rather than links they could not

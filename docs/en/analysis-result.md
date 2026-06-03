@@ -121,8 +121,12 @@ a link to each parent story (with its priority-tier badge). This is the
 upward half of the trust drill-down: a reader who arrived at the event
 can navigate back up to the correlation it belongs to. The membership is
 resolved by a reverse lookup over each story's member list, so it stays
-in sync as stories are re-analysed. The section is omitted when the event
-is not a member of any story.
+in sync as stories are re-analysed. Because a story's membership can
+change from one re-analysis generation to the next, each backlink opens
+the **exact story generation whose member list contains this event** — it
+does not blindly jump to the latest generation, which might have
+regrouped the event out. The section is omitted when the event is not a
+member of any story.
 
 <!-- Screenshot placeholder (#396): event page with the "Part of threat
 stories" backlink. Capture from a stack with real story-member data. -->
@@ -133,7 +137,11 @@ If one or more periodic reports cite this event, the page shows a **Cited
 by** trail listing those reports, newest first. Each entry links back up
 to the **exact report generation** that consumed this event — the link is
 generation-pinned, so it lands on the version the report was built from,
-not the latest. A single event may be cited by reports across several
+not the latest. The trail is also scoped to the **evidence generation you
+are viewing**: it lists the reports that cited *this* generation of the
+event, so arriving at an older pinned generation (via a report's Sources
+link) shows the reports that cited that generation, not ones that cited a
+different one. A single event may be cited by reports across several
 periods; the trail lists one entry per report bucket. An event cited by
 no report shows no trail (this is a normal state, not an error).
 
