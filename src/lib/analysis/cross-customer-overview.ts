@@ -503,67 +503,73 @@ export async function fetchCustomerStories(
   );
   const total = stateRes.rows.length;
   if (total === 0) return { rows: [], total: 0 };
-  const recencyById = new Map<string, Date>();
-  for (const r of stateRes.rows) recencyById.set(r.story_id, r.recency_at);
   const eligibleIds = stateRes.rows.map((r) => r.story_id);
+  const eligibleRecency = stateRes.rows.map((r) => r.recency_at);
 
   // Step 2 — candidate priority/scores from the customer DB
   // `story_analysis_result`: canonical default variant, latest generation, not
-  // superseded, RESTRICTED to the eligible story ids (`story_id = ANY(...)`)
-  // BEFORE ranking, then ordered HIGH-RISK FIRST and bounded to the top
-  // `fetchCap`. Bounding the eligible set by priority (not recency) keeps the
-  // displayed top-K aligned with the acceptance ordering even for a customer
-  // with a long story history (#392's denormalization is the unbounded-
-  // guarantee path).
+  // superseded, RESTRICTED to the eligible story ids (`JOIN wanted`) BEFORE
+  // ranking, then ordered HIGH-RISK FIRST and bounded to the top `fetchCap`.
+  // The auth-DB recency (`last_ready_at` → `updated_at`) is carried in via the
+  // `wanted` CTE so the pre-limit order can include `recency_at DESC` before
+  // the `story_id` tiebreak — matching the acceptance order (tier, severity,
+  // likelihood, recency, id). Without it, a customer with more than `fetchCap`
+  // eligible stories that tie on tier/severity/likelihood could truncate to
+  // the lowest ids and drop newer eligible stories, which the app-level
+  // `rankAndCap` (reordering only the already-truncated rows) cannot recover.
+  // Bounding the eligible set by priority (not recency) keeps the displayed
+  // top-K aligned with the acceptance ordering even for a customer with a long
+  // story history (#392's denormalization is the unbounded-guarantee path).
   const candRes = await customerPool.query<{
     story_id: string;
     priority_tier: PriorityTier;
     severity_score: number;
     likelihood_score: number;
+    recency_at: Date;
   }>(
-    `WITH canonical AS (
-       SELECT DISTINCT ON (story_id)
-              story_id::text AS story_id,
-              priority_tier, severity_score, likelihood_score
-         FROM story_analysis_result
-        WHERE customer_id = $1
-          AND lang = $2 AND model_name = $3 AND model = $4
-          AND superseded_at IS NULL
-          AND story_id = ANY($5::bigint[])
-        ORDER BY story_id, generation DESC
+    `WITH wanted(story_id, recency_at) AS (
+       SELECT s, t
+         FROM unnest($5::bigint[], $6::timestamptz[]) AS u(s, t)
+     ),
+     canonical AS (
+       SELECT DISTINCT ON (r.story_id)
+              r.story_id::text AS story_id,
+              r.priority_tier, r.severity_score, r.likelihood_score,
+              w.recency_at
+         FROM story_analysis_result r
+         JOIN wanted w ON w.story_id = r.story_id
+        WHERE r.customer_id = $1
+          AND r.lang = $2 AND r.model_name = $3 AND r.model = $4
+          AND r.superseded_at IS NULL
+        ORDER BY r.story_id, r.generation DESC
      )
-     SELECT story_id, priority_tier, severity_score, likelihood_score
+     SELECT story_id, priority_tier, severity_score, likelihood_score,
+            recency_at
        FROM canonical
       ORDER BY ${PRIORITY_RANK_SQL} DESC,
-               severity_score DESC, likelihood_score DESC, story_id ASC
-      LIMIT $6`,
+               severity_score DESC, likelihood_score DESC,
+               recency_at DESC, story_id ASC
+      LIMIT $7`,
     [
       customerId,
       DEFAULT_LANG,
       DEFAULT_MODEL_NAME,
       DEFAULT_MODEL,
       eligibleIds,
+      eligibleRecency,
       fetchCap,
     ],
   );
 
-  const rows: StoryOverviewRow[] = [];
-  for (const r of candRes.rows) {
-    const recencyAt = recencyById.get(r.story_id);
-    // The candidate set is already intersected with the eligible ids in SQL;
-    // this guards only the degenerate case of a result row with no matching
-    // state row (which the `ANY` filter already excludes).
-    if (!recencyAt) continue;
-    rows.push({
-      customerId,
-      customerName,
-      storyId: r.story_id,
-      priorityTier: r.priority_tier,
-      severityScore: r.severity_score,
-      likelihoodScore: r.likelihood_score,
-      recencyAt,
-    });
-  }
+  const rows: StoryOverviewRow[] = candRes.rows.map((r) => ({
+    customerId,
+    customerName,
+    storyId: r.story_id,
+    priorityTier: r.priority_tier,
+    severityScore: r.severity_score,
+    likelihoodScore: r.likelihood_score,
+    recencyAt: r.recency_at,
+  }));
   // Pre-cap per customer using the same key the cross-customer merge applies,
   // so a customer with thousands of ready stories contributes only its own
   // top-K to the merge.

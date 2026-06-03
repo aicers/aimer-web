@@ -129,6 +129,38 @@ describe("suspicious events overview page", () => {
     ).toBe("CRITICAL");
   });
 
+  it("encodes route-significant characters in the event deep link", async () => {
+    // `aice_id`/`event_key` are arbitrary non-empty strings at ingest, so a
+    // `/` or `%` would corrupt the path unless each segment is encoded.
+    mockLoadOverview.mockResolvedValue({
+      kind: "ok",
+      events: {
+        items: [
+          {
+            customerId: "c1",
+            customerName: "Acme",
+            aiceId: "aice/1 a",
+            eventKey: "ev?k%2",
+            priorityTier: "CRITICAL",
+            severityScore: 0.5,
+            likelihoodScore: 0.5,
+            requestedAt: new Date("2026-06-01T00:00:00Z"),
+            lang: "ENGLISH",
+            modelName: "openai",
+            model: "gpt-4o",
+          },
+        ],
+        totalCount: 1,
+        failedCustomers: [],
+      },
+    });
+    await renderPage();
+    const row = screen.getByTestId("overview-event-row");
+    expect(row.getAttribute("href")).toBe(
+      "/en/customers/c1/aice/aice%2F1%20a/events/ev%3Fk%252/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o",
+    );
+  });
+
   it("shows the empty state when no events are in scope", async () => {
     mockLoadOverview.mockResolvedValue({
       kind: "ok",

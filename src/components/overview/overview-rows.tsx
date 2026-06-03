@@ -126,7 +126,12 @@ export function EventRow({
     model_name: row.modelName,
     model: row.model,
   });
-  const href = `/${locale}/customers/${row.customerId}/aice/${row.aiceId}/events/${row.eventKey}/analysis?${params.toString()}`;
+  // `aice_id`/`event_key` are accepted as arbitrary non-empty strings at
+  // ingest, so a `/`, `?`, or `%` would corrupt the path. Encode each dynamic
+  // segment (matching `run-analyze-flow`'s URL builder).
+  const aiceId = encodeURIComponent(row.aiceId);
+  const eventKey = encodeURIComponent(row.eventKey);
+  const href = `/${locale}/customers/${row.customerId}/aice/${aiceId}/events/${eventKey}/analysis?${params.toString()}`;
   return (
     <Link
       href={href}

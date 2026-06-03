@@ -53,6 +53,12 @@ const NAME = "XC Customer";
 // don't perturb the counts asserted by the lifecycle tests above.
 const BOUNDARY_CUSTOMER_ID = "00000000-0000-0000-0000-0000000004b2";
 const BOUNDARY_NAME = "XC Boundary";
+// A third customer for the story recency-tiebreak test: several lifecycle-
+// eligible stories that tie on tier/severity/likelihood but differ in
+// `last_ready_at`, so the pre-limit order must rank by recency (not the
+// `story_id` tiebreak) to keep the newest eligible stories.
+const RECENCY_CUSTOMER_ID = "00000000-0000-0000-0000-0000000004c3";
+const RECENCY_NAME = "XC Recency";
 
 describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
   let authDbName: string;
@@ -237,8 +243,16 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     await authPool.query(
       `INSERT INTO customers (id, external_key, name, database_status, timezone)
        VALUES ($1, 'xc-1', $2, 'active', 'UTC'),
-              ($3, 'xc-2', $4, 'active', 'UTC')`,
-      [CUSTOMER_ID, NAME, BOUNDARY_CUSTOMER_ID, BOUNDARY_NAME],
+              ($3, 'xc-2', $4, 'active', 'UTC'),
+              ($5, 'xc-3', $6, 'active', 'UTC')`,
+      [
+        CUSTOMER_ID,
+        NAME,
+        BOUNDARY_CUSTOMER_ID,
+        BOUNDARY_NAME,
+        RECENCY_CUSTOMER_ID,
+        RECENCY_NAME,
+      ],
     );
 
     // --- Events: canonical dedup + non-default variant exclusion. ---
@@ -407,6 +421,29 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
       likelihood: 0.5,
       customerId: BOUNDARY_CUSTOMER_ID,
     });
+
+    // --- Story recency tiebreak (RECENCY_CUSTOMER_ID) ---
+    // Three ready stories tie on tier/severity/likelihood and differ only in
+    // `last_ready_at`, with recency order REVERSED from `story_id` order
+    // (oldest id = oldest recency). With a fetch cap of 2, an order that omits
+    // recency falls back to `story_id ASC` and keeps the two OLDEST (7001,
+    // 7002), dropping the newest eligible story; recency-before-id keeps the
+    // two NEWEST (7003, 7002).
+    for (const [storyId, lastReadyAt] of [
+      ["7001", "2026-06-01T00:00:00Z"],
+      ["7002", "2026-06-02T00:00:00Z"],
+      ["7003", "2026-06-03T00:00:00Z"],
+    ]) {
+      await seedStoryState(storyId, "ready", lastReadyAt, RECENCY_CUSTOMER_ID);
+      await seedStoryResult({
+        storyId,
+        generation: 1,
+        tier: "CRITICAL",
+        severity: 0.7,
+        likelihood: 0.7,
+        customerId: RECENCY_CUSTOMER_ID,
+      });
+    }
   }, 30_000);
 
   afterAll(async () => {
@@ -481,6 +518,25 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     // the single returned row — never crowded out by the archived rows.
     expect(total).toBe(1);
     expect(rows.map((r) => r.storyId)).toEqual(["9100"]);
+  });
+
+  it("stories: pre-limit order ranks by recency before the id tiebreak", async () => {
+    // fetchCap = 2 over three stories tied on tier/severity/likelihood. The
+    // customer-DB query must carry the auth-DB recency into its pre-limit
+    // order, or it truncates to the lowest ids and drops the newest eligible
+    // story. Correct (recency desc, then id asc): the two newest survive.
+    const { rows, total } = await fetchCustomerStories(
+      authPool,
+      customerPool,
+      RECENCY_CUSTOMER_ID,
+      RECENCY_NAME,
+      25,
+      2,
+    );
+    // All three are lifecycle-eligible, so the disclosure count is 3, but the
+    // fetch cap keeps the two newest by recency — never the lowest ids.
+    expect(total).toBe(3);
+    expect(rows.map((r) => r.storyId)).toEqual(["7003", "7002"]);
   });
 
   it("reports: an eligible high-risk bucket survives when archived buckets would exhaust the fetch cap", async () => {
