@@ -211,6 +211,46 @@ type Mutation {
 	"""
 	generatePeriodicSecurityReport(customerId: ID!, period: Period!, date: String!, timezone: String!, lang: Language, model: String!, name: String!, inputs: PeriodicReportInputs!): PeriodicSecurityReportResult!
 	"""
+	Translates an already-synthesized, tokenized English periodic security
+	report into `targetLang`, returning the same 5-field `sections` shape
+	`generatePeriodicSecurityReport` produces, with all narrative prose
+	localized and every redaction token preserved verbatim.
+
+	Stateless under `auth-mtls`: aimer stores nothing, performs no caching,
+	and accepts no `force`. `customerId` is accepted for observability and
+	prompt context only.
+
+	The input `sections` is the JSON string `generatePeriodicSecurityReport`
+	returns (executive summary, story highlights, notable events, baseline
+	observations, period outlook). It is validated against that shape before
+	any LLM call. Only narrative prose is translated; MITRE technique IDs and
+	`<<REDACTED_*_R{j}_*>>` redaction tokens stay in native form. `targetLang`
+	is limited to the `Language` enum's current variants (Korean / English);
+	`targetLang: ENGLISH` on an English canonical report is a no-op
+	round-trip.
+
+	Exactly one LLM call is issued per invocation (no retry). Two defensive
+	checks run on the response: an element-count check rejects any merge /
+	split / drop / add of the array sections, and a per-corresponding-string
+	redaction-token multiset check rejects any token add / drop / rewrite as
+	well as any token moved to a different string or array element. A pure
+	reorder of token-free prose is not separately detected; it is left to the
+	prompt's same-order constraint.
+
+	# Errors
+
+	Returns an error if:
+	- Input validation fails (empty `customerId` / `model` / `name`, or
+	`sections` that does not deserialize into the canonical report shape)
+	- The requested LLM server `name` is not registered
+	- The LLM call fails (transport error, provider error envelope,
+	structured-output payload missing or wrong-shaped)
+	- The translated output changes an array element count or alters the
+	per-string redaction-token multiset (including a token moved between
+	strings or array elements)
+	"""
+	translatePeriodicSecurityReport(customerId: ID!, sections: String!, targetLang: Language!, model: String!, name: String!): PeriodicSecurityReportResult!
+	"""
 	Generates a report for a given customer.
 	
 	- The `customer_id` parameter specifies the customer ID for which to generate the report.
@@ -251,9 +291,11 @@ type Mutation {
 	
 	PII redaction is the caller's responsibility. aimer-web owns the
 	per-event redaction map; `members[].event` and `storyMetadata` strings
-	are forwarded to the LLM unchanged. Placeholder tokens of the form
-	`<<REDACTED_TYPE_E{i}_NNN>>` are preserved verbatim in the analysis
-	output.
+	are forwarded to the LLM unchanged. Redaction tokens present in the
+	input are preserved verbatim in the analysis output. A real token looks
+	like `<<REDACTED_IP_E1_001>>`; the `TYPE`/`NNN`/`*`/`{i}` in the
+	`<<REDACTED_TYPE_E{i}_NNN>>` and `<<REDACTED_*_E{i}_*>>` shapes are
+	wildcards, not literal characters.
 	
 	Exactly one LLM call is issued per invocation (no two-stage formatter
 	pass). The response always includes `promptVersion` and
@@ -568,8 +610,9 @@ type StoryAnalysisResult {
 	ttpTags: [String!]!
 	"""
 	Markdown narrative reconstructing the attacker hypothesis across the
-	story. May contain `<<REDACTED_*_E{i}_*>>` tokens preserved verbatim
-	from the input.
+	story. May contain redaction tokens preserved verbatim from the input.
+	A real token looks like `<<REDACTED_IP_E1_001>>`; the `*`/`{i}` in the
+	`<<REDACTED_*_E{i}_*>>` shape are wildcards, not literal characters.
 	"""
 	analysis: String!
 	"""
@@ -604,8 +647,10 @@ input StoryMemberInput {
 	"""
 	eventTime: DateTime!
 	"""
-	Pre-redacted event payload. May contain `<<REDACTED_TYPE_E{i}_NNN>>`
-	tokens that aimer forwards verbatim.
+	Pre-redacted event payload. May contain event-scope redaction tokens
+	that aimer forwards verbatim. A real token looks like
+	`<<REDACTED_IP_E1_001>>`; the `TYPE`/`NNN` in the
+	`<<REDACTED_TYPE_E{i}_NNN>>` shape are wildcards, not literal characters.
 	"""
 	event: String!
 }

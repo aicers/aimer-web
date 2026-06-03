@@ -645,14 +645,47 @@ export async function buildPeriodicReportInput(
     limit: topEventsK,
   });
 
+  return assembleReportInput(
+    {
+      customerPool: args.customerPool,
+      period: args.period,
+      bucketDate: args.bucketDate,
+      variant: args.variant,
+    },
+    windows,
+    stories,
+    events,
+  );
+}
+
+/**
+ * Build the full `PeriodicReportBuildResult` from an already-selected set
+ * of story / event leaves — everything downstream of leaf selection
+ * (token rewrite, baseline aggregates, drift, aggregations, provenance,
+ * `input_hash`). Shared by the default top-K selection path
+ * (`buildPeriodicReportInput`) and the canonical-ref-pinned path
+ * (`buildCanonicalPinnedReportInput`); the two differ ONLY in how the
+ * leaves are chosen, so this keeps token numbering / hashing identical.
+ */
+async function assembleReportInput(
+  ctx: {
+    customerPool: Pool;
+    period: PeriodicPeriod;
+    bucketDate: string;
+    variant: ReportVariant;
+  },
+  windows: Windows,
+  stories: StoryLeafRow[],
+  events: EventLeafRow[],
+): Promise<PeriodicReportBuildResult> {
   // --- Baseline aggregates + drift ------------------------------------
   const currentCounts = await categoryCounts(
-    args.customerPool,
+    ctx.customerPool,
     windows.curStart,
     windows.curEnd,
   );
   const previousCounts = await categoryCounts(
-    args.customerPool,
+    ctx.customerPool,
     windows.prevStart,
     windows.prevEnd,
   );
@@ -662,17 +695,17 @@ export async function buildPeriodicReportInput(
   // `topSensors`. `events`/`hosts` come from the deduped baseline window;
   // `stories` from the canonical story set overlapping the window.
   const baselineTotals = await windowBaselineTotals(
-    args.customerPool,
+    ctx.customerPool,
     windows.curStart,
     windows.curEnd,
   );
   const storyTotal = await storyCountInWindow(
-    args.customerPool,
+    ctx.customerPool,
     windows.curStart,
     windows.curEnd,
   );
   const sensors = await topSensors(
-    args.customerPool,
+    ctx.customerPool,
     windows.curStart,
     windows.curEnd,
     TOP_AGGREGATE_K,
@@ -807,9 +840,9 @@ export async function buildPeriodicReportInput(
   }));
 
   const inputHash = computeInputHash({
-    period: args.period,
-    bucketDate: args.bucketDate,
-    variant: args.variant,
+    period: ctx.period,
+    bucketDate: ctx.bucketDate,
+    variant: ctx.variant,
     storyRefs,
     eventRefs,
     aimerInputs,
@@ -837,6 +870,270 @@ export async function buildPeriodicReportInput(
     sourceAiceIds,
     reportDate: windows.reportDate,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Canonical-ref-pinned input path (#389 PR #3 / #412)
+// ---------------------------------------------------------------------------
+
+export interface CanonicalPinnedBuildArgs {
+  customerPool: Pool;
+  /**
+   * Owning customer. `story_analysis_result` is keyed by `customer_id`, so the
+   * pinned story lookup must scope to it (mirrors `selectTopStories` and the
+   * loader's customer-scoped replay); otherwise a same-`story_id` row from
+   * another customer could satisfy the completeness gate.
+   */
+  customerId: string;
+  period: PeriodicPeriod;
+  bucketDate: string;
+  /** Target variant — `lang` is the non-English language being generated. */
+  variant: ReportVariant;
+  nowIso: string;
+  /** The English canonical's `input_story_refs` (story_id + generation). */
+  storyRefs: StoryRef[];
+  /** The English canonical's `input_event_refs` (aice_id/event_key + gen). */
+  eventRefs: EventRef[];
+}
+
+export type CanonicalPinnedBuildResult =
+  | { complete: true; built: PeriodicReportBuildResult }
+  // At least one cited leaf is missing in the target language at the pinned
+  // (story_id/event_key, generation, model_name, model). The caller routes
+  // to the translate path instead of native generation.
+  | { complete: false };
+
+/**
+ * Build a report input for a non-English variant pinned to the EXACT leaf
+ * set the English canonical cited (`storyRefs` / `eventRefs`), at the same
+ * `(generation, model_name, model)` but the target `lang`. Unlike
+ * `buildPeriodicReportInput` it does NOT re-run the top-K selectors
+ * (`selectTopStories` / `selectTopEvents`) — those re-query the target
+ * lang's own leaves and would diverge from the English first-seen order,
+ * breaking the `R{j}` token equivalence the loader and leak scan rely on.
+ *
+ * Returns `{ complete: false }` when any pinned leaf has no row in the
+ * target language at the pinned generation (the completeness gate): the
+ * caller then translates the canonical instead of generating natively.
+ */
+export async function buildCanonicalPinnedReportInput(
+  args: CanonicalPinnedBuildArgs,
+): Promise<CanonicalPinnedBuildResult> {
+  const windows = await resolveWindows(
+    args.customerPool,
+    args.period,
+    args.bucketDate,
+    args.variant.tz,
+    args.nowIso,
+  );
+
+  const stories = await fetchStoryLeavesByRefs(
+    args.customerPool,
+    args.customerId,
+    args.variant,
+    args.storyRefs,
+  );
+  if (stories === null) return { complete: false };
+
+  const events = await fetchEventLeavesByRefs(
+    args.customerPool,
+    args.variant,
+    args.eventRefs,
+  );
+  if (events === null) return { complete: false };
+
+  const built = await assembleReportInput(
+    {
+      customerPool: args.customerPool,
+      period: args.period,
+      bucketDate: args.bucketDate,
+      variant: args.variant,
+    },
+    windows,
+    stories,
+    events,
+  );
+  return { complete: true, built };
+}
+
+/**
+ * Fetch the target-language story leaves for the pinned refs, returned in
+ * the SAME order as `refs` so the report-scope `R{j}` numbering matches the
+ * English canonical. Pins each leaf by the owning `customer_id` and exact
+ * `(story_id, generation)` plus the target `(lang, model_name, model)` — the
+ * `customer_id` scope is part of the story leaf identity (the table's PK), so
+ * a same-`story_id` row belonging to another customer cannot satisfy the gate
+ * and get fed into native generation. Does NOT filter `superseded_at` (a
+ * generation is immutable, mirroring the page loader's pinned replay).
+ * Returns `null` if any ref has no matching target-language leaf.
+ */
+async function fetchStoryLeavesByRefs(
+  customerPool: Pool,
+  customerId: string,
+  variant: ReportVariant,
+  refs: StoryRef[],
+): Promise<StoryLeafRow[] | null> {
+  if (refs.length === 0) return [];
+  const storyIds = refs.map((r) => r.story_id);
+  const generations = refs.map((r) => r.generation);
+  const { rows } = await customerPool.query<StoryLeafRow>(
+    `WITH canonical_story AS (
+       SELECT DISTINCT ON (story_id)
+              story_id, story_version, source_aice_id,
+              time_window_start, time_window_end
+         FROM story
+        WHERE story_id = ANY($1::bigint[])
+        ORDER BY story_id, received_at DESC, story_version DESC
+     )
+     SELECT r.story_id::text AS story_id,
+            r.generation,
+            r.severity_score, r.likelihood_score,
+            r.priority_tier,
+            r.ttp_tags, r.severity_factors, r.likelihood_factors,
+            r.analysis_text, r.redaction_policy_version,
+            cs.source_aice_id,
+            cs.time_window_start, cs.time_window_end
+       FROM story_analysis_result r
+       JOIN canonical_story cs ON cs.story_id = r.story_id
+       JOIN unnest($1::bigint[], $2::int[]) AS ref(story_id, generation)
+         ON ref.story_id = r.story_id AND ref.generation = r.generation
+      WHERE r.customer_id = $6
+        AND r.lang = $3 AND r.model_name = $4 AND r.model = $5`,
+    [
+      storyIds,
+      generations,
+      variant.lang,
+      variant.modelName,
+      variant.model,
+      customerId,
+    ],
+  );
+  return orderByRefs(
+    rows,
+    refs,
+    (row) => `${row.story_id}|${row.generation}`,
+    (ref) => `${ref.story_id}|${ref.generation}`,
+  );
+}
+
+/**
+ * Fetch the target-language event leaves for the pinned refs, in `refs`
+ * order. Same pinning / no-supersede contract as `fetchStoryLeavesByRefs`.
+ * Returns `null` if any ref has no matching target-language leaf (or no
+ * deduped baseline row to source `event_time` from).
+ */
+async function fetchEventLeavesByRefs(
+  customerPool: Pool,
+  variant: ReportVariant,
+  refs: EventRef[],
+): Promise<EventLeafRow[] | null> {
+  if (refs.length === 0) return [];
+  const aiceIds = refs.map((r) => r.aice_id);
+  const eventKeys = refs.map((r) => r.event_key);
+  const generations = refs.map((r) => r.generation);
+  const { rows } = await customerPool.query<EventLeafRow>(
+    `WITH latest_baseline AS (
+       SELECT DISTINCT ON (source_aice_id, event_key)
+              source_aice_id, event_key, event_time
+         FROM baseline_event
+        ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
+     )
+     SELECT e.aice_id,
+            e.event_key::text AS event_key,
+            e.generation,
+            e.severity_score, e.likelihood_score,
+            e.priority_tier,
+            e.ttp_tags, e.severity_factors, e.likelihood_factors,
+            e.analysis_text, e.redaction_policy_version,
+            lb.event_time
+       FROM event_analysis_result e
+       JOIN latest_baseline lb
+         ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
+       JOIN unnest($1::text[], $2::numeric[], $3::int[])
+              AS ref(aice_id, event_key, generation)
+         ON ref.aice_id = e.aice_id AND ref.event_key = e.event_key
+        AND ref.generation = e.generation
+      WHERE e.lang = $4 AND e.model_name = $5 AND e.model = $6`,
+    [
+      aiceIds,
+      eventKeys,
+      generations,
+      variant.lang,
+      variant.modelName,
+      variant.model,
+    ],
+  );
+  return orderByRefs(
+    rows,
+    refs,
+    (row) => `${row.aice_id}|${row.event_key}|${row.generation}`,
+    (ref) => `${ref.aice_id}|${ref.event_key}|${ref.generation}`,
+  );
+}
+
+/**
+ * Re-order fetched leaf rows to match the canonical ref order, returning
+ * `null` if any ref is unmatched (the completeness gate). Keying both sides
+ * with the same composite makes the result deterministic regardless of the
+ * DB's row order.
+ */
+function orderByRefs<Row, Ref>(
+  rows: Row[],
+  refs: Ref[],
+  rowKey: (row: Row) => string,
+  refKey: (ref: Ref) => string,
+): Row[] | null {
+  const byKey = new Map<string, Row>();
+  for (const row of rows) byKey.set(rowKey(row), row);
+  const ordered: Row[] = [];
+  for (const ref of refs) {
+    const row = byKey.get(refKey(ref));
+    if (row === undefined) return null;
+    ordered.push(row);
+  }
+  return ordered;
+}
+
+/**
+ * Reconstruct the report-scope token refs (`ReportTokenRef[]`) for a pinned
+ * cited-leaf set by replaying `buildReportTokenMap` over the leaves at the
+ * given variant — the same `refs` the loader and leak scan need to validate
+ * report-scope `<<REDACTED_*_R{j}_*>>` tokens. Used by the translate path
+ * to derive the canonical's `allowedTokens` from its English cited leaves
+ * without re-running the full baseline assembly. Scoped to `customerId` so a
+ * same-`story_id` leaf from another customer cannot stand in for a missing one
+ * (story leaves are keyed by `customer_id`). Returns `null` if any pinned leaf
+ * is missing (the caller treats that as an integrity failure).
+ */
+export async function buildPinnedTokenRefs(
+  customerPool: Pool,
+  customerId: string,
+  variant: ReportVariant,
+  storyRefs: StoryRef[],
+  eventRefs: EventRef[],
+): Promise<ReportTokenRef[] | null> {
+  const stories = await fetchStoryLeavesByRefs(
+    customerPool,
+    customerId,
+    variant,
+    storyRefs,
+  );
+  if (stories === null) return null;
+  const events = await fetchEventLeavesByRefs(customerPool, variant, eventRefs);
+  if (events === null) return null;
+  const { refs } = buildReportTokenMap(
+    stories.map((s) => ({
+      analysis: s.analysis_text,
+      severityFactors: s.severity_factors,
+      likelihoodFactors: s.likelihood_factors,
+    })),
+    events.map((e) => ({
+      analysis: e.analysis_text,
+      severityFactors: e.severity_factors,
+      likelihoodFactors: e.likelihood_factors,
+    })),
+  );
+  return refs;
 }
 
 export const __testables = {

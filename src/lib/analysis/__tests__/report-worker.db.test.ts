@@ -48,6 +48,11 @@ const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2501;
 const CUSTOMER_LOCK_ID = 2502;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e1";
+// A second customer sharing the customer DB. `story_analysis_result` is keyed
+// by `customer_id`, so this exercises the pinned story lookup's customer scope
+// (#412 round-3): a same-`story_id` story leaf owned by another customer must
+// NOT satisfy the completeness gate for CUSTOMER_ID.
+const OTHER_CUSTOMER_ID = "00000000-0000-0000-0000-0000000000e2";
 const TZ = "Asia/Seoul";
 const LIVE_BUCKET = "1970-01-01";
 
@@ -163,6 +168,142 @@ async function seedEventLeaf(
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
              'MEDIUM', $2, $3, gen_random_uuid())`,
     [eventKey, analysis, redactionPolicyVersion],
+  );
+}
+
+// Seed a queued job for an arbitrary variant language (#412 routing tests).
+async function seedQueuedJobLang(
+  authPool: Pool,
+  period: string,
+  bucketDate: string,
+  lang: string,
+): Promise<void> {
+  await authPool.query(
+    `INSERT INTO periodic_report_job
+       (customer_id, period, bucket_date, tz, lang, model_name, model,
+        status, generation, dry_run)
+     VALUES ($1, $2, $3::date, $4, $5, 'openai', 'gpt-4o',
+             'queued', 1, FALSE)
+     ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+     DO UPDATE SET status = 'queued', generation = 1, attempts = 0,
+                   next_due_at = NULL`,
+    [CUSTOMER_ID, period, bucketDate, TZ, lang],
+  );
+}
+
+// Seed an event leaf for an arbitrary variant language.
+async function seedEventLeafLang(
+  customerPool: Pool,
+  eventKey: string,
+  lang: string,
+  redactionPolicyVersion: string,
+  analysis = "event leaf",
+): Promise<void> {
+  await customerPool.query(
+    `INSERT INTO event_analysis_result
+       (aice_id, event_key, lang, model_name, model, generation,
+        severity_score, likelihood_score,
+        severity_factors, likelihood_factors, ttp_tags,
+        priority_tier, analysis_text, redaction_policy_version, requested_by)
+     VALUES ('aice-1', $1::numeric, $2, 'openai', 'gpt-4o', 1,
+             0.6, 0.6,
+             '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
+             'MEDIUM', $3, $4, gen_random_uuid())`,
+    [eventKey, lang, analysis, redactionPolicyVersion],
+  );
+}
+
+// Seed an English canonical `periodic_report_result` row citing one event
+// ref, the source the non-English routing reads (#412). `restoration_lang`
+// is NULL (a native English row).
+async function seedCanonicalResult(
+  customerPool: Pool,
+  period: string,
+  bucketDate: string,
+  eventKey: string,
+): Promise<void> {
+  const eventRefs = JSON.stringify([
+    { aice_id: "aice-1", event_key: eventKey, generation: 1 },
+  ]);
+  await customerPool.query(
+    `INSERT INTO periodic_report_result
+       (customer_id, period, bucket_date, tz, lang, restoration_lang,
+        model_name, model, model_actual_version, prompt_version, generation,
+        aggregate_severity_score, aggregate_likelihood_score,
+        priority_tier, sections_jsonb, input_event_refs, input_story_refs,
+        input_hash, redaction_policy_version)
+     VALUES ($1, $2, $3::date, $4, 'ENGLISH', NULL,
+             'openai', 'gpt-4o', 'canon-mv', 'canon-pv', 1,
+             0.6, 0.6,
+             'MEDIUM', $5::jsonb, $6::jsonb, '[]'::jsonb,
+             'canon-hash', 'v1')`,
+    [
+      CUSTOMER_ID,
+      period,
+      bucketDate,
+      TZ,
+      JSON.stringify(AIMER_SECTIONS),
+      eventRefs,
+    ],
+  );
+}
+
+// Seed a story leaf for a given customer + language at the pinned
+// (story_id, generation 1, openai/gpt-4o). `customer_id` is part of the story
+// leaf identity (the PK), so the owning customer is explicit here.
+async function seedStoryLeafLang(
+  customerPool: Pool,
+  customerId: string,
+  storyId: string,
+  lang: string,
+  analysis = "story leaf",
+): Promise<void> {
+  await customerPool.query(
+    `INSERT INTO story_analysis_result
+       (customer_id, story_id, lang, model_name, model,
+        model_actual_version, prompt_version, generation,
+        severity_score, likelihood_score,
+        severity_factors, likelihood_factors, ttp_tags,
+        priority_tier, analysis_text, input_event_refs, input_hash,
+        redaction_policy_version)
+     VALUES ($1, $2::bigint, $3, 'openai', 'gpt-4o',
+             'mv', 'pv', 1,
+             0.8, 0.7,
+             '[]'::jsonb, '[]'::jsonb, '["T1078"]'::jsonb,
+             'MEDIUM', $4, '[]'::jsonb, 'h', 'v1')`,
+    [customerId, storyId, lang, analysis],
+  );
+}
+
+// Seed an English canonical `periodic_report_result` row citing one story ref
+// (and no events), the source the non-English story routing reads (#412).
+async function seedCanonicalResultWithStory(
+  customerPool: Pool,
+  period: string,
+  bucketDate: string,
+  storyId: string,
+): Promise<void> {
+  const storyRefs = JSON.stringify([{ story_id: storyId, generation: 1 }]);
+  await customerPool.query(
+    `INSERT INTO periodic_report_result
+       (customer_id, period, bucket_date, tz, lang, restoration_lang,
+        model_name, model, model_actual_version, prompt_version, generation,
+        aggregate_severity_score, aggregate_likelihood_score,
+        priority_tier, sections_jsonb, input_event_refs, input_story_refs,
+        input_hash, redaction_policy_version)
+     VALUES ($1, $2, $3::date, $4, 'ENGLISH', NULL,
+             'openai', 'gpt-4o', 'canon-mv', 'canon-pv', 1,
+             0.6, 0.6,
+             'MEDIUM', $5::jsonb, '[]'::jsonb, $6::jsonb,
+             'canon-hash', 'v1')`,
+    [
+      CUSTOMER_ID,
+      period,
+      bucketDate,
+      TZ,
+      JSON.stringify(AIMER_SECTIONS),
+      storyRefs,
+    ],
   );
 }
 
@@ -284,13 +425,97 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     // No second LLM call; the job is finalized from the probe path.
     expect(aimerCalls).toBe(0);
-    const { rows: job } = await authPool.query<{ status: string }>(
-      `SELECT status FROM periodic_report_job
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+    }>(
+      `SELECT status, translation_model_name FROM periodic_report_job
         WHERE customer_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-27' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
     expect(job[0].status).toBe("done");
+    // Native existing row (restoration_lang NULL): the idempotent finalize
+    // clears any stale translation audit.
+    expect(job[0].translation_model_name).toBeNull();
+  });
+
+  it("crash recovery: a translated existing row keeps its translation audit", async () => {
+    // The translate path writes the customer-DB result row (step 1) and only
+    // then writes the auth-DB `translation_*` audit + flips the job to done
+    // (step 2). If the worker crashes after step 1, the next attempt hits the
+    // result-row probe and finalizes idempotently — and must NOT NULL the
+    // audit columns that `recordTranslationAudit` persisted BEFORE step 1
+    // (#412 item 6 / round 4). Model that state directly: a translated result
+    // row (restoration_lang = ENGLISH) already exists and the job row already
+    // carries its translation audit, status back to queued.
+    aimerCalls = 0;
+    const bucket = "2026-06-30";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await customerPool.query(
+      `INSERT INTO periodic_report_result
+         (customer_id, period, bucket_date, tz, lang, restoration_lang,
+          model_name, model, model_actual_version, prompt_version, generation,
+          aggregate_severity_score, aggregate_likelihood_score,
+          aggregate_ttp_tags, priority_tier, sections_jsonb,
+          input_event_refs, input_story_refs, input_hash,
+          redaction_policy_version)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'ENGLISH',
+               'openai', 'gpt-4o', 'canon-mv', 'canon-pv', 1,
+               0.6, 0.6,
+               '[]'::jsonb, 'MEDIUM', $4::jsonb,
+               '[]'::jsonb, '[]'::jsonb, 'canon-hash',
+               'v1')`,
+      [CUSTOMER_ID, bucket, TZ, JSON.stringify(AIMER_SECTIONS)],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run,
+          translation_model_name, translation_model, translation_prompt_version)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 1, FALSE,
+               'openai', 'gpt-4o', 'translate-pv-1')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // No LLM call of either kind — finalized from the probe.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    // Done, with the translation audit columns preserved (not NULLed).
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+      translation_model: string | null;
+      translation_prompt_version: string | null;
+    }>(
+      `SELECT status, translation_model_name, translation_model,
+              translation_prompt_version
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+    expect(job[0].translation_model_name).toBe("openai");
+    expect(job[0].translation_model).toBe("gpt-4o");
+    expect(job[0].translation_prompt_version).toBe("translate-pv-1");
   });
 
   it("requeues (attempts++) on a retryable 5xx, no result row written", async () => {
@@ -965,5 +1190,668 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
     expect(stateRows[0].status).toBe("ready");
+  });
+
+  // --- #412: native-vs-translate routing + canonical defer guard --------
+
+  it("non-English defers (non-terminal) when the English canonical is absent", async () => {
+    aimerCalls = 0;
+    const bucket = "2026-06-10";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // No LLM call of either kind.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    // Non-terminal defer: still queued, attempts NOT incremented, a future
+    // next_due_at set so the picker won't hot-spin.
+    const { rows } = await authPool.query<{
+      status: string;
+      attempts: number;
+      last_error: string | null;
+      future: boolean;
+    }>(
+      `SELECT status, attempts, last_error,
+              (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].last_error).toBe("english_canonical_not_ready");
+    expect(rows[0].future).toBe(true);
+
+    // No result row was written for the deferred variant.
+    const { rows: res } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(res).toHaveLength(0);
+  });
+
+  it("non-English defers when only a PRIOR-generation English canonical exists", async () => {
+    // Generation-aware canonical lookup (review round 1). A dirty / force
+    // regenerate bumps every variant job to generation 2, but the prior
+    // English generation 1 result stays `superseded_at IS NULL` until the
+    // English generation 2 row is written. If a Korean generation 2 job is
+    // processed before English generation 2, the canonical lookup must NOT
+    // fall back to the stale generation 1 row (generating/translating Korean
+    // gen 2 from gen-1 refs/sections) — it must defer until the gen-2
+    // canonical exists.
+    aimerCalls = 0;
+    const bucket = "2026-06-15";
+    const eventKey = "7001";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // Leaves exist in both langs at the pinned (event_key, generation), so
+    // WITHOUT the generation guard the buggy lookup would read the gen-1
+    // canonical and generate Korean gen 2 natively instead of deferring.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedEventLeafLang(customerPool, eventKey, "KOREAN", "v1");
+    // Only a generation-1 English canonical exists.
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // Korean job bumped to generation 2 (as a dirty/force requeue would).
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 2, FALSE)
+       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       DO UPDATE SET status = 'queued', generation = 2, attempts = 0,
+                     next_due_at = NULL`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    await processReportJob(
+      makeJob({ bucket_date: bucket, lang: "KOREAN", generation: 2 }),
+      {
+        authPool,
+        resolveCustomerPool: () => customerPool,
+        loadRanges: async () => EMPTY_RANGES,
+        callGenerateReport: async () => {
+          aimerCalls += 1;
+          return AIMER_RESPONSE;
+        },
+        callTranslateReport: async () => {
+          translateCalls += 1;
+          return AIMER_RESPONSE;
+        },
+      },
+    );
+
+    // Deferred, not generated/translated off the stale gen-1 canonical.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    const { rows } = await authPool.query<{
+      status: string;
+      attempts: number;
+      last_error: string | null;
+      future: boolean;
+    }>(
+      `SELECT status, attempts, last_error,
+              (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].last_error).toBe("english_canonical_not_ready");
+    expect(rows[0].future).toBe(true);
+
+    // No Korean result row was written at the bumped generation.
+    const { rows: res } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(res).toHaveLength(0);
+  });
+
+  it("pickQueuedReportJobs honors a future next_due_at on a queued row", async () => {
+    const bucket = "2026-06-11";
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run, next_due_at)
+       VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'queued', 1, FALSE, NOW() + INTERVAL '1 hour')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    const tickOpts = {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => AIMER_RESPONSE,
+    };
+    const statusOf = async () =>
+      (
+        await authPool.query<{ status: string }>(
+          `SELECT status FROM periodic_report_job
+            WHERE customer_id = $1 AND period = 'DAILY'
+              AND bucket_date = $2::date AND tz = $3`,
+          [CUSTOMER_ID, bucket, TZ],
+        )
+      ).rows[0].status;
+
+    // Future next_due_at → the row is NOT picked (DB is shared across tests,
+    // so assert on this row's own status, not the global pick count).
+    await tickReportJobsOnce(authPool, 50, tickOpts);
+    expect(await statusOf()).toBe("queued");
+
+    // Clear next_due_at → the same row is now picked and processed to done.
+    await authPool.query(
+      `UPDATE periodic_report_job SET next_due_at = NULL
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    await tickReportJobsOnce(authPool, 50, tickOpts);
+    expect(await statusOf()).toBe("done");
+  });
+
+  it("claim rejects a stale picked row deferred by a concurrent tick", async () => {
+    // Pickup and claim are split, so a concurrent tick can hold a stale
+    // JobPickup for this row from before another worker deferred it. The
+    // non-terminal canonical-defer leaves status='queued' and attempts
+    // unchanged while setting a future next_due_at, so a stale claim still
+    // satisfies status/generation/attempts. Without the next_due_at gate on
+    // the claim UPDATE the stale worker would re-claim the just-deferred row
+    // and run immediately — bypassing the defer backoff (#412 review round
+    // 2). Here the canonical and both-lang leaves are present, so a
+    // SUCCESSFUL claim would generate natively (aimerCalls=1); the fix must
+    // keep aimerCalls=0 and leave the row in its deferred state.
+    aimerCalls = 0;
+    const bucket = "2026-06-16";
+    const eventKey = "8101";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedEventLeafLang(customerPool, eventKey, "KOREAN", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // Model the row as already deferred by a concurrent tick: queued, a
+    // future next_due_at, attempts still 0 (the non-terminal defer never
+    // increments attempts).
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, attempts, dry_run, next_due_at, last_error)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 1, 0, FALSE, NOW() + INTERVAL '1 hour',
+               'english_canonical_not_ready')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    // A stale worker (attempts=0, same generation) tries to process the row.
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // The claim was rejected: no LLM call of either kind.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    // The deferred state is untouched — still queued at the future
+    // next_due_at, attempts unchanged, never stamped processing.
+    const { rows } = await authPool.query<{
+      status: string;
+      attempts: number;
+      future: boolean;
+      processing_started_at: string | null;
+    }>(
+      `SELECT status, attempts,
+              (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future,
+              processing_started_at::text AS processing_started_at
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].future).toBe(true);
+    expect(rows[0].processing_started_at).toBeNull();
+
+    // No Korean result row was written.
+    const { rows: res } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(res).toHaveLength(0);
+  });
+
+  it("translates from the canonical when a cited leaf is missing in the target lang", async () => {
+    aimerCalls = 0;
+    const bucket = "2026-06-12";
+    const eventKey = "5001";
+    let translateCalls = 0;
+    let translateLang: string | null = null;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // English leaf exists (canonical refs resolve), but NO Korean leaf.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async (a) => {
+        translateCalls += 1;
+        translateLang = a.targetLang;
+        return TRANSLATED;
+      },
+    });
+
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+    expect(translateLang).toBe("KOREAN");
+
+    // The translated row copies the canonical's audit metadata + refs and
+    // pins restoration_lang = ENGLISH.
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+      model_actual_version: string;
+      prompt_version: string;
+      input_event_refs: Array<{ aice_id: string; event_key: string }>;
+    }>(
+      `SELECT restoration_lang, model_actual_version, prompt_version,
+              input_event_refs
+         FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBe("ENGLISH");
+    expect(rows[0].model_actual_version).toBe("canon-mv");
+    expect(rows[0].prompt_version).toBe("canon-pv");
+    expect(rows[0].input_event_refs[0].aice_id).toBe("aice-1");
+
+    // The job is done and carries the translation audit columns.
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+      translation_model: string | null;
+      translation_prompt_version: string | null;
+    }>(
+      `SELECT status, translation_model_name, translation_model,
+              translation_prompt_version
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+    expect(job[0].translation_model_name).toBe("openai");
+    expect(job[0].translation_model).toBe("gpt-4o");
+    expect(job[0].translation_prompt_version).toBe("translate-pv-1");
+  });
+
+  it("aborts the translate write when the watchdog requeues mid-call (audit not lost)", async () => {
+    // A slow translate attempt overruns the watchdog timeout:
+    // `recoverStuckReportJobs` returns the row to `queued` and clears
+    // `processing_started_at` while the attempt still holds the advisory
+    // lock. When the late attempt resumes, the claim-marker-guarded
+    // `recordTranslationAudit` matches ZERO rows. It must ABORT before the
+    // customer-DB insert — otherwise it would write a durable translated
+    // result row whose audit columns never landed, and the next retry's
+    // result probe would `preserve` them as NULL, re-introducing the
+    // audit-loss class via the watchdog/late-return path (#412 item 6 /
+    // round 5).
+    aimerCalls = 0;
+    const bucket = "2026-06-18";
+    const eventKey = "5004";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        // Simulate the watchdog timing out this attempt mid-call: return the
+        // row to `queued` and clear the claim marker, exactly as
+        // `recoverStuckReportJobs` does.
+        await authPool.query(
+          `UPDATE periodic_report_job
+              SET status = 'queued', processing_started_at = NULL,
+                  next_due_at = NULL, updated_at = NOW()
+            WHERE customer_id = $1 AND period = 'DAILY'
+              AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+          [CUSTOMER_ID, bucket, TZ],
+        );
+        return TRANSLATED;
+      },
+    });
+
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    // No translated result row was written — the attempt aborted at the
+    // authoritative pre-write audit check.
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(result).toHaveLength(0);
+
+    // The job is back in `queued` (left by the watchdog) with NO audit
+    // columns persisted — nothing to preserve as NULL on the next retry.
+    const { rows: job } = await authPool.query<{
+      status: string;
+      translation_model_name: string | null;
+      translation_model: string | null;
+      translation_prompt_version: string | null;
+    }>(
+      `SELECT status, translation_model_name, translation_model,
+              translation_prompt_version
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("queued");
+    expect(job[0].translation_model_name).toBeNull();
+    expect(job[0].translation_model).toBeNull();
+    expect(job[0].translation_prompt_version).toBeNull();
+  });
+
+  it("loads a SAME-generation English canonical even after it is superseded", async () => {
+    // A non-English job at generation N must still derive from the
+    // generation-N English canonical even once that row has been superseded by
+    // a LATER English-only generation. Reachable without an operator: the LIVE
+    // cadence bump only advances `done` variants, so a still-deferred Korean
+    // gen-1 job stays at gen 1 while English advances to gen 2 and supersedes
+    // the gen-1 English row. The lookup pins `generation = job.generation`
+    // (unique by PK), so dropping the stale `superseded_at IS NULL` predicate
+    // lets the gen-1 job translate instead of deferring forever (#412 round 4).
+    aimerCalls = 0;
+    const bucket = "2026-06-24";
+    const eventKey = "9001";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // English leaf exists (canonical refs resolve), but NO Korean leaf → the
+    // completeness gate misses and the job routes to translation.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // English advanced to gen 2, superseding the gen-1 canonical the Korean
+    // gen-1 job still depends on.
+    await customerPool.query(
+      `UPDATE periodic_report_result SET superseded_at = NOW()
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'
+          AND generation = 1`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    // Translated off the superseded same-generation canonical — NOT deferred.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("done");
+    expect(job[0].last_error).not.toBe("english_canonical_not_ready");
+
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+    }>(
+      `SELECT restoration_lang FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBe("ENGLISH");
+  });
+
+  it("generates natively when every cited leaf exists in the target lang", async () => {
+    aimerCalls = 0;
+    const bucket = "2026-06-13";
+    const eventKey = "6001";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    // Korean leaf present at the SAME pinned (event_key, generation) → the
+    // completeness gate passes, so the worker generates natively.
+    await seedEventLeafLang(customerPool, eventKey, "KOREAN", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // Native generation, NOT translation.
+    expect(aimerCalls).toBe(1);
+    expect(translateCalls).toBe(0);
+
+    // A natively-generated row has no restoration_lang pin.
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+    }>(
+      `SELECT restoration_lang FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBeNull();
+  });
+
+  it("translates (not native) when only another customer has the target-lang story leaf", async () => {
+    aimerCalls = 0;
+    const bucket = "2026-06-23";
+    const storyId = "7001";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    // A canonical story leaf for THIS customer (English) + the story row.
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES ($1::bigint, 'sv1', 'auto_correlated',
+               ($2::date)::timestamptz, ($2::date)::timestamptz + INTERVAL '1 day',
+               '{}'::jsonb, 'aice-1', ($2::date)::timestamptz)`,
+      [storyId, bucket],
+    );
+    await seedStoryLeafLang(customerPool, CUSTOMER_ID, storyId, "ENGLISH");
+    // The Korean story leaf exists ONLY for a DIFFERENT customer at the same
+    // (story_id, generation, model). Without the customer_id scope the pinned
+    // lookup would match it and generate natively off another customer's row.
+    await seedStoryLeafLang(customerPool, OTHER_CUSTOMER_ID, storyId, "KOREAN");
+    await seedCanonicalResultWithStory(customerPool, "DAILY", bucket, storyId);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    // The completeness gate must MISS (no Korean leaf for THIS customer) and
+    // route to translation, never native generation off the other customer.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+
+    const { rows } = await customerPool.query<{
+      restoration_lang: string | null;
+    }>(
+      `SELECT restoration_lang FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].restoration_lang).toBe("ENGLISH");
+  });
+
+  it("dirty auto-requeue clears a stale future next_due_at", async () => {
+    const bucket = "2026-06-14";
+    await seedState(authPool, "DAILY", bucket, "dirty");
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run, last_generated_at, next_due_at)
+       VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 2, FALSE,
+               NOW() - INTERVAL '2 hours', NOW() + INTERVAL '1 hour')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    const now = new Date().toISOString();
+    const client = await authPool.connect();
+    try {
+      await seedRealReportJobs(client, 10, now);
+    } finally {
+      client.release();
+    }
+
+    // The bumped row is queued at the next generation with next_due_at
+    // cleared, so the picker (which now honors next_due_at) processes it
+    // promptly rather than waiting out the stale cadence value.
+    const { rows } = await authPool.query<{
+      status: string;
+      generation: number;
+      next_due_at: Date | null;
+    }>(
+      `SELECT status, generation, next_due_at FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].generation).toBe(3);
+    expect(rows[0].next_due_at).toBeNull();
   });
 });
