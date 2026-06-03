@@ -1228,6 +1228,89 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(await statusOf()).toBe("done");
   });
 
+  it("claim rejects a stale picked row deferred by a concurrent tick", async () => {
+    // Pickup and claim are split, so a concurrent tick can hold a stale
+    // JobPickup for this row from before another worker deferred it. The
+    // non-terminal canonical-defer leaves status='queued' and attempts
+    // unchanged while setting a future next_due_at, so a stale claim still
+    // satisfies status/generation/attempts. Without the next_due_at gate on
+    // the claim UPDATE the stale worker would re-claim the just-deferred row
+    // and run immediately — bypassing the defer backoff (#412 review round
+    // 2). Here the canonical and both-lang leaves are present, so a
+    // SUCCESSFUL claim would generate natively (aimerCalls=1); the fix must
+    // keep aimerCalls=0 and leave the row in its deferred state.
+    aimerCalls = 0;
+    const bucket = "2026-06-16";
+    const eventKey = "8101";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedEventLeafLang(customerPool, eventKey, "KOREAN", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // Model the row as already deferred by a concurrent tick: queued, a
+    // future next_due_at, attempts still 0 (the non-terminal defer never
+    // increments attempts).
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, attempts, dry_run, next_due_at, last_error)
+       VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
+               'queued', 1, 0, FALSE, NOW() + INTERVAL '1 hour',
+               'english_canonical_not_ready')`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+
+    // A stale worker (attempts=0, same generation) tries to process the row.
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return AIMER_RESPONSE;
+      },
+    });
+
+    // The claim was rejected: no LLM call of either kind.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(0);
+
+    // The deferred state is untouched — still queued at the future
+    // next_due_at, attempts unchanged, never stamped processing.
+    const { rows } = await authPool.query<{
+      status: string;
+      attempts: number;
+      future: boolean;
+      processing_started_at: string | null;
+    }>(
+      `SELECT status, attempts,
+              (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future,
+              processing_started_at::text AS processing_started_at
+         FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(rows[0].status).toBe("queued");
+    expect(rows[0].attempts).toBe(0);
+    expect(rows[0].future).toBe(true);
+    expect(rows[0].processing_started_at).toBeNull();
+
+    // No Korean result row was written.
+    const { rows: res } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(res).toHaveLength(0);
+  });
+
   it("translates from the canonical when a cited leaf is missing in the target lang", async () => {
     aimerCalls = 0;
     const bucket = "2026-06-12";

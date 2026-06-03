@@ -336,6 +336,19 @@ export async function processReportJob(
         AND generation = $8
         AND status = 'queued'
         AND attempts = $9
+        -- Re-check next_due_at at claim time, mirroring the picker filter
+        -- (report-worker.ts pickQueuedReportJobs). Pickup and claim are
+        -- split, so a concurrent tick can hold a stale JobPickup for this
+        -- row from before another worker deferred it. The non-terminal
+        -- canonical-defer leaves status='queued' and attempts unchanged
+        -- while setting a future next_due_at, so without this gate the
+        -- stale worker would still satisfy status/generation/attempts and
+        -- claim the just-deferred row — bypassing the defer backoff
+        -- (immediate re-defer, or generate/translate the instant the
+        -- canonical appears mid-window). This closes the pickup→claim
+        -- window the same way the archived-parent EXISTS check below does
+        -- (#412 review round 2).
+        AND (next_due_at IS NULL OR next_due_at <= NOW())
         AND EXISTS (
           SELECT 1 FROM periodic_report_state s
            WHERE s.customer_id = periodic_report_job.customer_id
