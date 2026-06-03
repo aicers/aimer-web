@@ -16,7 +16,7 @@ export function MembersPage() {
   const t = useTranslations("members");
   const tCommon = useTranslations("common");
 
-  const { me, selectedCustomerId } = useCustomerContext();
+  const { me, singleCustomerId } = useCustomerContext();
   const { isManager } = usePermissions();
 
   const [members, setMembers] = useState<Member[]>([]);
@@ -29,9 +29,9 @@ export function MembersPage() {
     type: "success" | "error";
   } | null>(null);
 
-  const customerId = selectedCustomerId;
+  const customerId = singleCustomerId;
   const myRoleId =
-    me?.memberships.find((m) => m.customerId === selectedCustomerId)?.roleId ??
+    me?.memberships.find((m) => m.customerId === singleCustomerId)?.roleId ??
     null;
 
   const showToast = useCallback(
@@ -67,7 +67,9 @@ export function MembersPage() {
 
   useEffect(() => {
     if (!customerId) {
-      setError(t("noCustomerAccess"));
+      // No single customer in scope — Members is a single-customer surface,
+      // so show the scope-required state under a multi-/all-scope (#390).
+      setError(tCommon("scopeRequired"));
       setLoading(false);
       return;
     }
@@ -108,7 +110,7 @@ export function MembersPage() {
     return () => {
       cancelled = true;
     };
-  }, [customerId, t]);
+  }, [customerId, t, tCommon]);
 
   const managerCount = members.filter((m) => m.roleName === "Manager").length;
 

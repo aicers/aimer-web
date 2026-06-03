@@ -11,7 +11,8 @@
     "switchToEnglish": "English",
     "skipToContent": "Skip to content",
     "forbidden": "You do not have permission to access this page.",
-    "comingSoon": "This feature is not yet available."
+    "comingSoon": "This feature is not yet available.",
+    "scopeRequired": "This page is available only for a single customer. Narrow the customer scope to one customer to continue."
   },
   "auth": {
     "signIn": "Sign In",
@@ -105,12 +106,12 @@
     "actionSuccess": "Action completed successfully.",
     "actionError": "An error occurred. Please try again.",
     "lastManagerError": "Cannot remove or demote the last Manager.",
-    "noCustomerAccess": "No customer access. Please request an invitation from a manager.",
     "actions": "Actions"
   },
   "sidebar": {
-    "selectCustomer": "Customer",
-    "selectEnvironment": "Environment",
+    "scopeLabel": "Customer scope",
+    "scopeAll": "All customers",
+    "scopeSelected": "{count} of {total} customers",
     "bridgeLocked": "Locked to bridge session",
     "analyst": "Analyst",
     "expandSidebar": "Expand sidebar",

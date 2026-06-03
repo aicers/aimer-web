@@ -11,7 +11,8 @@
     "switchToEnglish": "English",
     "skipToContent": "본문으로 건너뛰기",
     "forbidden": "이 페이지에 접근할 권한이 없습니다.",
-    "comingSoon": "이 기능은 아직 사용할 수 없습니다."
+    "comingSoon": "이 기능은 아직 사용할 수 없습니다.",
+    "scopeRequired": "이 페이지는 단일 고객에 대해서만 사용할 수 있습니다. 계속하려면 고객 범위를 하나의 고객으로 좁히세요."
   },
   "auth": {
     "signIn": "로그인",
@@ -105,12 +106,12 @@
     "actionSuccess": "작업이 완료되었습니다.",
     "actionError": "오류가 발생했습니다. 다시 시도해 주세요.",
     "lastManagerError": "마지막 매니저는 제거하거나 강등할 수 없습니다.",
-    "noCustomerAccess": "고객 접근 권한이 없습니다. 매니저에게 초대를 요청하세요.",
     "actions": "작업"
   },
   "sidebar": {
-    "selectCustomer": "고객",
-    "selectEnvironment": "환경",
+    "scopeLabel": "고객 범위",
+    "scopeAll": "전체 고객",
+    "scopeSelected": "고객 {total}명 중 {count}명",
     "bridgeLocked": "브릿지 세션으로 제한됨",
     "analyst": "분석가",
     "expandSidebar": "사이드바 펼치기",

@@ -369,16 +369,10 @@ base.describe.serial("Manual screenshots", () => {
     await mgrPage.waitForTimeout(300);
   });
 
-  base("customer-selector.png", async () => {
-    await mgrPage.goto("/en");
-    await settle(mgrPage);
-
-    // Capture just the sidebar area showing the customer/environment selectors
-    await mgrPage.screenshot({
-      path: resolve(ASSETS, "customer-selector.png"),
-      clip: { x: 0, y: 30, width: 256, height: 656 },
-    });
-  });
+  // NOTE: the customer-scope selector screenshot is intentionally not
+  // captured here yet — a representative capture needs a stack with
+  // multiple customers loaded, which is not available. Tracked in #403
+  // (see docs/{en,ko}/navigation.md "Screenshot pending").
 
   base("mobile-menu.png", async () => {
     // Exception: 375×667 viewport — the mobile menu is only visible at

@@ -35,8 +35,8 @@ vi.mock("next-intl", () => {
     customerSettings: "Customer Settings",
   };
   const sidebarMap: Record<string, string> = {
-    selectCustomer: "Customer",
-    selectEnvironment: "Environment",
+    scopeLabel: "Customer scope",
+    scopeAll: "All customers",
     bridgeLocked: "Locked to bridge session",
     expandSidebar: "Expand sidebar",
     collapseSidebar: "Collapse sidebar",
@@ -46,7 +46,12 @@ vi.mock("next-intl", () => {
     useLocale: vi.fn(() => "en"),
     useTranslations: vi.fn((ns: string) => {
       if (ns === "nav") return (key: string) => navMap[key] ?? key;
-      if (ns === "sidebar") return (key: string) => sidebarMap[key] ?? key;
+      if (ns === "sidebar")
+        return (key: string, vars?: Record<string, unknown>) => {
+          if (key === "scopeSelected")
+            return `${vars?.count} of ${vars?.total} customers`;
+          return sidebarMap[key] ?? key;
+        };
       return (key: string) => key;
     }),
   };
@@ -112,6 +117,25 @@ const mockedUseCustomerContext = vi.mocked(useCustomerContext);
 const mockedUsePermissions = vi.mocked(usePermissions);
 const mockedUsePathname = vi.mocked(usePathname);
 
+const CUSTOMERS = [
+  {
+    id: "c1",
+    externalKey: "ext-1",
+    name: "Acme Corp",
+    role: "Manager",
+    isAnalyst: false,
+    permissions: [],
+  },
+  {
+    id: "c2",
+    externalKey: "ext-2",
+    name: "Beta Inc",
+    role: "User",
+    isAnalyst: false,
+    permissions: [],
+  },
+];
+
 function mockDefaults(
   overrides?: Partial<ReturnType<typeof useCustomerContext>>,
 ) {
@@ -129,21 +153,10 @@ function mockDefaults(
       bridge: { active: false, aiceId: null, customerIds: null },
       memberships: [],
     },
-    customers: [
-      {
-        id: "c1",
-        externalKey: "ext-1",
-        name: "Acme Corp",
-        role: "Manager",
-        isAnalyst: false,
-        permissions: [],
-      },
-    ],
-    selectedCustomerId: "c1",
-    setSelectedCustomerId: vi.fn(),
-    environments: [{ aiceId: "env-1", name: "Production" }],
-    selectedEnvironmentId: "env-1",
-    setSelectedEnvironmentId: vi.fn(),
+    customers: CUSTOMERS,
+    scope: { isAll: true, customerIds: ["c1", "c2"], canonical: "all" },
+    singleCustomerId: null,
+    setScope: vi.fn(),
     isBridgeSession: false,
     loading: false,
     ...overrides,
@@ -200,7 +213,13 @@ describe("Sidebar", () => {
     expect(text).toContain("Dashboard");
   });
 
-  it("renders manager-only items when canViewMembers is true", () => {
+  it("renders single-customer items when a single customer is in scope", () => {
+    mockDefaults({
+      customers: [CUSTOMERS[0]],
+      scope: { isAll: true, customerIds: ["c1"], canonical: "all" },
+      singleCustomerId: "c1",
+    });
+
     const { container } = render(<Sidebar collapsed={false} />);
     const nav = container.querySelector('nav[aria-label="Main"]');
     assertDefined(nav);
@@ -210,7 +229,24 @@ describe("Sidebar", () => {
     expect(text).toContain("Customer Settings");
   });
 
-  it("hides manager-only items when canViewMembers is false", () => {
+  it("hides single-customer items under a multi-/all-scope", () => {
+    // Default scope resolves to two customers ⇒ singleCustomerId null, so the
+    // links are hidden even though permissions allow them.
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = container.querySelector('nav[aria-label="Main"]');
+    assertDefined(nav);
+    const text = nav.textContent ?? "";
+
+    expect(text).not.toContain("Members");
+    expect(text).not.toContain("Customer Settings");
+  });
+
+  it("hides single-customer items when permissions deny them", () => {
+    mockDefaults({
+      customers: [CUSTOMERS[0]],
+      scope: { isAll: true, customerIds: ["c1"], canonical: "all" },
+      singleCustomerId: "c1",
+    });
     mockPermissions({
       isManager: false,
       canViewMembers: false,
@@ -226,25 +262,47 @@ describe("Sidebar", () => {
     expect(text).not.toContain("Customer Settings");
   });
 
-  it("renders customer selector with correct value", () => {
+  it("renders a scope checkbox per customer, all checked under all-scope", () => {
     const { container } = render(<Sidebar collapsed={false} />);
-    const selects = container.querySelectorAll("select");
+    const boxes = container.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
 
-    expect(selects.length).toBe(2);
-    expect((selects[0] as HTMLSelectElement).value).toBe("c1");
-    expect(selects[0].textContent).toContain("Acme Corp");
+    expect(boxes.length).toBe(2);
+    expect([...boxes].every((b) => b.checked)).toBe(true);
+    expect(container.textContent).toContain("All customers");
   });
 
-  it("renders environment selector", () => {
-    const { container } = render(<Sidebar collapsed={false} />);
-    const selects = container.querySelectorAll("select");
+  it("checks only the in-scope customers under a subset scope", () => {
+    mockDefaults({
+      scope: { isAll: false, customerIds: ["c2"], canonical: "c2" },
+      singleCustomerId: "c2",
+    });
 
-    expect(selects.length).toBe(2);
-    expect((selects[1] as HTMLSelectElement).value).toBe("env-1");
-    expect(selects[1].textContent).toContain("Production");
+    const { container } = render(<Sidebar collapsed={false} />);
+    const boxes = container.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+
+    expect(boxes[0].checked).toBe(false); // c1
+    expect(boxes[1].checked).toBe(true); // c2
+    expect(container.textContent).toContain("1 of 2 customers");
   });
 
-  it("disables selectors in bridge session", () => {
+  it("toggling a customer off under all-scope narrows to the rest", () => {
+    const setScope = vi.fn();
+    mockDefaults({ setScope });
+
+    const { container } = render(<Sidebar collapsed={false} />);
+    const boxes = container.querySelectorAll<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+
+    fireEvent.click(boxes[0]); // uncheck c1
+    expect(setScope).toHaveBeenCalledWith(["c2"]);
+  });
+
+  it("short-circuits the scope control in a bridge session", () => {
     mockDefaults({
       isBridgeSession: true,
       me: {
@@ -263,103 +321,40 @@ describe("Sidebar", () => {
     });
 
     const { container } = render(<Sidebar collapsed={false} />);
-    const selects = container.querySelectorAll("select");
 
-    expect((selects[0] as HTMLSelectElement).disabled).toBe(true);
-    expect((selects[1] as HTMLSelectElement).disabled).toBe(true);
+    expect(container.querySelectorAll('input[type="checkbox"]').length).toBe(0);
     expect(container.textContent).toContain("Locked to bridge session");
   });
 
-  it("disables environment selector when no environments exist", () => {
-    mockDefaults({ environments: [], selectedEnvironmentId: null });
-
-    const { container } = render(<Sidebar collapsed={false} />);
-    const selects = container.querySelectorAll("select");
-
-    expect(selects.length).toBe(2);
-    expect((selects[1] as HTMLSelectElement).disabled).toBe(true);
-  });
-
-  it("renders multiple customers in selector", () => {
+  it("preserves a narrowed scope on nav and single-customer links", () => {
+    // Two accessible customers, scope narrowed to c1 ⇒ the single-customer
+    // settings links appear AND must carry `?scope=c1`; otherwise clicking
+    // them drops the scope and the page re-normalizes to all customers,
+    // landing on the scope-required state (#390).
     mockDefaults({
-      customers: [
-        {
-          id: "c1",
-          externalKey: "ext-1",
-          name: "Acme Corp",
-          role: "Manager",
-          isAnalyst: false,
-          permissions: [],
-        },
-        {
-          id: "c2",
-          externalKey: "ext-2",
-          name: "Beta Inc",
-          role: "User",
-          isAnalyst: false,
-          permissions: [],
-        },
-      ],
+      scope: { isAll: false, customerIds: ["c1"], canonical: "c1" },
+      singleCustomerId: "c1",
     });
 
     const { container } = render(<Sidebar collapsed={false} />);
-    const customerSelect = container.querySelectorAll("select")[0];
-    assertDefined(customerSelect);
+    const href = (label: string) =>
+      [...container.querySelectorAll("a")]
+        .find((a) => a.textContent?.includes(label))
+        ?.getAttribute("href");
 
-    const options = customerSelect.querySelectorAll("option");
-    expect(options.length).toBe(2);
-    expect(options[0].textContent).toBe("Acme Corp");
-    expect(options[1].textContent).toBe("Beta Inc");
+    expect(href("Members")).toBe("/en/settings/members?scope=c1");
+    expect(href("Customer Settings")).toBe("/en/settings/customer?scope=c1");
+    expect(href("Reports")).toBe("/en/reports?scope=c1");
+    // Home stays unscoped (app root, not a cross-customer surface).
+    expect(href("Home")).toBe("/en");
   });
 
-  it("calls setSelectedCustomerId when customer changes", () => {
-    const setSelectedCustomerId = vi.fn();
-    mockDefaults({
-      setSelectedCustomerId,
-      customers: [
-        {
-          id: "c1",
-          externalKey: "ext-1",
-          name: "Acme Corp",
-          role: "Manager",
-          isAnalyst: false,
-          permissions: [],
-        },
-        {
-          id: "c2",
-          externalKey: "ext-2",
-          name: "Beta Inc",
-          role: "User",
-          isAnalyst: false,
-          permissions: [],
-        },
-      ],
-    });
-
+  it("leaves links unscoped under the default all-scope", () => {
     const { container } = render(<Sidebar collapsed={false} />);
-    const customerSelect = container.querySelectorAll("select")[0];
-    assertDefined(customerSelect);
-
-    fireEvent.change(customerSelect, { target: { value: "c2" } });
-    expect(setSelectedCustomerId).toHaveBeenCalledWith("c2");
-  });
-
-  it("calls setSelectedEnvironmentId when environment changes", () => {
-    const setSelectedEnvironmentId = vi.fn();
-    mockDefaults({
-      setSelectedEnvironmentId,
-      environments: [
-        { aiceId: "env-1", name: "Production" },
-        { aiceId: "env-2", name: "Staging" },
-      ],
-    });
-
-    const { container } = render(<Sidebar collapsed={false} />);
-    const envSelect = container.querySelectorAll("select")[1];
-    assertDefined(envSelect);
-
-    fireEvent.change(envSelect, { target: { value: "env-2" } });
-    expect(setSelectedEnvironmentId).toHaveBeenCalledWith("env-2");
+    const reports = [...container.querySelectorAll("a")].find((a) =>
+      a.textContent?.includes("Reports"),
+    );
+    expect(reports?.getAttribute("href")).toBe("/en/reports");
   });
 
   it("marks active nav item with aria-current=page", () => {
@@ -374,10 +369,11 @@ describe("Sidebar", () => {
     expect(activeLink.getAttribute("href")).toBe("/en/events");
   });
 
-  it("hides customer selector when collapsed", () => {
+  it("hides scope selector when collapsed", () => {
     const { container } = render(<Sidebar collapsed={true} />);
 
-    expect(container.querySelector("#customer-select")).toBeNull();
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(container.textContent).not.toContain("Customer scope");
   });
 });
 
@@ -413,16 +409,15 @@ describe("MobileSidebarTrigger", () => {
     expect(text).toContain("Dashboard");
   });
 
-  it("renders customer selector inside sheet", () => {
+  it("renders scope selector inside sheet", () => {
     const { container } = render(<MobileSidebarTrigger />);
 
     const sheetContent = container.querySelector(
       '[data-testid="sheet-content"]',
     );
     assertDefined(sheetContent);
-    const selects = sheetContent.querySelectorAll("select");
-    expect(selects.length).toBe(2);
-    expect((selects[0] as HTMLSelectElement).value).toBe("c1");
+    const boxes = sheetContent.querySelectorAll('input[type="checkbox"]');
+    expect(boxes.length).toBe(2);
   });
 
   it("closes sheet when a nav link is clicked", () => {
@@ -437,11 +432,7 @@ describe("MobileSidebarTrigger", () => {
     assertDefined(navLink);
     fireEvent.click(navLink);
 
-    // The sheet should call onOpenChange(false) to close
     assertDefined(lastOnOpenChange);
-    // The click handler on nav links calls the onNavigate callback,
-    // which calls setOpen(false), which triggers onOpenChange(false).
-    // Since our mock Sheet captures onOpenChange, verify it was provided.
     expect(typeof lastOnOpenChange).toBe("function");
   });
 });

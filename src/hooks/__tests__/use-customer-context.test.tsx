@@ -17,6 +17,15 @@ vi.mock("@/lib/api/client", () => ({
   },
 }));
 
+const mockPush = vi.fn();
+let mockSearchParams = new URLSearchParams();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+  usePathname: () => "/en/reports",
+  useSearchParams: () => mockSearchParams,
+}));
+
 import {
   CustomerContextProvider,
   useCustomerContext,
@@ -44,6 +53,7 @@ const mockCustomers = {
       name: "Customer 1",
       role: "Manager",
       isAnalyst: false,
+      permissions: [],
     },
     {
       id: "c2",
@@ -51,12 +61,9 @@ const mockCustomers = {
       name: "Customer 2",
       role: "User",
       isAnalyst: false,
+      permissions: [],
     },
   ],
-};
-
-const mockEnvironments = {
-  environments: [{ aiceId: "env-1.example.com", name: "Env 1" }],
 };
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -66,14 +73,13 @@ function wrapper({ children }: { children: ReactNode }) {
 describe("useCustomerContext", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockPush.mockReset();
+    mockSearchParams = new URLSearchParams();
     mockApiFetch.mockImplementation((url: string) => {
       if (url === "/api/auth/me") return Promise.resolve(mockMe);
       if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
-      if (url.startsWith("/api/auth/environments"))
-        return Promise.resolve(mockEnvironments);
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
-    // Reset location mock
     Object.defineProperty(window, "location", {
       value: { href: "" },
       writable: true,
@@ -91,32 +97,38 @@ describe("useCustomerContext", () => {
     expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/customers");
   });
 
-  it("auto-selects first customer when no bridge", async () => {
+  it("defaults to the all-scope (full accessible set) when no scope param", async () => {
     const { result } = renderHook(() => useCustomerContext(), { wrapper });
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.selectedCustomerId).toBe("c1");
+    expect(result.current.scope.isAll).toBe(true);
+    expect(result.current.scope.customerIds).toEqual(["c1", "c2"]);
+    // More than one customer ⇒ no single customer.
+    expect(result.current.singleCustomerId).toBeNull();
     expect(result.current.isBridgeSession).toBe(false);
   });
 
-  it("auto-selects bridge customer in bridge session", async () => {
-    const bridgeMe = {
-      ...mockMe,
-      bridge: {
-        active: true,
-        aiceId: "env-1.example.com",
-        customerIds: ["c2"],
-      },
-    };
+  it("derives a subset scope from the URL scope param", async () => {
+    mockSearchParams = new URLSearchParams("scope=c2");
+    const { result } = renderHook(() => useCustomerContext(), { wrapper });
 
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.scope.isAll).toBe(false);
+    expect(result.current.scope.customerIds).toEqual(["c2"]);
+    expect(result.current.singleCustomerId).toBe("c2");
+  });
+
+  it("singleCustomerId is set under an all-scope with one accessible customer", async () => {
     mockApiFetch.mockImplementation((url: string) => {
-      if (url === "/api/auth/me") return Promise.resolve(bridgeMe);
-      if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
-      if (url.startsWith("/api/auth/environments"))
-        return Promise.resolve(mockEnvironments);
+      if (url === "/api/auth/me") return Promise.resolve(mockMe);
+      if (url === "/api/auth/customers")
+        return Promise.resolve({ customers: [mockCustomers.customers[0]] });
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
 
@@ -126,59 +138,70 @@ describe("useCustomerContext", () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.selectedCustomerId).toBe("c2");
-    expect(result.current.isBridgeSession).toBe(true);
+    expect(result.current.scope.isAll).toBe(true);
+    expect(result.current.singleCustomerId).toBe("c1");
   });
 
-  it("fetches environments when selectedCustomerId changes", async () => {
+  it("setScope rewrites the URL, merging existing params", async () => {
+    mockSearchParams = new URLSearchParams("tz=UTC&lang=en");
     const { result } = renderHook(() => useCustomerContext(), { wrapper });
 
     await waitFor(() => {
       expect(result.current.loading).toBe(false);
     });
-
-    // After auto-selecting c1, environments should be fetched
-    await waitFor(() => {
-      expect(mockApiFetch).toHaveBeenCalledWith(
-        "/api/auth/environments?customer_id=c1",
-      );
-    });
-
-    expect(result.current.environments).toEqual(mockEnvironments.environments);
-    expect(result.current.selectedEnvironmentId).toBe("env-1.example.com");
-  });
-
-  it("setSelectedCustomerId is no-op in bridge session", async () => {
-    const bridgeMe = {
-      ...mockMe,
-      bridge: {
-        active: true,
-        aiceId: "env-1.example.com",
-        customerIds: ["c2"],
-      },
-    };
-
-    mockApiFetch.mockImplementation((url: string) => {
-      if (url === "/api/auth/me") return Promise.resolve(bridgeMe);
-      if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
-      if (url.startsWith("/api/auth/environments"))
-        return Promise.resolve(mockEnvironments);
-      return Promise.reject(new Error(`Unexpected URL: ${url}`));
-    });
-
-    const { result } = renderHook(() => useCustomerContext(), { wrapper });
-
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false);
-    });
-
-    expect(result.current.selectedCustomerId).toBe("c2");
 
     act(() => {
-      result.current.setSelectedCustomerId("c1");
+      result.current.setScope(["c2"]);
     });
 
-    expect(result.current.selectedCustomerId).toBe("c2");
+    expect(mockPush).toHaveBeenCalledWith(
+      "/en/reports?lang=en&scope=c2&tz=UTC",
+    );
+  });
+
+  it("setScope('all') drops the scope param while preserving other params", async () => {
+    mockSearchParams = new URLSearchParams("scope=c2&tz=UTC");
+    const { result } = renderHook(() => useCustomerContext(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    act(() => {
+      result.current.setScope("all");
+    });
+
+    expect(mockPush).toHaveBeenCalledWith("/en/reports?tz=UTC");
+  });
+
+  it("setScope is a no-op in a bridge session", async () => {
+    const bridgeMe = {
+      ...mockMe,
+      bridge: {
+        active: true,
+        aiceId: "env-1.example.com",
+        customerIds: ["c2"],
+      },
+    };
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === "/api/auth/me") return Promise.resolve(bridgeMe);
+      if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    const { result } = renderHook(() => useCustomerContext(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.isBridgeSession).toBe(true);
+
+    act(() => {
+      result.current.setScope(["c1"]);
+    });
+
+    expect(mockPush).not.toHaveBeenCalled();
   });
 
   it("throws error when used outside provider", () => {
@@ -204,7 +227,6 @@ describe("useCustomerContext", () => {
   it("sets loading=false after fetch completes", async () => {
     const { result } = renderHook(() => useCustomerContext(), { wrapper });
 
-    // Initially loading
     expect(result.current.loading).toBe(true);
 
     await waitFor(() => {

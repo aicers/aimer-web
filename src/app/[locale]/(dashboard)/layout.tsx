@@ -1,7 +1,7 @@
 "use client";
 
 import { useLocale, useTranslations } from "next-intl";
-import { useCallback } from "react";
+import { Suspense, useCallback } from "react";
 
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { AppHeader } from "@/components/header";
@@ -72,9 +72,14 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // The provider derives the active scope from the URL via
+  // `useSearchParams`, which requires a Suspense boundary to keep static
+  // rendering from bailing out at build time.
   return (
-    <CustomerContextProvider>
-      <DashboardShell>{children}</DashboardShell>
-    </CustomerContextProvider>
+    <Suspense>
+      <CustomerContextProvider>
+        <DashboardShell>{children}</DashboardShell>
+      </CustomerContextProvider>
+    </Suspense>
   );
 }

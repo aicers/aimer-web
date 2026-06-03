@@ -25,11 +25,11 @@ const MANAGER_PERMS = [
 
 function mockContext(
   customers: CustomerEntry[],
-  selectedCustomerId: string | null,
+  singleCustomerId: string | null,
 ) {
   mockedUseCustomerContext.mockReturnValue({
     customers,
-    selectedCustomerId,
+    singleCustomerId,
   } as ReturnType<typeof useCustomerContext>);
 }
 
