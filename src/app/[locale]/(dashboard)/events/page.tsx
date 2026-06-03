@@ -14,8 +14,9 @@ interface PageProps {
 // cross-customer `/suspicious-events` overview. The redirect preserves the
 // inbound query string (`/events?scope=c1,c2` lands on
 // `/suspicious-events?scope=c1,c2`) per the parent query-preservation
-// contract; the target page canonicalizes the scope itself. The sidebar still
-// points here until WS5 (#394); this redirect keeps that link working.
+// contract; the target page canonicalizes the scope itself. WS5 (#394)
+// repointed the sidebar at `/suspicious-events` directly; this redirect is
+// kept so bookmarked/external `/events` links keep working.
 export default async function EventsRedirect({
   params,
   searchParams,
