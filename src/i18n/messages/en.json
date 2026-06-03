@@ -57,7 +57,7 @@
     "analysts": "Analysts",
     "trustRegistry": "Trust Registry",
     "auditLog": "Audit Log",
-    "suspiciousActivity": "Suspicious Activity",
+    "suspiciousActivity": "Account Anomalies",
     "settings": "Settings"
   },
   "events": {
@@ -149,8 +149,8 @@
     "errorLoading": "Failed to load audit logs. Please try again."
   },
   "suspiciousActivity": {
-    "title": "Suspicious Activity",
-    "description": "Detected suspicious patterns in system activity.",
+    "title": "Account Anomalies",
+    "description": "Detected account and session anomalies from audit logs.",
     "createdAt": "Detected At",
     "severity": "Severity",
     "indicator": "Indicator",
@@ -166,7 +166,7 @@
     "filterTo": "To",
     "apply": "Apply",
     "reset": "Reset",
-    "noResults": "No suspicious activity alerts found.",
+    "noResults": "No account anomaly alerts found.",
     "loadMore": "Load More",
     "errorLoading": "Failed to load alerts. Please try again.",
     "last24h": "Last 24 hours",
