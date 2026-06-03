@@ -4,7 +4,7 @@ import { getTranslations } from "next-intl/server";
 import {
   CountBadge,
   PartialFailureNotice,
-  ReportRow,
+  StoryRow,
   SurfaceEmptyState,
 } from "@/components/overview/overview-rows";
 import { loadCrossCustomerOverview } from "@/lib/analysis/cross-customer-overview";
@@ -15,16 +15,20 @@ interface PageProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 }
 
-// Cross-customer Reports overview (WS2, #391). Surfaces the highest-risk /
-// most-recent periodic reports across every customer the user can both access
-// AND read (`reports:read`). Report rows expose the priority tier ONLY — the
-// aggregate score that drives ordering is never displayed (#386 guardrail).
-export default async function ReportsPage({ params, searchParams }: PageProps) {
+// Cross-customer Threat Stories overview (WS2, #391). Surfaces the highest-
+// risk / most-recent threat stories across every customer the user can both
+// access AND read (`analyses:read`). Honors the `story_analysis_state`
+// lifecycle: `archived` and `pending` rows are excluded (the aggregator only
+// considers `ready`/`dirty`), so no archived story leaks into the list.
+export default async function ThreatStoriesPage({
+  params,
+  searchParams,
+}: PageProps) {
   const { locale } = await params;
   const sp = (await searchParams) ?? {};
 
   const scope = await loadScopePage({
-    pathname: `/${locale}/reports`,
+    pathname: `/${locale}/threat-stories`,
     searchParams: sp,
   });
   if (scope.kind === "unauthorized") redirect("/api/auth/sign-in");
@@ -34,12 +38,12 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
   const t = await getTranslations("nav");
   const data = await loadCrossCustomerOverview({
     scopeCustomerIds: scope.scope.customerIds,
-    surfaces: ["reports"],
+    surfaces: ["stories"],
   });
   if (data.kind === "unauthorized") redirect("/api/auth/sign-in");
   if (data.kind === "bridge") forbidden();
 
-  const reports = data.reports ?? {
+  const stories = data.stories ?? {
     items: [],
     totalCount: 0,
     failedCustomers: [],
@@ -48,24 +52,24 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center gap-3">
-        <h1 className="text-2xl font-bold text-foreground">{t("reports")}</h1>
-        <CountBadge count={reports.totalCount} />
+        <h1 className="text-2xl font-bold text-foreground">
+          {t("threatStories")}
+        </h1>
+        <CountBadge count={stories.totalCount} />
       </header>
 
-      <PartialFailureNotice failed={reports.failedCustomers} />
+      <PartialFailureNotice failed={stories.failedCustomers} />
 
-      {reports.items.length === 0 ? (
+      {stories.items.length === 0 ? (
         <SurfaceEmptyState
-          testid="reports-empty"
-          label="No reports are available across the customers in scope yet."
+          testid="threat-stories-empty"
+          label="No threat stories are available across the customers in scope yet."
         />
       ) : (
-        <ul className="space-y-2" data-testid="reports-list">
-          {reports.items.map((row) => (
-            <li
-              key={`${row.customerId}-${row.period}-${row.bucketDate}-${row.tz}`}
-            >
-              <ReportRow row={row} locale={locale} />
+        <ul className="space-y-2" data-testid="threat-stories-list">
+          {stories.items.map((row) => (
+            <li key={`${row.customerId}-${row.storyId}`}>
+              <StoryRow row={row} locale={locale} />
             </li>
           ))}
         </ul>
