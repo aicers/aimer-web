@@ -44,12 +44,21 @@
     "reports": "보고서",
     "overview": "개요",
     "threatStories": "위협 스토리",
+    "threatStory": "위협 스토리",
     "suspiciousEvents": "의심 이벤트",
+    "event": "이벤트",
+    "customers": "고객",
     "members": "멤버",
     "accountSettings": "계정 설정",
     "customerSettings": "고객 설정",
     "settings": "설정",
     "admin": "관리자"
+  },
+  "reportPeriod": {
+    "LIVE": "실시간",
+    "DAILY": "일간",
+    "WEEKLY": "주간",
+    "MONTHLY": "월간"
   },
   "admin": {
     "accounts": "계정",

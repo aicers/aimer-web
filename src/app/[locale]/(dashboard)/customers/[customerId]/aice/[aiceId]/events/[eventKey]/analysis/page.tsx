@@ -1,8 +1,11 @@
 import { notFound } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { AnalysisBody } from "@/components/analysis-body";
+import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { loadAnalysisResultPage } from "@/lib/analysis/result-page-loader";
+import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
 
 interface PageProps {
   params: Promise<{
@@ -90,9 +93,16 @@ export default async function AnalysisResultPage({
   }
 
   const data = outcome.data;
+  const t = await getTranslations("nav");
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+      {/* Feed the breadcrumb its leaf label from already-loaded data
+          (no client refetch); `<Breadcrumbs />` falls back to the same
+          terminology + short-key format if this never registers (#393). */}
+      <BreadcrumbLabelRegistrar
+        label={entityCrumbLabel(t("event"), data.eventKey)}
+      />
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">AI Analysis</h1>
         <p className="mt-1 text-sm text-muted-foreground">

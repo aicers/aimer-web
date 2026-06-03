@@ -22,6 +22,12 @@ vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");
   },
+  // Read by the breadcrumb label registrar mounted on the ok path.
+  usePathname: () => "/en/customers/c1/analysis/story/12345",
+}));
+
+vi.mock("next-intl/server", () => ({
+  getTranslations: async () => (key: string) => key,
 }));
 
 vi.mock("../regenerate-button", () => ({

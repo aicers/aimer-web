@@ -3,6 +3,7 @@
 import { useLocale, useTranslations } from "next-intl";
 import { Suspense, useCallback } from "react";
 
+import { BreadcrumbLabelProvider } from "@/components/breadcrumb-label-store";
 import { Breadcrumbs } from "@/components/breadcrumbs";
 import { AppHeader } from "@/components/header";
 import {
@@ -54,14 +55,19 @@ function DashboardShell({ children }: { children: React.ReactNode }) {
       />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar collapsed={collapsed} />
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex shrink-0 items-center px-6 py-2">
-            <Breadcrumbs />
+        {/* Provider wraps both `<Breadcrumbs />` and the page subtree so a
+            leaf page's `<BreadcrumbLabelRegistrar />` can feed the crumb its
+            resolved label across the client/server boundary (#393). */}
+        <BreadcrumbLabelProvider>
+          <div className="flex flex-1 flex-col overflow-hidden">
+            <div className="flex shrink-0 items-center px-6 py-2">
+              <Breadcrumbs />
+            </div>
+            <main id="main-content" className="flex-1 overflow-y-auto">
+              {children}
+            </main>
           </div>
-          <main id="main-content" className="flex-1 overflow-y-auto">
-            {children}
-          </main>
-        </div>
+        </BreadcrumbLabelProvider>
       </div>
     </div>
   );
