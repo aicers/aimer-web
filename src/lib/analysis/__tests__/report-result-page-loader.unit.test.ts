@@ -49,6 +49,9 @@ vi.mock("../report-token-restore", () => ({
 let stateRows: Array<{ status: string }> = [];
 let availRows: Array<{ lang: string }> = [];
 let resultRows: Array<Record<string, unknown>> = [];
+// Per-leaf rows returned for the cited-source display-field SELECTs.
+let storyLeafRows: Array<Record<string, unknown>> = [];
+let eventLeafRows: Array<Record<string, unknown>> = [];
 
 const authPool = {
   query: vi.fn(async (sql: string) => {
@@ -63,9 +66,18 @@ const authPool = {
 };
 
 const customerPool = {
-  query: vi.fn(async (sql: string) => {
+  query: vi.fn(async (sql: string, _params?: unknown[]) => {
     if (sql.includes("SELECT DISTINCT lang")) return { rows: availRows };
     if (sql.includes("model_actual_version")) return { rows: resultRows };
+    // Order matters: the main result SELECT also names story/event tables
+    // in passing, but it is matched above via `model_actual_version`. These
+    // are the per-leaf display-field SELECTs in `buildReportTokenPlaintext`.
+    if (sql.includes("FROM story_analysis_result")) {
+      return { rows: storyLeafRows };
+    }
+    if (sql.includes("FROM event_analysis_result")) {
+      return { rows: eventLeafRows };
+    }
     return { rows: [] };
   }),
 };
@@ -129,6 +141,8 @@ beforeEach(() => {
   stateRows = [{ status: "ready" }];
   availRows = [];
   resultRows = [];
+  storyLeafRows = [];
+  eventLeafRows = [];
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
   mockVerifyJwtFull
     .mockReset()
@@ -269,5 +283,151 @@ describe("loadReportResultPage — L2 language resolution", () => {
     mockGetAuthCookie.mockResolvedValue(null);
     const outcome = await callLoader({ locale: "ko" });
     expect(outcome.kind).toBe("unauthorized");
+  });
+});
+
+describe("loadReportResultPage — cited sources (T1)", () => {
+  function storyLeaf(extras: Record<string, unknown> = {}) {
+    return {
+      analysis_text: "",
+      severity_factors: [],
+      likelihood_factors: [],
+      input_event_refs: [],
+      priority_tier: "HIGH",
+      severity_score: 0.6,
+      likelihood_score: 0.7,
+      ttp_tags: ["T1078"],
+      superseded_at: null,
+      ...extras,
+    };
+  }
+  function eventLeaf(extras: Record<string, unknown> = {}) {
+    return {
+      analysis_text: "",
+      severity_factors: [],
+      likelihood_factors: [],
+      priority_tier: "MEDIUM",
+      severity_score: 0.4,
+      likelihood_score: 0.5,
+      ttp_tags: [],
+      superseded_at: null,
+      ...extras,
+    };
+  }
+
+  it("exposes story/event refs + display fields fetched at the pinned variant", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [
+          { aice_id: "aice-9", event_key: "777", generation: 4 },
+        ],
+      },
+    ];
+    storyLeafRows = [storyLeaf()];
+    eventLeafRows = [eventLeaf()];
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.citedSources.stories).toEqual([
+      {
+        storyId: "555",
+        variant: {
+          generation: 2,
+          lang: "ENGLISH",
+          modelName: "openai",
+          model: "gpt-4o",
+        },
+        display: {
+          priorityTier: "HIGH",
+          severityScore: 0.6,
+          likelihoodScore: 0.7,
+          // lookupTtpName is stubbed to null in this suite.
+          ttpTags: [{ id: "T1078", name: null }],
+        },
+      },
+    ]);
+    expect(outcome.data.citedSources.events).toEqual([
+      {
+        aiceId: "aice-9",
+        eventKey: "777",
+        variant: {
+          generation: 4,
+          lang: "ENGLISH",
+          modelName: "openai",
+          model: "gpt-4o",
+        },
+        display: {
+          priorityTier: "MEDIUM",
+          severityScore: 0.4,
+          likelihoodScore: 0.5,
+        },
+      },
+    ]);
+  });
+
+  it("degrades a card to ID/generation when the pinned leaf row is superseded", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [],
+      },
+    ];
+    storyLeafRows = [storyLeaf({ superseded_at: new Date() })];
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    const story = outcome.data.citedSources.stories[0];
+    // The ID + pinned generation survive; the display fields do not.
+    expect(story.storyId).toBe("555");
+    expect(story.variant.generation).toBe(2);
+    expect(story.display).toBeNull();
+  });
+
+  it("degrades a card to ID/generation when the pinned leaf row is missing", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        input_story_refs: [{ story_id: "555", generation: 9 }],
+        input_event_refs: [],
+      },
+    ];
+    storyLeafRows = []; // no row at the pinned variant
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.citedSources.stories[0].display).toBeNull();
+    expect(outcome.data.citedSources.stories[0].variant.generation).toBe(9);
+  });
+
+  it("resolves cited leaves via restoration_lang for a translated report", async () => {
+    // Korean translated row carries restoration_lang=ENGLISH and points at
+    // the English canonical's leaves; the display fetch + link variant must
+    // use ENGLISH, not the row's own KOREAN lang (#395 translated path).
+    availRows = [{ lang: "KOREAN" }];
+    resultRows = [
+      {
+        ...resultRow("KOREAN"),
+        restoration_lang: "ENGLISH",
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [],
+      },
+    ];
+    storyLeafRows = [storyLeaf()];
+
+    const outcome = await callLoader({ locale: "ko" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    // The Sources link variant resolves to the canonical English leaf.
+    expect(outcome.data.citedSources.stories[0].variant.lang).toBe("ENGLISH");
+    // And the leaf SELECT was actually issued with lang=ENGLISH (param $4).
+    const leafCall = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("FROM story_analysis_result"),
+    );
+    expect(leafCall?.[1]?.[3]).toBe("ENGLISH");
   });
 });

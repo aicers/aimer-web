@@ -30,6 +30,27 @@ vi.mock("../regenerate-button", () => ({
 
 import StoryAnalysisPage from "../page";
 
+describe("StoryAnalysisPage — generation pin", () => {
+  beforeEach(() => mockLoad.mockReset());
+  afterEach(() => cleanup());
+
+  it("shows the evidence-unavailable notice for a pin_unavailable outcome", async () => {
+    mockLoad.mockResolvedValueOnce({ kind: "pin_unavailable", generation: 7 });
+    await renderPage({ generation: "7" });
+    expect(screen.getByLabelText("pin-unavailable-banner")).toBeTruthy();
+    expect(
+      screen.getByLabelText("pin-unavailable-banner").textContent,
+    ).toContain("no longer available");
+  });
+
+  it("404s a present-but-invalid generation rather than resolving latest", async () => {
+    await expect(renderPage({ generation: "0" })).rejects.toThrow(
+      "NEXT_NOT_FOUND",
+    );
+    expect(mockLoad).not.toHaveBeenCalled();
+  });
+});
+
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";
 const STORY_ID = "12345";
 
@@ -58,13 +79,16 @@ function fixture(tier: PriorityTier): StoryResultPageOutcome {
   };
 }
 
-async function renderPage(): Promise<void> {
+async function renderPage(
+  searchParams?: Record<string, string>,
+): Promise<void> {
   const jsx = await StoryAnalysisPage({
     params: Promise.resolve({
       locale: "en",
       customerId: CUSTOMER_ID,
       storyId: STORY_ID,
     }),
+    searchParams: searchParams ? Promise.resolve(searchParams) : undefined,
   });
   render(jsx);
 }

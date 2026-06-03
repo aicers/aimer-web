@@ -12,6 +12,7 @@ interface PageProps {
     eventKey: string;
   }>;
   searchParams: Promise<{
+    generation?: string;
     lang?: string;
     model_name?: string;
     model?: string;
@@ -36,6 +37,18 @@ export default async function AnalysisResultPage({
     notFound();
   }
 
+  // Optional generation pin (T1 Sources link). A present-but-invalid value
+  // 404s rather than silently resolving the latest generation (parent #386
+  // generation-pin contract).
+  let generation: number | undefined;
+  if (search.generation !== undefined) {
+    const n = Number(search.generation);
+    if (!Number.isInteger(n) || n <= 0) {
+      notFound();
+    }
+    generation = n;
+  }
+
   const outcome = await loadAnalysisResultPage({
     customerId,
     aiceId,
@@ -43,6 +56,7 @@ export default async function AnalysisResultPage({
     lang,
     modelName,
     model,
+    generation,
   });
 
   if (outcome.kind === "unauthorized") {
@@ -53,6 +67,26 @@ export default async function AnalysisResultPage({
   }
   if (outcome.kind === "not_found") {
     notFound();
+  }
+  if (outcome.kind === "pin_unavailable") {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold text-foreground">AI Analysis</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Event {eventKey} • {aiceId} • generation {outcome.generation}
+          </p>
+        </header>
+        <div
+          role="status"
+          aria-label="pin-unavailable-banner"
+          className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          This evidence version is no longer available. The cited generation has
+          been superseded or removed.
+        </div>
+      </div>
+    );
   }
 
   const data = outcome.data;

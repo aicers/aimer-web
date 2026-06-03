@@ -1,5 +1,6 @@
 import { forbidden, notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { SourcesPanel } from "@/components/analysis/sources-panel";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
 import { type AppLocale, reportLanguageToAppLocale } from "@/i18n/locale";
@@ -304,6 +305,17 @@ export default async function ReportDetailPage({
         body={data.sections.notable_events}
         testid="section-notable_events"
       />
+
+      {/* Report-level cited sources for the leaf-derived sections above
+          (executive summary / story highlights / notable events). Placed
+          before baseline observations, which is the drill-down's
+          deliberate stopping point and gets no Sources panel (#395). */}
+      <SourcesPanel
+        locale={locale}
+        customerId={customerId}
+        sources={data.citedSources}
+      />
+
       <ReportSection
         title="Baseline observations"
         body={data.sections.baseline_observations}

@@ -95,6 +95,42 @@ function okFixture(): ReportResultPageOutcome {
       },
       topStoryCount: 1,
       topEventCount: 1,
+      citedSources: {
+        stories: [
+          {
+            storyId: "555",
+            variant: {
+              generation: 2,
+              lang: "ENGLISH",
+              modelName: "openai",
+              model: "gpt-4o",
+            },
+            display: {
+              priorityTier: "HIGH",
+              severityScore: 0.6,
+              likelihoodScore: 0.7,
+              ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
+            },
+          },
+        ],
+        events: [
+          {
+            aiceId: "aice-9",
+            eventKey: "777",
+            variant: {
+              generation: 2,
+              lang: "ENGLISH",
+              modelName: "openai",
+              model: "gpt-4o",
+            },
+            display: {
+              priorityTier: "MEDIUM",
+              severityScore: 0.4,
+              likelihoodScore: 0.5,
+            },
+          },
+        ],
+      },
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),
       requestedLocale: "en",
@@ -143,6 +179,98 @@ describe("report detail page", () => {
     expect(
       screen.getByTestId("section-baseline_observations").textContent,
     ).toBe("Malware up 30%.");
+  });
+
+  it("renders a Sources panel with cited story/event cards and N stories · M events", async () => {
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.getByTestId("sources-panel")).toBeTruthy();
+    expect(screen.getByTestId("sources-provenance").textContent).toBe(
+      "1 story · 1 event",
+    );
+    expect(screen.getByTestId("source-story-555")).toBeTruthy();
+    expect(screen.getByTestId("source-event-aice-9-777")).toBeTruthy();
+  });
+
+  it("pins each Sources link to the cited variant (generation + lang + model)", async () => {
+    await renderPage("DAILY", "2026-05-26");
+    const storyHref = screen
+      .getByTestId("source-story-555")
+      .getAttribute("href");
+    // The four params guard against linking to the latest generation.
+    expect(storyHref).toContain("/analysis/story/555");
+    expect(storyHref).toContain("generation=2");
+    expect(storyHref).toContain("lang=ENGLISH");
+    expect(storyHref).toContain("model_name=openai");
+    expect(storyHref).toContain("model=gpt-4o");
+
+    const eventHref = screen
+      .getByTestId("source-event-aice-9-777")
+      .getAttribute("href");
+    expect(eventHref).toContain("/aice/aice-9/events/777/analysis");
+    expect(eventHref).toContain("generation=2");
+    expect(eventHref).toContain("lang=ENGLISH");
+    expect(eventHref).toContain("model_name=openai");
+    expect(eventHref).toContain("model=gpt-4o");
+  });
+
+  it("attaches the Sources panel to the leaf-derived sections, not baseline", async () => {
+    await renderPage("DAILY", "2026-05-26");
+    // Exactly one report-level Sources panel, and it is not nested inside
+    // the baseline section (the drill-down's deliberate stopping point).
+    expect(screen.getAllByTestId("sources-panel")).toHaveLength(1);
+    const baseline = screen.getByTestId("section-baseline_observations");
+    expect(baseline.querySelector('[data-testid="sources-panel"]')).toBeNull();
+    // The panel precedes the baseline section in document order.
+    const panel = screen.getByTestId("sources-panel");
+    expect(
+      panel.compareDocumentPosition(baseline) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("degrades a Sources card to ID/generation when the pinned row is unavailable", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: {
+        ...base.data,
+        citedSources: {
+          stories: [
+            {
+              storyId: "555",
+              variant: {
+                generation: 1,
+                lang: "ENGLISH",
+                modelName: "openai",
+                model: "gpt-4o",
+              },
+              display: null,
+            },
+          ],
+          events: [],
+        },
+      },
+    });
+    await renderPage("DAILY", "2026-05-26");
+    const card = screen.getByTestId("source-story-555");
+    // The card still links to the pinned generation and shows the ID...
+    expect(card.getAttribute("href")).toContain("generation=1");
+    expect(card.textContent).toContain("Story 555");
+    expect(card.textContent).toContain("generation 1");
+    // ...but degrades to the unavailable note instead of display fields.
+    expect(screen.getByTestId("source-unavailable")).toBeTruthy();
+  });
+
+  it("omits the Sources panel when there are no cited sources", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, citedSources: { stories: [], events: [] } },
+    });
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.queryByTestId("sources-panel")).toBeNull();
   });
 
   it("renders the period tabs with the active period marked and cross-period links", async () => {

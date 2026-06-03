@@ -31,6 +31,11 @@ export type StoryResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "not_found" }
   | { kind: "pending"; stateStatus: "pending" | "ready" | "dirty" }
+  // A specific generation/variant was pinned (T1 Sources link) but the
+  // pinned row is missing or superseded. The page shows the "evidence
+  // version no longer available" notice and does NOT fall back to the
+  // latest generation (parent #386 generation-pin contract).
+  | { kind: "pin_unavailable"; generation: number }
   | { kind: "ok"; data: StoryResultPageData };
 
 export interface StoryResultPageData {
@@ -62,6 +67,21 @@ export interface StoryResultPageData {
 export interface StoryResultPageInput {
   customerId: string;
   storyId: string;
+  /**
+   * Optional generation/variant pin (T1 Sources link, parent #386). When
+   * present, the loader resolves the EXACT pinned row — that generation at
+   * `(lang, modelName, model)` — instead of the latest non-superseded one,
+   * and reports `pin_unavailable` when that row is missing or superseded
+   * (no silent fallback to latest). `lang`/`modelName`/`model` default to
+   * the env-configured variant when omitted. `lang` is the report-language
+   * enum (`ENGLISH`/`KOREAN`), matching the leaf's stored `lang` column.
+   */
+  pin?: {
+    generation: number;
+    lang?: string;
+    modelName?: string;
+    model?: string;
+  };
 }
 
 export async function loadStoryResultPage(
@@ -123,7 +143,21 @@ export async function loadStoryResultPage(
   if (stateRows.rows.length === 0) return { kind: "not_found" };
   if (stateRows.rows[0].status === "archived") return { kind: "not_found" };
 
+  // Variant resolution: a pin (T1 Sources link) selects the exact cited
+  // variant; otherwise the env-configured default variant. `lang` is the
+  // report-language enum the leaf row is keyed on.
+  const lang = input.pin?.lang ?? DEFAULT_LANG;
+  const modelName = input.pin?.modelName ?? DEFAULT_MODEL_NAME;
+  const model = input.pin?.model ?? DEFAULT_MODEL;
+  const pinnedGeneration = input.pin?.generation ?? null;
+
   const customerPool = getCustomerRuntimePool(input.customerId);
+  // When a generation is pinned, target that exact row and read
+  // `superseded_at` so a superseded pin degrades to the notice rather than
+  // silently resolving the latest generation; otherwise keep the
+  // latest-non-superseded behavior. `superseded_at` is irrelevant on the
+  // unpinned path (the predicate already excludes superseded rows) and is
+  // selected uniformly to keep one row shape.
   const resultRow = await customerPool.query<{
     severity_score: number;
     likelihood_score: number;
@@ -140,45 +174,82 @@ export async function loadStoryResultPage(
     model_actual_version: string;
     prompt_version: string;
     generation: number;
+    superseded_at: Date | null;
     requested_by: string | null;
     requested_at: Date;
   }>(
-    `SELECT
-       severity_score,
-       likelihood_score,
-       priority_tier,
-       severity_factors,
-       likelihood_factors,
-       ttp_tags,
-       analysis_text,
-       input_event_refs,
-       model_actual_version,
-       prompt_version,
-       generation,
-       requested_by::text AS requested_by,
-       requested_at
-     FROM story_analysis_result
-     WHERE customer_id = $1
-       AND story_id = $2::bigint
-       AND lang = $3 AND model_name = $4 AND model = $5
-       AND superseded_at IS NULL
-     ORDER BY generation DESC
-     LIMIT 1`,
-    [
-      input.customerId,
-      input.storyId,
-      DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
-    ],
+    pinnedGeneration === null
+      ? `SELECT
+           severity_score,
+           likelihood_score,
+           priority_tier,
+           severity_factors,
+           likelihood_factors,
+           ttp_tags,
+           analysis_text,
+           input_event_refs,
+           model_actual_version,
+           prompt_version,
+           generation,
+           superseded_at,
+           requested_by::text AS requested_by,
+           requested_at
+         FROM story_analysis_result
+         WHERE customer_id = $1
+           AND story_id = $2::bigint
+           AND lang = $3 AND model_name = $4 AND model = $5
+           AND superseded_at IS NULL
+         ORDER BY generation DESC
+         LIMIT 1`
+      : `SELECT
+           severity_score,
+           likelihood_score,
+           priority_tier,
+           severity_factors,
+           likelihood_factors,
+           ttp_tags,
+           analysis_text,
+           input_event_refs,
+           model_actual_version,
+           prompt_version,
+           generation,
+           superseded_at,
+           requested_by::text AS requested_by,
+           requested_at
+         FROM story_analysis_result
+         WHERE customer_id = $1
+           AND story_id = $2::bigint
+           AND lang = $3 AND model_name = $4 AND model = $5
+           AND generation = $6
+         LIMIT 1`,
+    pinnedGeneration === null
+      ? [input.customerId, input.storyId, lang, modelName, model]
+      : [
+          input.customerId,
+          input.storyId,
+          lang,
+          modelName,
+          model,
+          pinnedGeneration,
+        ],
   );
   if (resultRow.rows.length === 0) {
+    // A pinned generation that no longer exists is "evidence no longer
+    // available", not a still-generating pending state.
+    if (pinnedGeneration !== null) {
+      return { kind: "pin_unavailable", generation: pinnedGeneration };
+    }
     return {
       kind: "pending",
       stateStatus: stateRows.rows[0].status as "pending" | "ready" | "dirty",
     };
   }
   const row = resultRow.rows[0];
+  // A superseded pinned row is treated as unavailable — the page must not
+  // present stale evidence as the version the report cited.
+  if (pinnedGeneration !== null && row.superseded_at !== null) {
+    return { kind: "pin_unavailable", generation: pinnedGeneration };
+  }
 
   // Restore story-scope tokens to plaintext. RFC 0002 §"Token
   // namespacing for multi-event LLM inputs": each `E{i}` references an
@@ -244,9 +315,9 @@ export async function loadStoryResultPage(
     data: {
       customerId: input.customerId,
       storyId: input.storyId,
-      lang: DEFAULT_LANG as "KOREAN" | "ENGLISH",
-      modelName: DEFAULT_MODEL_NAME,
-      model: DEFAULT_MODEL,
+      lang: lang as "KOREAN" | "ENGLISH",
+      modelName,
+      model,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
       generation: row.generation,

@@ -11,12 +11,49 @@ interface PageProps {
     customerId: string;
     storyId: string;
   }>;
+  searchParams?: Promise<{
+    generation?: string;
+    lang?: string;
+    model_name?: string;
+    model?: string;
+  }>;
 }
 
-export default async function StoryAnalysisPage({ params }: PageProps) {
-  const { customerId, storyId } = await params;
+// A pinned generation (T1 Sources link) must be a positive integer; any
+// other present value is rejected with a 404 rather than silently resolving
+// the latest generation (parent #386 generation-pin contract).
+function parseGeneration(raw: string | undefined): number | null | "invalid" {
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) return "invalid";
+  return n;
+}
 
-  const outcome = await loadStoryResultPage({ customerId, storyId });
+export default async function StoryAnalysisPage({
+  params,
+  searchParams,
+}: PageProps) {
+  const { customerId, storyId } = await params;
+  const search = (await searchParams) ?? {};
+
+  const generation = parseGeneration(search.generation);
+  if (generation === "invalid") {
+    notFound();
+  }
+  // The pin is keyed on the full variant; carry the cited `lang`/model
+  // params (report-language enum) alongside the generation so the exact
+  // cited leaf row resolves instead of the latest.
+  const pin =
+    generation !== null
+      ? {
+          generation,
+          lang: search.lang,
+          modelName: search.model_name,
+          model: search.model,
+        }
+      : undefined;
+
+  const outcome = await loadStoryResultPage({ customerId, storyId, pin });
 
   if (outcome.kind === "unauthorized") {
     // Indistinguishable 404 prevents probing of registered stories.
@@ -24,6 +61,26 @@ export default async function StoryAnalysisPage({ params }: PageProps) {
   }
   if (outcome.kind === "not_found") {
     notFound();
+  }
+  if (outcome.kind === "pin_unavailable") {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        <header className="mb-6">
+          <h1 className="text-2xl font-bold text-foreground">Story Analysis</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Story {storyId} • generation {outcome.generation}
+          </p>
+        </header>
+        <div
+          role="status"
+          aria-label="pin-unavailable-banner"
+          className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+        >
+          This evidence version is no longer available. The cited generation has
+          been superseded or removed.
+        </div>
+      </div>
+    );
   }
   if (outcome.kind === "pending") {
     return (

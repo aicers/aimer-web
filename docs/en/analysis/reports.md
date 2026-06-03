@@ -296,6 +296,55 @@ out-of-range index) are passed through unchanged so the page still
 renders; hallucinated decodes are blocked at write time and never reach
 this view.
 
+## Sources
+
+Below the leaf-derived sections — executive summary, story highlights,
+and notable events — the page shows a **Sources** panel listing the
+cited threat-story and suspicious-event leaves the report was generated
+from. These are the generation's recorded input list, so the panel is
+**report-level cited sources**: it tells you which leaves the report
+drew on, not which sentence cites which leaf. The panel does not imply
+per-sentence or per-claim provenance.
+
+<!-- Screenshot placeholder (#395): report detail Sources panel showing
+     cited story and event cards with the "N stories · M events"
+     provenance line. Capture from a stack with a real generation once
+     available. -->
+
+The panel header shows an **N stories · M events** provenance count.
+Each cited leaf renders as a card:
+
+- **Threat-story cards** are labelled `Story {story_id}` and show the
+  priority tier, severity and likelihood scores, and MITRE ATT&CK
+  technique chips of the cited leaf.
+- **Suspicious-event cards** are labelled `Event {aice_id} · {event_key}`
+  and show the priority tier and the severity and likelihood scores.
+
+There is no human-readable title for a story or event, so the cards are
+labelled by ID — the same convention as the Threat Stories and
+Suspicious Events lists. For a story, the technique chips double as the
+human-readable descriptor.
+
+Each card links to its detail page **pinned to the exact variant the
+report consumed** — the cited `generation` together with the language,
+provider, and model. Following a Sources link therefore opens the
+evidence as it was at generation time, not the latest re-analysis. For a
+report shown in a translated language, the links resolve to the
+canonical-language leaves the translation preserved, so the pinned
+evidence still exists.
+
+When a cited leaf's pinned version is no longer available — it has been
+superseded by a newer generation or removed by retention — its card
+degrades to the stored ID and generation with an **"Evidence version no
+longer available"** note, and the leaf detail page it links to shows the
+same notice rather than silently substituting the latest version. The
+card's link still carries the pinned generation, so the provenance trail
+is preserved even when the underlying evidence version is gone.
+
+**Baseline observations has no Sources panel.** It is the deliberate
+stopping point of the drill-down: the section reports only narrative
+baseline readings and is not traced back to individual leaves.
+
 ## Metadata fields
 
 Below the header the page shows the report metadata: language, provider

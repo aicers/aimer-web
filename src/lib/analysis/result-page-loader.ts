@@ -29,6 +29,11 @@ import { restoreRedactedTokens } from "./restore";
 export type ResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "not_found" }
+  // A specific generation was pinned (T1 Sources link) but the pinned row
+  // is missing or superseded. The page shows the "evidence version no
+  // longer available" notice and does NOT fall back to the latest
+  // generation (parent #386 generation-pin contract).
+  | { kind: "pin_unavailable"; generation: number }
   | { kind: "ok"; data: AnalysisResultPageData };
 
 export interface AnalysisResultPageData {
@@ -83,6 +88,14 @@ export interface ResultPageInput {
   lang: string;
   modelName: string;
   model: string;
+  /**
+   * Optional generation pin (T1 Sources link, parent #386). When present,
+   * the loader resolves the EXACT pinned row at `(lang, modelName, model,
+   * generation)` instead of the latest non-superseded one, and reports
+   * `pin_unavailable` when that row is missing or superseded (no silent
+   * fallback to latest).
+   */
+  generation?: number;
 }
 
 export async function loadAnalysisResultPage(
@@ -115,6 +128,11 @@ export async function loadAnalysisResultPage(
 
   // ---- Fetch result + map + source-event presence -----------------------
   const customerPool = getCustomerRuntimePool(input.customerId);
+  // When a generation is pinned, target that exact row and read
+  // `superseded_at` so a superseded pin degrades to the notice rather than
+  // silently resolving the latest generation; otherwise keep the
+  // latest-non-superseded behavior.
+  const pinnedGeneration = input.generation ?? null;
   const resultRow = await customerPool.query<{
     severity_score: number;
     likelihood_score: number;
@@ -125,34 +143,80 @@ export async function loadAnalysisResultPage(
     analysis_text: string;
     model_actual_version: string | null;
     prompt_version: string | null;
+    generation: number;
+    superseded_at: Date | null;
     requested_by: string;
     requested_at: Date;
   }>(
-    `SELECT
-       severity_score,
-       likelihood_score,
-       priority_tier,
-       severity_factors,
-       likelihood_factors,
-       ttp_tags,
-       analysis_text,
-       model_actual_version,
-       prompt_version,
-       requested_by,
-       requested_at
-     FROM event_analysis_result
-     WHERE aice_id = $1
-       AND event_key = $2::numeric
-       AND lang = $3
-       AND model_name = $4
-       AND model = $5
-       AND superseded_at IS NULL
-     ORDER BY generation DESC
-     LIMIT 1`,
-    [input.aiceId, input.eventKey, input.lang, input.modelName, input.model],
+    pinnedGeneration === null
+      ? `SELECT
+           severity_score,
+           likelihood_score,
+           priority_tier,
+           severity_factors,
+           likelihood_factors,
+           ttp_tags,
+           analysis_text,
+           model_actual_version,
+           prompt_version,
+           generation,
+           superseded_at,
+           requested_by,
+           requested_at
+         FROM event_analysis_result
+         WHERE aice_id = $1
+           AND event_key = $2::numeric
+           AND lang = $3
+           AND model_name = $4
+           AND model = $5
+           AND superseded_at IS NULL
+         ORDER BY generation DESC
+         LIMIT 1`
+      : `SELECT
+           severity_score,
+           likelihood_score,
+           priority_tier,
+           severity_factors,
+           likelihood_factors,
+           ttp_tags,
+           analysis_text,
+           model_actual_version,
+           prompt_version,
+           generation,
+           superseded_at,
+           requested_by,
+           requested_at
+         FROM event_analysis_result
+         WHERE aice_id = $1
+           AND event_key = $2::numeric
+           AND lang = $3
+           AND model_name = $4
+           AND model = $5
+           AND generation = $6
+         LIMIT 1`,
+    pinnedGeneration === null
+      ? [input.aiceId, input.eventKey, input.lang, input.modelName, input.model]
+      : [
+          input.aiceId,
+          input.eventKey,
+          input.lang,
+          input.modelName,
+          input.model,
+          pinnedGeneration,
+        ],
   );
-  if (resultRow.rows.length === 0) return { kind: "not_found" };
+  if (resultRow.rows.length === 0) {
+    if (pinnedGeneration !== null) {
+      return { kind: "pin_unavailable", generation: pinnedGeneration };
+    }
+    return { kind: "not_found" };
+  }
   const row = resultRow.rows[0];
+  // A superseded pinned row is treated as unavailable — the page must not
+  // present stale evidence as the version the report cited.
+  if (pinnedGeneration !== null && row.superseded_at !== null) {
+    return { kind: "pin_unavailable", generation: pinnedGeneration };
+  }
 
   // Always restore tokens — there is no "view redacted" mode.
   let restoredText = row.analysis_text;
