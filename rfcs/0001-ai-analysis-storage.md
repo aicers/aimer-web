@@ -109,7 +109,7 @@ Tokens follow a fixed shape so downstream scanning (LLM hallucination check) can
 - `<<REDACTED_IP_NNN>>`
 - `<<REDACTED_EMAIL_NNN>>`
 - `<<REDACTED_MAC_NNN>>`
-- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an enrichment fact)
+- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an enrichment fact). Note: in multi-event prompts these per-event tokens are rewritten to story-scope `<<REDACTED_{TYPE}_E{i}_{NNN}>>` per RFC 0002, and fact-only indicators use a fact-scope `<<REDACTED_{TYPE}_F{k}_{NNN}>>` form — see Amendment A.1.
 
 `NNN` is a per-event monotonic counter; identical entities within the same event collapse to the same token (so an attacker IP appearing 10 times produces one map entry and 10 occurrences of the same token).
 
@@ -884,7 +884,7 @@ Customer settings: `Data Retention` section.
 ## Amendment A — enrichment-fact redaction (domain KIND + fact pipeline + reflection)
 
 - Status: **proposed** (tracks [#424](https://github.com/aicers/aimer-web/issues/424))
-- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through); written against the post-#422 engine.
+- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through, an **open issue with no PR yet**). This amendment is written against the **post-#422** engine and **must merge after #422 lands**. Until #422 resolves, the base "Redaction engine — v1 policy" section is internally inconsistent (the policy-table row says public IPs pass through; the default paragraph still says "redact all public IPs"); A.2's pass-through analogy below holds only against #422's resolved pass-through default, not the current contradictory text.
 - Consumed by: RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)) **P1b** (C1 enrichment-fact injection). **Not** required by RFC 0003 P1a (the #361 deterministic floor never sends facts to the LLM).
 
 ### Motivation
@@ -893,33 +893,47 @@ RFC 0003 introduces **enrichment facts**: short statements the enrichment layer 
 
 Injecting a fact without redaction is wrong for two independent reasons:
 
-1. **Token consistency (always applies).** Per RFC 0001, the LLM must never see a raw indicator — only its token. A fact mentioning `evil-c2.example` must reach the LLM as `<<REDACTED_DOMAIN_001>>`, and crucially as the **same token** the story's member payload already assigned to that indicator, or the model cannot connect the fact to the event. This is required even if no customer data is involved.
+1. **Token consistency (always applies).** Per RFC 0001, the LLM must never see a raw indicator — only its token. A fact mentioning `evil-c2.example` must reach the LLM as the **same scope token** the story prompt already uses for that indicator (see A.1 for what "same token" means under RFC 0002's story-scope namespacing), or the model cannot connect the fact to the event. This is required even if no customer data is involved.
 2. **Reflection leak (defense).** Some TI responses *reflect* related indicators back — passive-DNS neighbors, co-resolving hosts, sibling domains — which can include **customer-owned hostnames/IPs** that were never in the member payload and so were never tokenized. A fact carrying `vpn.customer.example` would leak it to the LLM.
 
 Both reasons hold for facts from **every source** — curated feed, online API, and the LLM/web-search soft-only fallback generator in RFC 0003. Therefore:
 
 > **Every enrichment fact passes through redaction before reaching the LLM, regardless of source.**
 
-### A.1 — Run facts through the existing `redact()` pipeline
+### A.1 — Redact facts into RFC 0002's story-scope token namespace
 
-Before a fact is injected into the `analyzeStory` prompt, it is redacted with `redact({ payload: factText, existingMap: <the story's redaction map> })`. Because the engine's shared-map invariants (§"Shared map across ingestion paths") make the **first writer create, subsequent writers reuse**, any indicator already present in the story's member payloads resolves to the **token it already has**; indicators new to the fact get appended tokens under the same per-event monotonic counter. No new map mechanism is introduced — facts are just another writer against the existing `(aice_id, event_key)` / story map.
+There is **no single "story redaction map"** to write into. RFC 0002 (§"multi-event token namespacing") is explicit: the per-event `(aice_id, event_key)` maps remain the sole source of truth, and *no new encrypted map is introduced*. A story prompt is assembled at prompt-build time by rewriting each included event's per-event tokens `<<REDACTED_{TYPE}_{NNN}>>` into **story-scope tokens** `<<REDACTED_{TYPE}_E{i}_{NNN}>>`, where `i` indexes the event in the story's ordered `input_event_refs`. Fact redaction must hook into **that** rewrite pass, not a nonexistent unified map. Facts are redacted as a step of story-scope prompt assembly, producing story-scope tokens directly.
 
-Demap on the LLM's output follows the **same chain already defined for story/report-scope tokens** in RFC 0002; fact-origin tokens are demapped identically.
+Procedure (extends the RFC 0002 story-scope rewrite; facts are processed after the member events are indexed into `input_event_refs`):
+
+For each indicator found in a fact, resolve it against the already-built per-event maps of the story's members and assign a token by these rules:
+
+- **Indicator present in exactly one member event `i`.** Reuse that event's existing per-event token and emit the story-scope form `<<REDACTED_{TYPE}_E{i}_{NNN}>>`. The fact now shares the token the member text already carries.
+- **Indicator present in multiple member events.** It has several candidate `E{i}` tokens (one per event it appears in). Pick the token of the **lowest event index `i`** in `input_event_refs` (deterministic, and `input_event_refs` is already part of `input_hash`, so the choice is stable and reproducible). Optionally, the fact may additionally be emitted once per occurrence — but the canonical rule is lowest-index, single token, so the LLM sees one stable identifier per indicator.
+- **Indicator present only in the fact (no member event).** It has no `E{i}` anchor. Append it to a dedicated **fact scope** appended to `input_event_refs` as a synthetic ref (a `fact` pseudo-source rather than an `(aice_id, event_key)` event), and emit `<<REDACTED_{TYPE}_F{k}_{NNN}>>` where `F` marks the fact namespace and `k` indexes the fact scope. The value→token assignment for fact-only indicators lives in this fact scope, encrypted the same way as per-event maps; it is not written back into any event's map (per-event maps stay immutable, per RFC 0002).
+
+Demap on the LLM's output reuses RFC 0002's chain unchanged for `E{i}` tokens (resolve `i` via `input_event_refs`, decrypt that event's map). `F{k}` tokens resolve via the fact scope stored alongside the result row. No per-event map is mutated by fact redaction.
+
+> Note: the `F{k}` fact-scope mechanism is the one genuinely new piece this amendment adds to the token model; everything else reuses RFC 0002's `E{i}` story-scope rewrite. The exact storage shape of the fact scope (a column on the story result row vs. an entry in `input_event_refs` with a `kind` discriminator) is an implementation decision for #424's PR.
 
 ### A.2 — Domain / hostname token KIND with a customer-owned boundary policy
 
-v1 lists hostnames/FQDNs as "not redacted". That is acceptable for event payloads (no customer hostname registry exists yet) but is exactly the hole reflection exploits. This amendment adds a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`, map `kind: "domain"`) and a boundary policy **structurally analogous to #422's IP-range policy**:
+v1 lists hostnames/FQDNs as "not redacted". That is acceptable for event payloads (no customer hostname registry exists yet) but is exactly the hole reflection exploits. This amendment adds a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`). The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries. The boundary policy is **structurally analogous to #422's IP-range policy**:
 
 | Domain in a fact | Policy |
 |---|---|
 | Matches a customer-registered owned-domain suffix | **Redact** (`<<REDACTED_DOMAIN_NNN>>`) |
 | Not matched (external / malicious) | **Pass through** (preserved for analytic value) — same philosophy as #422: what the customer registers is what gets hidden |
 
-This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked. The customer-owned-domain registry parallels `customer_redaction_ranges` (a hostname-suffix list); its admin UI is deferred (it can ship empty, meaning "pass all domains through", exactly like the empty IP-range default under #422). Reflection protection in the empty-registry case is provided by A.3, not by the boundary policy.
+This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked. The customer-owned-domain registry parallels `customer_redaction_ranges` (a hostname-suffix list); its admin UI is deferred.
 
-### A.3 — Reflection / generated-text defense via `scanHallucinations()` reuse
+> **Known limitation — domain reflection leak in the empty-registry default.** Unlike IPs (where private ranges are always redacted and public ranges have a CIDR signal), domains have **no always-redact class and no registry yet**, so the default is pass-through for *all* domains. In that state, motivation #2 (reflection leak) is **not fully mitigated for domains**: a regex/scan cannot tell an external malicious domain (intended to pass) from a reflected customer-owned `vpn.customer.example` (a leak) — flagging everything defeats pass-through, flagging nothing gives no protection. A.3's scan is therefore a *partial* net for domains, not a complete one. **This hole closes only once the customer-owned-domain registry is populated.** Two consciously-deferred options for hardening the default (decide in #424's PR, not blocking): (a) document and accept the limitation until the registry ships; (b) adopt a *stricter* domain default than IPs — e.g. redact domains that resolve to / are mentioned alongside a customer-owned IP range, or require explicit opt-in before any domain passes through. For IP/email/MAC the always-redact and range rules give the scan a real signal, so this limitation is domain-specific.
 
-The engine already has `scanHallucinations()`, which scans LLM **output** for un-tokenized indicators and stamps them `<<UNVERIFIED_*>>`. This amendment reuses the same scan on **fact text before injection** (not just on output), to catch indicators that the boundary policy would pass through but that look like customer assets — most importantly in **LLM/web-search-generated facts**, whose text we do not control and which can surface unexpected values. The scan is the safety net for the empty-registry case in A.2: even with no registered owned-domains, a reflected value flagged by the scan is handled rather than passed raw. (Exact handling — drop the fact, mask the token, or route to an audit action — is an implementation decision for #424's PR; the requirement here is that fact text is scanned, regardless of source.)
+### A.3 — Reflection / generated-text defense via the hallucination scan
+
+RFC 0001's §"LLM hallucination handling" already defines a scan over LLM **output** that detects un-tokenized indicators and marks them with `<<UNVERIFIED_*>>` patterns. This amendment reuses **that same scan mechanism** on **fact text before injection** (not only on output), to catch indicators that the boundary policy would pass through but that look like customer assets — most importantly in **LLM/web-search-generated facts**, whose text we do not control and which can surface unexpected values. (The concrete function names in the engine are illustrative; the requirement is to reuse the documented hallucination-scan step, regardless of source of the fact.)
+
+For IP/email/MAC, this scan is an effective net (those classes have always-redact or range rules, so an un-tokenized one is genuinely anomalous). **For domains it is only a partial net** — see the "Known limitation" note in A.2: with the empty owned-domain registry, the scan cannot separate a legitimately-passing external domain from a reflected customer one. Exact handling of a flagged value (drop the fact, mask the token, or route to an audit action) is an implementation decision for #424's PR.
 
 ### A.4 — No engine-version / policy-version migration
 
