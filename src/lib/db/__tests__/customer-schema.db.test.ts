@@ -39,7 +39,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants,
     // 0007_analysis_result_tables (RFC 0002 Phase 0, #294),
     // 0008_event_analysis_result_generation (RFC 0002 Phase 2, #297),
-    // 0009_citation_reverse_lookup_gin (T2, #396)
+    // 0009_citation_reverse_lookup_gin (T2, #396),
+    // 0010_ioc_enrichment (RFC 0003 P1a, #361)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -51,6 +52,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0007",
       "0008",
       "0009",
+      "0010",
     ]);
   });
 

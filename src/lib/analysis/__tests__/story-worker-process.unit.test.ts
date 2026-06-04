@@ -207,6 +207,7 @@ describe("processStoryJob — happy path", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -293,6 +294,7 @@ describe("processStoryJob — happy path", () => {
       { ...baseJob(), lang: "KOREAN" },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => true,
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
         loadRanges: emptyRangesLoader as never,
@@ -342,6 +344,7 @@ describe("processStoryJob — happy path", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -401,6 +404,7 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     });
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: (async () => goodAimerResponse()) as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -451,6 +455,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -485,6 +490,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -521,6 +527,7 @@ describe("processStoryJob — result-row probe", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -553,6 +560,7 @@ describe("processStoryJob — lost pickup race", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -605,6 +613,7 @@ describe("processStoryJob — redaction-policy precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -662,6 +671,7 @@ describe("processStoryJob — redaction-policy precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -730,6 +740,7 @@ describe("processStoryJob — event-time precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -770,6 +781,7 @@ describe("processStoryJob — event-time precondition", () => {
       { ...baseJob(), attempts: 4 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => true,
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -812,6 +824,7 @@ describe("processStoryJob — hallucination scan", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -859,6 +872,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -891,6 +905,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
       { ...baseJob(), attempts: 4 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => true,
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -925,6 +940,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -963,6 +979,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
       { ...baseJob(), attempts: 2 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => true,
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -996,6 +1013,7 @@ describe("processStoryJob — source unavailable", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => true,
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });

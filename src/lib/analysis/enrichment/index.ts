@@ -22,6 +22,20 @@ export {
 } from "./evidence";
 export { createEnrichmentFact } from "./fact";
 export {
+  type ExtractedIndicator,
+  extractIndicators,
+  type RecoverToken,
+} from "./indicator-extraction";
+export {
+  buildLocalFeedDispatcher,
+  candidateValues,
+  type FeedMatchRow,
+  type FeedSnapshotMeta,
+  type FeedStore,
+  LOCAL_FEED_POLICIES,
+  LocalFeedEnricher,
+} from "./local-feed-enricher";
+export {
   ipInCidr,
   NORMALIZATION_VERSION,
   NormalizationError,

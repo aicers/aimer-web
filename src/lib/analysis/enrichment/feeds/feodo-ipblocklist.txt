@@ -1,0 +1,13 @@
+################################################################
+# abuse.ch Feodo Tracker Botnet C2 IP Blocklist (PINNED FIXTURE)
+#
+# This is a committed test fixture, NOT a live feed download. The
+# addresses are RFC 5737 documentation ranges (TEST-NET) so the
+# fixture is deterministic and references no real infrastructure.
+# Format mirrors the published plain-text blocklist: one IP per line,
+# `#` comment lines.
+################################################################
+203.0.113.10
+203.0.113.42
+198.51.100.50
+192.0.2.77

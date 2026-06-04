@@ -206,6 +206,17 @@ interface ProcessOptions {
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the customer redaction-range loader — used by tests. */
   loadRanges?: typeof loadCustomerRanges;
+  /**
+   * Override the IOC-enrichment readiness precondition (RFC 0003 P1a
+   * #361) — used by tests. Returns whether enrichment has completed for
+   * the canonical `(story_id, story_version)`, i.e. whether the floor's
+   * `known_ioc_hit` can be trusted as up to date.
+   */
+  checkEnrichmentReady?: (
+    customerPool: Pool,
+    storyId: string,
+    storyVersion: string,
+  ) => Promise<boolean>;
 }
 
 export async function processStoryJob(
@@ -363,6 +374,35 @@ export async function processStoryJob(
         story_id: job.story_id,
         generation: job.generation,
         attempts: nextAttempts,
+      }),
+    );
+    return;
+  }
+
+  // RFC 0003 P1a (#361) — enrichment ordering precondition. The async
+  // enrichment worker derives `known_ioc_hit` for this canonical version
+  // (UPDATEing `story.known_ioc_hit`) and records a
+  // `story_enrichment_state` completion marker. Reading the floor before
+  // that marker exists risks flooring on a stale `known_ioc_hit`. This
+  // precondition sits on the exact path that reads the floor: requeue our
+  // own job — WITHOUT consuming a retry attempt, since enrichment latency
+  // is not a job failure — until enrichment is complete for the canonical
+  // version, so analysis always reads the updated value. The best-effort
+  // post-commit hook may still TRIGGER enrichment, but it is never the
+  // thing that guarantees ordering.
+  const enrichmentReady = await (
+    opts.checkEnrichmentReady ?? defaultCheckEnrichmentReady
+  )(customerPool, job.story_id, canonical.storyVersion);
+  if (!enrichmentReady) {
+    await requeueForEnrichment(opts.authPool, job);
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.story_enrichment_incomplete_requeued",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        story_version: canonical.storyVersion,
+        generation: job.generation,
       }),
     );
     return;
@@ -1042,6 +1082,59 @@ async function failJob(
       job.generation,
       nextAttempts,
       reason,
+    ],
+  );
+}
+
+/**
+ * RFC 0003 P1a (#361) default enrichment-readiness check: the canonical
+ * `(story_id, story_version)` has a `story_enrichment_state` row marked
+ * `complete`. Absent or non-complete → not ready (analysis requeues).
+ */
+async function defaultCheckEnrichmentReady(
+  customerPool: Pool,
+  storyId: string,
+  storyVersion: string,
+): Promise<boolean> {
+  const { rows } = await customerPool.query<{ status: string }>(
+    `SELECT status
+       FROM story_enrichment_state
+      WHERE story_id = $1::bigint AND story_version = $2`,
+    [storyId, storyVersion],
+  );
+  return rows[0]?.status === "complete";
+}
+
+/**
+ * Re-queue a claimed job because enrichment has not yet completed for its
+ * canonical version (RFC 0003 P1a #361). Unlike {@link requeueWithBackoff}
+ * this does NOT consume a retry attempt: enrichment latency is an ordering
+ * wait, not a job failure, so the job must not exhaust `MAX_ATTEMPTS` while
+ * waiting. `attempts` is left untouched (typically 0), so the next tick
+ * re-picks the row immediately. Guarded on `status = 'processing'` so only
+ * the row this worker claimed is requeued.
+ */
+async function requeueForEnrichment(
+  authPool: Pool,
+  job: JobPickup,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE story_analysis_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            last_error = 'awaiting_enrichment',
+            updated_at = NOW()
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.story_id,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
     ],
   );
 }
