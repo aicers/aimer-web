@@ -5,9 +5,7 @@
 분석이 ID를 알아야만 접근할 수 있는 고아 URL이 아니라 탐색 가능한
 홈을 갖게 됩니다.
 
-<!-- Screenshot placeholder (#392): customer hub page showing the
-     Security Reports, Threat Stories, and Suspicious Events section
-     cards. Capture from a stack with a real membership once available. -->
+![보안 리포트·위협 스토리·의심 이벤트 섹션 카드가 있는 고객 허브](../../assets/customer-hub.ko.png)
 
 ## 섹션
 

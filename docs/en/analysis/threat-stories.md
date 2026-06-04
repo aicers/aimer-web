@@ -5,10 +5,7 @@ events](suspicious-events.md) into one kill-chain narrative. The threat
 stories list is the customer-scoped index of those stories, sibling to
 the existing [story detail page](story.md).
 
-<!-- Screenshot placeholder (#392): threat stories list page showing
-     priority-sorted rows with severity/likelihood and the priority
-     badge, plus the priority + time-window filter bar. Capture from a
-     stack with real aice-web-next data once available. -->
+![The threat stories list — priority-sorted rows with severity and likelihood, a priority badge, and the priority + time-window filter bar](../../assets/threat-stories-list.en.png)
 
 Each row links to the story detail page. Story detail takes no variant
 query params — it resolves the default language/model from the

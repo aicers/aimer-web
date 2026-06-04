@@ -283,10 +283,7 @@ was generated from. These are the generation's recorded input list, so the panel
 drew on, not which sentence cites which analysis. The panel does not imply
 per-sentence or per-claim provenance.
 
-<!-- Screenshot placeholder (#395): report detail Sources panel showing
-     cited story and event cards with the "N stories · M events"
-     provenance line. Capture from a stack with a real generation once
-     available. -->
+![The report detail Sources panel — the "N stories · M events" provenance line above the cited threat-story and suspicious-event cards](../../assets/report-sources-panel.en.png)
 
 The panel header shows an **N stories · M events** provenance count.
 Each cited analysis renders as a card:

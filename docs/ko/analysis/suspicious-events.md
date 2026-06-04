@@ -10,10 +10,7 @@ Clumit Insight가 보여 주는 의심 이벤트는 Clumit Security가 탐지하
 페이지](../analysis-result.md)로 연결됩니다. 전달된 이벤트 전체 모집단이
 아닙니다.
 
-<!-- Screenshot placeholder (#392): suspicious events list page showing
-     priority-sorted rows with the AICE environment, severity/likelihood,
-     and priority badge, plus the priority + time-window filter bar.
-     Capture from a stack with real aice-web-next data once available. -->
+![AICE 환경·심각도·가능성과 우선순위 배지가 있는 우선순위 정렬 행, 그리고 우선순위·기간 필터 바가 있는 의심 이벤트 목록](../../assets/suspicious-events-list.ko.png)
 
 이것은 **새로운 고객 수준 세그먼트**입니다. 이벤트 상세 경로는 단일 AICE
 환경 범위이지만, 고객 전체 목록은 여러 AICE 환경에 걸쳐 있으므로 단일

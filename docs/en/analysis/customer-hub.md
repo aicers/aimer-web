@@ -5,9 +5,7 @@ surfaces. It links to that customer's periodic reports, threat stories,
 and suspicious events, so every individual analysis has a navigable home
 rather than being reachable only by knowing its ID.
 
-<!-- Screenshot placeholder (#392): customer hub page showing the
-     Security Reports, Threat Stories, and Suspicious Events section
-     cards. Capture from a stack with a real membership once available. -->
+![The customer hub with the Security Reports, Threat Stories, and Suspicious Events section cards](../../assets/customer-hub.en.png)
 
 ## Sections
 
