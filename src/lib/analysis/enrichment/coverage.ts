@@ -28,12 +28,16 @@ function classify(
 ): SourceState {
   if (outcome === undefined) return "not_attempted";
   if (outcome.answered !== true) return "unavailable";
-  // Answered. A missing `sourceUpdatedAt` cannot prove staleness, so an
-  // answered source with no snapshot timestamp is treated as fresh (a clean
-  // no-hit still counts toward `complete`).
-  if (outcome.sourceUpdatedAt === undefined) return "fresh";
+  // Answered. Every relevant source carries a `maxAge`, so freshness must be
+  // proven, not assumed. The issue defines answered-fresh strictly as
+  // `checkedAt - sourceUpdatedAt <= maxAge`; a missing or unparseable
+  // `sourceUpdatedAt` cannot satisfy that predicate, so the source is NOT
+  // fresh. Classify it as `stale` (answered-but-not-fresh) rather than `fresh`
+  // so a source whose snapshot currency we cannot vouch for never yields
+  // `complete` — preserving the false-clean audit distinction.
+  if (outcome.sourceUpdatedAt === undefined) return "stale";
   const updatedMs = Date.parse(outcome.sourceUpdatedAt);
-  if (Number.isNaN(updatedMs)) return "fresh";
+  if (Number.isNaN(updatedMs)) return "stale";
   return checkedAtMs - updatedMs > maxAge ? "stale" : "fresh";
 }
 

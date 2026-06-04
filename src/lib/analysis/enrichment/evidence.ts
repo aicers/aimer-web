@@ -12,7 +12,12 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { serializeIndicator } from "./normalization";
-import type { EnrichmentMatch, HitType, NormalizedIndicator } from "./types";
+import type {
+  CoverageReport,
+  EnrichmentMatch,
+  HitType,
+  NormalizedIndicator,
+} from "./types";
 
 /**
  * An injectable, versioned HMAC key ring (`hmacKeyVersion → key`). Rotation
@@ -118,6 +123,18 @@ export interface EvidenceRecord {
   floorEligible: boolean;
   checkedAt: string;
   expiresAt?: string;
+  /**
+   * The coverage report for the dispatch this match came from (RFC §6 — "record
+   * the raw counts ... alongside the enum on the result/evidence"). Carrying it
+   * here gives the #361 persistence follow-up a typed home for `coverageStatus`
+   * + counts so it need not invent fields outside this foundation. It is the
+   * same per-indicator `CoverageReport` the dispatcher puts on
+   * `MergedEnrichmentResult`; stamping it onto each per-match record keeps every
+   * evidence row self-describing about how complete the scan was when the match
+   * was found. Optional because a single enricher's result (pre-merge) has no
+   * coverage view — only the dispatcher computes it.
+   */
+  coverage?: CoverageReport;
 }
 
 export interface BuildEvidenceParams {
@@ -130,6 +147,8 @@ export interface BuildEvidenceParams {
   /** Stamp with a specific key version; defaults to the ring's current. */
   hmacKeyVersion?: string;
   evidenceKeyId?: string;
+  /** Coverage report from the merged dispatch result (see `EvidenceRecord`). */
+  coverage?: CoverageReport;
 }
 
 /**
@@ -158,5 +177,6 @@ export function buildEvidenceRecord(
     floorEligible: params.match.floorEligible,
     checkedAt: params.checkedAt,
     expiresAt: params.expiresAt,
+    coverage: params.coverage,
   };
 }

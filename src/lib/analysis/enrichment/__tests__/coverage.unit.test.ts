@@ -147,6 +147,34 @@ describe("computeCoverage", () => {
     expect(report.expectedCount).toBe(1);
   });
 
+  it("an answered source with no sourceUpdatedAt is not fresh (downgrades)", () => {
+    const registry = new SourcePolicyRegistry([det("a")]);
+    // The source answered but gave no freshness evidence; with a maxAge policy
+    // its currency cannot be vouched for, so it must NOT yield `complete`.
+    const report = computeCoverage(
+      "IP",
+      [answered("a")], // sourceUpdatedAt undefined
+      registry,
+      CHECKED_AT,
+    );
+    expect(report.status).toBe("stale");
+    expect(report.freshCount).toBe(0);
+    expect(report.staleCount).toBe(1);
+    expect(report.answeredCount).toBe(1);
+  });
+
+  it("an answered source with an unparseable sourceUpdatedAt is not fresh", () => {
+    const registry = new SourcePolicyRegistry([det("a")]);
+    const report = computeCoverage(
+      "IP",
+      [answered("a", "not-a-timestamp")],
+      registry,
+      CHECKED_AT,
+    );
+    expect(report.status).toBe("stale");
+    expect(report.staleCount).toBe(1);
+  });
+
   it("false-complete and false-unknown are distinguishable", () => {
     const registry = new SourcePolicyRegistry([det("a")]);
     const falseComplete = computeCoverage(
