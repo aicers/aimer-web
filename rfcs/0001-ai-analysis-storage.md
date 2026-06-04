@@ -884,7 +884,7 @@ Customer settings: `Data Retention` section.
 ## Amendment A — enrichment-fact redaction (domain KIND + fact pipeline + reflection)
 
 - Status: **proposed** (tracks [#424](https://github.com/aicers/aimer-web/issues/424))
-- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through, an **open issue with no PR yet**). This amendment is written against the **post-#422** engine and **must merge after #422 lands**. Until #422 resolves, the base "Redaction engine — v1 policy" section is internally inconsistent (the policy-table row says public IPs pass through; the default paragraph still says "redact all public IPs"); A.2's pass-through analogy below holds only against #422's resolved pass-through default, not the current contradictory text.
+- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through, **merged**). This amendment is written against the post-#422 engine: the base "Redaction engine — v1 policy" default is now "pass all public IPs through (private/internal always redacted)", and A.2's domain pass-through policy is the deliberate analogue of that resolved IP-range default.
 - Consumed by: RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)) **P1b** (C1 enrichment-fact injection). **Not** required by RFC 0003 P1a (the #361 deterministic floor never sends facts to the LLM).
 
 ### Motivation
