@@ -209,14 +209,28 @@ interface ProcessOptions {
   /**
    * Override the IOC-enrichment readiness precondition (RFC 0003 P1a
    * #361) — used by tests. Returns whether enrichment has completed for
-   * the canonical `(story_id, story_version)`, i.e. whether the floor's
-   * `known_ioc_hit` can be trusted as up to date.
+   * the canonical `(story_id, story_version)` and the `known_ioc_hit`
+   * value read in the SAME snapshot as the completion marker, so the
+   * floor is computed from a value that cannot be staler than the marker
+   * the precondition gated on.
    */
   checkEnrichmentReady?: (
     customerPool: Pool,
     storyId: string,
     storyVersion: string,
-  ) => Promise<boolean>;
+  ) => Promise<EnrichmentReadiness>;
+}
+
+/**
+ * Result of the RFC 0003 P1a (#361) enrichment-readiness precondition.
+ * `knownIocHit` is the `story.known_ioc_hit` value read together with the
+ * completion marker (same query, same snapshot), so the analysis worker
+ * floors on the post-enrichment value rather than a `known_ioc_hit`
+ * loaded by `loadCanonicalMembers` before the precondition ran.
+ */
+interface EnrichmentReadiness {
+  ready: boolean;
+  knownIocHit: boolean;
 }
 
 export async function processStoryJob(
@@ -390,10 +404,10 @@ export async function processStoryJob(
   // version, so analysis always reads the updated value. The best-effort
   // post-commit hook may still TRIGGER enrichment, but it is never the
   // thing that guarantees ordering.
-  const enrichmentReady = await (
+  const enrichment = await (
     opts.checkEnrichmentReady ?? defaultCheckEnrichmentReady
   )(customerPool, job.story_id, canonical.storyVersion);
-  if (!enrichmentReady) {
+  if (!enrichment.ready) {
     await requeueForEnrichment(opts.authPool, job);
     console.warn(
       JSON.stringify({
@@ -407,6 +421,20 @@ export async function processStoryJob(
     );
     return;
   }
+
+  // Re-bind the floor input to the `known_ioc_hit` read alongside the
+  // readiness marker. `loadCanonicalMembers` (above) read `known_ioc_hit`
+  // BEFORE this gate, so a concurrent enrichment that committed
+  // `known_ioc_hit = true` between that load and now would otherwise let
+  // analysis floor on the stale in-memory `false`: the marker check would
+  // see `ready` while the already-loaded value was still `false`. The
+  // readiness query reads `story.known_ioc_hit` in the same statement (and
+  // therefore the same snapshot) as the completion marker, and
+  // `persistEnrichment` commits the floor UPDATE and the marker in one
+  // transaction, so once `ready` is observed this value is the committed,
+  // post-enrichment one. The boolean is monotonic, so this can only raise
+  // a hit, never lower it.
+  canonical.knownIocHit = enrichment.knownIocHit;
 
   // Token rewrite + LLM call.
   const { rewrittenMembers, refs, allowedTokens } = buildStoryTokenMap(
@@ -1090,19 +1118,38 @@ async function failJob(
  * RFC 0003 P1a (#361) default enrichment-readiness check: the canonical
  * `(story_id, story_version)` has a `story_enrichment_state` row marked
  * `complete`. Absent or non-complete → not ready (analysis requeues).
+ *
+ * Reads `story.known_ioc_hit` in the same statement (LEFT JOIN, one
+ * snapshot) as the completion marker so the caller can floor on a value
+ * that is consistent with the readiness it just gated on — closing the
+ * race where `loadCanonicalMembers` read `known_ioc_hit` before enrichment
+ * committed. `persistEnrichment` writes the floor UPDATE and the marker in
+ * one transaction, so a `complete` status implies the joined
+ * `known_ioc_hit` is the post-enrichment value. Returns `knownIocHit:
+ * false` when no `story` row exists (the caller has already loaded the
+ * canonical version, so in practice the row is always present).
  */
 async function defaultCheckEnrichmentReady(
   customerPool: Pool,
   storyId: string,
   storyVersion: string,
-): Promise<boolean> {
-  const { rows } = await customerPool.query<{ status: string }>(
-    `SELECT status
-       FROM story_enrichment_state
-      WHERE story_id = $1::bigint AND story_version = $2`,
+): Promise<EnrichmentReadiness> {
+  const { rows } = await customerPool.query<{
+    status: string | null;
+    known_ioc_hit: boolean | null;
+  }>(
+    `SELECT ses.status, s.known_ioc_hit
+       FROM story s
+       LEFT JOIN story_enrichment_state ses
+         ON ses.story_id = s.story_id
+        AND ses.story_version = s.story_version
+      WHERE s.story_id = $1::bigint AND s.story_version = $2`,
     [storyId, storyVersion],
   );
-  return rows[0]?.status === "complete";
+  return {
+    ready: rows[0]?.status === "complete",
+    knownIocHit: rows[0]?.known_ioc_hit ?? false,
+  };
 }
 
 /**
