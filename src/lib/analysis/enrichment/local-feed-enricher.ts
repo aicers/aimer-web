@@ -197,6 +197,14 @@ export const LOCAL_FEED_POLICIES: readonly SourcePolicy[] = [
     floorEligible: false,
   },
   {
+    sourcePolicyId: "abuse.ch/urlhaus-payloads",
+    label: "abuse.ch URLhaus (payloads)",
+    entityTypes: ["HASH"],
+    deterministicCoverage: true,
+    maxAge: FEED_MAX_AGE_MS,
+    floorEligible: false,
+  },
+  {
     sourcePolicyId: "spamhaus/drop",
     label: "Spamhaus DROP",
     entityTypes: ["IP"],

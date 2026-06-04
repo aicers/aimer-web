@@ -60,6 +60,29 @@ export function parseUrlhausCsv(text: string): string[] {
 }
 
 /**
+ * abuse.ch URLhaus "Collected Payloads" CSV — a separate URLhaus download
+ * from the URL feed (`parseUrlhausCsv`). Comment/header lines start with `#`;
+ * data rows are quoted CSV
+ * `firstseen,urlhaus_link,filetype,md5_hash,sha256_hash,signature`. Returns
+ * the MD5 and SHA-256 hash columns (non-empty ones), so a malware payload a
+ * story observed by file hash matches the same known-bad artifact URLhaus
+ * catalogs. Both digests are emitted; normalization at import distinguishes
+ * MD5 (32 hex) from SHA-256 (64 hex).
+ */
+export function parseUrlhausPayloadsCsv(text: string): string[] {
+  const hashes: string[] = [];
+  for (const line of contentLines(text)) {
+    const fields = splitCsv(line);
+    if (fields.length < 5) continue;
+    const md5 = fields[3];
+    const sha256 = fields[4];
+    if (md5) hashes.push(md5);
+    if (sha256) hashes.push(sha256);
+  }
+  return hashes;
+}
+
+/**
  * The host of each URLhaus URL that is a DOMAIN (not a bare-IP host),
  * lowercased. URLhaus publishes full URLs, but a story member often carries
  * only a bare `host`/`dns_query` domain; emitting the URL's host as a

@@ -46,6 +46,7 @@ import { seedFixtureFeeds } from "../enrichment/fixture-feeds";
 import { buildLocalFeedDispatcher } from "../enrichment/local-feed-enricher";
 import {
   normalizeDomain,
+  normalizeHash,
   normalizeIp,
   normalizeUrl,
 } from "../enrichment/normalization";
@@ -654,6 +655,23 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
       normalizeDomain("mail.example.test"),
     );
     expect(siblingMiss).toHaveLength(0);
+
+    // URLhaus payloads dump matches a fixture file hash (MD5 and SHA-256),
+    // case-insensitively — the HASH entity type a story member can carry.
+    const sha256Hit = await store.match(
+      "abuse.ch/urlhaus-payloads",
+      normalizeHash(
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+      ),
+    );
+    expect(sha256Hit.length).toBeGreaterThan(0);
+    expect(sha256Hit[0].hitType).toBe("deterministic_ioc");
+
+    const md5Hit = await store.match(
+      "abuse.ch/urlhaus-payloads",
+      normalizeHash("fedcba9876543210fedcba9876543210"),
+    );
+    expect(md5Hit.length).toBeGreaterThan(0);
   });
 
   it("tickStoryEnrichmentOnce enriches stories with a queued analysis job", async () => {

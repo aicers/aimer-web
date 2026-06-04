@@ -14,6 +14,7 @@ import {
   parseSpamhausDrop,
   parseUrlhausCsv,
   parseUrlhausHosts,
+  parseUrlhausPayloadsCsv,
 } from "../feed-import";
 
 describe("feed parsers", () => {
@@ -43,6 +44,22 @@ describe("feed parsers", () => {
       "not a url", // unparseable → skipped
     ]);
     expect(hosts).toEqual(["malware.example", "c2.example.test"]);
+  });
+
+  it("parses URLhaus payloads CSV, taking the MD5 and SHA-256 hash columns", () => {
+    const md5 = "0123456789abcdef0123456789abcdef";
+    const sha256 = `${md5}${md5}`;
+    const text = [
+      "# firstseen,urlhaus_link,filetype,md5_hash,sha256_hash,signature",
+      `"2026-05-01","https://urlhaus.abuse.ch/url/1/","exe","${md5}","${sha256}","Emotet"`,
+      // A row missing the sha256 column still yields its md5.
+      '"2026-05-01","https://urlhaus.abuse.ch/url/2/","dll","fedcba9876543210fedcba9876543210","",""',
+    ].join("\n");
+    expect(parseUrlhausPayloadsCsv(text)).toEqual([
+      md5,
+      sha256,
+      "fedcba9876543210fedcba9876543210",
+    ]);
   });
 
   it("parses Spamhaus DROP, taking the CIDR and dropping the SBL comment", () => {

@@ -24,6 +24,7 @@ import {
   parseSpamhausDrop,
   parseUrlhausCsv,
   parseUrlhausHosts,
+  parseUrlhausPayloadsCsv,
 } from "./feed-import";
 import type { EntityType, HitType } from "./types";
 
@@ -36,7 +37,11 @@ const FEEDS_DIR = join(
   "feeds",
 );
 
-type ParseKind = "ip-blocklist" | "urlhaus-csv" | "spamhaus-drop";
+type ParseKind =
+  | "ip-blocklist"
+  | "urlhaus-csv"
+  | "urlhaus-payloads-csv"
+  | "spamhaus-drop";
 
 interface FixtureFeedSpec {
   sourcePolicyId: string;
@@ -64,6 +69,14 @@ export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = [
     entityType: "URL",
     hitType: "deterministic_ioc",
     classification: "malware_url",
+  },
+  {
+    sourcePolicyId: "abuse.ch/urlhaus-payloads",
+    file: "urlhaus-payloads.csv",
+    parse: "urlhaus-payloads-csv",
+    entityType: "HASH",
+    hitType: "deterministic_ioc",
+    classification: "malware_payload",
   },
   {
     sourcePolicyId: "spamhaus/drop",
@@ -102,6 +115,12 @@ export function loadFixtureRows(spec: FixtureFeedSpec): FeedSnapshotRow[] {
       ).rows.map((row) => ({ ...row, entityType: "DOMAIN" as EntityType }));
       return [...urlRows, ...domainRows];
     }
+    case "urlhaus-payloads-csv":
+      // URLhaus also publishes a Collected Payloads dump keyed by MD5/SHA-256
+      // hash (a separate download from the URL feed), under its own
+      // `abuse.ch/urlhaus-payloads` source so it does not clobber the URL/host
+      // snapshot.
+      return normalizeExactValues("HASH", parseUrlhausPayloadsCsv(text)).rows;
     case "spamhaus-drop":
       return normalizeCidrs(parseSpamhausDrop(text)).rows;
     default:

@@ -154,10 +154,13 @@ describe("local-feed enricher — source match per entity type", () => {
 
   it("matches a file hash by exact lowercased digest", async () => {
     const sha = "a".repeat(64);
+    // The shipped URLhaus payloads source (a Tier-1 feed that publishes a
+    // Collected Payloads dump keyed by MD5/SHA-256), made floor-eligible here
+    // to exercise the floor path — it ships `floorEligible: false`.
     const hashPolicy: SourcePolicy[] = [
       {
-        sourcePolicyId: "abuse.ch/malwarebazaar",
-        label: "abuse.ch MalwareBazaar",
+        sourcePolicyId: "abuse.ch/urlhaus-payloads",
+        label: "abuse.ch URLhaus (payloads)",
         entityTypes: ["HASH"],
         deterministicCoverage: true,
         maxAge: 2 * 24 * 60 * 60 * 1000,
@@ -165,7 +168,7 @@ describe("local-feed enricher — source match per entity type", () => {
       },
     ];
     const store = new FakeFeedStore({
-      exact: { "abuse.ch/malwarebazaar": [sha] },
+      exact: { "abuse.ch/urlhaus-payloads": [sha] },
     });
     const dispatcher = buildLocalFeedDispatcher(store, {
       now: fresh,
@@ -173,6 +176,21 @@ describe("local-feed enricher — source match per entity type", () => {
     });
     const hit = await dispatcher.dispatch(normalizeHash(sha.toUpperCase()));
     expect(hit.matches.some(matchSatisfiesFloor)).toBe(true);
+  });
+
+  it("the shipped policies answer the HASH entity type (URLhaus payloads)", async () => {
+    // A hash IOC must be answerable by a shipped Tier-1 source, not only by a
+    // synthetic test policy — and it stays floor-ineligible under the
+    // licensing gate.
+    const sha = "b".repeat(64);
+    const store = new FakeFeedStore({
+      exact: { "abuse.ch/urlhaus-payloads": [sha] },
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, { now: fresh });
+    const result = await dispatcher.dispatch(normalizeHash(sha));
+    expect(result.matches.length).toBeGreaterThan(0);
+    expect(result.matches.some(matchSatisfiesFloor)).toBe(false);
+    expect(result.coverage.status).toBe("complete");
   });
 });
 
