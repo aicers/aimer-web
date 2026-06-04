@@ -99,7 +99,7 @@ Consequences:
 | Hostnames / FQDN, usernames, URL path components | v1: not redacted |
 | All categories | v2+: switch to AI-based privacy filter (OpenAI privacy filter or equivalent) |
 
-Default behaviour for customers who have not registered any public IP ranges: **redact all public IPs**. This is the safe default that protects the customer until they explicitly opt into a narrower scope. The admin UI must surface this state clearly.
+Default behaviour for customers who have not registered any public IP ranges: **pass all public IPs through (redact none)**. A customer registers ranges to hide *their own* sensitive public address space; with nothing registered there is no such range to hide, so public IPs (e.g. attacker source addresses) — exactly the threat intelligence operators need — flow through unredacted. Private/internal IPs are always redacted regardless. The admin UI must surface this state clearly.
 
 ### Token format
 
@@ -680,7 +680,7 @@ Failure response shape:
 
 LLM hallucination detection does not produce an error code: per the hallucination-handling decision above, the response is re-redacted and stored. Only the audit log entry signals the event.
 
-`customer_redaction_ranges` empty / unregistered does not produce an error: the default "redact all public IPs" policy is safe to apply immediately.
+`customer_redaction_ranges` empty / unregistered does not produce an error: the default "pass all public IPs through" policy (private/internal IPs still always redacted) is safe to apply immediately.
 
 ## UI — analysis result page
 
@@ -704,7 +704,7 @@ The button in aice-web-next opens this page in a **new tab** so the operator doe
 - New section in customer settings: `Redaction Ranges`
 - List view of registered CIDRs with delete buttons
 - Add form (single CIDR input, IPv4 or IPv6, validated client-side then server-side)
-- Status banner if no ranges registered: "No public IP ranges registered. All public IPs are being redacted by default."
+- Status banner if no ranges registered: "No public IP ranges registered. Public IPs are passed through (not redacted) by default; private IPs are always redacted."
 - Separate `Apply to existing data` button with a confirmation modal showing row count and estimated duration; clicking triggers an async re-redact job (one job per customer at a time, idempotent if re-clicked).
 
 ### Permissions

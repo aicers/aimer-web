@@ -49,13 +49,22 @@ describe("redaction engine — private IPs always redact", () => {
 });
 
 describe("redaction engine — public IPs", () => {
-  it("redacts ALL public IPs when range set is empty (safe default)", () => {
+  it("passes public IPs through when range set is empty (pass-through default)", () => {
     const { redacted, mergedMap } = redact(
       makeInput({ src: "203.0.113.5", dst: "198.51.100.10" }),
     );
-    expect((redacted as { src: string }).src).toMatch(/^<<REDACTED_IP_/);
-    expect((redacted as { dst: string }).dst).toMatch(/^<<REDACTED_IP_/);
-    expect(Object.keys(mergedMap)).toHaveLength(2);
+    expect((redacted as { src: string }).src).toBe("203.0.113.5");
+    expect((redacted as { dst: string }).dst).toBe("198.51.100.10");
+    expect(Object.keys(mergedMap)).toHaveLength(0);
+  });
+
+  it("still redacts private IPs when range set is empty", () => {
+    const { redacted, mergedMap } = redact(
+      makeInput({ priv: "10.0.0.1", pub: "203.0.113.5" }),
+    );
+    expect((redacted as { priv: string }).priv).toMatch(/^<<REDACTED_IP_/);
+    expect((redacted as { pub: string }).pub).toBe("203.0.113.5");
+    expect(Object.keys(mergedMap)).toHaveLength(1);
   });
 
   it("redacts only customer-range matches when range set is non-empty", () => {
@@ -168,7 +177,7 @@ describe("redaction engine — token assignment invariants", () => {
       makeInput({
         flow: {
           src: "10.0.0.1",
-          dst: ["198.51.100.1", { aux: "fe80::1" }],
+          dst: ["192.168.0.9", { aux: "fe80::1" }],
         },
       }),
     );
@@ -269,14 +278,16 @@ describe("redaction engine — hallucination scan", () => {
       "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
     };
     const response =
-      "The attacker 10.0.0.1 also reached 8.8.8.8 from eve@evil.com";
+      "The attacker 10.0.0.1 also reached 192.168.5.5 from eve@evil.com";
     const result = scanHallucinations(response, existingMap, EMPTY_RANGES);
     // 10.0.0.1 echoed by the LLM is replaced by its existing token,
     // not left as plaintext (storage contract: analysis_text holds
     // no raw entities).
     expect(result.scanned).toContain("<<REDACTED_IP_001>>");
     expect(result.scanned).not.toContain("10.0.0.1");
-    // 8.8.8.8 and eve@evil.com are not in the map -> flagged.
+    // 192.168.5.5 (private, always redacted) and eve@evil.com are not
+    // in the map -> flagged. A public IP under an empty range set would
+    // pass through, so a private IP is used to exercise this path.
     expect(result.scanned).toContain("<<UNVERIFIED_IP_001>>");
     expect(result.scanned).toContain("<<UNVERIFIED_EMAIL_001>>");
     // Known plaintext re-tokenisation does not bump the unverified
@@ -286,9 +297,10 @@ describe("redaction engine — hallucination scan", () => {
   });
 
   it("resets counters per response (RFC 0001 §LLM hallucination handling)", () => {
-    // Two separate responses each start at 001.
-    const r1 = scanHallucinations("see 8.8.8.8", {}, EMPTY_RANGES);
-    const r2 = scanHallucinations("see 1.1.1.1", {}, EMPTY_RANGES);
+    // Two separate responses each start at 001. Private IPs are used
+    // because public IPs pass through under an empty range set.
+    const r1 = scanHallucinations("see 192.168.1.1", {}, EMPTY_RANGES);
+    const r2 = scanHallucinations("see 10.1.2.3", {}, EMPTY_RANGES);
     expect(r1.scanned).toContain("<<UNVERIFIED_IP_001>>");
     expect(r2.scanned).toContain("<<UNVERIFIED_IP_001>>");
   });

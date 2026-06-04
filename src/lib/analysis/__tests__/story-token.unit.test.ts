@@ -178,14 +178,15 @@ describe("scanStoryAnalysisForLeaks", () => {
     expect(kinds).toContain("plaintext_pii");
   });
 
-  it("flags plaintext IPv6 PII (private and public)", () => {
-    // The redaction engine would have tokenised any IPv6 the prompt
-    // carried in, so an IPv6 literal in the analysis output is either
-    // a model hallucination or a leak — both blockers per #296.
+  it("flags plaintext IPv6 PII (private and in-range public)", () => {
+    // Private IPv6 is always redacted; the public IPv6 here is inside
+    // the configured range, so the engine would have tokenised both —
+    // an IPv6 literal in the analysis output is then either a model
+    // hallucination or a leak, both blockers per #296.
     const r = scanStoryAnalysisForLeaks(
       "Suspicious peer fc00::1 contacted 2001:db8::dead:beef over TCP",
       allowed,
-      EMPTY_RANGES,
+      buildRangeSet(["2001:db8::/32"]),
     );
     expect(r.hasLeak).toBe(true);
     const matches = r.leaks
@@ -283,7 +284,7 @@ describe("scanStoryAnalysisForLeaks", () => {
       ).toBe(true);
     });
 
-    it("flags every public IP when the range set is empty (redact-all default)", () => {
+    it("does not flag public IPs when the range set is empty (pass-through default)", () => {
       const r = scanStoryAnalysisForLeaks(
         "Public 8.8.8.8 and 2606:4700:4700::1111 echoed",
         allowed,
@@ -292,8 +293,21 @@ describe("scanStoryAnalysisForLeaks", () => {
       const matches = r.leaks
         .filter((l) => l.kind === "plaintext_pii")
         .map((l) => l.match);
-      expect(matches).toContain("8.8.8.8");
-      expect(matches).toContain("2606:4700:4700::1111");
+      expect(matches).not.toContain("8.8.8.8");
+      expect(matches).not.toContain("2606:4700:4700::1111");
+    });
+
+    it("still flags private IPs when the range set is empty", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Internal host 10.0.0.5 and fc00::1 contacted",
+        allowed,
+        EMPTY_RANGES,
+      );
+      const matches = r.leaks
+        .filter((l) => l.kind === "plaintext_pii")
+        .map((l) => l.match);
+      expect(matches).toContain("10.0.0.5");
+      expect(matches).toContain("fc00::1");
     });
   });
 });

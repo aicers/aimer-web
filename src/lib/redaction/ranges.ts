@@ -211,15 +211,19 @@ export function isPrivateIPv6(bytes: Uint8Array): boolean {
  * customer's range set.
  *
  * Per RFC 0001 §"Redaction engine — v1 policy", an **empty** range
- * set means "redact all public IPs" (the safe default that protects
- * the customer until they explicitly opt into a narrower scope).
+ * set means "redact no public IPs" — public IPs pass through. A
+ * customer registers ranges to hide *their own* sensitive public
+ * address space; when nothing is registered there is no such range
+ * to hide, so public IPs (e.g. attacker source addresses) flow
+ * through unredacted. Private/internal IPs are always redacted by
+ * the callers regardless of this function.
  */
 export function shouldRedactPublicIP(
   bytes: Uint8Array,
   ipVersion: 4 | 6,
   ranges: RangeSet,
 ): boolean {
-  if (ranges.ranges.length === 0) return true;
+  if (ranges.ranges.length === 0) return false;
   for (const r of ranges.ranges) {
     if (r.ipVersion !== ipVersion) continue;
     if (cidrContains(r, bytes)) return true;

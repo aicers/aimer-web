@@ -478,8 +478,8 @@ export async function processStoryJob(
 
   // Hallucination scan. IP-leak detection mirrors the redaction
   // engine's policy: only IPs the engine would have redacted (private,
-  // or in the customer's configured range set — empty range set falls
-  // back to "redact all public") are treated as leaks. Public
+  // or in the customer's configured range set — empty range set means
+  // public IPs pass through) are treated as leaks. Public
   // out-of-range IPs that legitimately reached the prompt unredacted
   // are NOT flagged when the LLM echoes them back.
   const ranges = await (opts.loadRanges ?? loadCustomerRanges)(

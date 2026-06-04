@@ -322,8 +322,8 @@ function collectAllowedTokens(
  * IPv4/IPv6 leak detection mirrors the redaction-engine policy exactly as
  * `scanStoryAnalysisForLeaks` does: a literal is flagged only if the
  * engine would have redacted it given the customer's `ranges` (private
- * always; public per `shouldRedactPublicIP`, empty range set ⇒ redact all
- * public). Public out-of-range IPs that legitimately reached the prompt
+ * always; public per `shouldRedactPublicIP`, empty range set ⇒ public IPs
+ * pass through). Public out-of-range IPs that legitimately reached the prompt
  * are not flagged.
  */
 export function scanReportAnalysisForLeaks(
