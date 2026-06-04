@@ -96,7 +96,8 @@ Consequences:
 | IPv4/IPv6 public | Redact only if matched by a customer-registered range; otherwise pass through |
 | Email addresses | Always redact (regex) |
 | MAC addresses | Always redact (regex) |
-| Hostnames / FQDN, usernames, URL path components | v1: not redacted |
+| Hostnames / FQDN / domains | v1: not redacted in event payloads; **redactable in enrichment facts** under a customer-owned-domain boundary policy — see Amendment A |
+| Usernames, URL path components | v1: not redacted |
 | All categories | v2+: switch to AI-based privacy filter (OpenAI privacy filter or equivalent) |
 
 Default behaviour for customers who have not registered any public IP ranges: **pass all public IPs through (redact none)**. A customer registers ranges to hide *their own* sensitive public address space; with nothing registered there is no such range to hide, so public IPs (e.g. attacker source addresses) — exactly the threat intelligence operators need — flow through unredacted. Private/internal IPs are always redacted regardless. The admin UI must surface this state clearly.
@@ -108,6 +109,7 @@ Tokens follow a fixed shape so downstream scanning (LLM hallucination check) can
 - `<<REDACTED_IP_NNN>>`
 - `<<REDACTED_EMAIL_NNN>>`
 - `<<REDACTED_MAC_NNN>>`
+- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an enrichment fact)
 
 `NNN` is a per-event monotonic counter; identical entities within the same event collapse to the same token (so an attacker IP appearing 10 times produces one map entry and 10 occurrences of the same token).
 
@@ -879,6 +881,58 @@ Customer settings: `Data Retention` section.
 - Two number inputs (Ingestion days, Analysis days). Blank Analysis = "Unlimited" with an explicit toggle next to the input.
 - Confirmation prompt on shortening either value (data older than the new threshold will be deleted on the next sweep tick).
 
+## Amendment A — enrichment-fact redaction (domain KIND + fact pipeline + reflection)
+
+- Status: **proposed** (tracks [#424](https://github.com/aicers/aimer-web/issues/424))
+- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through); written against the post-#422 engine.
+- Consumed by: RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)) **P1b** (C1 enrichment-fact injection). **Not** required by RFC 0003 P1a (the #361 deterministic floor never sends facts to the LLM).
+
+### Motivation
+
+RFC 0003 introduces **enrichment facts**: short statements the enrichment layer feeds the story-analysis LLM about an indicator — e.g. *"`evil-c2.example` is on the abuse.ch ThreatFox C2 list, registered 3 days ago."* These facts are produced **outside the event payload**, so the v1 redaction engine — which only tokenizes values found *inside* event payloads — never sees them. RFC 0003 P1b points at "redaction-token-aware enrichment fact injection (RFC 0001 extension)" but defers the definition to here. Discussion #318 flags the same gap twice as a mini-RFC of its own.
+
+Injecting a fact without redaction is wrong for two independent reasons:
+
+1. **Token consistency (always applies).** Per RFC 0001, the LLM must never see a raw indicator — only its token. A fact mentioning `evil-c2.example` must reach the LLM as `<<REDACTED_DOMAIN_001>>`, and crucially as the **same token** the story's member payload already assigned to that indicator, or the model cannot connect the fact to the event. This is required even if no customer data is involved.
+2. **Reflection leak (defense).** Some TI responses *reflect* related indicators back — passive-DNS neighbors, co-resolving hosts, sibling domains — which can include **customer-owned hostnames/IPs** that were never in the member payload and so were never tokenized. A fact carrying `vpn.customer.example` would leak it to the LLM.
+
+Both reasons hold for facts from **every source** — curated feed, online API, and the LLM/web-search soft-only fallback generator in RFC 0003. Therefore:
+
+> **Every enrichment fact passes through redaction before reaching the LLM, regardless of source.**
+
+### A.1 — Run facts through the existing `redact()` pipeline
+
+Before a fact is injected into the `analyzeStory` prompt, it is redacted with `redact({ payload: factText, existingMap: <the story's redaction map> })`. Because the engine's shared-map invariants (§"Shared map across ingestion paths") make the **first writer create, subsequent writers reuse**, any indicator already present in the story's member payloads resolves to the **token it already has**; indicators new to the fact get appended tokens under the same per-event monotonic counter. No new map mechanism is introduced — facts are just another writer against the existing `(aice_id, event_key)` / story map.
+
+Demap on the LLM's output follows the **same chain already defined for story/report-scope tokens** in RFC 0002; fact-origin tokens are demapped identically.
+
+### A.2 — Domain / hostname token KIND with a customer-owned boundary policy
+
+v1 lists hostnames/FQDNs as "not redacted". That is acceptable for event payloads (no customer hostname registry exists yet) but is exactly the hole reflection exploits. This amendment adds a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`, map `kind: "domain"`) and a boundary policy **structurally analogous to #422's IP-range policy**:
+
+| Domain in a fact | Policy |
+|---|---|
+| Matches a customer-registered owned-domain suffix | **Redact** (`<<REDACTED_DOMAIN_NNN>>`) |
+| Not matched (external / malicious) | **Pass through** (preserved for analytic value) — same philosophy as #422: what the customer registers is what gets hidden |
+
+This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked. The customer-owned-domain registry parallels `customer_redaction_ranges` (a hostname-suffix list); its admin UI is deferred (it can ship empty, meaning "pass all domains through", exactly like the empty IP-range default under #422). Reflection protection in the empty-registry case is provided by A.3, not by the boundary policy.
+
+### A.3 — Reflection / generated-text defense via `scanHallucinations()` reuse
+
+The engine already has `scanHallucinations()`, which scans LLM **output** for un-tokenized indicators and stamps them `<<UNVERIFIED_*>>`. This amendment reuses the same scan on **fact text before injection** (not just on output), to catch indicators that the boundary policy would pass through but that look like customer assets — most importantly in **LLM/web-search-generated facts**, whose text we do not control and which can surface unexpected values. The scan is the safety net for the empty-registry case in A.2: even with no registered owned-domains, a reflected value flagged by the scan is handled rather than passed raw. (Exact handling — drop the fact, mask the token, or route to an audit action — is an implementation decision for #424's PR; the requirement here is that fact text is scanned, regardless of source.)
+
+### A.4 — No engine-version / policy-version migration
+
+Like #422, the engine is still pre-release and undeployed, so there is no stored data under an old policy to reconcile. Adding the `domain` KIND and the fact pipeline requires **no `ENGINE_VERSION` bump, no policy-version migration, and no retroactive re-redact**. The change is made in place.
+
+### A.5 — Out of amendment scope
+
+- The customer-owned-domain **registration admin UI** (parallels the deferred IP-range UI work). The KIND and boundary policy are defined here; the UI lands with the broader customer-settings work.
+- Redaction of conversation turns (F1) and report-scope rewriting beyond what RFC 0002 already covers — these reuse the same pattern but are scoped by their own features.
+- Aggregate-level JSONB redaction (still deferred, see "Out of scope" below).
+
+---
+
 ## Out of scope (deferred to future design)
 
 - aimer-web standalone entry flow for users who never came through aice-web-next (will be designed together with the broader "event list / search / detail" UI in aimer-web).
@@ -886,8 +940,8 @@ Customer settings: `Data Retention` section.
 - v2 automatic retroactive re-redact on range addition.
 - **Storage for other aimer resolvers' results** (beyond `analyzeEvent`). v1 ships `event_analysis_result` for the single resolver and **does not preemptively abstract**. When a second resolver (`analyzeStory`, `analyzePolicy`, …) lands, that issue's design decides whether to extend the existing table with a `result_type` discriminator or to add a parallel table — driven by the actual shape of the new result rather than a guess made now.
 - **Aggregate-level JSONB redaction** for `story.summary_payload` and `policy_run.summary_stats`. The v1 map key `(aice_id, event_key)` does not accommodate row keys that have no single `event_key` (story_id+story_version, run_id). These columns stay plaintext in v1 (no regression from today) and are not sent to aimer because v1 only calls `analyzeEvent`. When `analyzeStory` / `analyzePolicy` ship in future aimer Phase 2+, the design for those features must introduce a story-level map (keyed by `aice_id, story_id, story_version`) and a run-level map (keyed by `aice_id, run_id`) — either as separate tables or as a generalised `redaction_map` with a discriminator. Tracked alongside the relevant resolver issue when it is filed.
-- IP enrichment (geo/ASN/threat intel metadata) prior to LLM call. Possible v3 addition; orthogonal to the redaction policy.
-- Customer-side hostname / FQDN registration for redaction. Same rationale as IP ranges but deferred until a concrete need surfaces.
+- IP / domain / hash enrichment (geo/ASN/threat-intel metadata) prior to LLM call — now designed in RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)); its redaction interaction is defined in Amendment A above rather than left orthogonal.
+- Customer-side hostname / FQDN / owned-domain **registration UI** for redaction. The domain KIND and boundary policy are defined in Amendment A; the registration UI is deferred until it ships with the broader customer-settings work (same rationale as the IP-range UI).
 - **Retention sweeper implementation**. The policy and per-customer storage land in v1; the actual deletion worker is a separate sub-issue filed after this design. v1 deployment has no urgency (12-month minimum default), so the sweeper has months of runway.
 
 ## Implementation sub-issue breakdown (suggested)
