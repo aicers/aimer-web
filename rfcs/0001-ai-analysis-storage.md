@@ -109,7 +109,7 @@ Tokens follow a fixed shape so downstream scanning (LLM hallucination check) can
 - `<<REDACTED_IP_NNN>>`
 - `<<REDACTED_EMAIL_NNN>>`
 - `<<REDACTED_MAC_NNN>>`
-- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an event payload or an enrichment fact). Note: in multi-event prompts these per-event tokens are rewritten to story-scope `<<REDACTED_{TYPE}_E{i}_{NNN}>>` per RFC 0002, and fact-only indicators use a fact-scope `<<REDACTED_{TYPE}_F{k}_{NNN}>>` form — see Amendment A.1.
+- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an event payload or an enrichment fact). Note: in multi-event prompts per-event tokens are rewritten to story-scope `<<REDACTED_{TYPE}_E{i}_{NNN}>>` per RFC 0002, while a fact's customer-asset tokens use a fact-scope `<<REDACTED_{TYPE}_F{k}_{NNN}>>` form — see Amendment A.1.
 
 `NNN` is a per-event monotonic counter; identical entities within the same event collapse to the same token (so an attacker IP appearing 10 times produces one map entry and 10 occurrences of the same token).
 
@@ -891,7 +891,7 @@ Customer settings: `Data Retention` section.
 
 RFC 0003 introduces **enrichment facts**: short statements the enrichment layer feeds the story-analysis LLM about an indicator — e.g. *"`evil-c2.example` is on the abuse.ch ThreatFox C2 list, registered 3 days ago."* These facts are produced **outside the event payload**, so the v1 redaction engine — which only tokenizes values found *inside* event payloads — never sees them. RFC 0003 P1b points at "redaction-token-aware enrichment fact injection (RFC 0001 extension)" but defers the definition to here. Discussion #318 flags the same gap twice as a mini-RFC of its own.
 
-Defining fact redaction surfaces a second, pre-existing gap: v1 does not redact **domains** even in event payloads, so a registered customer domain appearing in a member event already ships raw to the LLM, and a fact could never share a token with member text for that domain. This amendment therefore extends domain redaction to **both** event payloads and facts under one policy (A.2), so the two are consistent and token reuse is well-defined.
+Defining fact redaction surfaces a second, pre-existing gap: v1 does not redact **domains** even in event payloads, so a registered customer domain appearing in a member event already ships raw to the LLM. This amendment therefore extends domain redaction to **both** event payloads and facts under one policy (A.2), so a registered domain is masked everywhere it appears — as `E{i}` in a member event, as `F{k}` in a fact — and is never raw in front of the LLM.
 
 A fact is treated **exactly like an event payload**: it is run through the **same redaction policy at the DB-write boundary** — i.e. when the enrichment result is written to its cache / result row, before it touches disk — not at LLM-injection time. This keeps the RFC 0001 invariant intact: redaction happens **once, at storage**, and every later step (prompt assembly, reports) only *reads* the already-redacted artifact. The policy decides, per indicator, whether it is redacted at all:
 
@@ -933,7 +933,7 @@ For each indicator carried by a fact:
 
 ### A.2 — Domain / hostname token KIND with a customer-owned boundary policy
 
-The original v1 policy listed hostnames/FQDNs as "not redacted" anywhere. That leaves a registered customer domain exposed in two places: in event payloads (a member event mentioning `vpn.customer.example` ships it raw to the LLM) and in enrichment facts. Worse, a fact could never share a token with member text for the same domain, because the member text had no domain token to begin with. This amendment closes both by adding a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`) and applying a domain boundary policy **uniformly to event payloads and facts**, exactly as IP-range redaction already applies to both. The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries.
+The original v1 policy listed hostnames/FQDNs as "not redacted" anywhere. That leaves a registered customer domain exposed in two places: in event payloads (a member event mentioning `vpn.customer.example` ships it raw to the LLM) and in enrichment facts. This amendment closes both by adding a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`) and applying a domain boundary policy **uniformly to event payloads and facts**, exactly as IP-range redaction already applies to both — so a registered domain is masked wherever it appears. The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries.
 
 The boundary policy is **structurally identical to #422's IP-range policy** and applies wherever a domain appears (event payload or fact):
 
