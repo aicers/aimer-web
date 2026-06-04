@@ -321,7 +321,8 @@ export default async function ReportDetailPage({
           <div className="mt-1 text-xs text-muted-foreground">
             Aggregated by Clumit Insight from {data.topStoryCount} stor
             {data.topStoryCount === 1 ? "y" : "ies"} and {data.topEventCount}{" "}
-            event{data.topEventCount === 1 ? "" : "s"} plus baseline drift.
+            event{data.topEventCount === 1 ? "" : "s"} plus suspicious-event
+            trends.
           </div>
         </Field>
         <Field label="Language">{data.lang}</Field>
@@ -354,8 +355,9 @@ export default async function ReportDetailPage({
 
       {/* Report-level cited sources for the leaf-derived sections above
           (executive summary / story highlights / notable events). Placed
-          before baseline observations, which is the drill-down's
-          deliberate stopping point and gets no Sources panel (#395). */}
+          before the suspicious-event trends section, which is the
+          drill-down's deliberate stopping point and gets no Sources panel
+          (#395). */}
       <SourcesPanel
         locale={locale}
         customerId={customerId}
@@ -363,7 +365,7 @@ export default async function ReportDetailPage({
       />
 
       <ReportSection
-        title="Baseline observations"
+        title="Suspicious-event trends"
         body={data.sections.baseline_observations}
         testid="section-baseline_observations"
       />

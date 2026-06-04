@@ -1,50 +1,37 @@
 # Periodic Security Reports
 
 A periodic security report is a single LLM-written synthesis across a
-time window for one customer — it weaves together the stories and single
-events already analysed in that window plus the statistical drift in the
-baseline event stream. Unlike a story analysis (one LLM call about one
-story), a report aggregates many leaf analyses into one narrative and
-does **not** ask the LLM for scores: Clumit Insight computes the aggregate
-scores itself from the included leaves and the baseline drift.
+time window for one customer — it weaves together the threat stories and
+suspicious events already analysed in that window plus the trends across
+the period's suspicious events. Unlike a story analysis (one LLM call
+about one story), a report aggregates many individual analyses into one
+narrative and does **not** ask the LLM for scores: Clumit Insight computes
+the aggregate scores itself from the included story and event analyses
+and the suspicious-event trend.
 
-The page is reached from an aice-web-next dashboard card deep link, or
-directly via the customer-scoped URL:
+The page is reached from an aice-web-next dashboard card deep link, or by
+opening a specific report from the report index below.
 
-```
-/customers/{customerId}/analysis/reports/{period}/{bucketDate}
-```
+Access is existence-hiding: a caller who is not a member of the customer —
+or a request for a report that does not exist — sees a `404`, while a
+member without the `reports:read` permission, or a rejected bridge
+session, sees a permission notice rather than the report.
 
-`{period}` is **uppercase** — `LIVE`, `DAILY`, `WEEKLY`, or `MONTHLY`.
-The customer
-id appears in the path because a `(period, bucket_date)` pair is not
-globally unique — bucket date `2026-05-26` exists for every customer.
-A lowercase period in the URL returns `404` rather than redirecting, so
-the UI route and the API path validation share one case convention. A
-`{bucketDate}` that is shaped like a date but names an impossible
-calendar day (for example `2026-02-31`) also returns `404`, matching the
-API endpoints — it is rejected before any database lookup.
+![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
 
-Access is existence-hiding and matches the summary and regenerate
-endpoints: a caller who is not a member of the customer — or a request
-for a report that does not exist — returns `404`, while a member without
-the `reports:read` permission, or a rejected bridge session, returns a
-real `403` (a permission notice, not a normal page).
-
-![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections](../../assets/report-detail.en.png)
+<!-- Recapture note (#430): the report-detail*.{en,ko}.png captures still
+     show the old "Baseline observations" section header. They are kept
+     as-is until they can be re-shot from a real-data stack (the shared
+     constraint with #429); they must not be fabricated or hand-edited to
+     show the renamed "Suspicious-event trends" header. -->
 
 ## Report index
 
 The customer-scoped reports root lists the report buckets that exist for
-the customer and links into the detail page above:
+the customer and links into the detail page above.
 
-```
-/customers/{customerId}/analysis/reports
-```
-
-Before this index existed the bare path returned `404` — a report could
-only be opened by navigating directly to a specific
-`{period}/{bucketDate}` URL. The index groups the available buckets by
+Before this index existed, a report could only be opened by navigating
+directly to a specific report. The index groups the available buckets by
 period (Live, Daily, Weekly, Monthly), showing the most recent bucket of
 each period first, followed by a bounded recent list.
 
@@ -110,9 +97,9 @@ No operator action is needed for any period: a background worker seeds,
 schedules, and runs the LLM calls. The **Regenerate** button (below) is
 for forcing an out-of-cadence refresh.
 
-![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, baseline observations, and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
+![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
 
-![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and baseline observations framing the month's trend from within the window](../../assets/report-detail-monthly.en.png)
+![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and suspicious-event trends framing the month's activity from within the window](../../assets/report-detail-monthly.en.png)
 
 ## Period tabs
 
@@ -195,14 +182,13 @@ The worker pipeline runs without operator action:
    (eligible only when the story's state is `ready` and a non-superseded
    result exists for the variant, and the canonical story window
    overlaps the bucket) and **top events** (variant-matched event
-   analyses whose deduped baseline event time falls in the bucket,
+   analyses whose deduped suspicious-event time falls in the bucket,
    excluding events already covered by the chosen stories). It also
-   computes the **baseline aggregates**: deduplicated event counts, a
-   category distribution, and the per-category delta versus the previous
-   period.
-4. Every included leaf narrative is re-namespaced into a single
+   computes the window's **suspicious-event aggregates**: deduplicated
+   event counts and a category distribution.
+4. Every included analysis narrative is re-namespaced into a single
    report-scope token namespace (`<<REDACTED_*_R{j}_*>>`) so the same
-   placeholder in two different leaves cannot collide, and the bundle is
+   placeholder in two different analyses cannot collide, and the bundle is
    sent to aimer's `generatePeriodicSecurityReport` mutation under mTLS.
    The worker actor is `system:analysis-worker` with a stable
    `system:periodic-report` sentinel AICE id, because a report spans
@@ -217,7 +203,7 @@ The worker pipeline runs without operator action:
 Retryable failures (5xx, transport, mTLS error) re-queue with backoff up
 to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx, hallucination detected,
 missing or mismatched redaction policy versions across the included
-leaves) mark the job `failed` immediately.
+analyses) mark the job `failed` immediately.
 
 ## Priority tier and aggregate scores
 
@@ -225,47 +211,32 @@ The header shows the report's priority and its two aggregate scores:
 
 - **Priority tier** — `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`, rendered
   as a colored badge. The tier is the **maximum** over every included
-  leaf's own priority tier and the tier that the baseline drift maps to
-  through the same 4×4 matrix story analysis uses. Deriving it from the
-  leaves directly (rather than from the aggregate scores) preserves
-  "leaf monotonicity": a report is never tagged below the worst leaf it
-  cites, even when that leaf's tier was raised by an IOC or member-count
-  floor that the raw score does not reflect.
+  analysis's own priority tier and the tier the period's suspicious-event
+  trend maps to. Deriving it from the individual analyses directly
+  (rather than from the aggregate scores) means a report is never tagged
+  below the worst analysis it cites, even when that analysis's tier was
+  raised by an IOC or member-count floor that the raw score does not
+  reflect.
 - **Aggregate severity / likelihood scores** — `0.000`–`1.000`. Each is
-  the maximum, per axis independently, over the included leaves' scores
-  and the baseline drift signal. They are **informational** display
-  values (`score_kind: "aggregate"`), not the input to the tier.
+  the maximum, per axis independently, over the included analyses' scores
+  and the period's suspicious-event trend. They are **informational**
+  display values (`score_kind: "aggregate"`), not the input to the tier.
 
-### Baseline drift
-
-The baseline-drift signal compares the window's event-category
-distribution against the previous period of the same length (the prior
-24 hours for LIVE, the prior calendar day for DAILY, the prior 7 days
-for WEEKLY, the prior calendar month for MONTHLY):
-
-- **drift severity** — the largest per-category count change versus the
-  prior period, normalized and clamped to `[0, 1]`.
-- **drift likelihood** — `1.0` when any per-category fractional change
-  exceeds `ANALYSIS_BASELINE_DRIFT_NOISE_THRESHOLD` (default `0.3`),
-  else `0.0`. Statistical drift past the noise floor is treated as a
-  high-confidence signal.
-
-When the previous period had no events (first bucket), both drift
-signals are `0.0`. This drift signal feeds the priority tier and the
-aggregate scores above; the LLM narrates any drift it can see in the
-window's counts and ranks in the report's **Baseline observations**
-section.
+The period's **suspicious-event trend** can raise the report's priority
+when the window's activity deviates from the prior comparable period. The
+trend itself is narrated in the report's **Suspicious-event trends**
+section; only the resulting priority and scores surface in the header.
 
 ## MITRE ATT&CK techniques
 
 Next to the priority badge, the page renders the report's
 `aggregate_ttp_tags` — the deduplicated, sorted union of every included
-leaf's MITRE ATT&CK technique IDs. Each chip shows the technique ID;
+analysis's MITRE ATT&CK technique IDs. Each chip shows the technique ID;
 hovering reveals the official technique name (e.g. `T1078` → "Valid
 Accounts") from the vendored ATT&CK bundle. The LLM is given this set
 and is instructed to reference techniques by ID in the narrative, but
-the stored union is computed deterministically from the leaves — the
-LLM cannot add or drop a technique from the column.
+the stored union is computed deterministically from the individual
+analyses — the LLM cannot add or drop a technique from the column.
 
 ## Report sections
 
@@ -282,32 +253,32 @@ to plaintext:
   days that read as paraphrases of each other signal a dull prompt or an
   input-builder bug.
 - **Story highlights** — the top-K analysed stories, one highlight each,
-  with the strongest leaf factors quoted where precise.
+  with the strongest factors quoted where precise.
 - **Notable events** — single events not already covered by the story
   highlights, one highlight each.
-- **Baseline observations** — short factual readings of the window's
-  baseline aggregates (counts and ranks) and any drift visible against
-  the top techniques and sensors.
+- **Suspicious-event trends** — short factual readings of the window's
+  suspicious-event counts and ranks and any shift visible against the top
+  techniques and sensors.
 - **Period outlook** — a short forward-looking note in the period's
   tone: for LIVE, what to watch in the next window; for DAILY, what
   tomorrow's operator should re-check; for WEEKLY / MONTHLY, the trend
   to carry into the next week or month.
 
-Story highlights, notable events, and baseline observations are each a
+Story highlights, notable events, and suspicious-event trends are each a
 list of entries; the page joins them into one block per section. Tokens
-that cannot be restored (decrypt failure, a superseded leaf,
+that cannot be restored (decrypt failure, a superseded analysis,
 out-of-range index) are passed through unchanged so the page still
 renders; hallucinated decodes are blocked at write time and never reach
 this view.
 
 ## Sources
 
-Below the leaf-derived sections — executive summary, story highlights,
-and notable events — the page shows a **Sources** panel listing the
-cited threat-story and suspicious-event leaves the report was generated
-from. These are the generation's recorded input list, so the panel is
-**report-level cited sources**: it tells you which leaves the report
-drew on, not which sentence cites which leaf. The panel does not imply
+Below the analysis-derived sections — executive summary, story
+highlights, and notable events — the page shows a **Sources** panel
+listing the cited threat-story and suspicious-event analyses the report
+was generated from. These are the generation's recorded input list, so the panel is
+**report-level cited sources**: it tells you which analyses the report
+drew on, not which sentence cites which analysis. The panel does not imply
 per-sentence or per-claim provenance.
 
 <!-- Screenshot placeholder (#395): report detail Sources panel showing
@@ -316,11 +287,11 @@ per-sentence or per-claim provenance.
      available. -->
 
 The panel header shows an **N stories · M events** provenance count.
-Each cited leaf renders as a card:
+Each cited analysis renders as a card:
 
 - **Threat-story cards** are labelled `Story {story_id}` and show the
   priority tier, severity and likelihood scores, and MITRE ATT&CK
-  technique chips of the cited leaf.
+  technique chips of the cited analysis.
 - **Suspicious-event cards** are labelled `Event {aice_id} · {event_key}`
   and show the priority tier and the severity and likelihood scores.
 
@@ -334,25 +305,25 @@ report consumed** — the cited `generation` together with the language,
 provider, and model. Following a Sources link therefore opens the
 evidence as it was at generation time, not the latest re-analysis. For a
 report shown in a translated language, the links resolve to the
-canonical-language leaves the translation preserved, so the pinned
+canonical-language analyses the translation preserved, so the pinned
 evidence still exists.
 
-When a cited leaf's pinned version is no longer available — it has been
+When a cited analysis's pinned version is no longer available — it has been
 superseded by a newer generation or removed by retention — its card
 degrades to the stored ID and generation with an **"Evidence version no
-longer available"** note, and the leaf detail page it links to shows the
-same notice rather than silently substituting the latest version. The
+longer available"** note, and the analysis detail page it links to shows
+the same notice rather than silently substituting the latest version. The
 card's link still carries the pinned generation, so the provenance trail
 is preserved even when the underlying evidence version is gone.
 
-**Baseline observations has no Sources panel.** It is the deliberate
-stopping point of the drill-down: the section reports only narrative
-baseline readings and is not traced back to individual leaves.
+**Suspicious-event trends has no Sources panel.** It is the deliberate
+stopping point of the drill-down: the section reports only narrative trend
+readings and is not traced back to individual analyses.
 
 ### Reverse trail (Cited by)
 
 The Sources panel is the forward half of the link. The reverse half lives
-on the leaf detail pages: a [story](story.md#cited-by) or
+on the analysis detail pages: a [story](story.md#cited-by) or
 [event](../analysis-result.md#cited-by) cited by this report shows a
 **Cited by** trail back up to it. Those reverse links are
 **generation-pinned to this report**, so the report detail page accepts a
@@ -360,7 +331,7 @@ on the leaf detail pages: a [story](story.md#cited-by) or
 than the latest. When the pinned report generation is no longer available
 — superseded or removed — the page shows a **"This report version is no
 longer available"** notice instead of silently falling back to the latest,
-mirroring the leaf pages' pinned-evidence behaviour.
+mirroring the analysis pages' pinned-evidence behaviour.
 
 ## Metadata fields
 
@@ -380,19 +351,17 @@ independent of your personal display timezone.
 Operators with `reports:create` can force an out-of-cadence rerun via
 the **Regenerate** button at the bottom of the page.
 
-![Regenerate confirmation modal, warning that a fresh LLM call is issued across the period's stories, events, and baseline statistics and that the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/report-regenerate-modal.en.png)
+![Regenerate confirmation modal, warning that a fresh LLM call is issued across the period's stories, events, and suspicious-event trends and that the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/report-regenerate-modal.en.png)
 
 The confirmation modal states that a fresh LLM call is issued across the
-period's analysed stories, events, and baseline statistics, and that the
-latest generation is superseded once the new result lands. The previous
-result row is preserved with a `superseded_at` stamp; nothing is
+period's analysed stories, events, and suspicious-event trends, and that
+the latest generation is superseded once the new result lands. The
+previous result row is preserved with a `superseded_at` stamp; nothing is
 overwritten in place.
 
-Submitting the modal calls
-`POST /api/customers/{customerId}/analysis/report/{period}/{bucketDate}/regenerate`
-(optionally with `?tz=&lang=&model_name=&model=` to target a non-default
-variant — unlike story analysis, `tz` is accepted because reports are
-timezone-keyed). Behaviour:
+Submitting the modal queues a fresh generation. A non-default variant can
+be targeted, and — unlike story analysis — the report's timezone can be
+targeted too, because reports are timezone-keyed. Behaviour:
 
 - The job row's `generation` is bumped by one (or `1` if no prior row
   for the variant exists), `status` resets to `queued`, `attempts`
@@ -413,36 +382,23 @@ the new result.
 
 ## Cross-system deep link
 
-aice-web-next dashboard cards consume the matching summary endpoint to
-decide whether to surface a deep-link badge for a period:
+aice-web-next dashboard cards check whether a report exists for a period
+to decide whether to surface a deep-link badge.
 
-```
-GET /api/customers/{customerId}/analysis/report/{period}/{bucketDate}/summary
-```
-
-The endpoint returns either `{exists: false}` — no report yet, **or** the
-report's parent state row is missing or archived (for example after a
-timezone change, which archives the old-timezone state), so the badge is
-never deep-linked to a report whose page would `404` — or a content-free
-payload with `priority_tier`, the two aggregate scores,
-`score_kind: "aggregate"`, and a `link` to this page. The `link` carries
-the period as **uppercase** so following it lands on the page route
-without a case-insensitive redirect, and is customer-scoped so it
-resolves to the right report regardless of which customer the opening
-tab has selected. When the summary was requested for a non-default
-variant (`?tz=&lang=&model_name=&model=`), the `link` forwards those
-same query params so following it opens that variant rather than the
-default. As on the page, `?lang=` is an **app-locale code** (`en` / `ko`),
-not the report-language enum; a viewer-aware caller passes the resolved
-locale code, and when `?lang=` is absent the summary uses the English
-baseline (it has no viewer locale of its own to default from). The badge
-itself (priority tier and aggregate scores
-only, no section content) is rendered by aice-web-next; see the
-aice-web-next manual for its screenshot.
+No badge is shown when there is no report yet, or when the report's parent
+state row is missing or archived (for example after a timezone change,
+which archives the old-timezone state) — so the badge is never deep-linked
+to a report whose page would be unavailable. Otherwise the badge carries
+only the priority tier and the two aggregate scores and links to this
+page; following it opens the right report regardless of which customer the
+opening tab has selected, and opens the same variant (timezone, language,
+provider, model) the card was shown for. The badge itself (priority tier
+and aggregate scores only, no section content) is rendered by
+aice-web-next; see the aice-web-next manual for its screenshot.
 
 Section content, TTP tags, and factors are full-report-viewer concerns
-and stay out of the summary, so the badge cannot leak report detail. The
-summary applies the same existence-hiding policy as the page and the
-regenerate route: a non-member gets `404 report_state_not_found`,
-members without `reports:read` get `403 Forbidden`, and rejected bridge
-sessions get `403 bridge_not_allowed`.
+and stay out of the badge, so it cannot leak report detail. The deep-link
+check applies the same existence-hiding policy as the page and the
+regenerate action: a non-member sees a `404`, members without
+`reports:read` get a permission error, and rejected bridge sessions are
+turned away.

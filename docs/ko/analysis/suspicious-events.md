@@ -1,23 +1,23 @@
 # 의심 이벤트
 
-의심 이벤트는 aice-web-next가 전달한 탐지 — 즉 의심되는 위협입니다.
-의심 이벤트 목록은 한 고객에 대해 **분석된** 이벤트의 고객 범위
-인덱스로, 기존 [이벤트 분석 상세 페이지](../analysis-result.md)로
-연결됩니다.
+Clumit Insight가 보여 주는 의심 이벤트는 Clumit Security가 탐지하고 기본
+트리아지를 통과한 뒤 aice-web-next에서 전달된 이벤트 — 즉 의심되는
+위협입니다. 이 출처를 명시하는 곳은 이 페이지 한 곳이며, 다른 분석
+페이지는 여기를 참조합니다.
 
-```
-/customers/{customerId}/analysis/events
-```
+의심 이벤트 목록은 한 고객에 대해 **분석된** 하위 집합 — 이미 분석
+결과가 있는 이벤트 — 의 고객 범위 인덱스로, 기존 [이벤트 분석 상세
+페이지](../analysis-result.md)로 연결됩니다. 전달된 이벤트 전체 모집단이
+아닙니다.
 
 <!-- Screenshot placeholder (#392): suspicious events list page showing
      priority-sorted rows with the AICE environment, severity/likelihood,
      and priority badge, plus the priority + time-window filter bar.
      Capture from a stack with real aice-web-next data once available. -->
 
-이것은 **새로운 고객 수준 세그먼트**입니다. 이벤트 상세 경로는 AICE
-환경별(`aice/{aiceId}/events/{eventKey}/analysis`)이지만, 고객 전체
-목록은 여러 AICE 환경에 걸쳐 있으므로 단일 `aice/{aiceId}` 경로 아래에
-둘 수 없습니다.
+이것은 **새로운 고객 수준 세그먼트**입니다. 이벤트 상세 경로는 단일 AICE
+환경 범위이지만, 고객 전체 목록은 여러 AICE 환경에 걸쳐 있으므로 단일
+환경별 경로 아래에 둘 수 없습니다.
 
 ## 무엇을 나열하는가
 
@@ -30,17 +30,8 @@
 
 ### 상세 링크는 변형을 포함한다
 
-각 행은 **정규 변형 쿼리 파라미터와 함께** 이벤트 상세 페이지로
-연결됩니다.
-
-```
-/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis?lang=…&model_name=…&model=…
-```
-
-이벤트 상세 페이지는 `(lang, model_name, model)`로 키가 지정되며,
-`model_name` 또는 `model`이 없으면 `404`를 반환합니다(`lang`만
-기본값을 적용). 따라서 목록은 항상 세 가지를 모두 고정하여 링크가
-`404` 대신 분석된 이벤트로 해석되도록 합니다.
+각 행은 이벤트의 **정규 분석 변형**(언어와 모델)으로 연결되므로, 행을
+따라가면 분석되지 않은 이벤트가 아니라 해당 분석 결과가 열립니다.
 
 ## 정렬
 
