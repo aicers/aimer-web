@@ -1,0 +1,9 @@
+; Spamhaus DROP List (PINNED FIXTURE)
+;
+; Committed test fixture, NOT a live feed download. Networks are RFC 5737
+; documentation ranges (TEST-NET) so the fixture references no real
+; infrastructure. Format mirrors the published list: `<CIDR> ; <SBLref>`,
+; with `;` comment lines.
+;
+192.0.2.0/24 ; SBL000001
+198.51.100.0/24 ; SBL000002

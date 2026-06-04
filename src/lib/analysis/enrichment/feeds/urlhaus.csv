@@ -1,0 +1,9 @@
+# abuse.ch URLhaus URL feed (PINNED FIXTURE)
+#
+# Committed test fixture, NOT a live feed download. URLs use the
+# reserved `example`/`invalid` domains so the fixture references no real
+# infrastructure. Format mirrors the published CSV:
+# id,dateadded,url,url_status,threat,tags,urlhaus_link,reporter
+#
+"1001","2026-05-01 00:00:00","http://malware.example/payload.exe","online","malware_download","exe,emotet","https://urlhaus.abuse.ch/url/1001/","fixture"
+"1002","2026-05-01 00:00:00","https://c2.example.test/gate.php","online","botnet_cc","php","https://urlhaus.abuse.ch/url/1002/","fixture"

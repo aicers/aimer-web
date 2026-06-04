@@ -206,6 +206,39 @@ interface ProcessOptions {
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the customer redaction-range loader — used by tests. */
   loadRanges?: typeof loadCustomerRanges;
+  /**
+   * Override the IOC-enrichment readiness precondition (RFC 0003 P1a
+   * #361) — used by tests. Returns whether enrichment has completed for
+   * the canonical `(story_id, story_version)` and the `known_ioc_hit`
+   * value read in the SAME snapshot as the completion marker, so the
+   * floor is computed from a value that cannot be staler than the marker
+   * the precondition gated on.
+   */
+  checkEnrichmentReady?: (
+    customerPool: Pool,
+    storyId: string,
+    storyVersion: string,
+  ) => Promise<EnrichmentReadiness>;
+}
+
+/**
+ * Result of the RFC 0003 P1a (#361) enrichment-readiness precondition.
+ * `knownIocHit` is the `story.known_ioc_hit` value read together with the
+ * completion marker (same query, same snapshot), so the analysis worker
+ * floors on the post-enrichment value rather than a `known_ioc_hit`
+ * loaded by `loadCanonicalMembers` before the precondition ran.
+ */
+interface EnrichmentReadiness {
+  ready: boolean;
+  knownIocHit: boolean;
+  /**
+   * The `story_enrichment_state.status` (`complete` / `failed`) or `null`
+   * when no marker exists yet. Lets the worker distinguish a still-pending
+   * enrichment from a hard, operator-visible failure when it requeues.
+   */
+  status?: string | null;
+  /** `last_error` recorded by a hard enrichment failure, surfaced in logs. */
+  lastError?: string | null;
 }
 
 export async function processStoryJob(
@@ -367,6 +400,57 @@ export async function processStoryJob(
     );
     return;
   }
+
+  // RFC 0003 P1a (#361) — enrichment ordering precondition. The async
+  // enrichment worker derives `known_ioc_hit` for this canonical version
+  // (UPDATEing `story.known_ioc_hit`) and records a
+  // `story_enrichment_state` completion marker. Reading the floor before
+  // that marker exists risks flooring on a stale `known_ioc_hit`. This
+  // precondition sits on the exact path that reads the floor: requeue our
+  // own job — WITHOUT consuming a retry attempt, since enrichment latency
+  // is not a job failure — until enrichment is complete for the canonical
+  // version, so analysis always reads the updated value. The best-effort
+  // post-commit hook may still TRIGGER enrichment, but it is never the
+  // thing that guarantees ordering.
+  const enrichment = await (
+    opts.checkEnrichmentReady ?? defaultCheckEnrichmentReady
+  )(customerPool, job.story_id, canonical.storyVersion);
+  if (!enrichment.ready) {
+    await requeueForEnrichment(opts.authPool, job);
+    // A hard enrichment failure persists a `failed` marker with
+    // `last_error` (RFC 0003 P1a #361). Surface it distinctly so the
+    // requeue is a diagnosable operational state, not a silent spin — the
+    // job still requeues (recoverably) so a never-stale floor is preserved.
+    const failed = enrichment.status === "failed";
+    console.warn(
+      JSON.stringify({
+        level: failed ? "error" : "warn",
+        event: failed
+          ? "analysis.story_enrichment_failed_requeued"
+          : "analysis.story_enrichment_incomplete_requeued",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        story_version: canonical.storyVersion,
+        generation: job.generation,
+        ...(failed ? { last_error: enrichment.lastError } : {}),
+      }),
+    );
+    return;
+  }
+
+  // Re-bind the floor input to the `known_ioc_hit` read alongside the
+  // readiness marker. `loadCanonicalMembers` (above) read `known_ioc_hit`
+  // BEFORE this gate, so a concurrent enrichment that committed
+  // `known_ioc_hit = true` between that load and now would otherwise let
+  // analysis floor on the stale in-memory `false`: the marker check would
+  // see `ready` while the already-loaded value was still `false`. The
+  // readiness query reads `story.known_ioc_hit` in the same statement (and
+  // therefore the same snapshot) as the completion marker, and
+  // `persistEnrichment` commits the floor UPDATE and the marker in one
+  // transaction, so once `ready` is observed this value is the committed,
+  // post-enrichment one. The boolean is monotonic, so this can only raise
+  // a hit, never lower it.
+  canonical.knownIocHit = enrichment.knownIocHit;
 
   // Token rewrite + LLM call.
   const { rewrittenMembers, refs, allowedTokens } = buildStoryTokenMap(
@@ -1042,6 +1126,81 @@ async function failJob(
       job.generation,
       nextAttempts,
       reason,
+    ],
+  );
+}
+
+/**
+ * RFC 0003 P1a (#361) default enrichment-readiness check: the canonical
+ * `(story_id, story_version)` has a `story_enrichment_state` row marked
+ * `complete`. Absent or non-complete → not ready (analysis requeues).
+ *
+ * Reads `story.known_ioc_hit` in the same statement (LEFT JOIN, one
+ * snapshot) as the completion marker so the caller can floor on a value
+ * that is consistent with the readiness it just gated on — closing the
+ * race where `loadCanonicalMembers` read `known_ioc_hit` before enrichment
+ * committed. `persistEnrichment` writes the floor UPDATE and the marker in
+ * one transaction, so a `complete` status implies the joined
+ * `known_ioc_hit` is the post-enrichment value. Returns `knownIocHit:
+ * false` when no `story` row exists (the caller has already loaded the
+ * canonical version, so in practice the row is always present).
+ */
+async function defaultCheckEnrichmentReady(
+  customerPool: Pool,
+  storyId: string,
+  storyVersion: string,
+): Promise<EnrichmentReadiness> {
+  const { rows } = await customerPool.query<{
+    status: string | null;
+    last_error: string | null;
+    known_ioc_hit: boolean | null;
+  }>(
+    `SELECT ses.status, ses.last_error, s.known_ioc_hit
+       FROM story s
+       LEFT JOIN story_enrichment_state ses
+         ON ses.story_id = s.story_id
+        AND ses.story_version = s.story_version
+      WHERE s.story_id = $1::bigint AND s.story_version = $2`,
+    [storyId, storyVersion],
+  );
+  return {
+    ready: rows[0]?.status === "complete",
+    knownIocHit: rows[0]?.known_ioc_hit ?? false,
+    status: rows[0]?.status ?? null,
+    lastError: rows[0]?.last_error ?? null,
+  };
+}
+
+/**
+ * Re-queue a claimed job because enrichment has not yet completed for its
+ * canonical version (RFC 0003 P1a #361). Unlike {@link requeueWithBackoff}
+ * this does NOT consume a retry attempt: enrichment latency is an ordering
+ * wait, not a job failure, so the job must not exhaust `MAX_ATTEMPTS` while
+ * waiting. `attempts` is left untouched (typically 0), so the next tick
+ * re-picks the row immediately. Guarded on `status = 'processing'` so only
+ * the row this worker claimed is requeued.
+ */
+async function requeueForEnrichment(
+  authPool: Pool,
+  job: JobPickup,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE story_analysis_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            last_error = 'awaiting_enrichment',
+            updated_at = NOW()
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.story_id,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
     ],
   );
 }

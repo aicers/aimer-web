@@ -207,6 +207,7 @@ describe("processStoryJob — happy path", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -293,6 +294,7 @@ describe("processStoryJob — happy path", () => {
       { ...baseJob(), lang: "KOREAN" },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
         loadRanges: emptyRangesLoader as never,
@@ -342,6 +344,7 @@ describe("processStoryJob — happy path", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -401,6 +404,7 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     });
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: (async () => goodAimerResponse()) as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -451,6 +455,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -473,8 +478,13 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
         { rows: [], rowCount: 1 },
       ],
     });
+    // Interleaving regression (#361): `loadCanonicalMembers` reads
+    // `known_ioc_hit = false` (the value at load time), but enrichment
+    // commits `true` before the readiness gate. The floor must use the
+    // value the readiness check returns (read with the marker), NOT the
+    // stale member-load value — otherwise this would floor on `false`.
     const customerPool = makePool({
-      queryPlan: [{ rows: [] }, ...goodMembersQuery({ knownIocHit: true })],
+      queryPlan: [{ rows: [] }, ...goodMembersQuery({ knownIocHit: false })],
       clientQueryPlan: [{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }],
     });
     const callAnalyzeStory = async () => ({
@@ -485,6 +495,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: true }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -521,6 +532,7 @@ describe("processStoryJob — result-row probe", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -553,6 +565,7 @@ describe("processStoryJob — lost pickup race", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -605,6 +618,7 @@ describe("processStoryJob — redaction-policy precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -662,6 +676,7 @@ describe("processStoryJob — redaction-policy precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -672,6 +687,81 @@ describe("processStoryJob — redaction-policy precondition", () => {
     );
     expect(failCall?.params?.[6]).toBe(0); // attempts unchanged
     expect(failCall?.params?.[7]).toBe("mismatched_redaction_policy_version");
+  });
+});
+
+describe("processStoryJob — enrichment precondition", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("requeues a hard enrichment failure without consuming an attempt and surfaces it", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // requeueForEnrichment UPDATE → queued
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({
+        ready: false,
+        knownIocHit: false,
+        status: "failed",
+        lastError: "IOC_EVIDENCE_HMAC_KEY must be set in production",
+      }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    // Not ready → no LLM call, job requeued (not failed), attempts untouched.
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    expect(
+      sqlIncludes(authPool, "last_error = 'awaiting_enrichment'"),
+    ).toBeDefined();
+    expect(sqlIncludes(authPool, "status = 'failed'")).toBeUndefined();
+
+    // The operational failure is logged distinctly, carrying last_error —
+    // so the requeue is diagnosable, not a silent spin.
+    const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(log).toContain("analysis.story_enrichment_failed_requeued");
+    expect(log).toContain("IOC_EVIDENCE_HMAC_KEY");
+    warn.mockRestore();
+  });
+
+  it("requeues a still-pending enrichment as the (non-error) incomplete state", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      // No marker yet (status null) → pending, not a hard failure.
+      checkEnrichmentReady: async () => ({
+        ready: false,
+        knownIocHit: false,
+        status: null,
+      }),
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(log).toContain("analysis.story_enrichment_incomplete_requeued");
+    expect(log).not.toContain("analysis.story_enrichment_failed_requeued");
+    warn.mockRestore();
   });
 });
 
@@ -730,6 +820,7 @@ describe("processStoryJob — event-time precondition", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -770,6 +861,7 @@ describe("processStoryJob — event-time precondition", () => {
       { ...baseJob(), attempts: 4 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -812,6 +904,7 @@ describe("processStoryJob — hallucination scan", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
@@ -859,6 +952,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -891,6 +985,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
       { ...baseJob(), attempts: 4 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -925,6 +1020,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });
@@ -963,6 +1059,7 @@ describe("processStoryJob — retryable + fatal aimer errors", () => {
       { ...baseJob(), attempts: 2 },
       {
         authPool: authPool as never,
+        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
       },
@@ -996,6 +1093,7 @@ describe("processStoryJob — source unavailable", () => {
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
     });

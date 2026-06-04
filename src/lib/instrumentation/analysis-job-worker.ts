@@ -38,6 +38,7 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
+import { tickStoryEnrichmentOnce } from "../analysis/enrichment-worker";
 import {
   recoverStuckReportJobs,
   requeueLiveReportJobs,
@@ -473,6 +474,13 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   } finally {
     client.release();
   }
+  // IOC enrichment (RFC 0003 P1a #361) — derive `known_ioc_hit` and the
+  // per-story enrichment-state marker for stories about to be analyzed,
+  // BEFORE the story dispatch so enrichment usually lands first. The
+  // story-analysis worker's own precondition is the actual ordering
+  // guarantee (it requeues until the marker is complete), so this tick is
+  // an optimization, not the correctness mechanism.
+  await tickStoryEnrichmentOnce(pool, BATCH_SIZE);
   // Story LLM dispatch — picks `queued` real jobs, runs `analyzeStory`,
   // and writes `story_analysis_result`. Per-job advisory locks keep
   // multiple replicas from double-running the same (customer, story).

@@ -83,7 +83,14 @@ The header section shows three score-related fields:
   raises effective likelihood to `≥ 0.7` before the matrix lookup; a
   `known_ioc_hit` on the story raises it to `≥ 0.95`) are applied at
   tier derivation only, so calibration data and the floor policy stay
-  revisable without rewriting history.
+  revisable without rewriting history. The `known_ioc_hit` signal is
+  produced inside the platform by matching the story's observed
+  indicators (IP / domain / URL / file hash) against Tier-1 local threat-
+  intelligence feeds — curated known-bad lists imported and matched
+  locally, so customer indicators never leave the host. Only a
+  deterministic match from a license-cleared feed raises the floor; a
+  match from an uncleared or non-deterministic source is recorded for
+  context but does not.
 
 ### Tier matrix
 

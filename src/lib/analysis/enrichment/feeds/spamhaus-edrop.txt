@@ -1,0 +1,8 @@
+; Spamhaus EDROP List (PINNED FIXTURE)
+;
+; Committed test fixture, NOT a live feed download. Network is an RFC 5737
+; documentation range (TEST-NET) so the fixture references no real
+; infrastructure. Format mirrors the published list: `<CIDR> ; <SBLref>`,
+; with `;` comment lines.
+;
+203.0.113.0/24 ; SBL000003
