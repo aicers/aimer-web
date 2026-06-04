@@ -1,7 +1,11 @@
-// RFC 0003 P1a (#361) — extract normalized indicators from a stored,
-// already-redacted `story_member.event` JSONB (RFC 0003 worker step 1).
+// RFC 0003 P1a (#361) — extract normalized indicators from stored,
+// already-redacted member sources (RFC 0003 worker step 1): the
+// `story_member.event` JSONB and the discrete `policy_event` columns
+// (`orig_addr`/`resp_addr`/`host`/`dns_query`/`uri`) for the same
+// event_key. The caller passes them as one value (any JSON shape — object,
+// array of strings, or a mix); this walker handles all of them.
 //
-// Indicators are drawn from the stored member row, matching the CURRENT
+// Indicators are drawn from the stored member rows, matching the CURRENT
 // redaction reality (no RFC 0001 Amendment A / #424 dependency):
 //
 //   * External / pass-through IPs are stored RAW in member text (empty or

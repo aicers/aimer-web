@@ -2,8 +2,11 @@
 //
 // For a story's canonical version, the worker:
 //   1. extracts + normalizes indicators from the stored, already-redacted
-//      member rows (recovering tokenized customer-asset IPs via the event
-//      redaction map),
+//      member rows — both the `story_member.event` JSONB and the discrete
+//      `policy_event` columns (`orig_addr`/`resp_addr`/`host`/`dns_query`/
+//      `uri`) for the same event_key, which are redacted independently at
+//      ingest but share the same event_redaction_map row — recovering
+//      tokenized customer-asset IPs via that map,
 //   2. dispatches each through the Tier-1 local-feed dispatcher (#427),
 //   3. derives `known_ioc_hit` = OR over members of any match where
 //      `matchSatisfiesFloor` (deterministic_ioc && floorEligible; non-public
@@ -48,15 +51,33 @@ import type { CoverageStatus } from "./enrichment/types";
 // The key ring is injected (in-memory / config) per RFC 0003 — persisting
 // and rotating keys via OpenBao is the separate HMAC-key-management
 // follow-up. Evidence still stamps `hmacKeyVersion` and verifies across
-// versions. The dev fallback keeps local/test runs working; production
-// supplies `IOC_EVIDENCE_HMAC_KEY` (+ optional `_VERSION`).
+// versions. Production must supply `IOC_EVIDENCE_HMAC_KEY` (+ optional
+// `_VERSION`); a dev/test fallback keeps local runs working.
 let cachedKeyRing: HmacKeyRing | undefined;
 
 export function getEvidenceKeyRing(): HmacKeyRing {
   if (cachedKeyRing) return cachedKeyRing;
   const version = process.env.IOC_EVIDENCE_HMAC_KEY_VERSION ?? "v1";
-  const key =
-    process.env.IOC_EVIDENCE_HMAC_KEY ?? "dev-insecure-ioc-evidence-hmac-key";
+  const key = process.env.IOC_EVIDENCE_HMAC_KEY;
+  if (!key) {
+    // Fail closed in production. The evidence table deliberately stores
+    // only the keyed HMAC of each indicator — raw IP/domain/URL/hash
+    // values are sensitive and often dictionaryable, so a public default
+    // key would let any DB reader recompute likely plaintext and undo
+    // that privacy property. Refuse to write evidence without a real key
+    // configured; the dev fallback is for local/test only.
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "IOC_EVIDENCE_HMAC_KEY must be set in production: refusing to write " +
+          "IOC evidence with a public default HMAC key.",
+      );
+    }
+    cachedKeyRing = new HmacKeyRing(
+      { [version]: "dev-insecure-ioc-evidence-hmac-key" },
+      version,
+    );
+    return cachedKeyRing;
+  }
   cachedKeyRing = new HmacKeyRing({ [version]: key }, version);
   return cachedKeyRing;
 }
@@ -134,6 +155,38 @@ async function loadMembers(
   return rows;
 }
 
+interface PolicyEventFields {
+  orig_addr: string | null;
+  resp_addr: string | null;
+  host: string | null;
+  dns_query: string | null;
+  uri: string | null;
+}
+
+/**
+ * The discrete, redacted `policy_event` columns for a member's event_key.
+ * These are separate storage from `story_member.event` (redacted
+ * independently at ingest, per RFC 0003 §3) and can carry an indicator
+ * absent from the member JSONB, so enrichment must read both. `event_key`
+ * may recur across runs with identical network fields, so `DISTINCT`
+ * collapses the duplicates; per-indicator de-dup in `extractIndicators`
+ * is the backstop. After redaction the address columns are TEXT holding
+ * either a raw external IP or a `<<REDACTED_IP_n>>` token (recovered via
+ * the same event_redaction_map row as the member text).
+ */
+async function loadPolicyEventFields(
+  customerPool: Pool,
+  eventKey: string,
+): Promise<PolicyEventFields[]> {
+  const { rows } = await customerPool.query<PolicyEventFields>(
+    `SELECT DISTINCT orig_addr, resp_addr, host, dns_query, uri
+       FROM policy_event
+      WHERE event_key = $1::numeric`,
+    [eventKey],
+  );
+  return rows;
+}
+
 /** Read + decrypt the event redaction map (no advisory lock — read-only). */
 export type LoadRedactionMap = (
   customerPool: Pool,
@@ -166,26 +219,23 @@ const defaultLoadRedactionMap: LoadRedactionMap = async (
 };
 
 /**
- * Build a token-recovery closure for one member. The redaction map is only
- * loaded + decrypted when the member actually contains a token, so the
- * common (raw-only) path never touches the secret store.
+ * Build a token-recovery closure for one member's event_key. The redaction
+ * map is only loaded + decrypted when `content` (the combined member JSONB
+ * + policy_event columns) actually contains a token, so the common
+ * (raw-only) path never touches the secret store.
  */
 async function buildRecover(
   customerPool: Pool,
   customerId: string,
   aiceId: string,
-  member: MemberEventRow,
+  eventKey: string,
+  content: unknown,
   loadMap: LoadRedactionMap,
 ): Promise<RecoverToken> {
-  if (!JSON.stringify(member.event ?? null).includes("<<REDACTED_")) {
+  if (!JSON.stringify(content ?? null).includes("<<REDACTED_")) {
     return () => undefined;
   }
-  const map = await loadMap(
-    customerPool,
-    customerId,
-    aiceId,
-    member.member_event_key,
-  );
+  const map = await loadMap(customerPool, customerId, aiceId, eventKey);
   if (!map) return () => undefined;
   return (token) => map[token];
 }
@@ -261,15 +311,29 @@ export async function runStoryEnrichment(
   const evidence: EvidenceRecord[] = [];
 
   for (const member of members) {
+    // Combine both redacted sources for this event_key: the member JSONB
+    // and the discrete policy_event columns (RFC 0003 §3). They are
+    // redacted independently at ingest but share one event_redaction_map
+    // row, so a single recover closure covers tokens from either. Nulls
+    // and the nested object are walked uniformly by `extractIndicators`.
+    const policyRows = await loadPolicyEventFields(
+      customerPool,
+      member.member_event_key,
+    );
+    const sources: unknown[] = [member.event];
+    for (const p of policyRows) {
+      sources.push(p.orig_addr, p.resp_addr, p.host, p.dns_query, p.uri);
+    }
     const recover = await buildRecover(
       customerPool,
       customerId,
       canonical.sourceAiceId,
-      member,
+      member.member_event_key,
+      sources,
       loadMap,
     );
     for (const { indicator, redactionToken } of extractIndicators(
-      member.event,
+      sources,
       recover,
     )) {
       const merged = await dispatcher.dispatch(indicator);

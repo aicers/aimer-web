@@ -119,6 +119,54 @@ async function seedStory(
   );
 }
 
+/**
+ * Seed a `policy_event` row for `eventKey` carrying the IOC only in the
+ * discrete typed columns (separate storage from `story_member.event`).
+ * `seedStory` uses member_event_key = 1, so the default event_key matches.
+ */
+async function seedPolicyEvent(
+  customerPool: Pool,
+  runId: string,
+  fields: Partial<PolicyEventFields>,
+  eventKey = "1",
+): Promise<void> {
+  await customerPool.query(
+    `INSERT INTO policy_run
+       (run_id, period_start, period_end, created_at_source,
+        baseline_version, policies_fingerprint, exclusions_fingerprint,
+        status, source_aice_id)
+     VALUES ($1::bigint, '2026-05-01T00:00:00Z', '2026-05-01T01:00:00Z',
+             '2026-05-01T00:00:00Z', 'bv1', 'pf', 'ef', 'ready', $2)
+     ON CONFLICT (run_id) DO NOTHING`,
+    [runId, AICE_ID],
+  );
+  await customerPool.query(
+    `INSERT INTO policy_event
+       (run_id, event_key, event_time, kind, orig_addr, resp_addr,
+        host, dns_query, uri, policy_triage_snapshot,
+        redaction_policy_version)
+     VALUES ($1::bigint, $2::numeric, '2026-05-01T00:00:00Z', 'conn',
+             $3, $4, $5, $6, $7, '{}'::jsonb, 'engine:1.0.0|ranges:empty')`,
+    [
+      runId,
+      eventKey,
+      fields.orig_addr ?? null,
+      fields.resp_addr ?? null,
+      fields.host ?? null,
+      fields.dns_query ?? null,
+      fields.uri ?? null,
+    ],
+  );
+}
+
+interface PolicyEventFields {
+  orig_addr: string | null;
+  resp_addr: string | null;
+  host: string | null;
+  dns_query: string | null;
+  uri: string | null;
+}
+
 async function importFeodo(authPool: Pool, sourceUpdatedAt: string) {
   await importFeedSnapshot(authPool, {
     sourcePolicyId: "abuse.ch/feodo",
@@ -167,6 +215,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
 
   beforeEach(async () => {
     await customerPool.query("DELETE FROM story");
+    await customerPool.query("DELETE FROM policy_run");
     await authPool.query("DELETE FROM ioc_feed_snapshot");
     await authPool.query("DELETE FROM story_analysis_state");
   });
@@ -330,6 +379,58 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
         WHERE story_id = 1004 AND story_version = 'v1'`,
     );
     // Recovered value → the TOKEN is the evidence reference, not the value.
+    expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+  });
+
+  it("extracts an IOC present only in the policy_event typed columns", async () => {
+    await importFeodo(authPool, FRESH);
+    // The member JSONB carries NO indicator; the IOC lives only in the
+    // discrete policy_event.resp_addr column for the same event_key. A
+    // worker that read story_member.event alone would mark the story
+    // complete with known_ioc_hit=false and never flip the floor.
+    await seedStory(customerPool, "1007", { note: "no indicator in JSONB" });
+    await seedPolicyEvent(customerPool, "5001", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1007",
+      opts(authPool, customerPool),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1007 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(true);
+  });
+
+  it("recovers a tokenized IP from a policy_event column via the map", async () => {
+    await importFeodo(authPool, FRESH);
+    // The IOC is tokenized in policy_event.orig_addr (a customer-asset IP),
+    // absent from the member JSONB. Token recovery uses the same
+    // event_redaction_map row as the member text.
+    await seedStory(customerPool, "1008", { note: "no indicator in JSONB" });
+    await seedPolicyEvent(customerPool, "5002", {
+      orig_addr: "<<REDACTED_IP_001>>",
+    });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1008",
+      opts(authPool, customerPool, {
+        loadRedactionMap: async () => ({
+          "<<REDACTED_IP_001>>": { kind: "ip", value: "45.66.230.5" },
+        }),
+      }),
+    );
+    expect(result.knownIocHit).toBe(true);
+
+    const { rows: ev } = await customerPool.query<{ redaction_token: string }>(
+      `SELECT redaction_token FROM story_ioc_evidence
+        WHERE story_id = 1008 AND story_version = 'v1'`,
+    );
     expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
   });
 
