@@ -231,6 +231,14 @@ interface ProcessOptions {
 interface EnrichmentReadiness {
   ready: boolean;
   knownIocHit: boolean;
+  /**
+   * The `story_enrichment_state.status` (`complete` / `failed`) or `null`
+   * when no marker exists yet. Lets the worker distinguish a still-pending
+   * enrichment from a hard, operator-visible failure when it requeues.
+   */
+  status?: string | null;
+  /** `last_error` recorded by a hard enrichment failure, surfaced in logs. */
+  lastError?: string | null;
 }
 
 export async function processStoryJob(
@@ -409,14 +417,22 @@ export async function processStoryJob(
   )(customerPool, job.story_id, canonical.storyVersion);
   if (!enrichment.ready) {
     await requeueForEnrichment(opts.authPool, job);
+    // A hard enrichment failure persists a `failed` marker with
+    // `last_error` (RFC 0003 P1a #361). Surface it distinctly so the
+    // requeue is a diagnosable operational state, not a silent spin — the
+    // job still requeues (recoverably) so a never-stale floor is preserved.
+    const failed = enrichment.status === "failed";
     console.warn(
       JSON.stringify({
-        level: "warn",
-        event: "analysis.story_enrichment_incomplete_requeued",
+        level: failed ? "error" : "warn",
+        event: failed
+          ? "analysis.story_enrichment_failed_requeued"
+          : "analysis.story_enrichment_incomplete_requeued",
         customer_id: job.customer_id,
         story_id: job.story_id,
         story_version: canonical.storyVersion,
         generation: job.generation,
+        ...(failed ? { last_error: enrichment.lastError } : {}),
       }),
     );
     return;
@@ -1136,9 +1152,10 @@ async function defaultCheckEnrichmentReady(
 ): Promise<EnrichmentReadiness> {
   const { rows } = await customerPool.query<{
     status: string | null;
+    last_error: string | null;
     known_ioc_hit: boolean | null;
   }>(
-    `SELECT ses.status, s.known_ioc_hit
+    `SELECT ses.status, ses.last_error, s.known_ioc_hit
        FROM story s
        LEFT JOIN story_enrichment_state ses
          ON ses.story_id = s.story_id
@@ -1149,6 +1166,8 @@ async function defaultCheckEnrichmentReady(
   return {
     ready: rows[0]?.status === "complete",
     knownIocHit: rows[0]?.known_ioc_hit ?? false,
+    status: rows[0]?.status ?? null,
+    lastError: rows[0]?.last_error ?? null,
   };
 }
 

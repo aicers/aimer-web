@@ -12,6 +12,7 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import ipaddr from "ipaddr.js";
 import type { Pool } from "pg";
 import {
   NormalizationError,
@@ -56,6 +57,34 @@ export function parseUrlhausCsv(text: string): string[] {
     if (url) urls.push(url);
   }
   return urls;
+}
+
+/**
+ * The host of each URLhaus URL that is a DOMAIN (not a bare-IP host),
+ * lowercased. URLhaus publishes full URLs, but a story member often carries
+ * only a bare `host`/`dns_query` domain; emitting the URL's host as a
+ * separate DOMAIN row lets such a member match the same malicious
+ * infrastructure (the `abuse.ch/urlhaus` policy already declares `DOMAIN`).
+ * Matching on the exact host (FQDN) — not the registered domain — keeps it
+ * precise: `c2.evil.test` matches, a sibling `mail.evil.test` does not, so a
+ * malicious URL on shared hosting cannot over-flag the whole apex. IP hosts
+ * are skipped (the IP, if public, is covered by IP feeds).
+ */
+export function parseUrlhausHosts(urls: readonly string[]): string[] {
+  const hosts: string[] = [];
+  for (const url of urls) {
+    let host: string;
+    try {
+      host = normalizeUrl(url).derived?.host ?? "";
+    } catch {
+      continue;
+    }
+    if (host.length === 0) continue;
+    // Strip IPv6 brackets before the IP test (`[2001:db8::1]` → `2001:db8::1`).
+    if (ipaddr.isValid(host.replace(/^\[|\]$/g, ""))) continue;
+    hosts.push(host);
+  }
+  return hosts;
 }
 
 /**
@@ -116,6 +145,12 @@ function splitCsv(line: string): string[] {
 export interface FeedSnapshotRow {
   matchValue?: string;
   cidr?: string;
+  /**
+   * Per-row entity type, overriding the import's default. Lets one source
+   * (e.g. URLhaus) contribute rows of more than one entity type — its URLs
+   * as `URL` and their hosts as `DOMAIN` — under a single `source_policy_id`.
+   */
+  entityType?: EntityType;
 }
 
 /**
@@ -228,7 +263,7 @@ export async function importFeedSnapshot(
          VALUES ($1, $2, $3, $4::cidr, $5, $6, $7, $8, $9, $10::timestamptz)`,
         [
           params.sourcePolicyId,
-          params.entityType,
+          row.entityType ?? params.entityType,
           row.matchValue ?? null,
           row.cidr ?? null,
           params.hitType,

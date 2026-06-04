@@ -44,7 +44,11 @@ import { importFeedSnapshot } from "../enrichment/feed-import";
 import { PgFeedStore } from "../enrichment/feed-store";
 import { seedFixtureFeeds } from "../enrichment/fixture-feeds";
 import { buildLocalFeedDispatcher } from "../enrichment/local-feed-enricher";
-import { normalizeIp, normalizeUrl } from "../enrichment/normalization";
+import {
+  normalizeDomain,
+  normalizeIp,
+  normalizeUrl,
+} from "../enrichment/normalization";
 import type { SourcePolicy } from "../enrichment/source-policy";
 import {
   type EnrichmentWorkerOptions,
@@ -523,6 +527,85 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(ev[0].redaction_token).toBe("45.66.230.5");
   });
 
+  it("persists a visible, recoverable failed marker on a hard enrichment failure", async () => {
+    await importFeodo(authPool, FRESH);
+    await seedStory(customerPool, "1012", { resp_addr: "45.66.230.5" });
+
+    // A hard failure reached AFTER the canonical version is known — here the
+    // dispatcher build throws, standing in for a key-ring/config/decryption/
+    // DB error. Without a marker this would requeue analysis forever with
+    // only process logs to explain it.
+    const failing = opts(authPool, customerPool, {
+      buildDispatcher: () => {
+        throw new Error("boom: dispatcher unavailable");
+      },
+    });
+    await expect(
+      runStoryEnrichment(CUSTOMER_ID, "1012", failing),
+    ).rejects.toThrow(/boom/);
+
+    // The stall is now visible in the customer DB.
+    const { rows } = await customerPool.query<{
+      status: string;
+      last_error: string | null;
+      known_ioc_hit: boolean;
+    }>(
+      `SELECT status, last_error, known_ioc_hit FROM story_enrichment_state
+        WHERE story_id = 1012 AND story_version = 'v1'`,
+    );
+    expect(rows[0].status).toBe("failed");
+    expect(rows[0].last_error).toMatch(/boom/);
+    expect(rows[0].known_ioc_hit).toBe(false);
+
+    // Recoverable: a later successful run flips failed → complete.
+    const ok = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1012",
+      opts(authPool, customerPool),
+    );
+    expect(ok.knownIocHit).toBe(true);
+
+    // Monotonic-safe: a later transient failure must NOT downgrade an
+    // already-complete enrichment or erase its observed hit (only record
+    // the diagnostic last_error).
+    await expect(
+      runStoryEnrichment(CUSTOMER_ID, "1012", failing),
+    ).rejects.toThrow(/boom/);
+    const { rows: stable } = await customerPool.query<{
+      status: string;
+      known_ioc_hit: boolean;
+      last_error: string | null;
+    }>(
+      `SELECT status, known_ioc_hit, last_error FROM story_enrichment_state
+        WHERE story_id = 1012 AND story_version = 'v1'`,
+    );
+    expect(stable[0].status).toBe("complete");
+    expect(stable[0].known_ioc_hit).toBe(true);
+    expect(stable[0].last_error).toMatch(/boom/);
+  });
+
+  it("a no-hit story completes without resolving the evidence HMAC key (lazy)", async () => {
+    await importFeodo(authPool, FRESH);
+    // Indicator that does NOT hit the feed → no evidence record is built.
+    await seedStory(customerPool, "1013", { resp_addr: "45.66.230.99" });
+
+    // No keyRing injected and NODE_ENV=production: `getEvidenceKeyRing()`
+    // would THROW (fail-closed) if it were resolved. Lazy resolution means a
+    // no-hit story never reaches it, so enrichment still completes — the
+    // fail-closed guard cannot stall a story that had nothing to record.
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const result = await runStoryEnrichment(CUSTOMER_ID, "1013", {
+        ...opts(authPool, customerPool),
+        keyRing: undefined,
+      });
+      expect(result.status).toBe("complete");
+      expect(result.knownIocHit).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("seeds the pinned fixture feeds and matches a fixture IP via PgFeedStore", async () => {
     await seedFixtureFeeds(authPool, { sourceUpdatedAt: FRESH });
     const store = new PgFeedStore(authPool);
@@ -554,6 +637,23 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
       normalizeUrl("http://malware.example/payload.exe"),
     );
     expect(urlHit.length).toBeGreaterThan(0);
+
+    // A bare domain (e.g. a story's dns_query) matches the URLhaus host
+    // imported as a DOMAIN row — would miss if only full URLs were seeded.
+    const domainHit = await store.match(
+      "abuse.ch/urlhaus",
+      normalizeDomain("malware.example"),
+    );
+    expect(domainHit.length).toBeGreaterThan(0);
+    expect(domainHit[0].hitType).toBe("deterministic_ioc");
+
+    // A different host under the same apex must NOT match (host-exact, not
+    // registered-domain): URLhaus seeds `c2.example.test`, not `*.example.test`.
+    const siblingMiss = await store.match(
+      "abuse.ch/urlhaus",
+      normalizeDomain("mail.example.test"),
+    );
+    expect(siblingMiss).toHaveLength(0);
   });
 
   it("tickStoryEnrichmentOnce enriches stories with a queued analysis job", async () => {

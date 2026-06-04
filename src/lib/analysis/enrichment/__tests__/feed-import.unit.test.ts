@@ -13,6 +13,7 @@ import {
   parseIpBlocklist,
   parseSpamhausDrop,
   parseUrlhausCsv,
+  parseUrlhausHosts,
 } from "../feed-import";
 
 describe("feed parsers", () => {
@@ -31,6 +32,17 @@ describe("feed parsers", () => {
       "http://malware.example/a.exe",
       "https://c2.example.test/gate.php",
     ]);
+  });
+
+  it("extracts URLhaus URL hosts as DOMAINs, skipping IP hosts", () => {
+    const hosts = parseUrlhausHosts([
+      "http://malware.example/a.exe",
+      "https://c2.example.test/gate.php",
+      "http://198.51.100.7/payload", // IPv4 host → skipped (covered by IP feeds)
+      "http://[2001:db8::1]/x", // IPv6 host → skipped
+      "not a url", // unparseable → skipped
+    ]);
+    expect(hosts).toEqual(["malware.example", "c2.example.test"]);
   });
 
   it("parses Spamhaus DROP, taking the CIDR and dropping the SBL comment", () => {

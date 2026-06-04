@@ -23,6 +23,7 @@ import {
   parseIpBlocklist,
   parseSpamhausDrop,
   parseUrlhausCsv,
+  parseUrlhausHosts,
 } from "./feed-import";
 import type { EntityType, HitType } from "./types";
 
@@ -88,8 +89,19 @@ export function loadFixtureRows(spec: FixtureFeedSpec): FeedSnapshotRow[] {
   switch (spec.parse) {
     case "ip-blocklist":
       return normalizeExactValues(spec.entityType, parseIpBlocklist(text)).rows;
-    case "urlhaus-csv":
-      return normalizeExactValues(spec.entityType, parseUrlhausCsv(text)).rows;
+    case "urlhaus-csv": {
+      // URLhaus contributes both URL rows and the DOMAIN host of each URL,
+      // under the one `abuse.ch/urlhaus` source, so a bare `host`/`dns_query`
+      // domain member matches the same infrastructure (its policy already
+      // declares `["URL", "DOMAIN"]`).
+      const urls = parseUrlhausCsv(text);
+      const urlRows = normalizeExactValues("URL", urls).rows;
+      const domainRows = normalizeExactValues(
+        "DOMAIN",
+        parseUrlhausHosts(urls),
+      ).rows.map((row) => ({ ...row, entityType: "DOMAIN" as EntityType }));
+      return [...urlRows, ...domainRows];
+    }
     case "spamhaus-drop":
       return normalizeCidrs(parseSpamhausDrop(text)).rows;
     default:

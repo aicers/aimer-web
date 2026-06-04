@@ -297,12 +297,23 @@ export async function runStoryEnrichment(
     customerId,
   );
   const now = opts.now ?? (() => new Date());
-  const keyRing = opts.keyRing ?? getEvidenceKeyRing();
   const loadMap = opts.loadRedactionMap ?? defaultLoadRedactionMap;
   const buildDispatcher =
     opts.buildDispatcher ??
     ((authPool, clock) =>
       buildLocalFeedDispatcher(new PgFeedStore(authPool), { now: clock }));
+
+  // The evidence HMAC key ring is resolved lazily — only when a
+  // floor-supporting match actually needs an evidence record. A story with
+  // no floor-eligible hit (the common case, and the only case while every
+  // feed ships `floorEligible: false`) never touches the key store, so the
+  // fail-closed production guard in `getEvidenceKeyRing()` cannot stall an
+  // analysis job that would have had nothing to record anyway.
+  let keyRing: HmacKeyRing | undefined = opts.keyRing;
+  const resolveKeyRing = (): HmacKeyRing => {
+    if (!keyRing) keyRing = getEvidenceKeyRing();
+    return keyRing;
+  };
 
   const canonical = await loadCanonicalVersion(customerPool, storyId);
   if (!canonical) {
@@ -314,12 +325,58 @@ export async function runStoryEnrichment(
     };
   }
 
+  // Once the canonical version is known, any hard failure (key-ring config,
+  // redaction-map decryption, DB error) must leave a VISIBLE, recoverable
+  // marker. Without it the analysis precondition would requeue forever with
+  // nothing but process logs to explain the stall. A `failed` marker is
+  // recoverable: a later successful run flips it back to `complete`.
+  try {
+    return await enrichCanonicalVersion(customerPool, {
+      customerId,
+      storyId,
+      canonical,
+      now,
+      loadMap,
+      buildDispatcher: () => buildDispatcher(opts.authPool, now),
+      resolveKeyRing,
+    });
+  } catch (err) {
+    await persistEnrichmentFailure(customerPool, {
+      storyId,
+      storyVersion: canonical.storyVersion,
+      error: err,
+    }).catch((markErr) => {
+      console.error(
+        "[enrichment-worker] failed to persist enrichment-failure marker:",
+        markErr,
+      );
+    });
+    throw err;
+  }
+}
+
+interface EnrichCanonicalArgs {
+  customerId: string;
+  storyId: string;
+  canonical: CanonicalVersion;
+  now: () => Date;
+  loadMap: LoadRedactionMap;
+  buildDispatcher: () => EnrichmentDispatcher;
+  resolveKeyRing: () => HmacKeyRing;
+}
+
+/** Run the dispatch + persist for one canonical version (throws on hard error). */
+async function enrichCanonicalVersion(
+  customerPool: Pool,
+  args: EnrichCanonicalArgs,
+): Promise<EnrichmentOutcome> {
+  const { customerId, storyId, canonical, now, loadMap } = args;
   const members = await loadMembers(
     customerPool,
     storyId,
     canonical.storyVersion,
   );
-  const dispatcher = buildDispatcher(opts.authPool, now);
+  const dispatcher = args.buildDispatcher();
   const checkedAt = now().toISOString();
 
   let knownIocHit = false;
@@ -364,7 +421,8 @@ export async function runStoryEnrichment(
             indicator,
             match,
             redactionToken,
-            keyRing,
+            // Resolved only here — the first floor-supporting match.
+            keyRing: args.resolveKeyRing(),
             checkedAt,
             expiresAt: merged.expiresAt,
             coverage: merged.coverage,
@@ -501,6 +559,39 @@ async function persistEnrichment(
   }
 }
 
+/**
+ * Record a hard enrichment failure as a VISIBLE, recoverable
+ * `story_enrichment_state` row so the analysis precondition's requeue is no
+ * longer an invisible stall: operators see `status = 'failed'` and the
+ * `last_error`. Monotonic-safe — a prior `complete` (and its observed
+ * `known_ioc_hit`) is never downgraded, so a transient failure after a good
+ * run cannot un-ready a story; only a never-completed version is marked
+ * `failed`. A subsequent successful run flips it back to `complete`.
+ */
+async function persistEnrichmentFailure(
+  customerPool: Pool,
+  args: { storyId: string; storyVersion: string; error: unknown },
+): Promise<void> {
+  const message =
+    args.error instanceof Error ? args.error.message : String(args.error);
+  await customerPool.query(
+    `INSERT INTO story_enrichment_state
+       (story_id, story_version, status, coverage_status, known_ioc_hit,
+        last_error)
+     VALUES ($1::bigint, $2, 'failed', 'unknown', FALSE, $3)
+     ON CONFLICT (story_id, story_version) DO UPDATE SET
+       status          = CASE WHEN story_enrichment_state.status = 'complete'
+                              THEN 'complete' ELSE 'failed' END,
+       coverage_status = CASE WHEN story_enrichment_state.status = 'complete'
+                              THEN story_enrichment_state.coverage_status
+                              ELSE 'unknown' END,
+       known_ioc_hit   = story_enrichment_state.known_ioc_hit,
+       last_error      = EXCLUDED.last_error,
+       updated_at      = NOW()`,
+    [args.storyId, args.storyVersion, message.slice(0, 2000)],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tick — drive enrichment for stories about to be analyzed
 // ---------------------------------------------------------------------------
@@ -549,8 +640,10 @@ export async function tickStoryEnrichmentOnce(
   let enriched = 0;
   for (const candidate of candidates) {
     // Per-candidate failures (e.g. an unresolvable customer pool) must
-    // never break the analysis loop — log and move on. The analysis
-    // worker's precondition still requeues until enrichment lands.
+    // never break the analysis loop — log and move on. A hard failure
+    // reached after the canonical version is known has already persisted a
+    // visible `failed` marker (see `runStoryEnrichment`); the analysis
+    // precondition reports that state and keeps requeuing (recoverably).
     try {
       const customerPool = resolve(candidate.customer_id);
       const canonical = await loadCanonicalVersion(

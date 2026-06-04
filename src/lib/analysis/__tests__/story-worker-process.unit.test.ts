@@ -690,6 +690,81 @@ describe("processStoryJob — redaction-policy precondition", () => {
   });
 });
 
+describe("processStoryJob — enrichment precondition", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("requeues a hard enrichment failure without consuming an attempt and surfaces it", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // requeueForEnrichment UPDATE → queued
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({
+        ready: false,
+        knownIocHit: false,
+        status: "failed",
+        lastError: "IOC_EVIDENCE_HMAC_KEY must be set in production",
+      }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    // Not ready → no LLM call, job requeued (not failed), attempts untouched.
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    expect(
+      sqlIncludes(authPool, "last_error = 'awaiting_enrichment'"),
+    ).toBeDefined();
+    expect(sqlIncludes(authPool, "status = 'failed'")).toBeUndefined();
+
+    // The operational failure is logged distinctly, carrying last_error —
+    // so the requeue is diagnosable, not a silent spin.
+    const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(log).toContain("analysis.story_enrichment_failed_requeued");
+    expect(log).toContain("IOC_EVIDENCE_HMAC_KEY");
+    warn.mockRestore();
+  });
+
+  it("requeues a still-pending enrichment as the (non-error) incomplete state", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      // No marker yet (status null) → pending, not a hard failure.
+      checkEnrichmentReady: async () => ({
+        ready: false,
+        knownIocHit: false,
+        status: null,
+      }),
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+    });
+
+    const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(log).toContain("analysis.story_enrichment_incomplete_requeued");
+    expect(log).not.toContain("analysis.story_enrichment_failed_requeued");
+    warn.mockRestore();
+  });
+});
+
 function nullEventTimeMembersQuery(): Array<unknown> {
   return [
     {
