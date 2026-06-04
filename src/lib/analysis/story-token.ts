@@ -216,8 +216,9 @@ export interface ScanResult {
  * a literal is flagged only if the engine WOULD HAVE redacted it
  * given the customer's `ranges` (private always; public per
  * `shouldRedactPublicIP`, which treats an empty range set as
- * "redact all public"). Public out-of-range IPs that legitimately
- * passed through redaction into `story_member.event` are NOT flagged
+ * "redact no public" — public IPs pass through). Public out-of-range
+ * IPs that legitimately passed through redaction into
+ * `story_member.event` are NOT flagged
  * — otherwise the LLM faithfully echoing such an input would
  * permanently fail the job for any customer that narrowed their
  * redaction scope.

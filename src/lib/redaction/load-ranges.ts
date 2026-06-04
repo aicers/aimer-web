@@ -2,10 +2,10 @@
 // turn them into the `RangeSet` the engine consumes.
 //
 // Empty result → empty RangeSet, which the engine treats as "redact
-// all public IPs" (the safe default per RFC 0001 §"Redaction engine
-// — v1 policy"). The admin UI in #252 will eventually populate this
-// table; until then every customer reaches the engine with an empty
-// range set.
+// no public IPs" — public IPs pass through (per RFC 0001 §"Redaction
+// engine — v1 policy"); private/internal IPs are always redacted.
+// The admin UI in #252 will eventually populate this table; until
+// then every customer reaches the engine with an empty range set.
 
 import "server-only";
 
