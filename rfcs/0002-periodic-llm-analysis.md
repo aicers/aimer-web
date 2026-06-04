@@ -265,8 +265,9 @@ CREATE TABLE story_analysis_result (
   ttp_tags                 JSONB        NOT NULL DEFAULT '[]',    -- array of validated MITRE ATT&CK technique IDs (e.g. ["T1078", "T1110.001"]); see §"MITRE ATT&CK TTP tagging"
   priority_tier            TEXT         NOT NULL,         -- CRITICAL|HIGH|MEDIUM|LOW; derived from (severity, likelihood) matrix
   analysis_text            TEXT         NOT NULL,
-  input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
-  input_hash               TEXT         NOT NULL,         -- sha256 of the canonical LLM input (members + metadata + refs)
+  input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for E{i} token namespacing demap
+  input_fact_refs          JSONB        NOT NULL DEFAULT '[]', -- ordered [enrichment-row id, ...] for F{k} fact-scope demap (RFC 0001 Amendment A); empty when no enrichment facts carried customer-asset tokens
+  input_hash               TEXT         NOT NULL,         -- sha256 of the canonical LLM input (members + metadata + event refs + fact refs)
   redaction_policy_version TEXT         NOT NULL,
   requested_by             UUID,
   requested_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
