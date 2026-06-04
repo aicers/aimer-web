@@ -1,0 +1,64 @@
+{
+  "feeds": [
+    {
+      "sourcePolicyId": "abuse.ch/feodo",
+      "source": "abuse.ch/feodo",
+      "entityTypes": ["IP"],
+      "sourceVersion": "2026-06-01",
+      "feedHash": "feodo-snapshot-0001",
+      "sourceUpdatedAt": "2026-06-04T00:00:00.000Z",
+      "expiresAt": "2026-06-05T00:00:00.000Z",
+      "entries": [
+        {
+          "matchValue": "45.66.230.5",
+          "hitType": "deterministic_ioc",
+          "classification": "c2",
+          "confidence": 1
+        },
+        {
+          "cidr": "198.51.100.0/24",
+          "hitType": "deterministic_ioc",
+          "classification": "c2"
+        }
+      ]
+    },
+    {
+      "sourcePolicyId": "abuse.ch/urlhaus",
+      "source": "abuse.ch/urlhaus",
+      "entityTypes": ["URL", "DOMAIN"],
+      "sourceVersion": "2026-06-02",
+      "feedHash": "urlhaus-snapshot-0007",
+      "sourceUpdatedAt": "2026-06-04T00:00:00.000Z",
+      "expiresAt": "2026-06-04T12:00:00.000Z",
+      "entries": [
+        {
+          "matchValue": "malware.example",
+          "hitType": "deterministic_ioc",
+          "classification": "malware_download"
+        },
+        {
+          "matchValue": "http://malware.example/payload",
+          "hitType": "deterministic_ioc",
+          "classification": "malware_download"
+        }
+      ]
+    },
+    {
+      "sourcePolicyId": "internal/reputation",
+      "source": "internal/reputation",
+      "entityTypes": ["IP", "DOMAIN"],
+      "sourceVersion": "2026-06-03",
+      "feedHash": "reputation-snapshot-0042",
+      "sourceUpdatedAt": "2026-06-04T00:00:00.000Z",
+      "expiresAt": "2026-06-06T00:00:00.000Z",
+      "entries": [
+        {
+          "matchValue": "45.66.230.5",
+          "hitType": "soft_reputation",
+          "classification": "scanner",
+          "confidence": 0.4
+        }
+      ]
+    }
+  ]
+}
