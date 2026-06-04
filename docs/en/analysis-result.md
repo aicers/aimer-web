@@ -128,8 +128,7 @@ does not blindly jump to the latest generation, which might have
 regrouped the event out. The section is omitted when the event is not a
 member of any story.
 
-<!-- Screenshot placeholder (#396): event page with the "Part of threat
-stories" backlink. Capture from a stack with real story-member data. -->
+![The event page's "Part of threat story" backlink linking to the parent story with its priority-tier badge](../assets/event-part-of-stories.en.png)
 
 ## Cited by
 
@@ -149,8 +148,7 @@ The trail is permission-gated: it only appears for viewers who can read
 the customer's reports (`reports:read`). A viewer without that permission
 sees no trail rather than links they could not open.
 
-<!-- Screenshot placeholder (#396): event page with the "Cited by" trail.
-Capture from a stack with real report-citation data. -->
+![The event page's "Cited by" trail listing the periodic report that consumed this event, generation-pinned](../assets/event-cited-by.en.png)
 
 ## Raw source event
 

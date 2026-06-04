@@ -203,8 +203,7 @@ This is the downward half of the trust drill-down: a reader can move from
 the story narrative into each cited event, then on to the raw source
 event from the event page.
 
-<!-- Screenshot placeholder (#396): story page with the member suspicious
-events list. Capture from a stack with real story-member data. -->
+![The story page's member suspicious-events list, each analyzed member carrying a priority-tier badge and severity / likelihood scores](../../assets/story-member-events.en.png)
 
 ## Cited by
 
@@ -224,8 +223,7 @@ The trail is permission-gated on `reports:read`: a viewer who cannot read
 the customer's reports sees no trail rather than links they could not
 open.
 
-<!-- Screenshot placeholder (#396): story page with the "Cited by" trail.
-Capture from a stack with real report-citation data. -->
+![The story page's "Cited by" trail listing the periodic report that consumed this story, generation-pinned](../../assets/story-cited-by.en.png)
 
 ## Force regenerate
 

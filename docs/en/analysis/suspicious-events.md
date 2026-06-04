@@ -11,10 +11,7 @@ linking into the existing [event analysis detail
 page](../analysis-result.md). It is not the full population of forwarded
 events.
 
-<!-- Screenshot placeholder (#392): suspicious events list page showing
-     priority-sorted rows with the AICE environment, severity/likelihood,
-     and priority badge, plus the priority + time-window filter bar.
-     Capture from a stack with real aice-web-next data once available. -->
+![The suspicious events list — priority-sorted rows with the AICE environment, severity and likelihood, a priority badge, and the priority + time-window filter bar](../../assets/suspicious-events-list.en.png)
 
 This is a **new customer-level segment**. The event detail route is
 scoped to a single AICE environment, but a customer-wide list spans many
