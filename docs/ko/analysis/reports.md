@@ -1,8 +1,9 @@
 # 정기 보안 리포트
 
 정기 보안 리포트는 한 고객의 특정 시간 구간을 LLM이 하나의 서술로
-종합한 결과입니다. 해당 구간에서 이미 분석된 위협 스토리와 의심 이벤트,
-그리고 해당 구간의 의심 이벤트 동향을 함께 엮습니다. 스토리
+종합한 결과입니다. 해당 구간에서 이미 분석된 위협 스토리와
+[의심 이벤트](suspicious-events.md), 그리고 해당 구간의 의심 이벤트
+동향을 함께 엮습니다. 스토리
 분석(하나의 스토리에 대한 한 번의 LLM 호출)과 달리, 리포트는 여러 개별
 분석을 하나의 서술로 집계하며 LLM에게 점수를 요청하지 **않습니다**. 집계
 점수는 포함된 스토리·이벤트 분석과 의심 이벤트 동향으로부터 Clumit Insight가
@@ -15,13 +16,13 @@
 존재하지 않는 리포트 요청 — 는 `404`를 보게 되고, `reports:read` 권한이
 없는 멤버나 거부된 브리지 세션은 리포트 대신 권한 안내를 보게 됩니다.
 
-![정기 리포트 상세 페이지로, 우선순위 배지, 집계 심각도 및 신뢰도 점수, MITRE ATT&CK 기법 칩, 그리고 요약·스토리 하이라이트·주요 이벤트·의심 이벤트 동향·기간 전망 섹션이 표시됨](../../assets/report-detail.ko.png)
+![정기 리포트 상세 페이지로, 우선순위 배지, 집계 심각도 및 신뢰도 점수, MITRE ATT&CK 기법 칩, 그리고 요약·스토리 하이라이트·주요 이벤트·의심 이벤트 동향(아직 재촬영하지 않은 이 스크린샷에서는 옛 제목인 "Baseline observations"로 표시됨)·기간 전망 섹션이 표시됨](../../assets/report-detail.ko.png)
 
-<!-- Recapture note (#430): the report-detail*.{en,ko}.png captures still
-     show the old "Baseline observations" section header. They are kept
-     as-is until they can be re-shot from a real-data stack (the shared
-     constraint with #429); they must not be fabricated or hand-edited to
-     show the renamed "Suspicious-event trends" header. -->
+> **스크린샷 재촬영 대기(#430).** 이 캡처 — 그리고 아래의 주간·월간 변형
+> — 는 이 섹션을 옛 제목인 "Baseline observations"(옛 드리프트 표현
+> 포함)로 표시합니다. 실데이터 스택에서 다시 촬영할 예정이며(#429와
+> 공유하는 제약), 매뉴얼 정책에 따라 변경된 "의심 이벤트 동향" 제목을
+> 보여 주도록 조작하거나 손으로 편집하지 않습니다.
 
 
 ## 리포트 색인
@@ -88,9 +89,9 @@ Weekly 8, Monthly 12이며, 각각 대응하는 `ANALYSIS_REPORT_INDEX_CAP_*`
 스케줄링·LLM 호출을 수행합니다. **Regenerate** 버튼은 주기 외 강제 갱신을
 위한 것입니다.
 
-![Weekly 탭이 활성화된 주간 정기 리포트 상세 페이지 — CRITICAL 한 주 리뷰로, 우선순위 등급 배지, 집계 심각도·신뢰도 점수, MITRE ATT&CK 기법 칩, 그리고 요약·스토리 하이라이트·주요 이벤트·의심 이벤트 동향·기간 전망 섹션이 표시됨. 요약은 매일을 나열하지 않고 한 주의 활동을 하나의 서술로 추상화함](../../assets/report-detail-weekly.ko.png)
+![Weekly 탭이 활성화된 주간 정기 리포트 상세 페이지 — CRITICAL 한 주 리뷰로, 우선순위 등급 배지, 집계 심각도·신뢰도 점수, MITRE ATT&CK 기법 칩, 그리고 요약·스토리 하이라이트·주요 이벤트·의심 이벤트 동향(아직 재촬영하지 않은 이 스크린샷에서는 옛 제목인 "Baseline observations"로 표시됨)·기간 전망 섹션이 표시됨. 요약은 매일을 나열하지 않고 한 주의 활동을 하나의 서술로 추상화함](../../assets/report-detail-weekly.ko.png)
 
-![Monthly 탭이 활성화된 월간 정기 리포트 상세 페이지 — CRITICAL 한 달 리뷰로, 동일한 헤더(우선순위 등급, 집계 점수, 기법 칩)와 다섯 개의 서술 섹션이 표시되며, 요약과 의심 이벤트 동향이 그 달의 추세를 구간 내에서 서술함](../../assets/report-detail-monthly.ko.png)
+![Monthly 탭이 활성화된 월간 정기 리포트 상세 페이지 — CRITICAL 한 달 리뷰로, 동일한 헤더(우선순위 등급, 집계 점수, 기법 칩)와 다섯 개의 서술 섹션이 표시되며, 요약과 의심 이벤트 동향(아직 재촬영하지 않은 이 스크린샷에서는 옛 제목인 "Baseline observations"로 표시됨)이 그 달의 추세를 구간 내에서 서술함](../../assets/report-detail-monthly.ko.png)
 
 ## 주기 탭
 

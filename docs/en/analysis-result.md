@@ -1,6 +1,7 @@
 # Analysis Result Page
 
-The analysis result page shows a single LLM analysis of one security event.
+The analysis result page shows a single LLM analysis of one [suspicious
+event](analysis/suspicious-events.md).
 It is reached from aice-web-next by opening an event detail and following
 the deep link to Clumit Insight, or directly via its customer-scoped URL.
 

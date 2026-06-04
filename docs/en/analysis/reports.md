@@ -2,9 +2,10 @@
 
 A periodic security report is a single LLM-written synthesis across a
 time window for one customer — it weaves together the threat stories and
-suspicious events already analysed in that window plus the trends across
-the period's suspicious events. Unlike a story analysis (one LLM call
-about one story), a report aggregates many individual analyses into one
+[suspicious events](suspicious-events.md) already analysed in that window
+plus the trends across the period's suspicious events. Unlike a story
+analysis (one LLM call about one story), a report aggregates many
+individual analyses into one
 narrative and does **not** ask the LLM for scores: Clumit Insight computes
 the aggregate scores itself from the included story and event analyses
 and the suspicious-event trend.
@@ -17,13 +18,14 @@ or a request for a report that does not exist — sees a `404`, while a
 member without the `reports:read` permission, or a rejected bridge
 session, sees a permission notice rather than the report.
 
-![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
+![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot), and period outlook sections](../../assets/report-detail.en.png)
 
-<!-- Recapture note (#430): the report-detail*.{en,ko}.png captures still
-     show the old "Baseline observations" section header. They are kept
-     as-is until they can be re-shot from a real-data stack (the shared
-     constraint with #429); they must not be fabricated or hand-edited to
-     show the renamed "Suspicious-event trends" header. -->
+> **Screenshot pending recapture (#430).** This capture — and the weekly
+> and monthly variants below — still show this section under its former
+> heading "Baseline observations" (with the old drift wording). They will
+> be re-shot from a real-data stack (the shared constraint with #429);
+> per the manual policy they are not fabricated or hand-edited to show the
+> renamed "Suspicious-event trends" heading.
 
 ## Report index
 
@@ -97,9 +99,9 @@ No operator action is needed for any period: a background worker seeds,
 schedules, and runs the LLM calls. The **Regenerate** button (below) is
 for forcing an out-of-cadence refresh.
 
-![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
+![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot), and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
 
-![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and suspicious-event trends framing the month's activity from within the window](../../assets/report-detail-monthly.en.png)
+![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot) framing the month's activity from within the window](../../assets/report-detail-monthly.en.png)
 
 ## Period tabs
 
