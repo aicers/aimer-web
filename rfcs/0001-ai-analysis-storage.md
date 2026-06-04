@@ -96,7 +96,8 @@ Consequences:
 | IPv4/IPv6 public | Redact only if matched by a customer-registered range; otherwise pass through |
 | Email addresses | Always redact (regex) |
 | MAC addresses | Always redact (regex) |
-| Hostnames / FQDN, usernames, URL path components | v1: not redacted |
+| Hostnames / FQDN / domains | Redact only if matched by a customer-registered owned-domain suffix; otherwise pass through. Applies **uniformly to event payloads and enrichment facts** — see Amendment A. (Supersedes the original v1 "not redacted" stance.) |
+| Usernames, URL path components | v1: not redacted |
 | All categories | v2+: switch to AI-based privacy filter (OpenAI privacy filter or equivalent) |
 
 Default behaviour for customers who have not registered any public IP ranges: **pass all public IPs through (redact none)**. A customer registers ranges to hide *their own* sensitive public address space; with nothing registered there is no such range to hide, so public IPs (e.g. attacker source addresses) — exactly the threat intelligence operators need — flow through unredacted. Private/internal IPs are always redacted regardless. The admin UI must surface this state clearly.
@@ -108,6 +109,7 @@ Tokens follow a fixed shape so downstream scanning (LLM hallucination check) can
 - `<<REDACTED_IP_NNN>>`
 - `<<REDACTED_EMAIL_NNN>>`
 - `<<REDACTED_MAC_NNN>>`
+- `<<REDACTED_DOMAIN_NNN>>` (added by Amendment A; used when a hostname/FQDN is redacted in an event payload or an enrichment fact). Note: in multi-event prompts per-event tokens are rewritten to story-scope `<<REDACTED_{TYPE}_E{i}_{NNN}>>` per RFC 0002, while a fact's customer-asset tokens use a fact-scope `<<REDACTED_{TYPE}_F{k}_{NNN}>>` form — see Amendment A.1.
 
 `NNN` is a per-event monotonic counter; identical entities within the same event collapse to the same token (so an attacker IP appearing 10 times produces one map entry and 10 occurrences of the same token).
 
@@ -879,6 +881,93 @@ Customer settings: `Data Retention` section.
 - Two number inputs (Ingestion days, Analysis days). Blank Analysis = "Unlimited" with an explicit toggle next to the input.
 - Confirmation prompt on shortening either value (data older than the new threshold will be deleted on the next sweep tick).
 
+## Amendment A — enrichment-fact redaction + domain KIND (payload & fact) + reflection
+
+- Status: **proposed** (tracks [#424](https://github.com/aicers/aimer-web/issues/424))
+- Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through, **merged**). This amendment is written against the post-#422 engine: the base "Redaction engine — v1 policy" default is now "pass all public IPs through (private/internal always redacted)", and A.2's domain pass-through policy is the deliberate analogue of that resolved IP-range default.
+- Consumed by: RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)) **P1b** (C1 enrichment-fact injection). **Not** required by RFC 0003 P1a (the #361 deterministic floor never sends facts to the LLM).
+
+### Motivation
+
+RFC 0003 introduces **enrichment facts**: short statements the enrichment layer feeds the story-analysis LLM about an indicator — e.g. *"`evil-c2.example` is on the abuse.ch ThreatFox C2 list, registered 3 days ago."* These facts are produced **outside the event payload**, so the v1 redaction engine — which only tokenizes values found *inside* event payloads — never sees them. RFC 0003 P1b points at "redaction-token-aware enrichment fact injection (RFC 0001 extension)" but defers the definition to here. Discussion #318 flags the same gap twice as a mini-RFC of its own.
+
+Defining fact redaction surfaces a second, pre-existing gap: v1 does not redact **domains** even in event payloads, so a registered customer domain appearing in a member event already ships raw to the LLM. This amendment therefore extends domain redaction to **both** event payloads and facts under one policy (A.2), so a registered domain is masked everywhere it appears — as `E{i}` in a member event, as `F{k}` in a fact — and is never raw in front of the LLM.
+
+A fact is treated **exactly like an event payload**: it is run through the **same redaction policy at the DB-write boundary** — i.e. when the enrichment result is written to its cache / result row, before it touches disk — not at LLM-injection time. This keeps the RFC 0001 invariant intact: redaction happens **once, at storage**, and every later step (prompt assembly, reports) only *reads* the already-redacted artifact. The policy decides, per indicator, whether it is redacted at all:
+
+- **External / pass-through indicators** (attacker IPs outside any registered range, domains not matching a registered owned-domain) are **not** redacted — in the member payload or in a fact. They are stored, and later shown to the LLM, **raw**, identically in both. This is the post-#422 default and is exactly the threat intelligence the operator needs. ("No customer PII → no redaction" applies uniformly.)
+- **Customer-asset indicators** (an IP in a registered range, a domain matching a registered owned-domain) **are** redacted to a token at write time, with the raw value held only in the fact's encrypted redaction map — exactly as an event payload stores `redacted text + encrypted per-event map`.
+
+At prompt-build (a **read + rename** step, never a re-redaction) each customer-asset fact token is renamed to a **fact-scope** `F{k}` token; external fact indicators stay raw. The fact is **not** reconciled against member-event tokens — a customer asset that also appears in a member event is shown to the LLM under its own `F{k}`, distinct from the member's `E{i}`. This is a deliberate simplification (the case is rare — reflection only — and unifying the tokens has no clean home across RFC 0001/0002/0003's constraints; A.1 explains the trade-off). The motivating reflection case still works: a fact carrying `vpn.customer.example` (a registered owned-domain) is redacted at write time like any other customer asset and rendered as `F{k}`.
+
+The redaction decision and timing are identical to event-payload redaction; what is **new** here is only (a) a domain KIND so owned-domains can be matched at all (A.2), and (b) a fact-scope `F{k}` token for any customer-asset indicator carried by a fact (A.1). This applies to facts from **every source** — curated feed, online API, and the LLM/web-search soft-only fallback generator in RFC 0003. Therefore:
+
+> **Every enrichment fact is redacted at the DB-write boundary under the same policy as event payloads, regardless of source. External indicators are stored raw; customer-asset indicators are stored as tokens with the raw value only in an encrypted map. Prompt assembly and all later consumers read the redacted form and only rename tokens — they never re-redact.**
+
+### A.1 — Fact storage redaction, and fact-scope tokens at prompt-build
+
+Fact handling splits cleanly into two steps, mirroring event payloads:
+
+**Step 1 — redact at write (the only redaction step).** When an enrichment result is written to its cache / result row, the fact text is redacted under the same policy as an event payload (A.2): customer-asset indicators become tokens with the raw value held in the fact's **own encrypted redaction map**; external indicators stay raw. The stored fact is therefore already safe at rest — no raw customer asset on disk outside the encrypted map, exactly like a stored event.
+
+The fact's redaction map is **self-scoped** (keyed to the fact/enrichment row, like a per-event map is keyed to its event) — it is **not** a story-scope token yet, because the enrichment cache is per-indicator and reused across stories (RFC 0003, "enrich once"). A story-scope token would not be reusable across stories; a self-scoped one is.
+
+**Storage home — story-agnostic only.** The cache persists, per stored fact, exactly what is reusable across stories: the **redacted fact text** and the **encrypted self-scoped fact map** (`fact_token → { kind, value }`), plus the fact's **`redaction_policy_version`**. Introduce an `enrichment_redaction_map` table (or equivalent columns on the enrichment cache/result row) in the same shape as `event_redaction_map` — encrypted via the same DEK/KEK envelope, keyed to the enrichment row rather than `(aice_id, event_key)`. It stores **no story- or member-specific data**: the indicator's value and token are properties of the indicator, not of any story.
+
+**Step 2 — rename to fact scope at prompt-build (read only, never re-redact).** RFC 0002 (§"multi-event token namespacing") assembles a story prompt by renaming each event's per-event tokens `<<REDACTED_{TYPE}_{NNN}>>` to **story-scope** `<<REDACTED_{TYPE}_E{i}_{NNN}>>`, where index `i` is resolved at demap via the result row's `input_event_refs`. In the same pass, each **customer-asset fact token** is renamed to a **fact scope** token `<<REDACTED_{TYPE}_F{k}_{NNN}>>`, where `F` marks the fact namespace and `k` indexes the fact scope within this story. This is a pure **string rename** of the self-scoped fact token into the story's fact namespace — no value is read, no map is decrypted, nothing is re-redacted.
+
+For `F{k}` to be demappable later, the story result must record **which enrichment row each `k` came from** — exactly parallel to how RFC 0002's `input_event_refs` records the `(aice_id, event_key)` behind each `E{i}`. This amendment therefore adds an ordered **`input_fact_refs`** column to the story result row (the `story_analysis_result` / leaf-result table defined by RFC 0002), mapping `k` → enrichment-row identifier (e.g. the cache key or `enrichment_redaction_map` row id). At render/demap time, `F{k}` resolves as: look up `k` in `input_fact_refs` → load that enrichment row's self-scoped fact map → resolve the `<<REDACTED_{TYPE}_{NNN}>>` value — the same two-hop chain `E{i}` uses via `input_event_refs`, one namespace wider. Without `input_fact_refs`, a stored `F{k}` is unresolvable; adding it (and folding it into `input_hash` alongside `input_event_refs`) is part of this amendment's storage contract. The story result table is owned by RFC 0002 / the `analyzeStory` work, so this amendment adds the column **directly to that table's DDL** (RFC 0002 §`story_analysis_result`, `input_fact_refs JSONB NOT NULL DEFAULT '[]'`) rather than only stating a requirement here — the two documents are kept in sync.
+
+**Deliberately no fact↔member token reconciliation.** A customer-asset indicator that appears in *both* a member event (as `E{i}`) and a fact (as `F{k}`) is shown to the LLM under **two different tokens** — they are not unified. This is an intentional simplification:
+
+- The case is **rare**: the overwhelming majority of enrichment indicators are external (raw, no token at all); a customer asset appearing in a fact at all is the uncommon reflection case.
+- Unifying the two tokens would require deciding fact and event tokens denote the same value — which, given RFC 0001's "no plaintext outside the encrypted map" boundary, RFC 0003's story-agnostic per-indicator cache, and RFC 0002's per-story token scope, has no clean home (a write-time link is story-specific and breaks cache reuse; a build-time value compare adds plaintext decryption to prompt-build; an HMAC-on-map-entry leaks no value but cannot be read without decrypting the entry it is stored in). The unification is **not worth those costs** for a rare case.
+- **Correctness is unaffected**: each token demaps to its own value independently. Only the *cross-reference* ("the LLM knows fact-domain X is the same as member-domain X") is lost, and analytic value lives in the external indicators anyway.
+
+So the rule is simply: external fact indicators → raw; customer-asset fact indicators → fact-scope `F{k}`. No matching, no link, no HMAC, no map-shape change.
+
+**Fact scope never enters report scope.** RFC 0002's report-scope rewrite (§"Report-scope rewrite") only renamespaces `E{i}` / event tokens (keyed on `(aice_id, event_key)` in `input_event_refs`) into `R{j}`. `F{k}` tokens have no `(aice_id, event_key)`, so when a `story_analysis_result.analysis_text` is consumed by a periodic report, any `F{k}` token is **demapped (via `input_fact_refs`, above) or re-masked to a stable placeholder before report-scope rewriting runs** — the report builder never sees a live `F{k}`. RFC 0002's report-scope pass stays unchanged. Demap of `E{i}` tokens continues to reuse RFC 0002's chain unchanged.
+
+For each indicator carried by a fact:
+
+- **External / pass-through indicator** (stored raw — attacker IP outside every range, domain matching no owned-domain). Emit it **raw**; there is no token and none is needed. This is the common case for enrichment (the indicator the fact is *about* is usually external).
+- **Customer-asset indicator** (IP in a registered range, or domain matching a registered owned-domain). It is tokenized in the fact's self-scoped map (step 1); at build its token is renamed to fact scope `<<REDACTED_{TYPE}_F{k}_{NNN}>>`. Whether or not the same indicator also appears in a member event, the fact keeps its own `F{k}` token (no reconciliation, per above).
+
+### A.2 — Domain / hostname token KIND with a customer-owned boundary policy
+
+The original v1 policy listed hostnames/FQDNs as "not redacted" anywhere. That leaves a registered customer domain exposed in two places: in event payloads (a member event mentioning `vpn.customer.example` ships it raw to the LLM) and in enrichment facts. This amendment closes both by adding a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`) and applying a domain boundary policy **uniformly to event payloads and facts**, exactly as IP-range redaction already applies to both — so a registered domain is masked wherever it appears. The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries.
+
+The boundary policy is **structurally identical to #422's IP-range policy** and applies wherever a domain appears (event payload or fact):
+
+| Domain (in payload or fact) | Policy |
+|---|---|
+| Matches a customer-registered owned-domain suffix | **Redact** (`<<REDACTED_DOMAIN_NNN>>`) |
+| Not matched (external / malicious) | **Pass through** (preserved for analytic value) — same philosophy as #422: what the customer registers is what gets hidden |
+
+This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked, and they are masked **everywhere** (payload and fact alike), so a registered domain is never raw in front of the LLM — whether it appears in a member event (as `E{i}`) or in a fact (as `F{k}`).
+
+**Where owned-domains live.** The registry parallels `customer_redaction_ranges`: a new `customer_owned_domains` table in `auth_db`, keyed by `customer_id`, storing normalized owned-domain suffixes (lowercased, leading-dot-normalized for suffix matching), with the same per-customer read/write permission shape as redaction ranges. It feeds `computePolicyVersion` the same way ranges do — the policy-version string gains a `domains:<sha256-short>` segment alongside `ranges:<...>` so a domain-list change is detectable (though no retroactive re-redact runs pre-release, per A.4). The table and its permission seeds land in the schema sub-issue (row 1); the **loader/matcher** for owned-domains is added to the redaction-engine sub-issue that loads redaction ranges (see "Implementation sub-issue breakdown", row 2); the **admin UI** for editing them is deferred to the redaction-ranges UI sub-issue (row 5). Until the table has rows for a customer, the empty default is pass-through (see Known limitation).
+
+> **Known limitation — domain reflection leak before the registry is populated.** The policy is correct and consistent with #422 ("redact only what the customer registers; pass the rest"). The residual risk is purely the **registration gap**: until a customer registers any owned-domain, a reflected customer domain (`vpn.customer.example`) matches no registered suffix and passes through like any external domain. This is the same property IPs have (an unregistered customer IP range also passes), except IPs retain the always-redact private-range net while domains have no equivalent automatic class. So the reflection-leak defense is **fully effective only once the owned-domain registry is populated**; before that, A.3's scan is a *partial* net for domains. This is a property of registration-based redaction, not a policy defect — the fix is operator registration. Note this gap is symmetric across payload and fact (an unregistered domain is raw in both), so the two stay consistent. For IP/email/MAC the always-redact and range rules give the scan a real signal, so this gap is domain-specific.
+
+### A.3 — Reflection / generated-text defense via the hallucination scan
+
+RFC 0001's §"LLM hallucination handling" already defines a scan over LLM **output** that detects un-tokenized indicators and marks them with `<<UNVERIFIED_*>>` patterns. This amendment reuses **that same scan mechanism** as part of the fact's **write-time redaction step** (A.1 step 1) — not as a separate injection-time pass — to catch indicators that the boundary policy would pass through but that look like customer assets, most importantly in **LLM/web-search-generated facts**, whose text we do not control and which can surface unexpected values. Running it at write time keeps redaction at the single DB-write boundary: a flagged value is handled before the fact is stored, so nothing un-redacted reaches disk or, later, the LLM. (The concrete function names in the engine are illustrative; the requirement is to reuse the documented hallucination-scan step, regardless of source of the fact.)
+
+For IP/email/MAC, this scan is an effective net (those classes have always-redact or range rules, so an un-tokenized one is genuinely anomalous). **For domains it is only a partial net** — see the "Known limitation" note in A.2: with the empty owned-domain registry, the scan cannot separate a legitimately-passing external domain from a reflected customer one. Exact handling of a flagged value (drop the fact, mask the token, or route to an audit action) is an implementation decision for #424's PR.
+
+### A.4 — No engine-version / policy-version migration
+
+Like #422, the engine is still pre-release and undeployed, so there is no stored data under an old policy to reconcile. Adding the `domain` KIND, extending domain redaction to event payloads, and adding the fact pipeline all require **no `ENGINE_VERSION` bump, no policy-version migration, and no retroactive re-redact**. The change is made in place.
+
+### A.5 — Out of amendment scope
+
+- The customer-owned-domain **registration admin UI** (parallels the deferred IP-range UI work). The KIND and boundary policy are defined here; the UI lands with the broader customer-settings work.
+- Redaction of conversation turns (F1) and report-scope rewriting beyond what RFC 0002 already covers — these reuse the same pattern but are scoped by their own features.
+- Aggregate-level JSONB redaction (still deferred, see "Out of scope" below).
+
+---
+
 ## Out of scope (deferred to future design)
 
 - aimer-web standalone entry flow for users who never came through aice-web-next (will be designed together with the broader "event list / search / detail" UI in aimer-web).
@@ -886,8 +975,8 @@ Customer settings: `Data Retention` section.
 - v2 automatic retroactive re-redact on range addition.
 - **Storage for other aimer resolvers' results** (beyond `analyzeEvent`). v1 ships `event_analysis_result` for the single resolver and **does not preemptively abstract**. When a second resolver (`analyzeStory`, `analyzePolicy`, …) lands, that issue's design decides whether to extend the existing table with a `result_type` discriminator or to add a parallel table — driven by the actual shape of the new result rather than a guess made now.
 - **Aggregate-level JSONB redaction** for `story.summary_payload` and `policy_run.summary_stats`. The v1 map key `(aice_id, event_key)` does not accommodate row keys that have no single `event_key` (story_id+story_version, run_id). These columns stay plaintext in v1 (no regression from today) and are not sent to aimer because v1 only calls `analyzeEvent`. When `analyzeStory` / `analyzePolicy` ship in future aimer Phase 2+, the design for those features must introduce a story-level map (keyed by `aice_id, story_id, story_version`) and a run-level map (keyed by `aice_id, run_id`) — either as separate tables or as a generalised `redaction_map` with a discriminator. Tracked alongside the relevant resolver issue when it is filed.
-- IP enrichment (geo/ASN/threat intel metadata) prior to LLM call. Possible v3 addition; orthogonal to the redaction policy.
-- Customer-side hostname / FQDN registration for redaction. Same rationale as IP ranges but deferred until a concrete need surfaces.
+- IP / domain / hash enrichment (geo/ASN/threat-intel metadata) prior to LLM call — now designed in RFC 0003 ([#367](https://github.com/aicers/aimer-web/issues/367)); its redaction interaction is defined in Amendment A above rather than left orthogonal.
+- Customer-side hostname / FQDN / owned-domain **registration UI** for redaction. The domain KIND and boundary policy are defined in Amendment A; the registration UI is deferred until it ships with the broader customer-settings work (same rationale as the IP-range UI).
 - **Retention sweeper implementation**. The policy and per-customer storage land in v1; the actual deletion worker is a separate sub-issue filed after this design. v1 deployment has no urgency (12-month minimum default), so the sweeper has months of runway.
 
 ## Implementation sub-issue breakdown (suggested)
@@ -896,11 +985,11 @@ After this design lands, the work is split into smaller shippable units. Each sh
 
 | # | Title | Scope | Depends on |
 |---|---|---|---|
-| 1 | Schemas + permission seeds | All new tables (`event_redaction_map`, `event_analysis_result`, `customer_redaction_ranges`, `customer_retention_policy`, `redaction_jobs`). Existing-table column changes: Phase 1 `detection_events` per-event restructure; Phase 2 `policy_event.orig_addr`/`resp_addr` `INET → TEXT`; add `redaction_policy_version TEXT NOT NULL` to `detection_events`, `baseline_event`, `story_member`, `policy_event` (and the new `event_analysis_result`). Add and verify dedicated permission seeds for `customer-redaction-ranges:read/write` and `customer-retention:read/write` (User/Analyst/Manager/Admin for read, Manager/Admin for write) | — |
-| 2 | Redaction engine module | Pure module: regex scanning, IP/CIDR matching, customer range loading, token assignment, map structure. Unit tests cover policy completely. No DB writes, no HTTP | 1 (schemas referenced by tests) |
+| 1 | Schemas + permission seeds | All new tables (`event_redaction_map`, **`enrichment_redaction_map`** (Amendment A — self-scoped, **story-agnostic** encrypted map for stored enrichment facts, parallel to `event_redaction_map`; holds redacted fact text reference, encrypted map `fact_token → {kind,value}`, and fact `redaction_policy_version`. Carries **no** story/member data; customer-asset fact tokens are renamed to fact scope `F{k}` at prompt-build with no member reconciliation), `event_analysis_result`, `customer_redaction_ranges`, **`customer_owned_domains`** (Amendment A — `customer_id` + normalized owned-domain suffix), `customer_retention_policy`, `redaction_jobs`). Existing-table column changes: Phase 1 `detection_events` per-event restructure; Phase 2 `policy_event.orig_addr`/`resp_addr` `INET → TEXT`; add `redaction_policy_version TEXT NOT NULL` to `detection_events`, `baseline_event`, `story_member`, `policy_event` (and the new `event_analysis_result`). Add and verify dedicated permission seeds for `customer-redaction-ranges:read/write`, **`customer-owned-domains:read/write`**, and `customer-retention:read/write` (User/Analyst/Manager/Admin for read, Manager/Admin for write) | — |
+| 2 | Redaction engine module | Pure module: regex scanning, IP/CIDR matching, customer range loading, **owned-domain suffix loading + matching (Amendment A `domain` KIND, applied to payloads and facts)**, token assignment, map structure. Unit tests cover policy completely. No DB writes, no HTTP | 1 (schemas referenced by tests) |
 | 3 | Phase 1 ingestion refactor | Convert `/api/events/ingest` and the bridge consume path to per-event row writes with redaction. Includes the `event_count` semantics shift and the new per-event response shape | 2 |
 | 4 | Phase 2 ingestion refactor | Apply redaction in the four Phase 2 handlers (`/api/phase2/baseline/batch`, `/api/phase2/story/batch`, `/api/phase2/policy-run`) before persisting JSONB. No wire-contract change | 2 |
-| 5 | Customer redaction ranges admin API + UI | CRUD endpoints + Customer Settings UI section + retroactive job trigger button | 1 |
+| 5 | Customer redaction ranges + owned-domains admin API + UI | CRUD endpoints + Customer Settings UI section (IP ranges **and** owned-domains, Amendment A) + retroactive job trigger button | 1 |
 | 6 | Retroactive re-redact job | Worker module, `redaction_jobs` lifecycle, advisory-lock coordination, cursor-based resume, audit emissions | 1, 2 |
 | 7 | Customer retention settings UI | Form for `ingestion_days` / `analysis_days` under Customer Settings | 1 |
 | 8 | Analysis flow — `POST /api/analysis/analyze` + storage + UI page | `event_analysis_result` writes, the new endpoint, hallucination scan, mTLS GraphQL client wiring to `analyzeEvent`, result view page at the permalink | 1, 2 |

@@ -202,6 +202,8 @@ RFC 0001's redaction tokens are **scoped per event**: each `(aice_id, event_key)
 
 aimer-web resolves this **at prompt-build time** with a deterministic token rewrite. No new encrypted map is introduced; the per-event maps remain the sole source of truth.
 
+> Scope: this statement is about **event-token (`E{i}`) namespacing** — the only token source in RFC 0002 itself. RFC 0001 Amendment A later adds a separate fact-token namespace (`F{k}`) for external-TI enrichment facts, whose source of truth is the `enrichment_redaction_map` (resolved via `input_fact_refs`), not the per-event maps. The two namespaces are disjoint and demap through their own refs; "no new map" holds for the event-namespacing mechanism described here, while `F{k}` is governed by Amendment A.
+
 Procedure:
 
 1. The worker assigns each included event an ordinal index `i` (1, 2, 3, ...) in a fixed order — for story analysis: by `(member_event_key)` ascending; for periodic reports: by `(aice_id, event_key)` ascending.
@@ -265,8 +267,9 @@ CREATE TABLE story_analysis_result (
   ttp_tags                 JSONB        NOT NULL DEFAULT '[]',    -- array of validated MITRE ATT&CK technique IDs (e.g. ["T1078", "T1110.001"]); see §"MITRE ATT&CK TTP tagging"
   priority_tier            TEXT         NOT NULL,         -- CRITICAL|HIGH|MEDIUM|LOW; derived from (severity, likelihood) matrix
   analysis_text            TEXT         NOT NULL,
-  input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for token namespacing demap
-  input_hash               TEXT         NOT NULL,         -- sha256 of the canonical LLM input (members + metadata + refs)
+  input_event_refs         JSONB        NOT NULL,         -- ordered [{aice_id, event_key}, ...] for E{i} token namespacing demap
+  input_fact_refs          JSONB        NOT NULL DEFAULT '[]', -- ordered [enrichment-row id, ...] for F{k} fact-scope demap (RFC 0001 Amendment A); empty when no enrichment facts carried customer-asset tokens
+  input_hash               TEXT         NOT NULL,         -- sha256 of the canonical LLM input (members + metadata + event refs + fact refs)
   redaction_policy_version TEXT         NOT NULL,
   requested_by             UUID,
   requested_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
