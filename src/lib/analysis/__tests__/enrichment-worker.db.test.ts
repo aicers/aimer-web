@@ -6,7 +6,11 @@
 //     HMAC reproducibility across a key rotation,
 //   - false-complete (answered, no hit) vs false-unknown (missing feed),
 //   - redaction-map recovery of a tokenized customer-asset IP,
-//   - the boolean stays monotonic (stale feed never flips a hit).
+//   - the boolean stays monotonic (stale feed never flips a hit),
+//   - typed policy_event columns are scoped to the story's source_aice_id
+//     (a different source's same-event_key IOC must not flip the floor),
+//   - a rerun with no current match preserves prior evidence so a retained
+//     monotonic `true` stays explainable.
 //
 // Feeds use a floor-eligible policy set (simulating a license-cleared
 // feed); the SHIPPED policies are floorEligible:false (licensing gate),
@@ -129,6 +133,7 @@ async function seedPolicyEvent(
   runId: string,
   fields: Partial<PolicyEventFields>,
   eventKey = "1",
+  sourceAiceId = AICE_ID,
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO policy_run
@@ -138,7 +143,7 @@ async function seedPolicyEvent(
      VALUES ($1::bigint, '2026-05-01T00:00:00Z', '2026-05-01T01:00:00Z',
              '2026-05-01T00:00:00Z', 'bv1', 'pf', 'ef', 'ready', $2)
      ON CONFLICT (run_id) DO NOTHING`,
-    [runId, AICE_ID],
+    [runId, sourceAiceId],
   );
   await customerPool.query(
     `INSERT INTO policy_event
@@ -432,6 +437,90 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
         WHERE story_id = 1008 AND story_version = 'v1'`,
     );
     expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+  });
+
+  it("does not inherit a policy_event IOC from a different source_aice_id", async () => {
+    await importFeodo(authPool, FRESH);
+    // The story belongs to AICE_ID and has no indicator in its member JSONB.
+    // A DIFFERENT source's policy_run/policy_event shares the same event_key
+    // (1) and carries the IOC. Logical event identity is
+    // (source_aice_id, event_key), so this row must NOT flip the floor for
+    // a story owned by AICE_ID. An event_key-only read would.
+    await seedStory(customerPool, "1009", { note: "no indicator in JSONB" });
+    await seedPolicyEvent(
+      customerPool,
+      "5003",
+      { resp_addr: "45.66.230.5" },
+      "1",
+      "aice-other",
+    );
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1009",
+      opts(authPool, customerPool),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(0);
+
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1009 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(false);
+
+    // The SAME source's policy_event for the same event_key still flips it,
+    // proving the scoping is by source, not a blanket event_key suppression.
+    await seedPolicyEvent(customerPool, "5004", { resp_addr: "45.66.230.5" });
+    const rerun = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1009",
+      opts(authPool, customerPool),
+    );
+    expect(rerun.knownIocHit).toBe(true);
+  });
+
+  it("preserves prior evidence when a rerun finds no current match (monotonic)", async () => {
+    await importFeodo(authPool, FRESH);
+    await seedStory(customerPool, "1010", { resp_addr: "45.66.230.5" });
+
+    const first = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1010",
+      opts(authPool, customerPool),
+    );
+    expect(first.knownIocHit).toBe(true);
+    expect(first.evidenceCount).toBe(1);
+
+    // The feed snapshot becomes unavailable before a rerun: no current
+    // supporting match, coverage degrades to unknown. The boolean is
+    // monotonic so the hit is retained — and the evidence that explains it
+    // must NOT be erased, or a `true` floor would have nothing backing it.
+    await authPool.query("DELETE FROM ioc_feed_snapshot");
+    const second = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1010",
+      opts(authPool, customerPool),
+    );
+    expect(second.knownIocHit).toBe(false); // this run observed no hit
+    expect(second.coverageStatus).toBe("unknown");
+
+    // story + state stay true (monotonic OR).
+    const { rows: storyRows } = await customerPool.query<{
+      known_ioc_hit: boolean;
+    }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1010 AND story_version = 'v1'`,
+    );
+    expect(storyRows[0].known_ioc_hit).toBe(true);
+
+    // The prior evidence row survives the rerun — auditability preserved.
+    const { rows: ev } = await customerPool.query<{ redaction_token: string }>(
+      `SELECT redaction_token FROM story_ioc_evidence
+        WHERE story_id = 1010 AND story_version = 'v1'`,
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].redaction_token).toBe("45.66.230.5");
   });
 
   it("seeds the pinned fixture feeds and matches a fixture IP via PgFeedStore", async () => {

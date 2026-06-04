@@ -167,22 +167,37 @@ interface PolicyEventFields {
  * The discrete, redacted `policy_event` columns for a member's event_key.
  * These are separate storage from `story_member.event` (redacted
  * independently at ingest, per RFC 0003 §3) and can carry an indicator
- * absent from the member JSONB, so enrichment must read both. `event_key`
- * may recur across runs with identical network fields, so `DISTINCT`
- * collapses the duplicates; per-indicator de-dup in `extractIndicators`
- * is the backstop. After redaction the address columns are TEXT holding
- * either a raw external IP or a `<<REDACTED_IP_n>>` token (recovered via
- * the same event_redaction_map row as the member text).
+ * absent from the member JSONB, so enrichment must read both. After
+ * redaction the address columns are TEXT holding either a raw external IP
+ * or a `<<REDACTED_IP_n>>` token (recovered via the same
+ * event_redaction_map row as the member text).
+ *
+ * The logical event identity in this schema is `(source_aice_id,
+ * event_key)`, NOT `event_key` alone — `event_key` recurs across AICE
+ * sources and runs, and `policy_event` only carries `source_aice_id`
+ * through its `policy_run`. So this MUST join `policy_run` and scope to the
+ * canonical story's `source_aice_id`; an `event_key`-only read would let a
+ * different source's `policy_event` row flip `known_ioc_hit` for the wrong
+ * story. As with `baseline_event` (0002 lines 21-25), a source+event may
+ * have multiple runs, so `DISTINCT ON (event_key)` keeps the latest by
+ * `policy_run.received_at` (the project's "latest by received_at" dedupe).
+ * Token recovery already uses `canonical.sourceAiceId`, so this also keeps
+ * the typed-column read consistent with the redaction-map lookup.
  */
 async function loadPolicyEventFields(
   customerPool: Pool,
+  sourceAiceId: string,
   eventKey: string,
 ): Promise<PolicyEventFields[]> {
   const { rows } = await customerPool.query<PolicyEventFields>(
-    `SELECT DISTINCT orig_addr, resp_addr, host, dns_query, uri
-       FROM policy_event
-      WHERE event_key = $1::numeric`,
-    [eventKey],
+    `SELECT DISTINCT ON (pe.event_key)
+            pe.orig_addr, pe.resp_addr, pe.host, pe.dns_query, pe.uri
+       FROM policy_event pe
+       JOIN policy_run pr ON pr.run_id = pe.run_id
+      WHERE pe.event_key = $1::numeric
+        AND pr.source_aice_id = $2
+      ORDER BY pe.event_key, pr.received_at DESC`,
+    [eventKey, sourceAiceId],
   );
   return rows;
 }
@@ -268,8 +283,10 @@ export interface EnrichmentOutcome {
 
 /**
  * Enrich one story's canonical version and persist the result. Idempotent:
- * re-running replaces this version's evidence rows and re-marks state, and
- * the `known_ioc_hit` writes are monotonic OR.
+ * the `known_ioc_hit` writes are monotonic OR, and re-running re-marks
+ * state. Evidence is replaced only when the run produces supporting
+ * matches, so a retained monotonic `true` never loses its explaining
+ * evidence (see `persistEnrichment`).
  */
 export async function runStoryEnrichment(
   customerId: string,
@@ -318,6 +335,7 @@ export async function runStoryEnrichment(
     // and the nested object are walked uniformly by `extractIndicators`.
     const policyRows = await loadPolicyEventFields(
       customerPool,
+      canonical.sourceAiceId,
       member.member_event_key,
     );
     const sources: unknown[] = [member.event];
@@ -399,12 +417,25 @@ async function persistEnrichment(
       [args.storyId, args.storyVersion, args.knownIocHit],
     );
 
-    // Replace this version's evidence (idempotent re-run).
-    await client.query(
-      `DELETE FROM story_ioc_evidence
-        WHERE story_id = $1::bigint AND story_version = $2`,
-      [args.storyId, args.storyVersion],
-    );
+    // Evidence must stay consistent with the monotonic boolean: a `true`
+    // floor has to remain explainable after the fact. Replace this
+    // version's evidence ONLY when the current run produced supporting
+    // matches — those are fresh and accurate for the retained `true`. When
+    // the current run produced NO supporting match (e.g. the feed snapshot
+    // is unavailable, a refreshed feed no longer lists the IOC, or a policy
+    // was made ineligible) we leave any prior evidence in place rather than
+    // blindly deleting it: the `known_ioc_hit OR` above keeps a prior `true`
+    // (an unavailable source never erases an observed hit), so deleting the
+    // evidence would leave a `true` floor with nothing to explain it. A
+    // prior `false` simply has no evidence to preserve, so this is a no-op
+    // there.
+    if (args.evidence.length > 0) {
+      await client.query(
+        `DELETE FROM story_ioc_evidence
+          WHERE story_id = $1::bigint AND story_version = $2`,
+        [args.storyId, args.storyVersion],
+      );
+    }
     for (const e of args.evidence) {
       await client.query(
         `INSERT INTO story_ioc_evidence
