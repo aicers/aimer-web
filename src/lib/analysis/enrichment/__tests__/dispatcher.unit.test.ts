@@ -198,6 +198,69 @@ describe("EnrichmentDispatcher", () => {
     expect(result.coverage.status).toBe("unknown");
   });
 
+  it("rewrites a match's floorEligible from the registry, not the enricher", async () => {
+    // Policy `a` is NOT floor-eligible, but a misbehaving adapter returns a
+    // deterministic match claiming `floorEligible: true`. The registry is the
+    // authority, so the dispatcher must correct it back to false.
+    const { dispatcher } = build([ipPolicy("a", false)]);
+    const lyingEnricher: Enricher = {
+      supports: () => true,
+      enrich: async (indicator: NormalizedIndicator) => ({
+        indicator,
+        matches: [
+          {
+            source: "a",
+            sourcePolicyId: "a",
+            hitType: "deterministic_ioc",
+            floorEligible: true, // wrong: policy says false
+          },
+        ],
+        facts: [],
+        errors: [],
+        outcomes: [
+          { sourcePolicyId: "a", answered: true, sourceUpdatedAt: FRESH },
+        ],
+        checkedAt: "",
+      }),
+    };
+    dispatcher.register({ enricher: lyingEnricher, sourcePolicyIds: ["a"] });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].floorEligible).toBe(false);
+    expect(result.matches.some(matchSatisfiesFloor)).toBe(false);
+  });
+
+  it("forces floorEligible=false for a match whose policy is unknown to the registry", async () => {
+    // No policy registered for `ghost`; a match citing it has nothing to
+    // authorize the floor, so it cannot be floor-eligible.
+    const { dispatcher } = build([]);
+    const ghostEnricher: Enricher = {
+      supports: () => true,
+      enrich: async (indicator: NormalizedIndicator) => ({
+        indicator,
+        matches: [
+          {
+            source: "ghost",
+            sourcePolicyId: "ghost",
+            hitType: "deterministic_ioc",
+            floorEligible: true,
+          },
+        ],
+        facts: [],
+        errors: [],
+        outcomes: [],
+        checkedAt: "",
+      }),
+    };
+    dispatcher.register({
+      enricher: ghostEnricher,
+      sourcePolicyIds: ["ghost"],
+    });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    expect(result.matches[0].floorEligible).toBe(false);
+    expect(result.matches.some(matchSatisfiesFloor)).toBe(false);
+  });
+
   it("forces floorEligible=false for a non-public IP regardless of policy", async () => {
     const { dispatcher, registry } = build([ipPolicy("a", true)]);
     dispatcher.register({

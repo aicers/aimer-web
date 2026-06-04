@@ -8,7 +8,10 @@
 // `checkedAt` and stale computation deterministically testable.
 
 import { computeCoverage } from "./coverage";
-import type { SourcePolicyRegistry } from "./source-policy";
+import {
+  resolveFloorEligible,
+  type SourcePolicyRegistry,
+} from "./source-policy";
 import type {
   Enricher,
   EnricherError,
@@ -68,8 +71,12 @@ export class EnrichmentDispatcher {
    *   - `outcomes` — augmented so every expected deterministic source that
    *     produced no outcome (enricher threw or omitted it) is recorded as
    *     `unavailable`. The merged `outcomes[]` is the sole input to coverage.
-   * A non-public IP forces `floorEligible = false` on every match regardless
-   * of source policy (normalization override).
+   * `floorEligible` on every match is (re)derived from the active source
+   * policy via `resolveFloorEligible`, not trusted from the enricher — the
+   * registry is the authority for floor eligibility, and the non-public IP
+   * override is applied there too. A match whose `sourcePolicyId` is unknown
+   * to the registry is forced `floorEligible = false` (no policy authorizes
+   * it to drive the floor).
    */
   async dispatch(
     indicator: NormalizedIndicator,
@@ -115,10 +122,20 @@ export class EnrichmentDispatcher {
       }
     });
 
-    // Non-public IP override: never floor-eligible regardless of policy.
-    if (indicator.entityType === "IP" && indicator.isPublic === false) {
-      matches = matches.map((m) => ({ ...m, floorEligible: false }));
-    }
+    // The registry — not the enricher — is the authority for floor
+    // eligibility (issue §3). Re-derive `floorEligible` on every merged match
+    // from its source policy via `resolveFloorEligible`, which also applies
+    // the non-public IP override. An adapter that returns the wrong value
+    // (e.g. `floorEligible: true` for a `floorEligible: false` policy) is
+    // corrected here. A match whose `sourcePolicyId` is unknown to the
+    // registry has no policy to authorize it, so it cannot drive the floor.
+    matches = matches.map((m) => {
+      const policy = this.registry.get(m.sourcePolicyId);
+      const floorEligible = policy
+        ? resolveFloorEligible(policy, indicator)
+        : false;
+      return floorEligible === m.floorEligible ? m : { ...m, floorEligible };
+    });
 
     // Augment outcomes (issue §2): any expected deterministic source that an
     // enricher was REGISTERED to back (per registration + registry) but that
