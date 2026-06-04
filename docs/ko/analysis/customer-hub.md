@@ -1,13 +1,9 @@
 # 고객 허브
 
 고객 허브는 단일 고객의 분석 화면으로 들어가는 진입점입니다. 해당
-고객의 주기 리포트, 위협 스토리, 의심 이벤트로 연결되어, 모든 리프
+고객의 정기 리포트, 위협 스토리, 의심 이벤트로 연결되어, 모든 개별
 분석이 ID를 알아야만 접근할 수 있는 고아 URL이 아니라 탐색 가능한
 홈을 갖게 됩니다.
-
-```
-/customers/{customerId}
-```
 
 <!-- Screenshot placeholder (#392): customer hub page showing the
      Security Reports, Threat Stories, and Suspicious Events section
@@ -18,12 +14,10 @@
 허브는 최대 세 개의 섹션 카드를 렌더링하며, 각 카드는 목록으로
 연결됩니다.
 
-- **보안 리포트** → `/customers/{customerId}/analysis/reports` — 주기
-  리포트 인덱스([주기 보안 리포트](reports.md) 참고).
-- **위협 스토리** → `/customers/{customerId}/analysis/story` — 고객
-  범위 [위협 스토리 목록](threat-stories.md).
-- **의심 이벤트** → `/customers/{customerId}/analysis/events` — 고객
-  범위 [의심 이벤트 목록](suspicious-events.md).
+- **보안 리포트** — 정기 리포트 인덱스([정기 보안 리포트](reports.md)
+  참고).
+- **위협 스토리** — 고객 범위 [위협 스토리 목록](threat-stories.md).
+- **의심 이벤트** — 고객 범위 [의심 이벤트 목록](suspicious-events.md).
 
 ## 접근 제어
 
@@ -39,6 +33,6 @@
 접근할 수 있으며, 오류 대신 "접근 가능한 섹션 없음" 안내가 표시됩니다.
 
 허브 자체는 호출자가 **해당 고객의 멤버가 전혀 아닐 때만** `404`를
-반환합니다(존재 은닉, 리포트·리프 페이지와 동일). 거부된 브리지
+반환합니다(존재 은닉, 리포트·분석 페이지와 동일). 거부된 브리지
 세션은 실제 `403`을 반환합니다. 이 단일 고객 화면은 브리지에서 읽을
 수 없습니다.

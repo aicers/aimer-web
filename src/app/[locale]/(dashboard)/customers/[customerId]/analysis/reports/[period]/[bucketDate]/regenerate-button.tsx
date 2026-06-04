@@ -115,7 +115,7 @@ export function ReportRegenerateButton({
             </h2>
             <p className="mb-4 text-sm text-muted-foreground">
               This issues a fresh LLM call across the period's analyzed stories,
-              events, and baseline statistics, and supersedes the latest
+              events, and suspicious-event trends, and supersedes the latest
               generation when the new result lands. The previous result row is
               preserved with a <code>superseded_at</code> stamp.
             </p>

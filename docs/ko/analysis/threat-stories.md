@@ -1,22 +1,18 @@
 # 위협 스토리
 
-위협 스토리는 여러 의심 이벤트를 하나의 킬체인 내러티브로 미리 선별해
-연관 지은 것입니다. 위협 스토리 목록은 그러한 스토리의 고객 범위
-인덱스로, 기존 [스토리 상세 페이지](story.md)의 형제 화면입니다.
-
-```
-/customers/{customerId}/analysis/story
-```
+위협 스토리는 여러 [의심 이벤트](suspicious-events.md)를 하나의 킬체인
+내러티브로 미리 선별해 연관 지은 것입니다. 위협 스토리 목록은 그러한
+스토리의 고객 범위 인덱스로, 기존 [스토리 상세 페이지](story.md)의 형제
+화면입니다.
 
 <!-- Screenshot placeholder (#392): threat stories list page showing
      priority-sorted rows with severity/likelihood and the priority
      badge, plus the priority + time-window filter bar. Capture from a
      stack with real aice-web-next data once available. -->
 
-각 행은 스토리 상세 페이지
-(`/customers/{customerId}/analysis/story/{storyId}`)로 연결됩니다. 스토리
-상세는 변형 쿼리 파라미터를 받지 않고 환경 기본값에서 언어/모델을
-해석하므로, 목록 링크에는 변형 파라미터가 없습니다.
+각 행은 스토리 상세 페이지로 연결됩니다. 스토리 상세는 변형 쿼리
+파라미터를 받지 않고 환경 기본값에서 언어/모델을 해석하므로, 목록 링크에는
+변형 파라미터가 없습니다.
 
 ## 정렬
 

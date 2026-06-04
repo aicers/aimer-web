@@ -7,17 +7,13 @@ before deeper review. Each story is analysed once per default
 renders the latest non-superseded result.
 
 The page is reached from aice-web-next by opening a story detail and
-following the deep link to Clumit Insight, or directly via the
-customer-scoped URL:
+following the deep link to Clumit Insight, or directly via its
+customer-scoped URL.
 
-```
-/customers/{customerId}/analysis/story/{storyId}
-```
-
-The customer id appears in the path because story ids are only unique
-within a customer. Opening a story-scoped URL without the customer
-segment would resolve to the wrong story when the tab's selected
-customer differs from the story's owner.
+The URL is customer-scoped because story ids are only unique within a
+customer. A story-scoped URL without the customer would resolve to the
+wrong story when the tab's selected customer differs from the story's
+owner.
 
 ![Story analysis page for a HIGH-tier story, showing the priority badge, severity and likelihood scores, factor chips, MITRE ATT&CK technique chips, and the Regenerate button](../../assets/story-detail-high.en.png)
 
@@ -243,10 +239,8 @@ issued and the latest generation is superseded once the new result
 lands. The previous result row is preserved with a `superseded_at`
 stamp; nothing is overwritten in place.
 
-Submitting the modal calls
-`POST /api/customers/{customerId}/analysis/story/{storyId}/regenerate`
-(optionally with `?lang=&model_name=&model=` to target a non-default
-variant). Behaviour:
+Submitting the modal queues a fresh analysis (optionally targeting a
+non-default variant). Behaviour:
 
 - The job row's `generation` is bumped by one (or `1` if no prior row
   for the variant exists), `status` resets to `queued`, `attempts` resets
@@ -271,24 +265,17 @@ written the new result.
 
 ## Cross-system deep link
 
-aice-web-next consumes the matching summary endpoint to decide whether
-to expose a deep link badge for a story:
+aice-web-next checks whether an analysis exists for a story to decide
+whether to expose a deep-link badge. No badge is shown until an analysis
+has been produced; otherwise the badge carries only the priority tier and
+the two scores and links to this page. TTP tags and factors are content,
+not surface metadata, and stay out of the badge so it cannot leak details
+of the analysis. To filter stories by TTP, use the Clumit Insight overview
+list rather than the badge.
 
-```
-GET /api/customers/{customerId}/analysis/story/{storyId}/summary
-```
-
-The endpoint returns either `{exists: false}` (no analysis has been
-produced yet) or a small content-free payload with `priority_tier`, the
-two scores, `score_kind: "leaf"`, and a `link` to this page. TTP tags
-and factors are content, not surface metadata, and stay out of the
-summary so the aice-web-next badge cannot leak details of the
-analysis. To filter stories by TTP, use the Clumit Insight overview list at
-`/analysis` rather than the badge.
-
-The summary endpoint applies the same existence-hiding policy as the
-page and the regenerate route: a caller that is not a member of the
-customer gets `404 story_not_found` rather than `403`, so the badge
-probe cannot enumerate story ids across customers. Members without
-`analyses:read` get a precise `403 Forbidden`, and bridge sessions
-that the endpoint rejects outright get `403 bridge_not_allowed`.
+The deep-link check applies the same existence-hiding policy as the page
+and the regenerate action: a caller that is not a member of the customer
+sees a `404` rather than a permission error, so the badge probe cannot
+enumerate story ids across customers. Members without `analyses:read` get
+a permission error, and bridge sessions the check rejects outright are
+turned away.

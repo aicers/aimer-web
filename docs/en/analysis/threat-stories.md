@@ -1,22 +1,17 @@
 # Threat Stories
 
-A threat story is a pre-curated correlation of multiple suspicious events
-into one kill-chain narrative. The threat stories list is the
-customer-scoped index of those stories, sibling to the existing [story
-detail page](story.md).
-
-```
-/customers/{customerId}/analysis/story
-```
+A threat story is a pre-curated correlation of multiple [suspicious
+events](suspicious-events.md) into one kill-chain narrative. The threat
+stories list is the customer-scoped index of those stories, sibling to
+the existing [story detail page](story.md).
 
 <!-- Screenshot placeholder (#392): threat stories list page showing
      priority-sorted rows with severity/likelihood and the priority
      badge, plus the priority + time-window filter bar. Capture from a
      stack with real aice-web-next data once available. -->
 
-Each row links to the story detail page
-(`/customers/{customerId}/analysis/story/{storyId}`). Story detail takes
-no variant query params — it resolves the default language/model from the
+Each row links to the story detail page. Story detail takes no variant
+query params — it resolves the default language/model from the
 environment — so the list links carry none.
 
 ## Ordering

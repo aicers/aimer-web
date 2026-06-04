@@ -2,12 +2,8 @@
 
 The customer hub is the entry point for a single customer's analysis
 surfaces. It links to that customer's periodic reports, threat stories,
-and suspicious events, so every leaf analysis has a navigable home rather
-than being reachable only by knowing its ID.
-
-```
-/customers/{customerId}
-```
+and suspicious events, so every individual analysis has a navigable home
+rather than being reachable only by knowing its ID.
 
 <!-- Screenshot placeholder (#392): customer hub page showing the
      Security Reports, Threat Stories, and Suspicious Events section
@@ -17,13 +13,12 @@ than being reachable only by knowing its ID.
 
 The hub renders up to three section cards, each linking into a list:
 
-- **Security Reports** → `/customers/{customerId}/analysis/reports` —
-  the periodic report index (see [Periodic Security
-  Reports](reports.md)).
-- **Threat Stories** → `/customers/{customerId}/analysis/story` — the
-  customer-scoped [threat stories list](threat-stories.md).
-- **Suspicious Events** → `/customers/{customerId}/analysis/events` — the
-  customer-scoped [suspicious events list](suspicious-events.md).
+- **Security Reports** — the periodic report index (see [Periodic
+  Security Reports](reports.md)).
+- **Threat Stories** — the customer-scoped [threat stories
+  list](threat-stories.md).
+- **Suspicious Events** — the customer-scoped [suspicious events
+  list](suspicious-events.md).
 
 ## Access control
 
@@ -41,5 +36,5 @@ sections" notice rather than an error.
 
 The hub itself returns `404` only when the caller is **not a member of
 the customer at all** (existence-hiding, uniform with the report and
-leaf pages). A rejected bridge session returns a real `403`: these
+analysis pages). A rejected bridge session returns a real `403`: these
 single-customer surfaces are not readable under a bridge.

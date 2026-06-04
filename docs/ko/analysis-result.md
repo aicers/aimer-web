@@ -1,8 +1,7 @@
 # 분석 결과 페이지
 
-분석 결과 페이지는 단일 보안 이벤트에 대한 LLM 분석을 보여줍니다. aice-web-next에서
-이벤트 상세 화면을 열고 Clumit Insight 딥링크를 따라가거나,
-`/customers/{customerId}/aice/{aiceId}/events/{eventKey}/analysis` 경로로
+분석 결과 페이지는 하나의 [의심 이벤트](analysis/suspicious-events.md)에 대한 LLM 분석을 보여줍니다. aice-web-next에서
+이벤트 상세 화면을 열고 Clumit Insight 딥링크를 따라가거나, 고객 범위 URL로
 직접 접근할 수 있습니다.
 
 ![우선순위 배지와 심각도 / 신뢰도 점수가 포함된 분석 결과 페이지](../assets/analysis-result.ko.png)
@@ -123,7 +122,7 @@ HTML은 실제 마크업으로 렌더링되지 않고 비활성 텍스트로 처
 
 ## 인용한 리포트(Cited by)
 
-하나 이상의 주기 리포트가 이 이벤트를 인용한 경우, 페이지에는 해당
+하나 이상의 정기 리포트가 이 이벤트를 인용한 경우, 페이지에는 해당
 리포트를 최신순으로 나열하는 **Cited by** 추적이 표시됩니다. 각 항목은
 이 이벤트를 사용한 **정확한 리포트 세대**로 다시 연결됩니다 — 링크는
 세대 고정이므로 최신 버전이 아니라 리포트가 작성된 시점의 버전으로
