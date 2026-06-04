@@ -96,7 +96,7 @@ Consequences:
 | IPv4/IPv6 public | Redact only if matched by a customer-registered range; otherwise pass through |
 | Email addresses | Always redact (regex) |
 | MAC addresses | Always redact (regex) |
-| Hostnames / FQDN / domains | v1: not redacted in event payloads; **redactable in enrichment facts** under a customer-owned-domain boundary policy — see Amendment A |
+| Hostnames / FQDN / domains | Redact only if matched by a customer-registered owned-domain suffix; otherwise pass through. Applies **uniformly to event payloads and enrichment facts** — see Amendment A. (Supersedes the original v1 "not redacted" stance.) |
 | Usernames, URL path components | v1: not redacted |
 | All categories | v2+: switch to AI-based privacy filter (OpenAI privacy filter or equivalent) |
 
@@ -881,7 +881,7 @@ Customer settings: `Data Retention` section.
 - Two number inputs (Ingestion days, Analysis days). Blank Analysis = "Unlimited" with an explicit toggle next to the input.
 - Confirmation prompt on shortening either value (data older than the new threshold will be deleted on the next sweep tick).
 
-## Amendment A — enrichment-fact redaction (domain KIND + fact pipeline + reflection)
+## Amendment A — enrichment-fact redaction + domain KIND (payload & fact) + reflection
 
 - Status: **proposed** (tracks [#424](https://github.com/aicers/aimer-web/issues/424))
 - Depends on: [#422](https://github.com/aicers/aimer-web/issues/422) (empty-range public-IP pass-through, **merged**). This amendment is written against the post-#422 engine: the base "Redaction engine — v1 policy" default is now "pass all public IPs through (private/internal always redacted)", and A.2's domain pass-through policy is the deliberate analogue of that resolved IP-range default.
@@ -890,6 +890,8 @@ Customer settings: `Data Retention` section.
 ### Motivation
 
 RFC 0003 introduces **enrichment facts**: short statements the enrichment layer feeds the story-analysis LLM about an indicator — e.g. *"`evil-c2.example` is on the abuse.ch ThreatFox C2 list, registered 3 days ago."* These facts are produced **outside the event payload**, so the v1 redaction engine — which only tokenizes values found *inside* event payloads — never sees them. RFC 0003 P1b points at "redaction-token-aware enrichment fact injection (RFC 0001 extension)" but defers the definition to here. Discussion #318 flags the same gap twice as a mini-RFC of its own.
+
+Defining fact redaction surfaces a second, pre-existing gap: v1 does not redact **domains** even in event payloads, so a registered customer domain appearing in a member event already ships raw to the LLM, and a fact could never share a token with member text for that domain. This amendment therefore extends domain redaction to **both** event payloads and facts under one policy (A.2), so the two are consistent and token reuse is well-defined.
 
 A fact must be run through the **same redaction policy** as event payloads before it reaches the LLM. That policy decides, per indicator, whether it is redacted at all:
 
@@ -906,10 +908,12 @@ The redaction decision is identical to event-payload redaction; what is **new** 
 
 There is **no single "story redaction map"** to write into. RFC 0002 (§"multi-event token namespacing") is explicit: the per-event `(aice_id, event_key)` maps remain the sole source of truth, and *no new encrypted map is introduced*. A story prompt is assembled at prompt-build time by rewriting each included event's per-event tokens `<<REDACTED_{TYPE}_{NNN}>>` into **story-scope tokens** `<<REDACTED_{TYPE}_E{i}_{NNN}>>`, where `i` indexes the event in the story's ordered `input_event_refs`. Fact redaction hooks into **that** assembly pass.
 
-A fact is processed after the member events are indexed into `input_event_refs`. For each indicator found in a fact, **first apply the redaction policy** (the IP-range / owned-domain rules; see A.2), then place it by these four cases:
+The redaction policy (A.2) is **the same for event payloads and facts**: IPs redact on a registered range, domains redact on a registered owned-domain suffix, both pass through otherwise. Because payload and fact share one policy, a customer-asset indicator that appears in a member event is already tokenized in that event's per-event map — for **both** IPs and domains — so a fact can reuse that token. (This is what makes the per-event-token reuse below well-defined for domains, not only IPs.)
 
-- **External / pass-through indicator** (not redacted by policy — e.g. an attacker IP outside every registered range, a domain not matching any registered owned-domain). Emit it **raw**, exactly as it appears raw in the member text. There is no token, and none is needed — this is the common case for enrichment (the indicator the fact is *about* is usually external). This is the case the previous draft mishandled: a pass-through indicator has no per-event token to "reuse", and must not be forced into one.
-- **Customer-asset indicator present in exactly one member event `i`.** It was redacted in that event, so a per-event token exists. Reuse it and emit the story-scope form `<<REDACTED_{TYPE}_E{i}_{NNN}>>`, so the fact shares the token the member text already carries.
+A fact is processed after the member events are indexed into `input_event_refs`. For each indicator found in a fact, **first apply the redaction policy**, then place it by these four cases:
+
+- **External / pass-through indicator** (not redacted by policy — e.g. an attacker IP outside every registered range, a domain not matching any registered owned-domain). Emit it **raw**, exactly as it appears raw in the member text. There is no token, and none is needed — this is the common case for enrichment (the indicator the fact is *about* is usually external). This is the case an earlier draft mishandled: a pass-through indicator has no per-event token to "reuse", and must not be forced into one.
+- **Customer-asset indicator present in exactly one member event `i`.** It was redacted in that event (IP in a registered range, or domain matching a registered owned-domain), so a per-event token exists. Reuse it and emit the story-scope form `<<REDACTED_{TYPE}_E{i}_{NNN}>>`, so the fact shares the token the member text already carries.
 - **Customer-asset indicator present in multiple member events.** Pick the token of the **lowest event index `i`** in `input_event_refs` (deterministic, and `input_event_refs` is part of `input_hash`, so the choice is stable and reproducible). The LLM then sees one stable identifier per indicator.
 - **Customer-asset indicator present only in the fact** (reflection leak — e.g. a registered owned-domain that no member event mentioned). It has no `E{i}` anchor, so it goes into a dedicated **fact scope** and is emitted as `<<REDACTED_{TYPE}_F{k}_{NNN}>>`, where `F` marks the fact namespace and `k` indexes the fact scope. The value→token assignment lives in this fact scope, encrypted like a per-event map; no event map is mutated (per-event maps stay immutable, per RFC 0002). This case exists **only** to mask reflected customer assets, so it is rare.
 
@@ -919,16 +923,18 @@ Because external indicators pass through raw, the `F{k}` fact scope only ever ho
 
 ### A.2 — Domain / hostname token KIND with a customer-owned boundary policy
 
-v1 lists hostnames/FQDNs as "not redacted". That is acceptable for event payloads (no customer hostname registry exists yet) but is exactly the hole reflection exploits. This amendment adds a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`). The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries. The boundary policy is **structurally analogous to #422's IP-range policy**:
+The original v1 policy listed hostnames/FQDNs as "not redacted" anywhere. That leaves a registered customer domain exposed in two places: in event payloads (a member event mentioning `vpn.customer.example` ships it raw to the LLM) and in enrichment facts. Worse, a fact could never share a token with member text for the same domain, because the member text had no domain token to begin with. This amendment closes both by adding a `domain` KIND (`<<REDACTED_DOMAIN_NNN>>`) and applying a domain boundary policy **uniformly to event payloads and facts**, exactly as IP-range redaction already applies to both. The redaction map's value entries already carry a `kind` field (`{ kind, value }`, see §"Redaction map shape"); this amendment **introduces `"domain"` as a new `kind` value** for those entries.
 
-| Domain in a fact | Policy |
+The boundary policy is **structurally identical to #422's IP-range policy** and applies wherever a domain appears (event payload or fact):
+
+| Domain (in payload or fact) | Policy |
 |---|---|
 | Matches a customer-registered owned-domain suffix | **Redact** (`<<REDACTED_DOMAIN_NNN>>`) |
 | Not matched (external / malicious) | **Pass through** (preserved for analytic value) — same philosophy as #422: what the customer registers is what gets hidden |
 
-This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked. The customer-owned-domain registry parallels `customer_redaction_ranges` (a hostname-suffix list); its admin UI is deferred.
+This mirrors #422 deliberately: external malicious domains are the threat intelligence the operator needs to see; only the customer's *own* registered domains are masked, and they are masked **everywhere** (payload and fact alike), so a registered domain is never raw in front of the LLM and the per-event token a fact reuses always exists. The customer-owned-domain registry parallels `customer_redaction_ranges` (a hostname-suffix list); its admin UI is deferred.
 
-> **Known limitation — domain reflection leak before the registry is populated.** The policy itself is correct and consistent with #422 ("redact only what the customer registers; pass the rest"). The residual risk is purely the **registration gap**: until a customer registers any owned-domain, a reflected customer domain (`vpn.customer.example`) matches no registered suffix and so passes through like any external domain. This is the same property IPs have (an unregistered customer IP range also passes), except IPs retain the always-redact private-range net while domains have no equivalent automatic class. So the reflection-leak defense (motivation above) is **fully effective only once the owned-domain registry is populated**; before that, A.3's scan is a *partial* net for domains. This is a property of registration-based redaction, not a policy defect — the fix is operator registration, not a policy change. For IP/email/MAC the always-redact and range rules give the scan a real signal, so this gap is domain-specific.
+> **Known limitation — domain reflection leak before the registry is populated.** The policy is correct and consistent with #422 ("redact only what the customer registers; pass the rest"). The residual risk is purely the **registration gap**: until a customer registers any owned-domain, a reflected customer domain (`vpn.customer.example`) matches no registered suffix and passes through like any external domain. This is the same property IPs have (an unregistered customer IP range also passes), except IPs retain the always-redact private-range net while domains have no equivalent automatic class. So the reflection-leak defense is **fully effective only once the owned-domain registry is populated**; before that, A.3's scan is a *partial* net for domains. This is a property of registration-based redaction, not a policy defect — the fix is operator registration. Note this gap is symmetric across payload and fact (an unregistered domain is raw in both), so the two stay consistent. For IP/email/MAC the always-redact and range rules give the scan a real signal, so this gap is domain-specific.
 
 ### A.3 — Reflection / generated-text defense via the hallucination scan
 
@@ -938,7 +944,7 @@ For IP/email/MAC, this scan is an effective net (those classes have always-redac
 
 ### A.4 — No engine-version / policy-version migration
 
-Like #422, the engine is still pre-release and undeployed, so there is no stored data under an old policy to reconcile. Adding the `domain` KIND and the fact pipeline requires **no `ENGINE_VERSION` bump, no policy-version migration, and no retroactive re-redact**. The change is made in place.
+Like #422, the engine is still pre-release and undeployed, so there is no stored data under an old policy to reconcile. Adding the `domain` KIND, extending domain redaction to event payloads, and adding the fact pipeline all require **no `ENGINE_VERSION` bump, no policy-version migration, and no retroactive re-redact**. The change is made in place.
 
 ### A.5 — Out of amendment scope
 
