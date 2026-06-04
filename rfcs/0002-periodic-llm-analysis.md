@@ -202,6 +202,8 @@ RFC 0001's redaction tokens are **scoped per event**: each `(aice_id, event_key)
 
 aimer-web resolves this **at prompt-build time** with a deterministic token rewrite. No new encrypted map is introduced; the per-event maps remain the sole source of truth.
 
+> Scope: this statement is about **event-token (`E{i}`) namespacing** — the only token source in RFC 0002 itself. RFC 0001 Amendment A later adds a separate fact-token namespace (`F{k}`) for external-TI enrichment facts, whose source of truth is the `enrichment_redaction_map` (resolved via `input_fact_refs`), not the per-event maps. The two namespaces are disjoint and demap through their own refs; "no new map" holds for the event-namespacing mechanism described here, while `F{k}` is governed by Amendment A.
+
 Procedure:
 
 1. The worker assigns each included event an ordinal index `i` (1, 2, 3, ...) in a fixed order — for story analysis: by `(member_event_key)` ascending; for periodic reports: by `(aice_id, event_key)` ascending.
