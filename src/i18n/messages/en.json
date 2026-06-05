@@ -470,7 +470,8 @@
       "evidencePinUnavailable": "This evidence version is no longer available. The cited generation has been superseded or removed.",
       "securityReports": "Security Reports",
       "tryAgain": "Try again",
-      "nextPage": "Next page"
+      "nextPage": "Next page",
+      "ttpTags": "MITRE ATT&CK techniques"
     },
     "fields": {
       "priorityTier": "Priority tier",
@@ -485,7 +486,9 @@
       "severityScore": "Severity score (if real, how bad)",
       "likelihoodScore": "Likelihood score (is it real)",
       "showSeverityFactors": "Show severity factors",
-      "showLikelihoodFactors": "Show likelihood factors"
+      "showLikelihoodFactors": "Show likelihood factors",
+      "severityFactors": "Severity factors",
+      "likelihoodFactors": "Likelihood factors"
     },
     "reportDetail": {
       "title": "Security Report",
@@ -530,6 +533,17 @@
       "storyLabel": "Story {storyId}",
       "viewSourceEvent": "View source event in aice-web-next",
       "forceRerun": "Force re-run in aice-web-next"
+    },
+    "regenerate": {
+      "button": "Regenerate",
+      "cancel": "Cancel",
+      "submitting": "Submitting…",
+      "queued": "Regenerate queued (generation {generation}). Refresh the page once processing completes.",
+      "error": "Could not queue regenerate: {message}",
+      "reportTitle": "Regenerate this report?",
+      "reportBody": "This issues a fresh LLM call across the period's analyzed stories, events, and suspicious-event trends, and supersedes the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp.",
+      "storyTitle": "Regenerate story analysis?",
+      "storyBody": "This issues a fresh LLM call against the canonical story members and overwrites the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp."
     },
     "lists": {
       "eventsSubtitle": "Analyzed detections for this customer, highest priority first.",

@@ -470,7 +470,8 @@
       "evidencePinUnavailable": "이 근거 버전은 더 이상 사용할 수 없습니다. 인용된 세대가 대체되었거나 삭제되었습니다.",
       "securityReports": "보안 보고서",
       "tryAgain": "다시 시도",
-      "nextPage": "다음 페이지"
+      "nextPage": "다음 페이지",
+      "ttpTags": "MITRE ATT&CK 기법"
     },
     "fields": {
       "priorityTier": "우선순위 등급",
@@ -485,7 +486,9 @@
       "severityScore": "심각도 점수 (실제라면 얼마나 심각한가)",
       "likelihoodScore": "가능성 점수 (실제인가)",
       "showSeverityFactors": "심각도 요인 보기",
-      "showLikelihoodFactors": "가능성 요인 보기"
+      "showLikelihoodFactors": "가능성 요인 보기",
+      "severityFactors": "심각도 요인",
+      "likelihoodFactors": "가능성 요인"
     },
     "reportDetail": {
       "title": "보안 보고서",
@@ -530,6 +533,17 @@
       "storyLabel": "스토리 {storyId}",
       "viewSourceEvent": "aice-web-next에서 원본 이벤트 보기",
       "forceRerun": "aice-web-next에서 강제 재실행"
+    },
+    "regenerate": {
+      "button": "재생성",
+      "cancel": "취소",
+      "submitting": "제출 중…",
+      "queued": "재생성이 대기열에 추가되었습니다 (세대 {generation}). 처리가 완료되면 페이지를 새로고침하세요.",
+      "error": "재생성을 대기열에 추가하지 못했습니다: {message}",
+      "reportTitle": "이 보고서를 재생성하시겠습니까?",
+      "reportBody": "이 기간에 분석된 스토리, 이벤트, 의심 이벤트 동향에 대해 새로운 LLM 호출을 실행하며, 새 결과가 도착하면 최신 세대를 대체합니다. 이전 결과 행은 <code>superseded_at</code> 스탬프와 함께 보존됩니다.",
+      "storyTitle": "스토리 분석을 재생성하시겠습니까?",
+      "storyBody": "정규 스토리 구성원에 대해 새로운 LLM 호출을 실행하며, 새 결과가 도착하면 최신 세대를 덮어씁니다. 이전 결과 행은 <code>superseded_at</code> 스탬프와 함께 보존됩니다."
     },
     "lists": {
       "eventsSubtitle": "이 고객의 분석된 탐지 결과를 우선순위가 높은 순으로 표시합니다.",

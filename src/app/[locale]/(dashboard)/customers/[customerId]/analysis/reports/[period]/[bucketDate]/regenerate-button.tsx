@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 
 interface Props {
@@ -35,6 +36,7 @@ export function ReportRegenerateButton({
   bucketDate,
   variant,
 }: Props) {
+  const t = useTranslations("analysis");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<
@@ -99,25 +101,24 @@ export function ReportRegenerateButton({
         onClick={() => setOpen(true)}
         className="inline-flex items-center rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
       >
-        Regenerate
+        {t("regenerate.button")}
       </button>
 
       {open ? (
         <div
           role="dialog"
-          aria-label="regenerate-modal"
+          aria-label={t("regenerate.reportTitle")}
           data-testid="regenerate-modal"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4"
         >
           <div className="w-full max-w-md rounded-lg bg-card p-5 shadow-lg">
             <h2 className="mb-2 text-lg font-semibold text-foreground">
-              Regenerate this report?
+              {t("regenerate.reportTitle")}
             </h2>
             <p className="mb-4 text-sm text-muted-foreground">
-              This issues a fresh LLM call across the period's analyzed stories,
-              events, and suspicious-event trends, and supersedes the latest
-              generation when the new result lands. The previous result row is
-              preserved with a <code>superseded_at</code> stamp.
+              {t.rich("regenerate.reportBody", {
+                code: (chunks) => <code>{chunks}</code>,
+              })}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -126,7 +127,7 @@ export function ReportRegenerateButton({
                 disabled={busy}
                 className="rounded border border-border bg-card px-3 py-2 text-sm text-foreground hover:bg-muted"
               >
-                Cancel
+                {t("regenerate.cancel")}
               </button>
               <button
                 type="button"
@@ -135,7 +136,7 @@ export function ReportRegenerateButton({
                 disabled={busy}
                 className="rounded bg-foreground px-3 py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60"
               >
-                {busy ? "Submitting…" : "Regenerate"}
+                {busy ? t("regenerate.submitting") : t("regenerate.button")}
               </button>
             </div>
           </div>
@@ -148,8 +149,7 @@ export function ReportRegenerateButton({
           data-testid="regenerate-status"
           className="mt-3 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
         >
-          Regenerate queued (generation {status.generation}). Refresh the page
-          once processing completes.
+          {t("regenerate.queued", { generation: status.generation })}
         </div>
       ) : null}
       {status.kind === "error" ? (
@@ -158,7 +158,7 @@ export function ReportRegenerateButton({
           data-testid="regenerate-error"
           className="mt-3 rounded border border-rose-400 bg-rose-50 px-3 py-2 text-sm text-rose-800"
         >
-          Could not queue regenerate: {status.message}
+          {t("regenerate.error", { message: status.message })}
         </div>
       ) : null}
     </div>

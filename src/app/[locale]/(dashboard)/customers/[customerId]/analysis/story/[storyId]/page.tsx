@@ -168,7 +168,7 @@ export default async function StoryAnalysisPage({
         <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
             <PriorityBadge tier={data.priorityTier} />
-            <TtpChipRow tags={data.ttpTags} />
+            <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
           </div>
         </Field>
         <Field label={tA("fields.severityScore")}>
@@ -177,7 +177,8 @@ export default async function StoryAnalysisPage({
             collapsed={collapseFactors}
             summaryLabel={tA("fields.showSeverityFactors")}
             factors={data.severityFactors}
-            ariaLabel="severity-factors"
+            ariaLabel={tA("fields.severityFactors")}
+            testId="severity-factors"
           />
         </Field>
         <Field label={tA("fields.likelihoodScore")}>
@@ -186,7 +187,8 @@ export default async function StoryAnalysisPage({
             collapsed={collapseFactors}
             summaryLabel={tA("fields.showLikelihoodFactors")}
             factors={data.likelihoodFactors}
-            ariaLabel="likelihood-factors"
+            ariaLabel={tA("fields.likelihoodFactors")}
+            testId="likelihood-factors"
           />
         </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
@@ -388,22 +390,26 @@ function CollapsibleFactors({
   summaryLabel,
   factors,
   ariaLabel,
+  testId,
 }: {
   collapsed: boolean;
   summaryLabel: string;
   factors: readonly string[];
   ariaLabel: string;
+  testId: string;
 }) {
   if (factors.length === 0) return null;
   if (!collapsed) {
-    return <FactorChipRow factors={factors} ariaLabel={ariaLabel} />;
+    return (
+      <FactorChipRow factors={factors} ariaLabel={ariaLabel} testId={testId} />
+    );
   }
   return (
-    <details data-testid={`${ariaLabel}-details`} className="mt-2">
+    <details data-testid={`${testId}-details`} className="mt-2">
       <summary className="cursor-pointer text-xs text-muted-foreground">
         {summaryLabel}
       </summary>
-      <FactorChipRow factors={factors} ariaLabel={ariaLabel} />
+      <FactorChipRow factors={factors} ariaLabel={ariaLabel} testId={testId} />
     </details>
   );
 }
@@ -411,15 +417,17 @@ function CollapsibleFactors({
 function FactorChipRow({
   factors,
   ariaLabel,
+  testId,
 }: {
   factors: readonly string[];
   ariaLabel: string;
+  testId: string;
 }) {
   if (factors.length === 0) return null;
   return (
     <ul
       aria-label={ariaLabel}
-      data-testid={ariaLabel}
+      data-testid={testId}
       className="mt-2 flex flex-wrap gap-1"
     >
       {factors.map((item) => (
@@ -437,13 +445,15 @@ function FactorChipRow({
 
 function TtpChipRow({
   tags,
+  ariaLabel,
 }: {
   tags: ReadonlyArray<{ id: string; name: string | null }>;
+  ariaLabel: string;
 }) {
   if (tags.length === 0) return null;
   return (
     <ul
-      aria-label="ttp-tags"
+      aria-label={ariaLabel}
       data-testid="ttp-tags"
       className="flex flex-wrap gap-1"
     >

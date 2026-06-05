@@ -136,7 +136,7 @@ function StorySourceCard({
               ) : null}
             </div>
             {source.display ? (
-              <TtpChipRow tags={source.display.ttpTags} />
+              <TtpChipRow tags={source.display.ttpTags} t={t} />
             ) : (
               <UnavailableNote t={t} />
             )}
@@ -235,13 +235,15 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
 
 function TtpChipRow({
   tags,
+  t,
 }: {
   tags: ReadonlyArray<{ id: string; name: string | null }>;
+  t: AnalysisTranslations;
 }) {
   if (tags.length === 0) return null;
   return (
     <ul
-      aria-label="source-ttp-tags"
+      aria-label={t("common.ttpTags")}
       data-testid="source-ttp-tags"
       className="mt-2 flex flex-wrap gap-1"
     >
