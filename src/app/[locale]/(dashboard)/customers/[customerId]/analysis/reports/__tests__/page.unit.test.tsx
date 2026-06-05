@@ -42,6 +42,19 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+vi.mock("next-intl/server", async () => {
+  const { createTranslator } = await import("next-intl");
+  const messages = (await import("@/i18n/messages/en.json")).default;
+  return {
+    getTranslations: async (namespace?: string) =>
+      createTranslator({
+        locale: "en",
+        messages,
+        namespace: namespace as never,
+      }),
+  };
+});
+
 import ReportIndexPage from "../page";
 
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";

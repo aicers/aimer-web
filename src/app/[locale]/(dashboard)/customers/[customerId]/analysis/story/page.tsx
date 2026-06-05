@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
+import type { useTranslations } from "next-intl";
+import { getTranslations } from "next-intl/server";
 import { ListFilterBar } from "@/components/analysis/list-filter-bar";
+import { filterBarLabels } from "@/components/analysis/list-filter-labels";
 import { buildListQuery, parseListFilters } from "@/lib/analysis/list-filters";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   loadStoryListPage,
   type StoryListItem,
 } from "@/lib/analysis/story-list-page-loader";
+
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 interface PageProps {
   params: Promise<{
@@ -52,13 +57,17 @@ export default async function ThreatStoryListPage({
 
   const { items, nextCursor } = outcome.page;
   const basePath = `/${locale}/customers/${customerId}/analysis/story`;
+  const tA = await getTranslations("analysis");
+  const tNav = await getTranslations("nav");
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Threat Stories</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {tNav("threatStories")}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pre-curated correlations of suspicious events, highest priority first.
+          {tA("lists.storiesSubtitle")}
         </p>
       </header>
 
@@ -66,22 +75,27 @@ export default async function ThreatStoryListPage({
         action={basePath}
         priorityTier={filters.priorityTier}
         window={filters.window}
+        labels={filterBarLabels(tA)}
       />
 
       {items.length === 0 ? (
         <div
           role="status"
-          aria-label="empty-banner"
           data-testid="stories-empty"
           className="rounded border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         >
-          No threat stories match the current filters.
+          {tA("lists.storiesEmpty")}
         </div>
       ) : (
         <ul className="space-y-2" data-testid="stories-list">
           {items.map((item) => (
             <li key={item.storyId}>
-              <StoryRow item={item} locale={locale} customerId={customerId} />
+              <StoryRow
+                item={item}
+                locale={locale}
+                customerId={customerId}
+                t={tA}
+              />
             </li>
           ))}
         </ul>
@@ -98,7 +112,7 @@ export default async function ThreatStoryListPage({
             })}`}
             className="inline-flex items-center rounded border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
-            Next page
+            {tA("common.nextPage")}
           </Link>
         </div>
       )}
@@ -110,10 +124,12 @@ function StoryRow({
   item,
   locale,
   customerId,
+  t,
 }: {
   item: StoryListItem;
   locale: string;
   customerId: string;
+  t: AnalysisTranslations;
 }) {
   // Story detail takes no variant params — it defaults lang/model from env.
   const href = `/${locale}/customers/${customerId}/analysis/story/${item.storyId}`;
@@ -125,11 +141,13 @@ function StoryRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          Story {item.storyId}
+          {t("lists.storyLabel", { storyId: item.storyId })}
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
-          severity {item.severityScore.toFixed(3)} • likelihood{" "}
-          {item.likelihoodScore.toFixed(3)}
+          {t("lists.storyRowMeta", {
+            severity: item.severityScore.toFixed(3),
+            likelihood: item.likelihoodScore.toFixed(3),
+          })}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -138,7 +156,7 @@ function StoryRow({
             data-testid={`story-status-${item.storyId}`}
             className="inline-flex items-center rounded-full border border-sky-300 bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-900"
           >
-            Updating
+            {t("lists.statusUpdating")}
           </span>
         )}
         <PriorityBadge tier={item.priorityTier} />

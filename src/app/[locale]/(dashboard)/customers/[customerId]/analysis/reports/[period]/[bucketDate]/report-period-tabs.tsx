@@ -24,13 +24,20 @@ interface Props {
    * and the language switcher preserve params identically (#388).
    */
   currentQuery?: string;
+  /**
+   * Translated tab labels (`reportPeriod`), keyed by period and injected by
+   * the (server-component) caller so this stays a synchronous component.
+   */
+  periodLabels: Record<PeriodKind, string>;
+  /** Localized accessible name for the tab-bar navigation landmark. */
+  navLabel: string;
 }
 
-const TABS: ReadonlyArray<{ period: PeriodKind; label: string }> = [
-  { period: "LIVE", label: "Live" },
-  { period: "DAILY", label: "Daily" },
-  { period: "WEEKLY", label: "Weekly" },
-  { period: "MONTHLY", label: "Monthly" },
+const TAB_PERIODS: readonly PeriodKind[] = [
+  "LIVE",
+  "DAILY",
+  "WEEKLY",
+  "MONTHLY",
 ];
 
 /**
@@ -47,15 +54,18 @@ export function ReportPeriodTabs({
   activePeriod,
   referenceDate,
   currentQuery,
+  periodLabels,
+  navLabel,
 }: Props) {
   // Preserve (and normalize) the current variant params on every tab link.
   const qs = mergeQuery(currentQuery, {});
   const query = qs ? `?${qs}` : "";
   const base = `/${locale}/customers/${customerId}/analysis/reports`;
   return (
-    <nav aria-label="report-period-tabs" data-testid="report-period-tabs">
+    <nav aria-label={navLabel} data-testid="report-period-tabs">
       <ul className="flex flex-wrap gap-1 border-b border-border">
-        {TABS.map(({ period, label }) => {
+        {TAB_PERIODS.map((period) => {
+          const label = periodLabels[period];
           const active = period === activePeriod;
           const bucket = periodBucketDate(period, referenceDate);
           const className = `inline-flex items-center rounded-t border-b-2 px-3 py-2 text-sm font-medium ${

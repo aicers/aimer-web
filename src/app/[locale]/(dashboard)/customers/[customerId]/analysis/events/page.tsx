@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
+import type { useTranslations } from "next-intl";
+import { getTranslations } from "next-intl/server";
 import { ListFilterBar } from "@/components/analysis/list-filter-bar";
+import { filterBarLabels } from "@/components/analysis/list-filter-labels";
 import {
   type EventListItem,
   loadEventListPage,
 } from "@/lib/analysis/event-list-page-loader";
 import { buildListQuery, parseListFilters } from "@/lib/analysis/list-filters";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
+
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 interface PageProps {
   params: Promise<{
@@ -54,15 +59,17 @@ export default async function SuspiciousEventListPage({
 
   const { items, nextCursor, variant } = outcome.page;
   const basePath = `/${locale}/customers/${customerId}/analysis/events`;
+  const tA = await getTranslations("analysis");
+  const tNav = await getTranslations("nav");
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">
-          Suspicious Events
+          {tNav("suspiciousEvents")}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Analyzed detections for this customer, highest priority first.
+          {tA("lists.eventsSubtitle")}
         </p>
       </header>
 
@@ -70,16 +77,16 @@ export default async function SuspiciousEventListPage({
         action={basePath}
         priorityTier={filters.priorityTier}
         window={filters.window}
+        labels={filterBarLabels(tA)}
       />
 
       {items.length === 0 ? (
         <div
           role="status"
-          aria-label="empty-banner"
           data-testid="events-empty"
           className="rounded border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         >
-          No suspicious events match the current filters.
+          {tA("lists.eventsEmpty")}
         </div>
       ) : (
         <ul className="space-y-2" data-testid="events-list">
@@ -90,6 +97,7 @@ export default async function SuspiciousEventListPage({
                 locale={locale}
                 customerId={customerId}
                 variant={variant}
+                t={tA}
               />
             </li>
           ))}
@@ -107,7 +115,7 @@ export default async function SuspiciousEventListPage({
             })}`}
             className="inline-flex items-center rounded border border-border bg-card px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >
-            Next page
+            {tA("common.nextPage")}
           </Link>
         </div>
       )}
@@ -120,11 +128,13 @@ function EventRow({
   locale,
   customerId,
   variant,
+  t,
 }: {
   item: EventListItem;
   locale: string;
   customerId: string;
   variant: Variant;
+  t: AnalysisTranslations;
 }) {
   // The event detail page 404s without `model_name`/`model` (they are part
   // of the storage PK), defaulting only `lang`. Carry the canonical
@@ -146,11 +156,14 @@ function EventRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          Event {item.eventKey}
+          {t("lists.eventLabel", { eventKey: item.eventKey })}
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
-          {item.aiceId} • severity {item.severityScore.toFixed(3)} • likelihood{" "}
-          {item.likelihoodScore.toFixed(3)}
+          {t("lists.eventRowMeta", {
+            aiceId: item.aiceId,
+            severity: item.severityScore.toFixed(3),
+            likelihood: item.likelihoodScore.toFixed(3),
+          })}
         </div>
       </div>
       <PriorityBadge tier={item.priorityTier} />

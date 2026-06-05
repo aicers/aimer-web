@@ -21,11 +21,6 @@ function supportedTimeZones(): string[] {
   return [];
 }
 
-const LOCALE_LABELS: Record<string, string> = {
-  en: "English",
-  ko: "한국어",
-};
-
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 export function AccountPreferencesPage() {
@@ -91,7 +86,7 @@ export function AccountPreferencesPage() {
         >
           {routing.locales.map((loc) => (
             <option key={loc} value={loc}>
-              {LOCALE_LABELS[loc] ?? loc}
+              {loc === "en" ? t("localeName.en") : t("localeName.ko")}
             </option>
           ))}
         </Select>

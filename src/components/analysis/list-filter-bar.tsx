@@ -1,10 +1,21 @@
 import {
   PRIORITY_TIERS,
-  TIME_WINDOW_LABELS,
   TIME_WINDOWS,
   type TimeWindow,
 } from "@/lib/analysis/list-filters";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
+
+// Translated labels injected by the (server-component) caller, which
+// resolves them via `getTranslations("analysis.filters")`. The bar stays a
+// plain synchronous component so it never calls the i18n hooks itself.
+export interface ListFilterBarLabels {
+  priority: string;
+  all: string;
+  timeWindow: string;
+  apply: string;
+  /** Display label for each time window, keyed by the stable window id. */
+  windows: Record<TimeWindow, string>;
+}
 
 // Shared filter bar for the WS3 (#392) Threat Stories / Suspicious Events
 // list pages. A plain GET form so it works without client JS: submitting
@@ -16,11 +27,13 @@ export function ListFilterBar({
   action,
   priorityTier,
   window,
+  labels,
 }: {
   /** Path the form submits to (the list page's own path). */
   action: string;
   priorityTier: PriorityTier | null;
   window: TimeWindow;
+  labels: ListFilterBarLabels;
 }) {
   return (
     <form
@@ -30,13 +43,13 @@ export function ListFilterBar({
       className="mb-6 flex flex-wrap items-end gap-3"
     >
       <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-        Priority
+        {labels.priority}
         <select
           name="priority"
           defaultValue={priorityTier ?? ""}
           className="rounded border border-border bg-card px-2 py-1 text-sm text-foreground"
         >
-          <option value="">All</option>
+          <option value="">{labels.all}</option>
           {PRIORITY_TIERS.map((tier) => (
             <option key={tier} value={tier}>
               {tier}
@@ -45,7 +58,7 @@ export function ListFilterBar({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-        Time window
+        {labels.timeWindow}
         <select
           name="window"
           defaultValue={window}
@@ -53,7 +66,7 @@ export function ListFilterBar({
         >
           {TIME_WINDOWS.map((w) => (
             <option key={w} value={w}>
-              {TIME_WINDOW_LABELS[w]}
+              {labels.windows[w]}
             </option>
           ))}
         </select>
@@ -62,7 +75,7 @@ export function ListFilterBar({
         type="submit"
         className="rounded border border-border bg-card px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted"
       >
-        Apply
+        {labels.apply}
       </button>
     </form>
   );

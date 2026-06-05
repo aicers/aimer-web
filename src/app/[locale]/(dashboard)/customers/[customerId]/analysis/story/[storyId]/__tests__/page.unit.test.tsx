@@ -32,9 +32,18 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/en/customers/c1/analysis/story/12345",
 }));
 
-vi.mock("next-intl/server", () => ({
-  getTranslations: async () => (key: string) => key,
-}));
+vi.mock("next-intl/server", async () => {
+  const { createTranslator } = await import("next-intl");
+  const messages = (await import("@/i18n/messages/en.json")).default;
+  return {
+    getTranslations: async (namespace?: string) =>
+      createTranslator({
+        locale: "en",
+        messages,
+        namespace: namespace as never,
+      }),
+  };
+});
 
 vi.mock("../regenerate-button", () => ({
   StoryRegenerateButton: () => null,
@@ -49,10 +58,10 @@ describe("StoryAnalysisPage — generation pin", () => {
   it("shows the evidence-unavailable notice for a pin_unavailable outcome", async () => {
     mockLoad.mockResolvedValueOnce({ kind: "pin_unavailable", generation: 7 });
     await renderPage({ generation: "7" });
-    expect(screen.getByLabelText("pin-unavailable-banner")).toBeTruthy();
-    expect(
-      screen.getByLabelText("pin-unavailable-banner").textContent,
-    ).toContain("no longer available");
+    expect(screen.getByTestId("pin-unavailable-banner")).toBeTruthy();
+    expect(screen.getByTestId("pin-unavailable-banner").textContent).toContain(
+      "no longer available",
+    );
   });
 
   it("404s a present-but-invalid generation rather than resolving latest", async () => {

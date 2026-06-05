@@ -147,6 +147,20 @@ export default async function ReportDetailPage({
     generation: null,
   });
 
+  const tA = await getTranslations("analysis");
+  const tPeriod = await getTranslations("reportPeriod");
+  // Translated period labels (`reportPeriod`), reused for the tab bar and
+  // the header badge. The header subtitle historically rendered the raw
+  // uppercase enum (`WEEKLY`); uppercasing the translated value keeps the
+  // English byte-for-byte while localizing KO.
+  const periodLabels: Record<string, string> = {
+    LIVE: tPeriod("LIVE"),
+    DAILY: tPeriod("DAILY"),
+    WEEKLY: tPeriod("WEEKLY"),
+    MONTHLY: tPeriod("MONTHLY"),
+  };
+  const subtitlePeriod = (periodLabels[period] ?? period).toUpperCase();
+
   // Non-member / non-existent → 404 (existence-hiding). Permission- or
   // bridge-denied → 403 (round-15 S3). `forbidden()` (enabled via
   // `experimental.authInterrupts`) interrupts rendering with a real 403
@@ -167,19 +181,22 @@ export default async function ReportDetailPage({
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
         <header className="mb-6">
           <h1 className="text-2xl font-bold text-foreground">
-            Security Report
+            {tA("reportDetail.title")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {period} • {bucketDate} • generation {outcome.generation}
+            {tA("reportDetail.subtitlePinUnavailable", {
+              period: subtitlePeriod,
+              bucketDate,
+              generation: outcome.generation,
+            })}
           </p>
         </header>
         <div
           role="status"
-          aria-label="pin-unavailable-banner"
+          data-testid="pin-unavailable-banner"
           className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
         >
-          This report version is no longer available. The cited generation has
-          been superseded or removed.
+          {tA("reportDetail.pinUnavailableBanner")}
         </div>
       </div>
     );
@@ -198,6 +215,8 @@ export default async function ReportDetailPage({
       activePeriod={period}
       referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
       currentQuery={currentQuery}
+      periodLabels={periodLabels}
+      navLabel={tA("reportDetail.periodNavLabel")}
     />
   );
 
@@ -206,20 +225,22 @@ export default async function ReportDetailPage({
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
         <header className="mb-6">
           <h1 className="text-2xl font-bold text-foreground">
-            Security Report
+            {tA("reportDetail.title")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {period} • {bucketDate}
+            {tA("reportDetail.subtitlePending", {
+              period: subtitlePeriod,
+              bucketDate,
+            })}
           </p>
         </header>
         <div className="mb-6">{tabs}</div>
         <div
           role="status"
-          aria-label="pending-banner"
+          data-testid="pending-banner"
           className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
         >
-          The report is being generated (state: {outcome.stateStatus}). Refresh
-          once the result is ready.
+          {tA("reportDetail.pendingBanner", { status: outcome.stateStatus })}
         </div>
       </div>
     );
@@ -242,6 +263,7 @@ export default async function ReportDetailPage({
   const switcher = (
     <ReportLanguageSwitcher
       label={t("languageSwitcherLabel")}
+      navLabel={tA("reportDetail.languageNavLabel")}
       basePath={basePath}
       currentQuery={currentQuery}
       currentLocale={shownLocale}
@@ -294,11 +316,21 @@ export default async function ReportDetailPage({
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Security Report</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {tA("reportDetail.title")}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {data.period === "LIVE" ? "LIVE (rolling)" : data.period} •{" "}
-          {data.period === "LIVE" ? "now" : data.bucketDate} • {data.tz} •
-          generation {data.generation}
+          {tA("reportDetail.subtitle", {
+            period:
+              data.period === "LIVE"
+                ? tA("reportDetail.liveRolling", {
+                    period: periodLabels.LIVE.toUpperCase(),
+                  })
+                : (periodLabels[data.period] ?? data.period).toUpperCase(),
+            when: data.period === "LIVE" ? tA("common.now") : data.bucketDate,
+            tz: data.tz,
+            generation: data.generation,
+          })}
         </p>
       </header>
 
@@ -307,48 +339,54 @@ export default async function ReportDetailPage({
       {languageNotice}
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Priority tier">
+        <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
             <PriorityBadge tier={data.priorityTier} />
-            <TtpChipRow tags={data.ttpTags} />
+            <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
           </div>
         </Field>
-        <Field label="Aggregate scores">
+        <Field label={tA("fields.aggregateScores")}>
           <div data-testid="aggregate-scores">
-            severity {data.aggregateSeverityScore.toFixed(3)} • likelihood{" "}
-            {data.aggregateLikelihoodScore.toFixed(3)}
+            {tA("common.severityLikelihood", {
+              severity: data.aggregateSeverityScore.toFixed(3),
+              likelihood: data.aggregateLikelihoodScore.toFixed(3),
+            })}
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Aggregated by Clumit Insight from {data.topStoryCount} stor
-            {data.topStoryCount === 1 ? "y" : "ies"} and {data.topEventCount}{" "}
-            event{data.topEventCount === 1 ? "" : "s"} plus suspicious-event
-            trends.
+            {tA("reportDetail.aggregateHint", {
+              storyCount: data.topStoryCount,
+              eventCount: data.topEventCount,
+            })}
           </div>
         </Field>
-        <Field label="Language">{data.lang}</Field>
-        <Field label="Model">
+        <Field label={tA("fields.language")}>{data.lang}</Field>
+        <Field label={tA("fields.model")}>
           {data.modelName} / {data.model}
         </Field>
-        <Field label="Model snapshot">{data.modelActualVersion}</Field>
-        <Field label="Prompt version">{data.promptVersion}</Field>
-        <Field label="Requested by">{data.requestedBy ?? "system"}</Field>
-        <Field label="Requested at">
+        <Field label={tA("fields.modelSnapshot")}>
+          {data.modelActualVersion}
+        </Field>
+        <Field label={tA("fields.promptVersion")}>{data.promptVersion}</Field>
+        <Field label={tA("fields.requestedBy")}>
+          {data.requestedBy ?? tA("common.system")}
+        </Field>
+        <Field label={tA("fields.requestedAt")}>
           <Timestamp at={data.requestedAt} />
         </Field>
       </section>
 
       <ReportSection
-        title="Executive summary"
+        title={tA("reportDetail.sectionExecutiveSummary")}
         body={data.sections.executive_summary}
         testid="section-executive_summary"
       />
       <ReportSection
-        title="Story highlights"
+        title={tA("reportDetail.sectionStoryHighlights")}
         body={data.sections.story_highlights}
         testid="section-story_highlights"
       />
       <ReportSection
-        title="Notable events"
+        title={tA("reportDetail.sectionNotableEvents")}
         body={data.sections.notable_events}
         testid="section-notable_events"
       />
@@ -362,15 +400,16 @@ export default async function ReportDetailPage({
         locale={locale}
         customerId={customerId}
         sources={data.citedSources}
+        t={tA}
       />
 
       <ReportSection
-        title="Suspicious-event trends"
+        title={tA("reportDetail.sectionSuspiciousEventTrends")}
         body={data.sections.baseline_observations}
         testid="section-baseline_observations"
       />
       <ReportSection
-        title="Period outlook"
+        title={tA("reportDetail.sectionPeriodOutlook")}
         body={data.sections.period_outlook}
         testid="section-period_outlook"
       />
@@ -449,13 +488,15 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
 
 function TtpChipRow({
   tags,
+  ariaLabel,
 }: {
   tags: ReadonlyArray<{ id: string; name: string | null }>;
+  ariaLabel: string;
 }) {
   if (tags.length === 0) return null;
   return (
     <ul
-      aria-label="ttp-tags"
+      aria-label={ariaLabel}
       data-testid="ttp-tags"
       className="flex flex-wrap gap-1"
     >

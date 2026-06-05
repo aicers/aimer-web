@@ -8,21 +8,25 @@
 // variant-agnostic. The more specific `[period]/[bucketDate]/forbidden.tsx`
 // still wins for the detail subtree.
 
-export default function ReportsForbidden() {
+import { getTranslations } from "next-intl/server";
+
+export default async function ReportsForbidden() {
+  const t = await getTranslations("analysis");
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Security Reports</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {t("common.securityReports")}
+        </h1>
       </header>
       <div
         role="alert"
-        aria-label="forbidden-banner"
         data-testid="forbidden-banner"
         className="rounded border border-rose-400 bg-rose-50 px-4 py-3 text-sm text-rose-800"
       >
-        You do not have permission to view reports for this customer (403). Ask
-        a customer administrator to grant the <code>reports:read</code>{" "}
-        permission.
+        {t.rich("boundaries.reportsForbidden", {
+          code: (chunks) => <code>{chunks}</code>,
+        })}
       </div>
     </div>
   );

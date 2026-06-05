@@ -5,6 +5,8 @@ import { mergeQuery } from "@/lib/navigation/query";
 interface Props {
   /** Localized "Language" label. */
   label: string;
+  /** Localized accessible name for the switcher navigation landmark. */
+  navLabel: string;
   /**
    * The detail page path WITHOUT a query string
    * (`/{locale}/customers/{cid}/analysis/reports/{period}/{bucket}`). The
@@ -36,6 +38,7 @@ interface Props {
  */
 export function ReportLanguageSwitcher({
   label,
+  navLabel,
   basePath,
   currentQuery,
   currentLocale,
@@ -43,7 +46,7 @@ export function ReportLanguageSwitcher({
 }: Props) {
   return (
     <nav
-      aria-label="report-language-switcher"
+      aria-label={navLabel}
       data-testid="report-language-switcher"
       className="flex items-center gap-2 text-sm"
     >

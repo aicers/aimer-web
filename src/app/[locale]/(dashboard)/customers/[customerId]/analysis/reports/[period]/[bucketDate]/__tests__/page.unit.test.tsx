@@ -28,11 +28,21 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn() }),
 }));
 
-// Server-component translations: echo the key so assertions can target
-// testids rather than localized copy (mirrors other dashboard page tests).
-vi.mock("next-intl/server", () => ({
-  getTranslations: async () => (key: string) => key,
-}));
+// Server-component translations: resolve against the real English catalog
+// so the migrated chrome renders its actual copy (and ICU placeholders
+// interpolate) the way it does at runtime.
+vi.mock("next-intl/server", async () => {
+  const { createTranslator } = await import("next-intl");
+  const messages = (await import("@/i18n/messages/en.json")).default;
+  return {
+    getTranslations: async (namespace?: string) =>
+      createTranslator({
+        locale: "en",
+        messages,
+        namespace: namespace as never,
+      }),
+  };
+});
 
 vi.mock("../regenerate-button", () => ({
   ReportRegenerateButton: () => null,
@@ -387,7 +397,7 @@ describe("report detail page", () => {
       tz: "Asia/Seoul",
     });
     await renderPage("DAILY", "2026-05-26");
-    expect(screen.getByLabelText("pending-banner")).toBeTruthy();
+    expect(screen.getByTestId("pending-banner")).toBeTruthy();
   });
 
   it("anchors the LIVE tabs on the resolved report tz, not UTC", async () => {
@@ -425,7 +435,7 @@ describe("report detail page", () => {
       tz: "Not/AZone",
     });
     await renderPage("LIVE", "1970-01-01");
-    expect(screen.getByLabelText("pending-banner")).toBeTruthy();
+    expect(screen.getByTestId("pending-banner")).toBeTruthy();
     expect(
       screen.getByTestId("report-tab-DAILY").getAttribute("href"),
     ).toContain("/reports/DAILY/2026-05-27");

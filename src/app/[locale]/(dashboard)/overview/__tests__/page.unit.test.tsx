@@ -34,9 +34,18 @@ vi.mock("next/navigation", () => ({
   redirect: (t: string) => redirectMock(t),
   forbidden: () => forbiddenMock(),
 }));
-vi.mock("next-intl/server", () => ({
-  getTranslations: async () => (key: string) => key,
-}));
+vi.mock("next-intl/server", async () => {
+  const { createTranslator } = await import("next-intl");
+  const messages = (await import("@/i18n/messages/en.json")).default;
+  return {
+    getTranslations: async (namespace?: string) =>
+      createTranslator({
+        locale: "en",
+        messages,
+        namespace: namespace as never,
+      }),
+  };
+});
 vi.mock("next/link", () => ({
   default: ({
     href,

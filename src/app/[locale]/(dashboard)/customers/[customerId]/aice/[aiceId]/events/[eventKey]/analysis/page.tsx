@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import { CitedByTrail } from "@/components/analysis/cited-by-trail";
 import { AnalysisBody } from "@/components/analysis-body";
@@ -12,6 +13,8 @@ import {
   loadAnalysisResultPage,
 } from "@/lib/analysis/result-page-loader";
 import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
+
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 interface PageProps {
   params: Promise<{
@@ -77,22 +80,28 @@ export default async function AnalysisResultPage({
   if (outcome.kind === "not_found") {
     notFound();
   }
+  const tA = await getTranslations("analysis");
   if (outcome.kind === "pin_unavailable") {
     return (
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
         <header className="mb-6">
-          <h1 className="text-2xl font-bold text-foreground">AI Analysis</h1>
+          <h1 className="text-2xl font-bold text-foreground">
+            {tA("eventAnalysis.title")}
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Event {eventKey} • {aiceId} • generation {outcome.generation}
+            {tA("eventAnalysis.subtitlePinned", {
+              eventKey,
+              aiceId,
+              generation: outcome.generation,
+            })}
           </p>
         </header>
         <div
           role="status"
-          aria-label="pin-unavailable-banner"
+          data-testid="pin-unavailable-banner"
           className="rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
         >
-          This evidence version is no longer available. The cited generation has
-          been superseded or removed.
+          {tA("common.evidencePinUnavailable")}
         </div>
       </div>
     );
@@ -100,6 +109,13 @@ export default async function AnalysisResultPage({
 
   const data = outcome.data;
   const t = await getTranslations("nav");
+  const tPeriod = await getTranslations("reportPeriod");
+  const periodLabels: Record<string, string> = {
+    LIVE: tPeriod("LIVE"),
+    DAILY: tPeriod("DAILY"),
+    WEEKLY: tPeriod("WEEKLY"),
+    MONTHLY: tPeriod("MONTHLY"),
+  };
 
   // Reverse trail: the report(s) that cite this event (T2 #396).
   // Permission-gated inside the loader; an empty trail renders nothing.
@@ -122,19 +138,24 @@ export default async function AnalysisResultPage({
         label={entityCrumbLabel(t("event"), data.eventKey)}
       />
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">AI Analysis</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {tA("eventAnalysis.title")}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Event {data.eventKey} • {data.aiceId}
+          {tA("eventAnalysis.subtitle", {
+            eventKey: data.eventKey,
+            aiceId: data.aiceId,
+          })}
         </p>
       </header>
 
       {!data.sourceEventPresent ? (
         <div
           role="status"
-          aria-label="retention-banner"
+          data-testid="retention-banner"
           className="mb-6 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
         >
-          Source event removed by retention; analysis result preserved.
+          {tA("eventAnalysis.retentionBanner")}
         </div>
       ) : null}
 
@@ -144,53 +165,64 @@ export default async function AnalysisResultPage({
         locale={locale}
         customerId={customerId}
         parentStories={data.parentStories}
+        t={tA}
       />
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Priority tier">
+        <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
             <PriorityBadge tier={data.priorityTier} />
-            <TtpChipRow tags={data.ttpTags} />
+            <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
           </div>
         </Field>
-        <Field label="Severity score (if real, how bad)">
+        <Field label={tA("fields.severityScore")}>
           <div>{data.severityScore.toFixed(3)}</div>
           <FactorChipRow
             factors={data.severityFactors}
-            ariaLabel="severity-factors"
+            ariaLabel={tA("fields.severityFactors")}
+            testId="severity-factors"
           />
         </Field>
-        <Field label="Likelihood score (is it real)">
+        <Field label={tA("fields.likelihoodScore")}>
           <div>{data.likelihoodScore.toFixed(3)}</div>
           <FactorChipRow
             factors={data.likelihoodFactors}
-            ariaLabel="likelihood-factors"
+            ariaLabel={tA("fields.likelihoodFactors")}
+            testId="likelihood-factors"
           />
         </Field>
-        <Field label="Language">{data.lang}</Field>
-        <Field label="Provider">{data.modelName}</Field>
-        <Field label="Model">{data.model}</Field>
+        <Field label={tA("fields.language")}>{data.lang}</Field>
+        <Field label={tA("fields.provider")}>{data.modelName}</Field>
+        <Field label={tA("fields.model")}>{data.model}</Field>
         {data.modelActualVersion ? (
-          <Field label="Model snapshot">{data.modelActualVersion}</Field>
+          <Field label={tA("fields.modelSnapshot")}>
+            {data.modelActualVersion}
+          </Field>
         ) : null}
         {data.promptVersion ? (
-          <Field label="Prompt version">{data.promptVersion}</Field>
+          <Field label={tA("fields.promptVersion")}>{data.promptVersion}</Field>
         ) : null}
-        <Field label="Requested by">{data.requestedBy}</Field>
-        <Field label="Requested at">
+        <Field label={tA("fields.requestedBy")}>{data.requestedBy}</Field>
+        <Field label={tA("fields.requestedAt")}>
           <Timestamp at={data.requestedAt} />
         </Field>
       </section>
 
       <section className="mt-8">
         <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Analysis
+          {tA("common.sectionAnalysis")}
         </h2>
         <AnalysisBody text={data.analysisText} testid="analysis-body" />
       </section>
 
       {/* Reverse "Cited by" trail back up to the citing report(s). */}
-      <CitedByTrail locale={locale} customerId={customerId} reports={citedBy} />
+      <CitedByTrail
+        locale={locale}
+        customerId={customerId}
+        reports={citedBy}
+        t={tA}
+        periodLabels={periodLabels}
+      />
 
       {/* Bottom of the trust chain: the raw source event. aimer-web does
           not store raw event payloads, so the final hop links out to the
@@ -200,8 +232,16 @@ export default async function AnalysisResultPage({
           retention banner above) instead of a dead link (parent #386). */}
       {data.sourceEventPresent ? (
         <section className="mt-8 flex flex-wrap gap-2">
-          <RawEventHop aiceId={data.aiceId} eventKey={data.eventKey} />
-          <ForceRerunButton aiceId={data.aiceId} eventKey={data.eventKey} />
+          <RawEventHop
+            aiceId={data.aiceId}
+            eventKey={data.eventKey}
+            label={tA("eventAnalysis.viewSourceEvent")}
+          />
+          <ForceRerunButton
+            aiceId={data.aiceId}
+            eventKey={data.eventKey}
+            label={tA("eventAnalysis.forceRerun")}
+          />
         </section>
       ) : null}
     </div>
@@ -212,16 +252,18 @@ function ParentStoryBacklink({
   locale,
   customerId,
   parentStories,
+  t,
 }: {
   locale: string;
   customerId: string;
   parentStories: AnalysisResultPageData["parentStories"];
+  t: AnalysisTranslations;
 }) {
   if (parentStories.length === 0) return null;
   return (
     <section className="mb-6" data-testid="parent-stories">
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Part of threat {parentStories.length === 1 ? "story" : "stories"}
+        {t("eventAnalysis.partOfThreat", { count: parentStories.length })}
       </h2>
       <ul className="flex flex-wrap gap-2">
         {parentStories.map((s) => (
@@ -237,7 +279,9 @@ function ParentStoryBacklink({
               data-testid={`parent-story-${s.storyId}`}
               className="inline-flex items-center gap-2 rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:border-foreground"
             >
-              <span>Story {s.storyId}</span>
+              <span>
+                {t("eventAnalysis.storyLabel", { storyId: s.storyId })}
+              </span>
               <span
                 data-tier={s.priorityTier}
                 className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${TIER_CLASSES[s.priorityTier]}`}
@@ -260,9 +304,11 @@ function ParentStoryBacklink({
 function RawEventHop({
   aiceId,
   eventKey,
+  label,
 }: {
   aiceId: string;
   eventKey: string;
+  label: string;
 }) {
   const origin = process.env.AICE_WEB_NEXT_ORIGIN ?? "";
   let target = "";
@@ -281,7 +327,7 @@ function RawEventHop({
       className="inline-flex items-center rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
       aria-disabled={target === "" ? "true" : undefined}
     >
-      View source event in aice-web-next
+      {label}
     </a>
   );
 }
@@ -325,15 +371,17 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
 function FactorChipRow({
   factors,
   ariaLabel,
+  testId,
 }: {
   factors: readonly string[];
   ariaLabel: string;
+  testId: string;
 }) {
   if (factors.length === 0) return null;
   return (
     <ul
       aria-label={ariaLabel}
-      data-testid={ariaLabel}
+      data-testid={testId}
       className="mt-2 flex flex-wrap gap-1"
     >
       {factors.map((item) => (
@@ -350,13 +398,15 @@ function FactorChipRow({
 
 function TtpChipRow({
   tags,
+  ariaLabel,
 }: {
   tags: ReadonlyArray<{ id: string; name: string | null }>;
+  ariaLabel: string;
 }) {
   if (tags.length === 0) return null;
   return (
     <ul
-      aria-label="ttp-tags"
+      aria-label={ariaLabel}
       data-testid="ttp-tags"
       className="flex flex-wrap gap-1"
     >
@@ -380,9 +430,11 @@ function TtpChipRow({
 function ForceRerunButton({
   aiceId,
   eventKey,
+  label,
 }: {
   aiceId: string;
   eventKey: string;
+  label: string;
 }) {
   // Force re-run requires `event_data`, which only aice-web-next holds
   // (RFC 0001 §"Force re-run button gating"). Open aice-web-next back
@@ -417,7 +469,7 @@ function ForceRerunButton({
       className="inline-flex items-center rounded border border-border bg-card px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
       aria-disabled={target === "" ? "true" : undefined}
     >
-      Force re-run in aice-web-next
+      {label}
     </a>
   );
 }

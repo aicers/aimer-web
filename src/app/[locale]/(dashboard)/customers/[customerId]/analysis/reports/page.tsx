@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
+import type { useTranslations } from "next-intl";
+import { getTranslations } from "next-intl/server";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type { PeriodKind } from "@/lib/analysis/report-bucket-date";
 import {
@@ -7,6 +9,8 @@ import {
   type ReportBucketItem,
   type ReportPeriodGroup,
 } from "@/lib/analysis/report-index-page-loader";
+
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 interface PageProps {
   params: Promise<{
@@ -35,26 +39,33 @@ export default async function ReportIndexPage({ params }: PageProps) {
   if (outcome.kind === "forbidden") forbidden();
 
   const { groups } = outcome;
+  const tA = await getTranslations("analysis");
+  const tPeriod = await getTranslations("reportPeriod");
+  const periodLabels: Record<PeriodKind, string> = {
+    LIVE: tPeriod("LIVE"),
+    DAILY: tPeriod("DAILY"),
+    WEEKLY: tPeriod("WEEKLY"),
+    MONTHLY: tPeriod("MONTHLY"),
+  };
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Security Reports</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {tA("common.securityReports")}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Available report buckets for this customer. Open a bucket to read its
-          report.
+          {tA("reportIndex.subtitle")}
         </p>
       </header>
 
       {groups.length === 0 ? (
         <div
           role="status"
-          aria-label="empty-banner"
           data-testid="reports-empty"
           className="rounded border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         >
-          No report buckets are available yet. Reports appear here once the
-          analysis worker begins tracking them.
+          {tA("reportIndex.empty")}
         </div>
       ) : (
         <div className="space-y-8" data-testid="report-index">
@@ -64,6 +75,8 @@ export default async function ReportIndexPage({ params }: PageProps) {
               group={group}
               locale={locale}
               customerId={customerId}
+              periodLabels={periodLabels}
+              t={tA}
             />
           ))}
         </div>
@@ -72,42 +85,50 @@ export default async function ReportIndexPage({ params }: PageProps) {
   );
 }
 
-const PERIOD_LABELS: Record<PeriodKind, string> = {
-  LIVE: "Live",
-  DAILY: "Daily",
-  WEEKLY: "Weekly",
-  MONTHLY: "Monthly",
-};
-
 function PeriodSection({
   group,
   locale,
   customerId,
+  periodLabels,
+  t,
 }: {
   group: ReportPeriodGroup;
   locale: string;
   customerId: string;
+  periodLabels: Record<PeriodKind, string>;
+  t: AnalysisTranslations;
 }) {
   const [latest, ...rest] = group.items;
   return (
     <section
-      aria-label={`period-${group.period}`}
+      aria-labelledby={`period-heading-${group.period}`}
       data-testid={`period-section-${group.period}`}
     >
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {PERIOD_LABELS[group.period]}
+      <h2
+        id={`period-heading-${group.period}`}
+        className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground"
+      >
+        {periodLabels[group.period]}
       </h2>
       <BucketCard
         item={latest}
         locale={locale}
         customerId={customerId}
         latest
+        periodLabels={periodLabels}
+        t={t}
       />
       {rest.length > 0 && (
         <ul className="mt-2 space-y-2">
           {rest.map((item) => (
             <li key={`${item.period}-${item.bucketDate}-${item.tz}`}>
-              <BucketCard item={item} locale={locale} customerId={customerId} />
+              <BucketCard
+                item={item}
+                locale={locale}
+                customerId={customerId}
+                periodLabels={periodLabels}
+                t={t}
+              />
             </li>
           ))}
         </ul>
@@ -121,11 +142,15 @@ function BucketCard({
   locale,
   customerId,
   latest = false,
+  periodLabels,
+  t,
 }: {
   item: ReportBucketItem;
   locale: string;
   customerId: string;
   latest?: boolean;
+  periodLabels: Record<PeriodKind, string>;
+  t: AnalysisTranslations;
 }) {
   // Pin `?tz=<state.tz>` on every link. The detail loader resolves tz as
   // "pinned ?tz → customer current-timezone snapshot → UTC"; without the
@@ -145,12 +170,16 @@ function BucketCard({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          {bucketLabel(item)}
+          {bucketLabel(item, t, periodLabels)}
         </div>
         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <span>
             {item.tz}
-            {item.result ? ` • generation ${item.result.generation}` : ""}
+            {item.result
+              ? ` • ${t("common.generation", {
+                  generation: item.result.generation,
+                })}`
+              : ""}
           </span>
           {item.availableLocales.length > 0 && (
             <span
@@ -172,22 +201,30 @@ function BucketCard({
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {item.result && <PriorityBadge tier={item.result.priorityTier} />}
-        <StatusBadge item={item} />
+        <StatusBadge item={item} t={t} />
       </div>
     </Link>
   );
 }
 
 // Human-readable bucket label. LIVE is a rolling window with no calendar
-// bucket; the calendar periods show their bucket range.
-function bucketLabel(item: ReportBucketItem): string {
+// bucket; the calendar periods show their bucket range. DAILY/MONTHLY render
+// raw calendar identifiers (not localized).
+function bucketLabel(
+  item: ReportBucketItem,
+  t: AnalysisTranslations,
+  periodLabels: Record<PeriodKind, string>,
+): string {
   switch (item.period) {
     case "LIVE":
-      return "Live (rolling) • now";
+      return t("reportIndex.liveRollingNow", { period: periodLabels.LIVE });
     case "DAILY":
       return item.bucketDate;
     case "WEEKLY":
-      return `Week of ${item.bucketDate} – ${addDays(item.bucketDate, 6)}`;
+      return t("reportIndex.weekOf", {
+        start: item.bucketDate,
+        end: addDays(item.bucketDate, 6),
+      });
     case "MONTHLY":
       return monthLabel(item.bucketDate);
   }
@@ -212,23 +249,35 @@ function monthLabel(bucketDate: string): string {
 // just a link). A result present means the latest default variant rendered;
 // `dirty` means new source data landed and a refresh is queued; no result
 // (pending) means the first generation is still being produced.
-function StatusBadge({ item }: { item: ReportBucketItem }) {
+function StatusBadge({
+  item,
+  t,
+}: {
+  item: ReportBucketItem;
+  t: AnalysisTranslations;
+}) {
+  // `data-status` keeps a stable English value (a technical attribute);
+  // only the visible label is localized.
   let label: string;
+  let status: string;
   let className: string;
   if (item.stateStatus === "dirty") {
-    label = "Updating";
+    label = t("reportIndex.statusUpdating");
+    status = "Updating";
     className = "border-sky-300 bg-sky-50 text-sky-900";
   } else if (item.result) {
-    label = "Ready";
+    label = t("reportIndex.statusReady");
+    status = "Ready";
     className = "border-emerald-300 bg-emerald-50 text-emerald-900";
   } else {
-    label = "Being generated";
+    label = t("reportIndex.statusBeingGenerated");
+    status = "Being generated";
     className = "border-amber-300 bg-amber-50 text-amber-900";
   }
   return (
     <span
       data-testid={`report-status-${item.period}-${item.bucketDate}`}
-      data-status={label}
+      data-status={status}
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}
     >
       {label}

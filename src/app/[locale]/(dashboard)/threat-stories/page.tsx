@@ -36,6 +36,7 @@ export default async function ThreatStoriesPage({
   if (scope.kind === "bridge") forbidden();
 
   const t = await getTranslations("nav");
+  const tA = await getTranslations("analysis");
   const data = await loadCrossCustomerOverview({
     scopeCustomerIds: scope.scope.customerIds,
     surfaces: ["stories"],
@@ -58,18 +59,30 @@ export default async function ThreatStoriesPage({
         <CountBadge count={stories.totalCount} />
       </header>
 
-      <PartialFailureNotice failed={stories.failedCustomers} />
+      <PartialFailureNotice
+        failed={stories.failedCustomers}
+        locale={locale}
+        t={tA}
+      />
 
       {stories.items.length === 0 ? (
         <SurfaceEmptyState
           testid="threat-stories-empty"
-          label="No threat stories are available across the customers in scope yet."
+          label={tA("overview.storiesEmptyFull")}
         />
       ) : (
         <ul className="space-y-2" data-testid="threat-stories-list">
           {stories.items.map((row) => (
             <li key={`${row.customerId}-${row.storyId}`}>
-              <StoryRow row={row} locale={locale} />
+              <StoryRow
+                row={row}
+                locale={locale}
+                label={tA("overview.storyLabel", { storyId: row.storyId })}
+                scoreLabel={tA("overview.scorePair", {
+                  severity: row.severityScore.toFixed(2),
+                  likelihood: row.likelihoodScore.toFixed(2),
+                })}
+              />
             </li>
           ))}
         </ul>

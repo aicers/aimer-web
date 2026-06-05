@@ -17,13 +17,6 @@ export type TimeWindow = "all" | "24h" | "7d" | "30d";
 
 export const TIME_WINDOWS: readonly TimeWindow[] = ["all", "24h", "7d", "30d"];
 
-export const TIME_WINDOW_LABELS: Record<TimeWindow, string> = {
-  all: "All time",
-  "24h": "Last 24 hours",
-  "7d": "Last 7 days",
-  "30d": "Last 30 days",
-};
-
 const WINDOW_MS: Record<Exclude<TimeWindow, "all">, number> = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
