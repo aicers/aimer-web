@@ -8,10 +8,15 @@
 // unconditionally.
 
 import Link from "next/link";
+import type { useTranslations } from "next-intl";
 import { Timestamp } from "@/components/timestamp";
 import type { CitedByReport } from "@/lib/analysis/cited-by-loader";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { LIVE_BUCKET_DATE } from "@/lib/analysis/report-bucket-date";
+
+// The `analysis`-namespace translator, resolved by the (server-component)
+// caller and passed in so this presentational component stays synchronous.
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 const TIER_CLASSES: Record<PriorityTier, string> = {
   CRITICAL: "border-rose-500 bg-rose-100 text-rose-900",
@@ -44,49 +49,62 @@ export function CitedByTrail({
   locale,
   customerId,
   reports,
+  t,
+  periodLabels,
 }: {
   locale: string;
   customerId: string;
   reports: CitedByReport[];
+  t: AnalysisTranslations;
+  /** Translated period labels (`reportPeriod`), keyed by period. */
+  periodLabels: Record<string, string>;
 }) {
   if (reports.length === 0) return null;
 
   return (
     <section className="mt-8" data-testid="cited-by-trail">
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Cited by
+        {t("citedBy.heading")}
       </h2>
       <p className="mb-3 text-xs text-muted-foreground">
-        Periodic reports that cited this evidence, newest first. Each link opens
-        the exact report generation that consumed it.
+        {t("citedBy.description")}
       </p>
       <ul className="space-y-2">
-        {reports.map((r) => (
-          <li
-            key={`${r.period}-${r.bucketDate}-${r.tz}-${r.generation}`}
-            data-testid={`cited-by-report-${r.period}-${r.bucketDate}`}
-          >
-            <Link
-              href={reportHref(locale, customerId, r)}
-              className="block rounded border border-border bg-card px-4 py-3 transition-colors hover:border-foreground"
+        {reports.map((r) => {
+          const isLive =
+            r.period === "LIVE" || r.bucketDate === LIVE_BUCKET_DATE;
+          const period = (periodLabels[r.period] ?? r.period).toUpperCase();
+          return (
+            <li
+              key={`${r.period}-${r.bucketDate}-${r.tz}-${r.generation}`}
+              data-testid={`cited-by-report-${r.period}-${r.bucketDate}`}
             >
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-foreground">
-                    {r.period === "LIVE" || r.bucketDate === LIVE_BUCKET_DATE
-                      ? "LIVE report (rolling)"
-                      : `${r.period} report • ${r.bucketDate}`}
+              <Link
+                href={reportHref(locale, customerId, r)}
+                className="block rounded border border-border bg-card px-4 py-3 transition-colors hover:border-foreground"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">
+                      {isLive
+                        ? t("citedBy.liveReport", { period })
+                        : t("citedBy.periodReport", {
+                            period,
+                            bucketDate: r.bucketDate,
+                          })}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {r.tz} •{" "}
+                      {t("common.generation", { generation: r.generation })} •{" "}
+                      <Timestamp at={r.requestedAt} />
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {r.tz} • generation {r.generation} •{" "}
-                    <Timestamp at={r.requestedAt} />
-                  </div>
+                  <PriorityBadge tier={r.priorityTier} />
                 </div>
-                <PriorityBadge tier={r.priorityTier} />
-              </div>
-            </Link>
-          </li>
-        ))}
+              </Link>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

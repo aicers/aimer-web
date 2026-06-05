@@ -443,7 +443,11 @@
     "save": "Save",
     "saving": "Saving…",
     "saved": "Preferences saved.",
-    "error": "Could not save preferences."
+    "error": "Could not save preferences.",
+    "localeName": {
+      "en": "English",
+      "ko": "한국어"
+    }
   },
   "reports": {
     "languageSwitcherLabel": "Language",
@@ -455,5 +459,148 @@
     "jobPreparing": "Preparing the {language} report… this page updates automatically when it's ready.",
     "jobFailed": "Could not prepare the {language} report. Showing the English version for now.",
     "jobPendingSource": "This report is still being generated. The {language} version will be available once the base report is ready."
+  },
+  "analysis": {
+    "common": {
+      "generation": "generation {generation}",
+      "now": "now",
+      "system": "system",
+      "severityLikelihood": "severity {severity} • likelihood {likelihood}",
+      "sectionAnalysis": "Analysis",
+      "evidencePinUnavailable": "This evidence version is no longer available. The cited generation has been superseded or removed.",
+      "securityReports": "Security Reports",
+      "tryAgain": "Try again",
+      "nextPage": "Next page"
+    },
+    "fields": {
+      "priorityTier": "Priority tier",
+      "aggregateScores": "Aggregate scores",
+      "language": "Language",
+      "provider": "Provider",
+      "model": "Model",
+      "modelSnapshot": "Model snapshot",
+      "promptVersion": "Prompt version",
+      "requestedBy": "Requested by",
+      "requestedAt": "Requested at",
+      "severityScore": "Severity score (if real, how bad)",
+      "likelihoodScore": "Likelihood score (is it real)",
+      "showSeverityFactors": "Show severity factors",
+      "showLikelihoodFactors": "Show likelihood factors"
+    },
+    "reportDetail": {
+      "title": "Security Report",
+      "liveRolling": "{period} (rolling)",
+      "subtitle": "{period} • {when} • {tz} • generation {generation}",
+      "subtitlePending": "{period} • {bucketDate}",
+      "subtitlePinUnavailable": "{period} • {bucketDate} • generation {generation}",
+      "pendingBanner": "The report is being generated (state: {status}). Refresh once the result is ready.",
+      "pinUnavailableBanner": "This report version is no longer available. The cited generation has been superseded or removed.",
+      "aggregateHint": "Aggregated by Clumit Insight from {storyCount, plural, one {# story} other {# stories}} and {eventCount, plural, one {# event} other {# events}} plus suspicious-event trends.",
+      "sectionExecutiveSummary": "Executive summary",
+      "sectionStoryHighlights": "Story highlights",
+      "sectionNotableEvents": "Notable events",
+      "sectionSuspiciousEventTrends": "Suspicious-event trends",
+      "sectionPeriodOutlook": "Period outlook"
+    },
+    "reportIndex": {
+      "subtitle": "Available report buckets for this customer. Open a bucket to read its report.",
+      "empty": "No report buckets are available yet. Reports appear here once the analysis worker begins tracking them.",
+      "liveRollingNow": "{period} (rolling) • now",
+      "weekOf": "Week of {start} – {end}",
+      "statusUpdating": "Updating",
+      "statusReady": "Ready",
+      "statusBeingGenerated": "Being generated"
+    },
+    "storyDetail": {
+      "title": "Story Analysis",
+      "subtitle": "Story {storyId} • generation {generation}",
+      "subtitlePlain": "Story {storyId}",
+      "pendingBanner": "Analysis is in progress (state: {status}). The page refreshes automatically once the result is ready.",
+      "memberEventsHeading": "Member suspicious events",
+      "memberEventsDescription": "The suspicious events correlated into this story, in order.",
+      "memberUnavailable": "Event analysis not available at the default variant.",
+      "memberEventLabel": "Event {aiceId} · {eventKey}"
+    },
+    "eventAnalysis": {
+      "title": "AI Analysis",
+      "subtitle": "Event {eventKey} • {aiceId}",
+      "subtitlePinned": "Event {eventKey} • {aiceId} • generation {generation}",
+      "retentionBanner": "Source event removed by retention; analysis result preserved.",
+      "partOfThreat": "{count, plural, one {Part of threat story} other {Part of threat stories}}",
+      "storyLabel": "Story {storyId}",
+      "viewSourceEvent": "View source event in aice-web-next",
+      "forceRerun": "Force re-run in aice-web-next"
+    },
+    "lists": {
+      "eventsSubtitle": "Analyzed detections for this customer, highest priority first.",
+      "eventsEmpty": "No suspicious events match the current filters.",
+      "eventsLoading": "Loading suspicious events…",
+      "eventsError": "Failed to load suspicious events.",
+      "eventsForbidden": "You do not have permission to view suspicious events for this customer (403). Ask a customer administrator to grant the <code>analyses:read</code> permission.",
+      "eventLabel": "Event {eventKey}",
+      "eventRowMeta": "{aiceId} • severity {severity} • likelihood {likelihood}",
+      "storiesSubtitle": "Pre-curated correlations of suspicious events, highest priority first.",
+      "storiesEmpty": "No threat stories match the current filters.",
+      "storiesLoading": "Loading threat stories…",
+      "storiesError": "Failed to load threat stories.",
+      "storiesForbidden": "You do not have permission to view threat stories for this customer (403). Ask a customer administrator to grant the <code>analyses:read</code> permission.",
+      "storyLabel": "Story {storyId}",
+      "storyRowMeta": "severity {severity} • likelihood {likelihood}",
+      "statusUpdating": "Updating"
+    },
+    "filters": {
+      "priority": "Priority",
+      "all": "All",
+      "timeWindow": "Time window",
+      "apply": "Apply",
+      "windowAll": "All time",
+      "window24h": "Last 24 hours",
+      "window7d": "Last 7 days",
+      "window30d": "Last 30 days"
+    },
+    "sources": {
+      "heading": "Sources",
+      "description": "Cited evidence this report was generated from, pinned to the generation it consumed. These are report-level sources, not per-sentence citations.",
+      "provenance": "{storyCount, plural, one {# story} other {# stories}} · {eventCount, plural, one {# event} other {# events}}",
+      "storyLabel": "Story {storyId}",
+      "eventLabel": "Event {aiceId} · {eventKey}",
+      "cardScores": "severity {severity} • likelihood {likelihood}",
+      "unavailable": "Evidence version no longer available."
+    },
+    "citedBy": {
+      "heading": "Cited by",
+      "description": "Periodic reports that cited this evidence, newest first. Each link opens the exact report generation that consumed it.",
+      "liveReport": "{period} report (rolling)",
+      "periodReport": "{period} report • {bucketDate}"
+    },
+    "overview": {
+      "subtitle": "Highest-risk and most recent items across the customers in scope.",
+      "viewAll": "View all",
+      "loading": "Loading",
+      "storyLabel": "Story {storyId}",
+      "eventLabel": "Event {eventKey}",
+      "scorePair": "S {severity} · L {likelihood}",
+      "partialFailureIntro": "Some customers could not be reached and are excluded from the counts and list below:",
+      "partialFailureRetry": ". Try again shortly.",
+      "reportsEmpty": "No reports in scope yet.",
+      "storiesEmpty": "No threat stories in scope yet.",
+      "eventsEmpty": "No suspicious events in scope yet.",
+      "reportsEmptyFull": "No reports are available across the customers in scope yet.",
+      "storiesEmptyFull": "No threat stories are available across the customers in scope yet.",
+      "eventsEmptyFull": "No analyzed events are available across the customers in scope yet."
+    },
+    "customerHub": {
+      "title": "Customer",
+      "subtitle": "Reports and analysis for this customer.",
+      "empty": "You do not have access to any sections for this customer.",
+      "forbidden": "You do not have permission to view this customer (403).",
+      "reportsDescription": "Periodic report buckets for this customer.",
+      "storiesDescription": "Pre-curated correlations of suspicious events.",
+      "eventsDescription": "Analyzed detections forwarded for this customer."
+    },
+    "boundaries": {
+      "reportsForbidden": "You do not have permission to view reports for this customer (403). Ask a customer administrator to grant the <code>reports:read</code> permission.",
+      "reportForbidden": "You do not have permission to view this report (403). Ask a customer administrator to grant the <code>reports:read</code> permission."
+    }
   }
 }

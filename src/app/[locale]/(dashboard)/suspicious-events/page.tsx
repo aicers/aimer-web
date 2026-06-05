@@ -35,6 +35,7 @@ export default async function SuspiciousEventsPage({
   if (scope.kind === "bridge") forbidden();
 
   const t = await getTranslations("nav");
+  const tA = await getTranslations("analysis");
   const data = await loadCrossCustomerOverview({
     scopeCustomerIds: scope.scope.customerIds,
     surfaces: ["events"],
@@ -57,18 +58,30 @@ export default async function SuspiciousEventsPage({
         <CountBadge count={events.totalCount} />
       </header>
 
-      <PartialFailureNotice failed={events.failedCustomers} />
+      <PartialFailureNotice
+        failed={events.failedCustomers}
+        introLabel={tA("overview.partialFailureIntro")}
+        retryLabel={tA("overview.partialFailureRetry")}
+      />
 
       {events.items.length === 0 ? (
         <SurfaceEmptyState
           testid="suspicious-events-empty"
-          label="No analyzed events are available across the customers in scope yet."
+          label={tA("overview.eventsEmptyFull")}
         />
       ) : (
         <ul className="space-y-2" data-testid="suspicious-events-list">
           {events.items.map((row) => (
             <li key={`${row.customerId}-${row.aiceId}-${row.eventKey}`}>
-              <EventRow row={row} locale={locale} />
+              <EventRow
+                row={row}
+                locale={locale}
+                label={tA("overview.eventLabel", { eventKey: row.eventKey })}
+                scoreLabel={tA("overview.scorePair", {
+                  severity: row.severityScore.toFixed(2),
+                  likelihood: row.likelihoodScore.toFixed(2),
+                })}
+              />
             </li>
           ))}
         </ul>

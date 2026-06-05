@@ -10,12 +10,17 @@
 // deliberate stopping point) gets no Sources panel.
 
 import Link from "next/link";
+import type { useTranslations } from "next-intl";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CitedEventSource,
   CitedLeafVariant,
   CitedStorySource,
 } from "@/lib/analysis/report-result-page-loader";
+
+// The `analysis`-namespace translator, resolved by the (server-component)
+// caller and passed in so this presentational component stays synchronous.
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 const TIER_CLASSES: Record<PriorityTier, string> = {
   CRITICAL: "border-rose-500 bg-rose-100 text-rose-900",
@@ -41,10 +46,12 @@ export function SourcesPanel({
   locale,
   customerId,
   sources,
+  t,
 }: {
   locale: string;
   customerId: string;
   sources: { stories: CitedStorySource[]; events: CitedEventSource[] };
+  t: AnalysisTranslations;
 }) {
   const storyCount = sources.stories.length;
   const eventCount = sources.events.length;
@@ -53,18 +60,16 @@ export function SourcesPanel({
   return (
     <section className="mt-8" data-testid="sources-panel">
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        Sources
+        {t("sources.heading")}
       </h2>
       <p className="mb-1 text-xs text-muted-foreground">
-        Cited evidence this report was generated from, pinned to the generation
-        it consumed. These are report-level sources, not per-sentence citations.
+        {t("sources.description")}
       </p>
       <p
         data-testid="sources-provenance"
         className="mb-3 text-xs font-medium text-foreground"
       >
-        {storyCount} stor{storyCount === 1 ? "y" : "ies"} · {eventCount} event
-        {eventCount === 1 ? "" : "s"}
+        {t("sources.provenance", { storyCount, eventCount })}
       </p>
       <ul className="space-y-2">
         {sources.stories.map((s) => (
@@ -73,6 +78,7 @@ export function SourcesPanel({
             locale={locale}
             customerId={customerId}
             source={s}
+            t={t}
           />
         ))}
         {sources.events.map((e) => (
@@ -81,6 +87,7 @@ export function SourcesPanel({
             locale={locale}
             customerId={customerId}
             source={e}
+            t={t}
           />
         ))}
       </ul>
@@ -92,10 +99,12 @@ function StorySourceCard({
   locale,
   customerId,
   source,
+  t,
 }: {
   locale: string;
   customerId: string;
   source: CitedStorySource;
+  t: AnalysisTranslations;
 }) {
   const href = `/${locale}/customers/${customerId}/analysis/story/${encodeURIComponent(
     source.storyId,
@@ -110,22 +119,26 @@ function StorySourceCard({
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-foreground">
-              Story {source.storyId}
+              {t("sources.storyLabel", { storyId: source.storyId })}
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              generation {source.variant.generation}
+              {t("common.generation", {
+                generation: source.variant.generation,
+              })}
               {source.display ? (
                 <>
-                  {" "}
-                  • severity {source.display.severityScore.toFixed(3)} •
-                  likelihood {source.display.likelihoodScore.toFixed(3)}
+                  {" • "}
+                  {t("sources.cardScores", {
+                    severity: source.display.severityScore.toFixed(3),
+                    likelihood: source.display.likelihoodScore.toFixed(3),
+                  })}
                 </>
               ) : null}
             </div>
             {source.display ? (
               <TtpChipRow tags={source.display.ttpTags} />
             ) : (
-              <UnavailableNote />
+              <UnavailableNote t={t} />
             )}
           </div>
           {source.display ? (
@@ -141,10 +154,12 @@ function EventSourceCard({
   locale,
   customerId,
   source,
+  t,
 }: {
   locale: string;
   customerId: string;
   source: CitedEventSource;
+  t: AnalysisTranslations;
 }) {
   const href = `/${locale}/customers/${customerId}/aice/${encodeURIComponent(
     source.aiceId,
@@ -161,19 +176,26 @@ function EventSourceCard({
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-foreground">
-              Event {source.aiceId} · {source.eventKey}
+              {t("sources.eventLabel", {
+                aiceId: source.aiceId,
+                eventKey: source.eventKey,
+              })}
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              generation {source.variant.generation}
+              {t("common.generation", {
+                generation: source.variant.generation,
+              })}
               {source.display ? (
                 <>
-                  {" "}
-                  • severity {source.display.severityScore.toFixed(3)} •
-                  likelihood {source.display.likelihoodScore.toFixed(3)}
+                  {" • "}
+                  {t("sources.cardScores", {
+                    severity: source.display.severityScore.toFixed(3),
+                    likelihood: source.display.likelihoodScore.toFixed(3),
+                  })}
                 </>
               ) : null}
             </div>
-            {source.display ? null : <UnavailableNote />}
+            {source.display ? null : <UnavailableNote t={t} />}
           </div>
           {source.display ? (
             <PriorityBadge tier={source.display.priorityTier} />
@@ -186,13 +208,13 @@ function EventSourceCard({
 
 // Shown when the pinned leaf row is missing or superseded: the card keeps
 // the stored ID + generation but cannot show display fields.
-function UnavailableNote() {
+function UnavailableNote({ t }: { t: AnalysisTranslations }) {
   return (
     <div
       data-testid="source-unavailable"
       className="mt-1 text-xs text-muted-foreground"
     >
-      Evidence version no longer available.
+      {t("sources.unavailable")}
     </div>
   );
 }

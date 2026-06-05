@@ -1,9 +1,7 @@
 import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
-import {
-  type CustomerHubSections,
-  loadCustomerHubPage,
-} from "@/lib/analysis/customer-hub-page-loader";
+import { getTranslations } from "next-intl/server";
+import { loadCustomerHubPage } from "@/lib/analysis/customer-hub-page-loader";
 
 interface PageProps {
   params: Promise<{
@@ -27,13 +25,17 @@ export default async function CustomerHubPage({ params }: PageProps) {
   const { sections } = outcome;
   const anySection =
     sections.reports || sections.threatStories || sections.suspiciousEvents;
+  const tA = await getTranslations("analysis");
+  const tNav = await getTranslations("nav");
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Customer</h1>
+        <h1 className="text-2xl font-bold text-foreground">
+          {tA("customerHub.title")}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Reports and analysis for this customer.
+          {tA("customerHub.subtitle")}
         </p>
       </header>
 
@@ -42,63 +44,41 @@ export default async function CustomerHubPage({ params }: PageProps) {
           className="grid grid-cols-1 gap-4 sm:grid-cols-3"
           data-testid="hub"
         >
-          <HubCards
-            locale={locale}
-            customerId={customerId}
-            sections={sections}
-          />
+          {sections.reports && (
+            <HubCard
+              href={`/${locale}/customers/${customerId}/analysis/reports`}
+              testid="hub-link-reports"
+              title={tA("common.securityReports")}
+              description={tA("customerHub.reportsDescription")}
+            />
+          )}
+          {sections.threatStories && (
+            <HubCard
+              href={`/${locale}/customers/${customerId}/analysis/story`}
+              testid="hub-link-stories"
+              title={tNav("threatStories")}
+              description={tA("customerHub.storiesDescription")}
+            />
+          )}
+          {sections.suspiciousEvents && (
+            <HubCard
+              href={`/${locale}/customers/${customerId}/analysis/events`}
+              testid="hub-link-events"
+              title={tNav("suspiciousEvents")}
+              description={tA("customerHub.eventsDescription")}
+            />
+          )}
         </div>
       ) : (
         <div
           role="status"
-          aria-label="empty-banner"
           data-testid="hub-empty"
           className="rounded border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         >
-          You do not have access to any sections for this customer.
+          {tA("customerHub.empty")}
         </div>
       )}
     </div>
-  );
-}
-
-function HubCards({
-  locale,
-  customerId,
-  sections,
-}: {
-  locale: string;
-  customerId: string;
-  sections: CustomerHubSections;
-}) {
-  const base = `/${locale}/customers/${customerId}`;
-  return (
-    <>
-      {sections.reports && (
-        <HubCard
-          href={`${base}/analysis/reports`}
-          testid="hub-link-reports"
-          title="Security Reports"
-          description="Periodic report buckets for this customer."
-        />
-      )}
-      {sections.threatStories && (
-        <HubCard
-          href={`${base}/analysis/story`}
-          testid="hub-link-stories"
-          title="Threat Stories"
-          description="Pre-curated correlations of suspicious events."
-        />
-      )}
-      {sections.suspiciousEvents && (
-        <HubCard
-          href={`${base}/analysis/events`}
-          testid="hub-link-events"
-          title="Suspicious Events"
-          description="Analyzed detections forwarded for this customer."
-        />
-      )}
-    </>
   );
 }
 

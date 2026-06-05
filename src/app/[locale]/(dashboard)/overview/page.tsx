@@ -47,6 +47,20 @@ export default async function OverviewPage({
   if (scope.kind === "bridge") forbidden();
 
   const t = await getTranslations("nav");
+  const tA = await getTranslations("analysis");
+  const tPeriod = await getTranslations("reportPeriod");
+  const periodLabels: Record<string, string> = {
+    LIVE: tPeriod("LIVE"),
+    DAILY: tPeriod("DAILY"),
+    WEEKLY: tPeriod("WEEKLY"),
+    MONTHLY: tPeriod("MONTHLY"),
+  };
+  const nowLabel = tA("common.now");
+  const scoreLabel = (severity: number, likelihood: number): string =>
+    tA("overview.scorePair", {
+      severity: severity.toFixed(2),
+      likelihood: likelihood.toFixed(2),
+    });
   const data = await loadCrossCustomerOverview({
     scopeCustomerIds: scope.scope.customerIds,
     surfaces: ["reports", "stories", "events"],
@@ -71,7 +85,7 @@ export default async function OverviewPage({
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">{t("overview")}</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Highest-risk and most recent items across the customers in scope.
+          {tA("overview.subtitle")}
         </p>
       </header>
 
@@ -81,6 +95,8 @@ export default async function OverviewPage({
           stories.failedCustomers,
           events.failedCustomers,
         )}
+        introLabel={tA("overview.partialFailureIntro")}
+        retryLabel={tA("overview.partialFailureRetry")}
       />
 
       <div className="space-y-8">
@@ -89,13 +105,19 @@ export default async function OverviewPage({
           count={reports.totalCount}
           href={`/${locale}/reports${scopeQuery}`}
           emptyTestid="overview-reports-empty"
-          emptyLabel="No reports in scope yet."
+          emptyLabel={tA("overview.reportsEmpty")}
+          viewAllLabel={tA("overview.viewAll")}
         >
           {reports.items.map((row) => (
             <li
               key={`${row.customerId}-${row.period}-${row.bucketDate}-${row.tz}`}
             >
-              <ReportRow row={row} locale={locale} />
+              <ReportRow
+                row={row}
+                locale={locale}
+                periodLabels={periodLabels}
+                nowLabel={nowLabel}
+              />
             </li>
           ))}
         </Section>
@@ -105,11 +127,17 @@ export default async function OverviewPage({
           count={stories.totalCount}
           href={`/${locale}/threat-stories${scopeQuery}`}
           emptyTestid="overview-stories-empty"
-          emptyLabel="No threat stories in scope yet."
+          emptyLabel={tA("overview.storiesEmpty")}
+          viewAllLabel={tA("overview.viewAll")}
         >
           {stories.items.map((row) => (
             <li key={`${row.customerId}-${row.storyId}`}>
-              <StoryRow row={row} locale={locale} />
+              <StoryRow
+                row={row}
+                locale={locale}
+                label={tA("overview.storyLabel", { storyId: row.storyId })}
+                scoreLabel={scoreLabel(row.severityScore, row.likelihoodScore)}
+              />
             </li>
           ))}
         </Section>
@@ -119,11 +147,17 @@ export default async function OverviewPage({
           count={events.totalCount}
           href={`/${locale}/suspicious-events${scopeQuery}`}
           emptyTestid="overview-events-empty"
-          emptyLabel="No suspicious events in scope yet."
+          emptyLabel={tA("overview.eventsEmpty")}
+          viewAllLabel={tA("overview.viewAll")}
         >
           {events.items.map((row) => (
             <li key={`${row.customerId}-${row.aiceId}-${row.eventKey}`}>
-              <EventRow row={row} locale={locale} />
+              <EventRow
+                row={row}
+                locale={locale}
+                label={tA("overview.eventLabel", { eventKey: row.eventKey })}
+                scoreLabel={scoreLabel(row.severityScore, row.likelihoodScore)}
+              />
             </li>
           ))}
         </Section>
@@ -153,6 +187,7 @@ function Section({
   children,
   emptyLabel,
   emptyTestid,
+  viewAllLabel,
 }: {
   title: string;
   count: number;
@@ -160,6 +195,7 @@ function Section({
   children: React.ReactNode[];
   emptyLabel: string;
   emptyTestid: string;
+  viewAllLabel: string;
 }) {
   return (
     <section aria-label={title} data-testid={`overview-section-${emptyTestid}`}>
@@ -174,7 +210,7 @@ function Section({
           href={href}
           className="text-xs font-medium text-foreground underline-offset-2 hover:underline"
         >
-          View all
+          {viewAllLabel}
         </Link>
       </div>
       {children.length === 0 ? (

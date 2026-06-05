@@ -24,13 +24,18 @@ interface Props {
    * and the language switcher preserve params identically (#388).
    */
   currentQuery?: string;
+  /**
+   * Translated tab labels (`reportPeriod`), keyed by period and injected by
+   * the (server-component) caller so this stays a synchronous component.
+   */
+  periodLabels: Record<PeriodKind, string>;
 }
 
-const TABS: ReadonlyArray<{ period: PeriodKind; label: string }> = [
-  { period: "LIVE", label: "Live" },
-  { period: "DAILY", label: "Daily" },
-  { period: "WEEKLY", label: "Weekly" },
-  { period: "MONTHLY", label: "Monthly" },
+const TAB_PERIODS: readonly PeriodKind[] = [
+  "LIVE",
+  "DAILY",
+  "WEEKLY",
+  "MONTHLY",
 ];
 
 /**
@@ -47,6 +52,7 @@ export function ReportPeriodTabs({
   activePeriod,
   referenceDate,
   currentQuery,
+  periodLabels,
 }: Props) {
   // Preserve (and normalize) the current variant params on every tab link.
   const qs = mergeQuery(currentQuery, {});
@@ -55,7 +61,8 @@ export function ReportPeriodTabs({
   return (
     <nav aria-label="report-period-tabs" data-testid="report-period-tabs">
       <ul className="flex flex-wrap gap-1 border-b border-border">
-        {TABS.map(({ period, label }) => {
+        {TAB_PERIODS.map((period) => {
+          const label = periodLabels[period];
           const active = period === activePeriod;
           const bucket = periodBucketDate(period, referenceDate);
           const className = `inline-flex items-center rounded-t border-b-2 px-3 py-2 text-sm font-medium ${

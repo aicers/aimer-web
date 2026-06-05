@@ -38,19 +38,18 @@ function CustomerLabel({ name }: { name: string }) {
   return <span className="truncate text-xs text-muted-foreground">{name}</span>;
 }
 
-const PERIOD_LABELS: Record<string, string> = {
-  LIVE: "Live",
-  DAILY: "Daily",
-  WEEKLY: "Weekly",
-  MONTHLY: "Monthly",
-};
-
 export function ReportRow({
   row,
   locale,
+  periodLabels,
+  nowLabel,
 }: {
   row: ReportOverviewRow;
   locale: string;
+  /** Translated period labels (`reportPeriod`), keyed by period. */
+  periodLabels: Record<string, string>;
+  /** Translated "now" label for the rolling LIVE bucket. */
+  nowLabel: string;
 }) {
   // Pin `?tz=<row.tz>` on every report link. The detail loader resolves tz as
   // "pinned ?tz → customer current-timezone snapshot → UTC"; without the pin
@@ -67,8 +66,8 @@ export function ReportRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          {PERIOD_LABELS[row.period] ?? row.period} •{" "}
-          {row.period === "LIVE" ? "now" : row.bucketDate}
+          {periodLabels[row.period] ?? row.period} •{" "}
+          {row.period === "LIVE" ? nowLabel : row.bucketDate}
         </div>
         <CustomerLabel name={row.customerName} />
       </div>
@@ -81,9 +80,15 @@ export function ReportRow({
 export function StoryRow({
   row,
   locale,
+  label,
+  scoreLabel,
 }: {
   row: StoryOverviewRow;
   locale: string;
+  /** Translated row title (`Story {id}`). */
+  label: string;
+  /** Translated abbreviated severity/likelihood pair. */
+  scoreLabel: string;
 }) {
   // Story detail takes no variant params (it defaults from env).
   const href = `/${locale}/customers/${row.customerId}/analysis/story/${row.storyId}`;
@@ -97,15 +102,12 @@ export function StoryRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          Story {row.storyId}
+          {label}
         </div>
         <CustomerLabel name={row.customerName} />
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <ScorePair
-          severity={row.severityScore}
-          likelihood={row.likelihoodScore}
-        />
+        <ScorePair label={scoreLabel} />
         <PriorityBadge tier={row.priorityTier} />
       </div>
     </Link>
@@ -115,9 +117,15 @@ export function StoryRow({
 export function EventRow({
   row,
   locale,
+  label,
+  scoreLabel,
 }: {
   row: EventOverviewRow;
   locale: string;
+  /** Translated row title (`Event {key}`). */
+  label: string;
+  /** Translated abbreviated severity/likelihood pair. */
+  scoreLabel: string;
 }) {
   // The event detail page 404s without `model_name`/`model`, so carry the
   // canonical variant on the link (it only defaults `lang` to ENGLISH).
@@ -143,33 +151,24 @@ export function EventRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          Event {row.eventKey}
+          {label}
         </div>
         <div className="truncate text-xs text-muted-foreground">
           {row.aiceId} • {row.customerName}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <ScorePair
-          severity={row.severityScore}
-          likelihood={row.likelihoodScore}
-        />
+        <ScorePair label={scoreLabel} />
         <PriorityBadge tier={row.priorityTier} />
       </div>
     </Link>
   );
 }
 
-function ScorePair({
-  severity,
-  likelihood,
-}: {
-  severity: number;
-  likelihood: number;
-}) {
+function ScorePair({ label }: { label: string }) {
   return (
     <span className="hidden text-xs text-muted-foreground sm:inline">
-      S {severity.toFixed(2)} · L {likelihood.toFixed(2)}
+      {label}
     </span>
   );
 }
@@ -184,7 +183,6 @@ export function SurfaceEmptyState({
   return (
     <div
       role="status"
-      aria-label="empty-banner"
       data-testid={testid}
       className="rounded border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
     >
@@ -195,21 +193,29 @@ export function SurfaceEmptyState({
 
 // Partial fan-out failure (#391): one unreachable customer DB must not zero
 // the counts nor blank the page — surface which customer degraded instead.
-export function PartialFailureNotice({ failed }: { failed: FailedCustomer[] }) {
+// The intro/retry copy is injected pre-translated by the (server-component)
+// caller so this stays a synchronous presentational component.
+export function PartialFailureNotice({
+  failed,
+  introLabel,
+  retryLabel,
+}: {
+  failed: FailedCustomer[];
+  introLabel: string;
+  retryLabel: string;
+}) {
   if (failed.length === 0) return null;
   return (
     <div
       role="alert"
-      aria-label="partial-failure-banner"
       data-testid="overview-partial-failure"
       className="mb-4 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
     >
-      Some customers could not be reached and are excluded from the counts and
-      list below:{" "}
+      {introLabel}{" "}
       <span className="font-medium">
         {failed.map((f) => f.name).join(", ")}
       </span>
-      . Try again shortly.
+      {retryLabel}
     </div>
   );
 }
@@ -218,12 +224,19 @@ export function PartialFailureNotice({ failed }: { failed: FailedCustomer[] }) {
 // potentially many customer DBs per request, so each route ships a
 // `loading.tsx` that renders this while the server component awaits the
 // aggregator — Next.js wraps the page in a Suspense boundary automatically.
-export function OverviewSkeleton({ rows = 5 }: { rows?: number }) {
+export function OverviewSkeleton({
+  rows = 5,
+  loadingLabel,
+}: {
+  rows?: number;
+  /** Localized accessible label for the busy region. */
+  loadingLabel: string;
+}) {
   return (
     <div
       className="mx-auto max-w-4xl px-4 py-8 sm:px-6"
       role="status"
-      aria-label="loading"
+      aria-label={loadingLabel}
       aria-busy="true"
       data-testid="overview-loading"
     >

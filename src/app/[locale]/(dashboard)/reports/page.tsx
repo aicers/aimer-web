@@ -32,6 +32,14 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
   if (scope.kind === "bridge") forbidden();
 
   const t = await getTranslations("nav");
+  const tA = await getTranslations("analysis");
+  const tPeriod = await getTranslations("reportPeriod");
+  const periodLabels: Record<string, string> = {
+    LIVE: tPeriod("LIVE"),
+    DAILY: tPeriod("DAILY"),
+    WEEKLY: tPeriod("WEEKLY"),
+    MONTHLY: tPeriod("MONTHLY"),
+  };
   const data = await loadCrossCustomerOverview({
     scopeCustomerIds: scope.scope.customerIds,
     surfaces: ["reports"],
@@ -52,12 +60,16 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
         <CountBadge count={reports.totalCount} />
       </header>
 
-      <PartialFailureNotice failed={reports.failedCustomers} />
+      <PartialFailureNotice
+        failed={reports.failedCustomers}
+        introLabel={tA("overview.partialFailureIntro")}
+        retryLabel={tA("overview.partialFailureRetry")}
+      />
 
       {reports.items.length === 0 ? (
         <SurfaceEmptyState
           testid="reports-empty"
-          label="No reports are available across the customers in scope yet."
+          label={tA("overview.reportsEmptyFull")}
         />
       ) : (
         <ul className="space-y-2" data-testid="reports-list">
@@ -65,7 +77,12 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
             <li
               key={`${row.customerId}-${row.period}-${row.bucketDate}-${row.tz}`}
             >
-              <ReportRow row={row} locale={locale} />
+              <ReportRow
+                row={row}
+                locale={locale}
+                periodLabels={periodLabels}
+                nowLabel={tA("common.now")}
+              />
             </li>
           ))}
         </ul>
