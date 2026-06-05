@@ -40,14 +40,14 @@ import {
 } from "../redaction/ranges";
 import type { RangeSet } from "../redaction/types";
 
-const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_([0-9]+)>>/g;
-const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_([0-9]+)>>/g;
+const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_([0-9]+)>>/g;
+const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_([0-9]+)>>/g;
 
 // Re-anchored event-token matcher used by the leak scan. The story
 // prompt SHOULD only ever contain story-scope tokens; an event-scope
 // token in the analysis output is a hallucination signal because the
 // LLM cannot have read one from the input.
-const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_[0-9]+>>/g;
+const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_[0-9]+>>/g;
 
 // Kind-agnostic backstop matcher. Unlike the matchers above it is NOT
 // pinned to the kinds the redaction engine emits (`IP`/`EMAIL`/`MAC`),

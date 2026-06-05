@@ -8,7 +8,7 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { buildRangeSet } from "@/lib/redaction";
+import { buildRangeSet, EMPTY_OWNED_DOMAIN_SET } from "@/lib/redaction";
 
 vi.mock("server-only", () => ({}));
 
@@ -36,21 +36,42 @@ const ingestBaselineBatch: (
   payload: Parameters<typeof _ingestBaselineBatch>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestBaselineBatch> = (pool, payload, aiceId) =>
-  _ingestBaselineBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestBaselineBatch(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 const ingestStoryBatch: (
   pool: Pool,
   payload: Parameters<typeof _ingestStoryBatch>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestStoryBatch> = (pool, payload, aiceId) =>
-  _ingestStoryBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestStoryBatch(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 const ingestPolicyRun: (
   pool: Pool,
   payload: Parameters<typeof _ingestPolicyRun>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestPolicyRun> = (pool, payload, aiceId) =>
-  _ingestPolicyRun(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestPolicyRun(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID_CUSTOMER = 1002;

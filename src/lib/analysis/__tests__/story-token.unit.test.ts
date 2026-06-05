@@ -47,6 +47,22 @@ describe("buildStoryTokenMap", () => {
     ]);
   });
 
+  it("namespaces DOMAIN tokens to story scope (RFC 0001 Amendment A.2)", () => {
+    const out = buildStoryTokenMap([
+      {
+        aiceId: "aice-1",
+        eventKey: "1001",
+        event: { host: "<<REDACTED_DOMAIN_001>>" },
+      },
+    ]);
+    expect(out.rewrittenMembers[0].event).toEqual({
+      host: "<<REDACTED_DOMAIN_E1_001>>",
+    });
+    expect(Array.from(out.allowedTokens)).toEqual([
+      "<<REDACTED_DOMAIN_E1_001>>",
+    ]);
+  });
+
   it("returns empty refs and tokens for zero members", () => {
     const out = buildStoryTokenMap([]);
     expect(out.rewrittenMembers).toEqual([]);

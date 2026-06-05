@@ -1,6 +1,8 @@
 import type { PoolClient } from "pg";
 import {
+  EMPTY_OWNED_DOMAIN_SET,
   ENGINE_VERSION,
+  type OwnedDomainSet,
   type RangeSet,
   RedactionInjectivityError,
   readMapWithLock,
@@ -13,6 +15,12 @@ export interface RedactionContext {
   aiceId: string;
   eventKey: string;
   ranges: RangeSet;
+  /**
+   * Customer-owned domain suffixes (RFC 0001 Amendment A.2). Optional:
+   * defaults to an empty set (redact no domains) so any path not yet
+   * wired to load owned domains keeps the prior behaviour.
+   */
+  ownedDomains?: OwnedDomainSet;
   client: PoolClient;
 }
 
@@ -47,6 +55,7 @@ export async function redactAndMaybeUpsertMap(
       payload,
       existingMap: existing ?? {},
       ranges: ctx.ranges,
+      ownedDomains: ctx.ownedDomains ?? EMPTY_OWNED_DOMAIN_SET,
       engineVersion: ENGINE_VERSION,
     });
   } catch (err) {

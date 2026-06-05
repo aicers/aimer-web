@@ -14,6 +14,7 @@ const mockAuditLog = vi.fn();
 const mockAuthorize = vi.fn();
 const mockStoreApprovedEvents = vi.fn();
 const mockLoadCustomerRanges = vi.fn();
+const mockLoadCustomerOwnedDomains = vi.fn();
 
 vi.mock("@/lib/auth/staged-events", () => ({
   updateCustomerStatus: (...args: unknown[]) =>
@@ -76,6 +77,8 @@ vi.mock("@/lib/auth/event-storage", () => ({
 
 vi.mock("@/lib/redaction", () => ({
   loadCustomerRanges: (...args: unknown[]) => mockLoadCustomerRanges(...args),
+  loadCustomerOwnedDomains: (...args: unknown[]) =>
+    mockLoadCustomerOwnedDomains(...args),
   RedactionInjectivityError,
 }));
 
@@ -149,6 +152,7 @@ describe("PATCH /api/events/staged/[payloadId]/customers/[customerId]", () => {
       normalisedCidrs: [],
       ranges: [],
     });
+    mockLoadCustomerOwnedDomains.mockResolvedValue({ normalisedSuffixes: [] });
   });
 
   async function callPATCH(

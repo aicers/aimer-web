@@ -18,6 +18,7 @@
 //     into ingestion routes (#251).
 
 import { createHash } from "node:crypto";
+import { EMPTY_OWNED_DOMAIN_SET, shouldRedactOwnedDomain } from "./domains";
 import {
   isPrivateIPv4,
   isPrivateIPv6,
@@ -27,6 +28,7 @@ import {
 } from "./ranges";
 import type {
   EntityKind,
+  OwnedDomainSet,
   RangeSet,
   RedactInput,
   RedactionMap,
@@ -62,10 +64,24 @@ const IPV4_RE =
 const IPV6_RE =
   /(?<![A-Za-z0-9:.])[A-Fa-f0-9]{0,4}(?::[A-Fa-f0-9]{0,4}){2,}(?![A-Za-z0-9:.])/g;
 
+// Domain / FQDN candidate — at least two dot-separated labels ending in
+// a TLD-shaped label. Unicode letters/digits are allowed so IDN
+// U-labels match; `normalizeDomain` folds them to punycode and rejects
+// non-hostname shapes (e.g. dotted numerics) before the owned-suffix
+// test. The leading boundary forbids characters that can sit inside a
+// hostname so we never start mid-label; the trailing boundary excludes
+// the same set minus `.` so a trailing FQDN root dot does not block the
+// match. Runs LAST in `redactString` (after the IP passes), so by the
+// time it executes every IP literal is already a token and cannot be
+// mis-matched as a domain.
+const DOMAIN_RE =
+  /(?<![\p{L}\p{N}._-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}\p{N}-]{2,}(?![\p{L}\p{N}_-])/gu;
+
 const TOKEN_PREFIX_BY_KIND: Record<EntityKind, string> = {
   ip: "<<REDACTED_IP_",
   email: "<<REDACTED_EMAIL_",
   mac: "<<REDACTED_MAC_",
+  domain: "<<REDACTED_DOMAIN_",
 };
 
 const TOKEN_SUFFIX = ">>";
@@ -130,7 +146,12 @@ interface AssignmentState {
 function initState(existingMap: RedactionMap): AssignmentState {
   const reverse = new Map<string, string>();
   const forward = new Map<string, { kind: EntityKind; value: string }>();
-  const maxByKind: Record<EntityKind, number> = { ip: 0, email: 0, mac: 0 };
+  const maxByKind: Record<EntityKind, number> = {
+    ip: 0,
+    email: 0,
+    mac: 0,
+    domain: 0,
+  };
 
   for (const [token, entry] of Object.entries(existingMap)) {
     // Shared-map invariant 3 (token-value injectivity): each entity
@@ -167,6 +188,7 @@ function initState(existingMap: RedactionMap): AssignmentState {
       ip: maxByKind.ip + 1,
       email: maxByKind.email + 1,
       mac: maxByKind.mac + 1,
+      domain: maxByKind.domain + 1,
     },
     mapChanged: false,
   };
@@ -215,11 +237,21 @@ function assignToken(
  * otherwise consume. Email's `@` and MAC's `:` separators are
  * disjoint from a bare IP so the order is safe even though the
  * regexes do not coordinate.
+ *
+ * The domain pass runs **last** (RFC 0001 Amendment A.2): email is
+ * already tokenised (so its `user@host` substring is gone) and every
+ * IP literal is already a token, so the FQDN matcher only sees genuine
+ * hostnames. Only domains matched by an owned-domain suffix are
+ * redacted — external domains pass through raw, mirroring the
+ * external-IP pass-through. The map `value` stores the **original**
+ * matched substring; normalisation (lowercase / IDN-fold) is
+ * matching-only.
  */
 function redactString(
   input: string,
   state: AssignmentState,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): string {
   let out = input.replace(EMAIL_RE, (m) => assignToken(state, "email", m));
   out = out.replace(MAC_RE, (m) => assignToken(state, "mac", m));
@@ -241,6 +273,12 @@ function redactString(
     }
     return m;
   });
+  out = out.replace(DOMAIN_RE, (m) => {
+    if (shouldRedactOwnedDomain(m, ownedDomains)) {
+      return assignToken(state, "domain", m);
+    }
+    return m;
+  });
   return out;
 }
 
@@ -252,12 +290,13 @@ function walk(
   value: unknown,
   state: AssignmentState,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): unknown {
   if (typeof value === "string") {
-    return redactString(value, state, ranges);
+    return redactString(value, state, ranges, ownedDomains);
   }
   if (Array.isArray(value)) {
-    return value.map((v) => walk(v, state, ranges));
+    return value.map((v) => walk(v, state, ranges, ownedDomains));
   }
   if (value !== null && typeof value === "object") {
     const out: Record<string, unknown> = {};
@@ -265,7 +304,7 @@ function walk(
       // Structural keys are preserved as-is (RFC 0001 cross-cutting
       // expectations: "tokens substituted at any depth, structural
       // keys preserved").
-      out[k] = walk(v, state, ranges);
+      out[k] = walk(v, state, ranges, ownedDomains);
     }
     return out;
   }
@@ -279,16 +318,19 @@ function walk(
 /**
  * Compute the composite `redaction_policy_version` for a write.
  *
- * Format: `engine:<semver>|ranges:<sha256-short>` where
- * `<sha256-short>` is the first 12 hex chars of the SHA-256 of the
- * sorted, normalised CIDR list serialised as JSON. Empty range set
- * hashes to a fixed sentinel ("empty") so the retroactive job can
- * tell "operator removed all ranges" apart from "operator added
- * ranges and then removed them again".
+ * Format: `engine:<semver>|ranges:<sha256-short>|domains:<sha256-short>`
+ * where each `<sha256-short>` is the first 12 hex chars of the SHA-256
+ * of the sorted, normalised list (CIDRs / owned-domain suffixes)
+ * serialised as JSON. An empty list hashes to a fixed sentinel
+ * ("empty") so the retroactive job can tell "operator removed all
+ * ranges/domains" apart from "operator added some and then removed them
+ * again". The `domains:` segment is additive (RFC 0001 Amendment A.2,
+ * pre-release stance §A.4): `engine:<semver>` is unchanged.
  */
 export function computePolicyVersion(
   engineVersion: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet = EMPTY_OWNED_DOMAIN_SET,
 ): string {
   let rangesShort: string;
   if (ranges.normalisedCidrs.length === 0) {
@@ -297,7 +339,14 @@ export function computePolicyVersion(
     const json = JSON.stringify(ranges.normalisedCidrs);
     rangesShort = createHash("sha256").update(json).digest("hex").slice(0, 12);
   }
-  return `engine:${engineVersion}|ranges:${rangesShort}`;
+  let domainsShort: string;
+  if (ownedDomains.normalisedSuffixes.length === 0) {
+    domainsShort = "empty";
+  } else {
+    const json = JSON.stringify(ownedDomains.normalisedSuffixes);
+    domainsShort = createHash("sha256").update(json).digest("hex").slice(0, 12);
+  }
+  return `engine:${engineVersion}|ranges:${rangesShort}|domains:${domainsShort}`;
 }
 
 /**
@@ -306,8 +355,9 @@ export function computePolicyVersion(
  * preserving the existing tokens (shared-map invariants 1 + 2 + 3).
  */
 export function redact(input: RedactInput): RedactOutput {
+  const ownedDomains = input.ownedDomains ?? EMPTY_OWNED_DOMAIN_SET;
   const state = initState(input.existingMap);
-  const redacted = walk(input.payload, state, input.ranges);
+  const redacted = walk(input.payload, state, input.ranges, ownedDomains);
 
   const mergedMap: RedactionMap = {};
   for (const [token, entry] of state.forward) {
@@ -317,7 +367,11 @@ export function redact(input: RedactInput): RedactOutput {
   return {
     redacted,
     mergedMap,
-    policyVersion: computePolicyVersion(input.engineVersion, input.ranges),
+    policyVersion: computePolicyVersion(
+      input.engineVersion,
+      input.ranges,
+      ownedDomains,
+    ),
     mapChanged: state.mapChanged,
   };
 }
@@ -330,6 +384,7 @@ const UNVERIFIED_PREFIX_BY_KIND: Record<EntityKind, string> = {
   ip: "<<UNVERIFIED_IP_",
   email: "<<UNVERIFIED_EMAIL_",
   mac: "<<UNVERIFIED_MAC_",
+  domain: "<<UNVERIFIED_DOMAIN_",
 };
 
 export interface HallucinationScanResult {
@@ -365,6 +420,7 @@ export function scanHallucinations(
   response: string,
   existingMap: RedactionMap,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet = EMPTY_OWNED_DOMAIN_SET,
 ): HallucinationScanResult {
   // Reverse index: value -> existing token. The forward map is
   // token-keyed, so build this once for value lookups.
@@ -372,7 +428,12 @@ export function scanHallucinations(
   for (const [token, entry] of Object.entries(existingMap)) {
     knownTokens.set(entry.value, token);
   }
-  const counts: Record<EntityKind, number> = { ip: 0, email: 0, mac: 0 };
+  const counts: Record<EntityKind, number> = {
+    ip: 0,
+    email: 0,
+    mac: 0,
+    domain: 0,
+  };
 
   function substitute(kind: EntityKind, original: string): string {
     const existingToken = knownTokens.get(original);
@@ -397,6 +458,17 @@ export function scanHallucinations(
     if (!bytes) return m;
     if (isPrivateIPv4(bytes) || shouldRedactPublicIP(bytes, 4, ranges)) {
       return substitute("ip", m);
+    }
+    return m;
+  });
+  // Owned-domain leak-back scan (RFC 0001 Amendment A.2): the LLM
+  // echoing a customer-owned domain it should have kept as a token is
+  // either a known-value restatement (case 1) or a hallucination
+  // (case 2). External domains pass through, mirroring the redaction
+  // pass's external-domain pass-through.
+  out = out.replace(DOMAIN_RE, (m) => {
+    if (shouldRedactOwnedDomain(m, ownedDomains)) {
+      return substitute("domain", m);
     }
     return m;
   });

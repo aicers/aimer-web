@@ -13,7 +13,11 @@ import {
   updateCustomerStatus,
 } from "@/lib/auth/staged-events";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
-import { loadCustomerRanges, RedactionInjectivityError } from "@/lib/redaction";
+import {
+  loadCustomerOwnedDomains,
+  loadCustomerRanges,
+  RedactionInjectivityError,
+} from "@/lib/redaction";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -163,6 +167,7 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
     // engine input ready for every per-event call without holding the
     // auth_db connection longer than necessary.
     const ranges = await loadCustomerRanges(pool, customerId);
+    const ownedDomains = await loadCustomerOwnedDomains(pool, customerId);
 
     const source = staged.connection_id ? "bridge" : "manual";
 
@@ -194,6 +199,7 @@ export const PATCH = withAuth(async (req: NextRequest, auth) => {
           ingestedBy: auth.accountId,
           plaintext: decrypted.payload,
           ranges,
+          ownedDomains,
         });
 
         return updateCustomerStatus(client, payloadId, customerId, "approve");

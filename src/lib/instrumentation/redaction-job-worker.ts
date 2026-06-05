@@ -28,6 +28,7 @@ import { z } from "zod";
 import { auditLog } from "../audit";
 import { getAuthPool } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
+import { buildOwnedDomainSet } from "../redaction/domains";
 import { ENGINE_VERSION, redact } from "../redaction/engine";
 import {
   decryptRedactionMap,
@@ -38,7 +39,11 @@ import {
   REDACTION_VERSIONED_TABLES,
   type RedactionVersionedTable,
 } from "../redaction/stale-scan";
-import type { RangeSet, RedactionMap } from "../redaction/types";
+import type {
+  OwnedDomainSet,
+  RangeSet,
+  RedactionMap,
+} from "../redaction/types";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -257,7 +262,13 @@ function snapshotFromCidrs(cidrs: string[]): {
 function targetHashFragment(targetPolicyVersion: string): string {
   const idx = targetPolicyVersion.indexOf("|ranges:");
   if (idx === -1) return "";
-  return targetPolicyVersion.slice(idx + "|ranges:".length);
+  const after = targetPolicyVersion.slice(idx + "|ranges:".length);
+  // Isolate the ranges hash only: a `|domains:<short>` segment (RFC
+  // 0001 Amendment A.2) now follows it, so stop at the next `|`.
+  // Without this the fragment would greedily include the domains
+  // segment and never match the recomputed ranges hash.
+  const nextPipe = after.indexOf("|");
+  return nextPipe === -1 ? after : after.slice(0, nextPipe);
 }
 
 function validateRangeSnapshot(job: JobRow): RangeSet {
@@ -307,7 +318,7 @@ function durationFromTimestamps(
 // Token reconstruction
 // ---------------------------------------------------------------------------
 
-const TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_\d{3,}>>/g;
+const TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_\d{3,}>>/g;
 
 /**
  * Walk a JSON value substituting every <<REDACTED_*>> token in string
@@ -796,6 +807,7 @@ async function processItem(
   job: JobRow,
   item: JobItem,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
   targetPolicyVersion: string,
   deps: WorkerDeps,
 ): Promise<ProcessItemResult> {
@@ -879,6 +891,13 @@ async function processItem(
             payload: reconstructed,
             existingMap: map,
             ranges,
+            // Thread the customer's current owned domains so a payload
+            // carrying a `<<REDACTED_DOMAIN_NNN>>` token round-trips
+            // cleanly: substituteTokens restores it to plaintext and
+            // this re-redact re-tokenises it via the existing map.
+            // Without it the restored domain plaintext would leak back
+            // into the stored payload (RFC 0001 Amendment A.2).
+            ownedDomains,
             engineVersion: ENGINE_VERSION,
           });
 
@@ -1067,6 +1086,7 @@ async function processJobItems(
   authClient: PoolClient,
   job: JobRow,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
   deps: WorkerDeps,
 ): Promise<ProcessOutcome> {
   let processed = job.processed_rows;
@@ -1142,6 +1162,7 @@ async function processJobItems(
         job,
         item,
         ranges,
+        ownedDomains,
         job.target_policy_version,
         deps,
       );
@@ -1649,9 +1670,33 @@ async function runJobInner(
   // emit but before the first counter checkpoint would re-fire the audit
   // on the next recovery pass.
 
+  // Load the customer's current owned domains so re-redacted rows that
+  // carry a `<<REDACTED_DOMAIN_NNN>>` token round-trip via the existing
+  // map (RFC 0001 Amendment A.2). The retroactive job is range-keyed;
+  // domains are not part of snapshot validation (pre-release §A.4), but
+  // they must be threaded so restored domain plaintext does not leak
+  // back into the stored payload.
+  const ownedDomainsRes = await authClient.query<{
+    owned_domain_suffix: string;
+  }>(
+    `SELECT owned_domain_suffix
+       FROM customer_owned_domains
+      WHERE customer_id = $1`,
+    [job.customer_id],
+  );
+  const ownedDomains = buildOwnedDomainSet(
+    ownedDomainsRes.rows.map((r) => r.owned_domain_suffix),
+  );
+
   let outcome: ProcessOutcome;
   try {
-    outcome = await processJobItems(authClient, job, ranges, deps);
+    outcome = await processJobItems(
+      authClient,
+      job,
+      ranges,
+      ownedDomains,
+      deps,
+    );
   } catch (err) {
     // The catch path must reflect counters that were already
     // checkpointed by processJobItems' batch loop, not the stale

@@ -39,8 +39,11 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 const mockLoadCustomerRanges = vi.fn();
+const mockLoadCustomerOwnedDomains = vi.fn();
 vi.mock("@/lib/redaction", () => ({
   loadCustomerRanges: (...args: unknown[]) => mockLoadCustomerRanges(...args),
+  loadCustomerOwnedDomains: (...args: unknown[]) =>
+    mockLoadCustomerOwnedDomains(...args),
 }));
 
 const mockExecuteWindowReplace = vi.fn();
@@ -63,11 +66,13 @@ vi.mock("@/lib/analysis/ingest-hooks", () => ({
 await import("../route");
 
 const fakeRanges = { __ranges: true } as unknown;
+const fakeOwnedDomains = { __ownedDomains: true } as unknown;
 const customerPool = { kind: "customer" } as unknown as Pool;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockLoadCustomerRanges.mockResolvedValue(fakeRanges);
+  mockLoadCustomerOwnedDomains.mockResolvedValue(fakeOwnedDomains);
   mockExecuteWindowReplace.mockResolvedValue({
     counts: { accepted: 1, deleted: 0 },
     extras: {
@@ -106,12 +111,17 @@ describe("refresh-window route wiring", () => {
       mockAuthPool,
       verified.customerId,
     );
+    expect(mockLoadCustomerOwnedDomains).toHaveBeenCalledWith(
+      mockAuthPool,
+      verified.customerId,
+    );
     expect(mockExecuteWindowReplace).toHaveBeenCalledWith(
       customerPool,
       payload,
       verified.customerId,
       verified.envelopeClaims.aiceId,
       fakeRanges,
+      fakeOwnedDomains,
     );
   });
 });

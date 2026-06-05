@@ -8,7 +8,11 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { buildRangeSet } from "@/lib/redaction";
+import {
+  buildOwnedDomainSet,
+  buildRangeSet,
+  EMPTY_OWNED_DOMAIN_SET,
+} from "@/lib/redaction";
 
 vi.mock("server-only", () => ({}));
 
@@ -42,21 +46,42 @@ const ingestBaselineBatch: (
   payload: Parameters<typeof _ingestBaselineBatch>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestBaselineBatch> = (pool, payload, aiceId) =>
-  _ingestBaselineBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestBaselineBatch(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 const ingestStoryBatch: (
   pool: Pool,
   payload: Parameters<typeof _ingestStoryBatch>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestStoryBatch> = (pool, payload, aiceId) =>
-  _ingestStoryBatch(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestStoryBatch(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 const ingestPolicyRun: (
   pool: Pool,
   payload: Parameters<typeof _ingestPolicyRun>[1],
   aiceId: string,
 ) => ReturnType<typeof _ingestPolicyRun> = (pool, payload, aiceId) =>
-  _ingestPolicyRun(pool, payload, TEST_CUSTOMER_ID, aiceId, TEST_RANGES);
+  _ingestPolicyRun(
+    pool,
+    payload,
+    TEST_CUSTOMER_ID,
+    aiceId,
+    TEST_RANGES,
+    EMPTY_OWNED_DOMAIN_SET,
+  );
 
 describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
   let dbName: string;
@@ -539,6 +564,85 @@ describe.skipIf(!hasPostgres)("Phase 2 ingest helpers", () => {
       // for clarity.
       expect(rows[0].orig_addr).toMatch(/^<<REDACTED_IP_\d{3}>>$/);
       expect(rows[0].resp_addr).toMatch(/^<<REDACTED_IP_\d{3}>>$/);
+    });
+  });
+
+  // -- owned-domain redaction (RFC 0001 Amendment A.2) --
+
+  describe("policy_event owned-domain redaction", () => {
+    it("tokenises owned domains in host/dns_query/uri, leaves external ones raw, and stores the value only in the map", async () => {
+      const ownedDomains = buildOwnedDomainSet(["customer.example"]);
+      const runPayload = {
+        external_key: "ext-dom",
+        run: {
+          run_id: "7200",
+          period_start: "2026-01-02T03:00:00Z",
+          period_end: "2026-01-02T04:00:00Z",
+          created_at: "2026-01-02T04:00:01Z",
+          baseline_version: "pr-v1",
+          policies_fingerprint: "pfp",
+          exclusions_fingerprint: "efp",
+          status: "ready" as const,
+        },
+        events: [
+          {
+            event_key: "1",
+            event_time: "2026-01-02T03:05:00Z",
+            kind: "http",
+            host: "vpn.customer.example",
+            dns_query: "evil.attacker.test",
+            uri: "http://intranet.customer.example/login",
+            policy_triage_snapshot: [],
+          },
+        ],
+      };
+      await _ingestPolicyRun(
+        pool,
+        runPayload,
+        TEST_CUSTOMER_ID,
+        "aice-dom",
+        TEST_RANGES,
+        ownedDomains,
+      );
+
+      const { rows } = await pool.query<{
+        host: string | null;
+        dns_query: string | null;
+        uri: string | null;
+      }>(
+        "SELECT host, dns_query, uri FROM policy_event WHERE run_id = 7200 AND event_key = 1",
+      );
+      expect(rows).toHaveLength(1);
+      // Owned domain in `host` → DOMAIN token.
+      expect(rows[0].host).toMatch(/^<<REDACTED_DOMAIN_\d{3}>>$/);
+      // External domain in `dns_query` → raw pass-through.
+      expect(rows[0].dns_query).toBe("evil.attacker.test");
+      // Owned domain embedded in a URI → tokenised in place.
+      expect(rows[0].uri).toMatch(
+        /^http:\/\/<<REDACTED_DOMAIN_\d{3}>>\/login$/,
+      );
+
+      // The plaintext owned domains live only in the (stubbed-encrypted)
+      // map; the external domain never enters it.
+      const map = await pool.query<{ ciphertext: Buffer }>(
+        `SELECT ciphertext FROM event_redaction_map
+         WHERE aice_id = 'aice-dom' AND event_key = 1`,
+      );
+      const entries = Object.values(
+        JSON.parse(map.rows[0].ciphertext.toString("utf8")) as Record<
+          string,
+          { kind: string; value: string }
+        >,
+      );
+      const domainValues = entries
+        .filter((e) => e.kind === "domain")
+        .map((e) => e.value)
+        .sort();
+      expect(domainValues).toEqual([
+        "intranet.customer.example",
+        "vpn.customer.example",
+      ]);
+      expect(entries.map((e) => e.value)).not.toContain("evil.attacker.test");
     });
   });
 

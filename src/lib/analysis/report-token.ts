@@ -43,18 +43,20 @@ import type { RangeSet } from "../redaction/types";
 // Story-scope token: `<<REDACTED_IP_E1_001>>`. The `E{i}` group is the
 // story member ordinal; the trailing group is the event-scope token
 // number. Both are folded into the report-scope `SEQ` on rewrite.
-const STORY_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/g;
+const STORY_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/g;
 // Event-scope token: `<<REDACTED_IP_001>>`. The kind is followed directly
 // by digits (no `E{i}` segment), so this never matches a story-scope
 // token.
-const EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/g;
+const EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/g;
 
 // Report-scope token matcher used by the leak scan. The report prompt
 // SHOULD only ever contain report-scope tokens; a lower-scope token in
 // the output is a hallucination signal because the LLM never saw one.
-const REPORT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_R(\d+)_(\d+)>>/g;
-const RESIDUAL_STORY_SCOPE_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_E\d+_\d+>>/g;
-const RESIDUAL_EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_\d+>>/g;
+const REPORT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_R(\d+)_(\d+)>>/g;
+const RESIDUAL_STORY_SCOPE_TOKEN_RE =
+  /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_E\d+_\d+>>/g;
+const RESIDUAL_EVENT_SCOPE_TOKEN_RE =
+  /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_\d+>>/g;
 
 // Kind-agnostic backstop matcher. Unlike the matchers above it is NOT
 // pinned to the kinds the redaction engine emits (`IP`/`EMAIL`/`MAC`),

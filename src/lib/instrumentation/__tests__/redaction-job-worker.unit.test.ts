@@ -49,6 +49,23 @@ describe("redaction-job-worker helpers", () => {
       expect(missing.size).toBe(0);
     });
 
+    it("restores DOMAIN tokens (RFC 0001 Amendment A.2 round-trip)", () => {
+      const map = {
+        "<<REDACTED_DOMAIN_001>>": {
+          kind: "domain" as const,
+          value: "vpn.customer.example",
+        },
+      };
+      const missing = new Set<string>();
+      const out = __testables.substituteTokens(
+        { host: "<<REDACTED_DOMAIN_001>>" },
+        map,
+        missing,
+      );
+      expect(out).toEqual({ host: "vpn.customer.example" });
+      expect(missing.size).toBe(0);
+    });
+
     it("records missing tokens but leaves them literal", () => {
       const missing = new Set<string>();
       const out = __testables.substituteTokens(
@@ -104,6 +121,22 @@ describe("redaction-job-worker helpers", () => {
         __testables.targetHashFragment("engine:1.0.0|ranges:abcdef012345"),
       ).toBe("abcdef012345");
       expect(__testables.targetHashFragment("garbage")).toBe("");
+    });
+
+    it("targetHashFragment isolates the ranges hash when a |domains: segment follows", () => {
+      // RFC 0001 Amendment A.2: a `|domains:<short>` segment now trails
+      // the ranges hash. The fragment must stop at the next `|` so
+      // snapshot validation does not false-fail with policy_version_mismatch.
+      expect(
+        __testables.targetHashFragment(
+          "engine:1.0.0|ranges:abcdef012345|domains:0011223344ff",
+        ),
+      ).toBe("abcdef012345");
+      expect(
+        __testables.targetHashFragment(
+          "engine:1.0.0|ranges:empty|domains:empty",
+        ),
+      ).toBe("empty");
     });
 
     it("validateRangeSnapshot returns the rebuilt rangeset on the happy path", () => {

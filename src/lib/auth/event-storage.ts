@@ -6,8 +6,9 @@ import { z } from "zod";
 import { withTransaction } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
 import { eventKeyString } from "../event-key";
-import type { RangeSet } from "../redaction";
+import type { OwnedDomainSet, RangeSet } from "../redaction";
 import {
+  EMPTY_OWNED_DOMAIN_SET,
   ENGINE_VERSION,
   RedactionInjectivityError,
   readMapWithLock,
@@ -65,6 +66,12 @@ export interface StoreApprovedEventsParams {
   plaintext: Buffer;
   /** Customer's registered public IP ranges (loaded by the route). */
   ranges: RangeSet;
+  /**
+   * Customer's registered owned-domain suffixes (loaded by the route,
+   * RFC 0001 Amendment A.2). Optional: defaults to an empty set
+   * (redact no domains) so callers not yet wired keep prior behaviour.
+   */
+  ownedDomains?: OwnedDomainSet;
 }
 
 /** Override hooks for tests. */
@@ -154,6 +161,7 @@ export async function storeApprovedEvents(
           payload: event,
           existingMap: existing ?? {},
           ranges: params.ranges,
+          ownedDomains: params.ownedDomains ?? EMPTY_OWNED_DOMAIN_SET,
           engineVersion: ENGINE_VERSION,
         });
       } catch (err) {

@@ -71,6 +71,31 @@ describe("buildReportTokenMap", () => {
     );
   });
 
+  it("folds DOMAIN tokens into the report namespace (RFC 0001 Amendment A.2)", () => {
+    const out = buildReportTokenMap(
+      [{ analysis: "Beacon to <<REDACTED_DOMAIN_E1_001>>." }],
+      [{ analysis: "DNS for <<REDACTED_DOMAIN_002>>." }],
+    );
+    expect(out.rewrittenStoryTexts[0]).toBe(
+      "Beacon to <<REDACTED_DOMAIN_R1_001>>.",
+    );
+    expect(out.rewrittenEventTexts[0]).toBe(
+      "DNS for <<REDACTED_DOMAIN_R2_001>>.",
+    );
+    expect(out.refs[0].tokens).toEqual([
+      {
+        reportToken: "<<REDACTED_DOMAIN_R1_001>>",
+        sourceToken: "<<REDACTED_DOMAIN_E1_001>>",
+      },
+    ]);
+    expect(out.refs[1].tokens).toEqual([
+      {
+        reportToken: "<<REDACTED_DOMAIN_R2_001>>",
+        sourceToken: "<<REDACTED_DOMAIN_002>>",
+      },
+    ]);
+  });
+
   it("maps a recurring source token to one stable report token per leaf", () => {
     const out = buildReportTokenMap(
       [{ analysis: "<<REDACTED_IP_E1_009>> twice: <<REDACTED_IP_E1_009>>" }],

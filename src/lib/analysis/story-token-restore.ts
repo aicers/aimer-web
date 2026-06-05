@@ -23,7 +23,7 @@
 
 import type { RedactionMap } from "@/lib/redaction";
 
-const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/g;
+const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/g;
 
 /**
  * Substitute every `<<REDACTED_KIND_E{i}_NNN>>` token in `text` with

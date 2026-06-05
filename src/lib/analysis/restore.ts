@@ -12,7 +12,7 @@
 
 import type { RedactionMap } from "@/lib/redaction";
 
-const REDACTED_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/g;
+const REDACTED_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/g;
 
 /**
  * Substitute every `<<REDACTED_*_NNN>>` token in `text` with the

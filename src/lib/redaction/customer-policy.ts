@@ -1,15 +1,17 @@
 import type { Pool, PoolClient } from "pg";
-// Import directly from `engine` + `ranges` rather than the `./index`
-// barrel — the barrel pulls in `envelope-adapter.ts` (a `server-only`
-// module) which crashes Vitest unit tests running against mocked
-// pools.
+// Import directly from `engine` + `ranges` + `domains` rather than the
+// `./index` barrel — the barrel pulls in `envelope-adapter.ts` (a
+// `server-only` module) which crashes Vitest unit tests running against
+// mocked pools.
+import { buildOwnedDomainSet } from "./domains";
 import { computePolicyVersion, ENGINE_VERSION } from "./engine";
 import { buildRangeSet } from "./ranges";
 
 /**
- * Load the customer's registered CIDRs from `auth_db` and return the
- * composite policy version string in the format
- * `engine:<semver>|ranges:<sha256-short>`. Used by:
+ * Load the customer's registered CIDRs + owned domains from `auth_db`
+ * and return the composite policy version string in the format
+ * `engine:<semver>|ranges:<sha256-short>|domains:<sha256-short>`. Used
+ * by:
  *
  *   - `/api/admin/customers/[id]/redaction-jobs/preview` to populate
  *     `target_policy_version` returned to the modal.
@@ -27,5 +29,16 @@ export async function computeCustomerPolicyVersion(
     [customerId],
   );
   const ranges = buildRangeSet(rows.map((r) => r.cidr));
-  return computePolicyVersion(ENGINE_VERSION, ranges);
+  const { rows: domainRows } = await authClient.query<{
+    owned_domain_suffix: string;
+  }>(
+    `SELECT owned_domain_suffix
+     FROM customer_owned_domains
+     WHERE customer_id = $1`,
+    [customerId],
+  );
+  const ownedDomains = buildOwnedDomainSet(
+    domainRows.map((r) => r.owned_domain_suffix),
+  );
+  return computePolicyVersion(ENGINE_VERSION, ranges, ownedDomains);
 }

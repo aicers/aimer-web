@@ -52,4 +52,22 @@ describe("restoreStoryAnalysisTokens", () => {
       "From 10.0.0.1 to u@example.com.",
     );
   });
+
+  it("restores story-scope DOMAIN tokens (RFC 0001 Amendment A.2)", () => {
+    const maps = new Map<number, RedactionMap>([
+      [
+        1,
+        {
+          "<<REDACTED_DOMAIN_001>>": {
+            value: "vpn.customer.example",
+            kind: "domain",
+          },
+        },
+      ],
+    ]);
+    const text = "Beacon to <<REDACTED_DOMAIN_E1_001>>.";
+    expect(restoreStoryAnalysisTokens(text, maps)).toBe(
+      "Beacon to vpn.customer.example.",
+    );
+  });
 });

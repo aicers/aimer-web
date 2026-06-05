@@ -12,6 +12,7 @@ import { AnalyzeEventDocument } from "@/lib/graphql/__generated__/analyze-event"
 import { graphqlRequest } from "@/lib/graphql/client";
 import {
   ENGINE_VERSION,
+  loadCustomerOwnedDomains,
   loadCustomerRanges,
   readMapWithLock,
   redact,
@@ -209,6 +210,7 @@ interface IngestAndRedactParams {
   eventData: Record<string, unknown>;
   schemaVersion: string;
   ranges: import("@/lib/redaction").RangeSet;
+  ownedDomains: import("@/lib/redaction").OwnedDomainSet;
   accountId: string;
 }
 
@@ -242,6 +244,7 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       payload: params.eventData,
       existingMap: existing ?? {},
       ranges: params.ranges,
+      ownedDomains: params.ownedDomains,
       engineVersion: ENGINE_VERSION,
     });
     if (existing === null || out.mapChanged) {
@@ -458,13 +461,19 @@ function emitTtpDropAuditRows(args: {
 
 function computeAnalysisPolicyVersion(
   ranges: import("@/lib/redaction").RangeSet,
+  ownedDomains: import("@/lib/redaction").OwnedDomainSet,
 ): string {
   const json = JSON.stringify(ranges.normalisedCidrs);
   const short =
     ranges.normalisedCidrs.length === 0
       ? "empty"
       : createHash("sha256").update(json).digest("hex").slice(0, 12);
-  return `engine:${ENGINE_VERSION}|ranges:${short}`;
+  const domainsJson = JSON.stringify(ownedDomains.normalisedSuffixes);
+  const domainsShort =
+    ownedDomains.normalisedSuffixes.length === 0
+      ? "empty"
+      : createHash("sha256").update(domainsJson).digest("hex").slice(0, 12);
+  return `engine:${ENGINE_VERSION}|ranges:${short}|domains:${domainsShort}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +559,7 @@ export async function runAnalyzeFlow(
 
   const customerPool = getCustomerRuntimePool(customer.id);
   const ranges = await loadCustomerRanges(authPool, customer.id);
+  const ownedDomains = await loadCustomerOwnedDomains(authPool, customer.id);
 
   // Single concrete `lang` value used wherever the BFF needs to write
   // or look up a row keyed on `lang`. Absent caller `lang` collapses
@@ -637,6 +647,7 @@ export async function runAnalyzeFlow(
       eventData: params.eventData,
       schemaVersion,
       ranges,
+      ownedDomains,
       accountId: params.accountId,
     });
     redactedEvent = ingest.redacted;
@@ -739,8 +750,16 @@ export async function runAnalyzeFlow(
     };
   }
 
-  const scan = scanHallucinations(aimerResponse.analysis, mergedMap, ranges);
-  if (scan.counts.ip + scan.counts.email + scan.counts.mac > 0) {
+  const scan = scanHallucinations(
+    aimerResponse.analysis,
+    mergedMap,
+    ranges,
+    ownedDomains,
+  );
+  if (
+    scan.counts.ip + scan.counts.email + scan.counts.mac + scan.counts.domain >
+    0
+  ) {
     void auditLog({
       ...auditBase,
       action: "ai_analysis.hallucination_detected",
@@ -754,7 +773,10 @@ export async function runAnalyzeFlow(
     });
   }
 
-  const analysisPolicyVersion = computeAnalysisPolicyVersion(ranges);
+  const analysisPolicyVersion = computeAnalysisPolicyVersion(
+    ranges,
+    ownedDomains,
+  );
   const priorityTier = computePriorityTier(
     aimerResponse.severityScore,
     aimerResponse.likelihoodScore,
