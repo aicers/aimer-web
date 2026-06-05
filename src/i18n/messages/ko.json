@@ -595,7 +595,7 @@
       "loading": "로딩 중",
       "storyLabel": "스토리 {storyId}",
       "eventLabel": "이벤트 {eventKey}",
-      "scorePair": "S {severity} · L {likelihood}",
+      "scorePair": "심각도 {severity} · 가능성 {likelihood}",
       "partialFailure": "일부 고객에 연결하지 못해 아래 집계와 목록에서 제외되었습니다: <names>{customers}</names>. 잠시 후 다시 시도하세요.",
       "reportsEmpty": "아직 범위 내 보고서가 없습니다.",
       "storiesEmpty": "아직 범위 내 위협 스토리가 없습니다.",
