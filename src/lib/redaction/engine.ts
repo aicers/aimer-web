@@ -18,7 +18,11 @@
 //     into ingestion routes (#251).
 
 import { createHash } from "node:crypto";
-import { EMPTY_OWNED_DOMAIN_SET, shouldRedactOwnedDomain } from "./domains";
+import {
+  domainCandidateRegex,
+  EMPTY_OWNED_DOMAIN_SET,
+  shouldRedactOwnedDomain,
+} from "./domains";
 import {
   isPrivateIPv4,
   isPrivateIPv6,
@@ -64,18 +68,12 @@ const IPV4_RE =
 const IPV6_RE =
   /(?<![A-Za-z0-9:.])[A-Fa-f0-9]{0,4}(?::[A-Fa-f0-9]{0,4}){2,}(?![A-Za-z0-9:.])/g;
 
-// Domain / FQDN candidate — at least two dot-separated labels ending in
-// a TLD-shaped label. Unicode letters/digits are allowed so IDN
-// U-labels match; `normalizeDomain` folds them to punycode and rejects
-// non-hostname shapes (e.g. dotted numerics) before the owned-suffix
-// test. The leading boundary forbids characters that can sit inside a
-// hostname so we never start mid-label; the trailing boundary excludes
-// the same set minus `.` so a trailing FQDN root dot does not block the
-// match. Runs LAST in `redactString` (after the IP passes), so by the
-// time it executes every IP literal is already a token and cannot be
-// mis-matched as a domain.
-const DOMAIN_RE =
-  /(?<![\p{L}\p{N}._-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}\p{N}-]{2,}(?![\p{L}\p{N}_-])/gu;
+// Domain / FQDN candidate. Defined once in `domains.ts` and shared with
+// the story/report leak scanners so the redaction pass and the
+// hallucination scan agree on what a hostname looks like. Runs LAST in
+// `redactString` (after the IP passes), so by the time it executes every
+// IP literal is already a token and cannot be mis-matched as a domain.
+const DOMAIN_RE = domainCandidateRegex();
 
 const TOKEN_PREFIX_BY_KIND: Record<EntityKind, string> = {
   ip: "<<REDACTED_IP_",

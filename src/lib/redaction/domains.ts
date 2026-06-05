@@ -47,6 +47,55 @@ export const EMPTY_OWNED_DOMAIN_SET: OwnedDomainSet = {
   normalisedSuffixes: [],
 };
 
+// Domain / FQDN candidate — at least two dot-separated labels ending in
+// a TLD-shaped label. Unicode letters/digits are allowed so IDN
+// U-labels match; `normalizeDomain` folds them to punycode and rejects
+// non-hostname shapes (dotted numerics, version strings) before the
+// owned-suffix test. The leading/trailing boundaries forbid characters
+// that can sit inside a hostname so a match never starts/ends mid-label.
+// This is the single source of truth for the engine's redaction pass
+// (`engine.ts`) AND the story/report leak scanners, so a customer-owned
+// domain echoed verbatim by the LLM is detected with the exact same
+// shape the engine would have redacted.
+const DOMAIN_CANDIDATE_PATTERN =
+  /(?<![\p{L}\p{N}._-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?\.)+[\p{L}\p{N}-]{2,}(?![\p{L}\p{N}_-])/gu;
+
+/**
+ * A fresh global FQDN-candidate regex. Returns a new instance each call
+ * so concurrent `exec` / `matchAll` loops never share `lastIndex`.
+ */
+export function domainCandidateRegex(): RegExp {
+  return new RegExp(
+    DOMAIN_CANDIDATE_PATTERN.source,
+    DOMAIN_CANDIDATE_PATTERN.flags,
+  );
+}
+
+/**
+ * Find every FQDN candidate in `text` that the customer's owned-domain
+ * policy would redact — i.e. each substring `shouldRedactOwnedDomain`
+ * accepts. External domains (an attacker C2 host, an unrelated vendor)
+ * are skipped, mirroring the engine's external-domain pass-through. An
+ * empty owned-domain set matches nothing.
+ *
+ * Used by the story/report hallucination scanners to flag an owned
+ * domain the LLM echoed in plaintext (RFC 0001 Amendment A.2), parallel
+ * to how the IP-leak scan flags an address the engine would have
+ * redacted. Returns matches in document order, including duplicates, so
+ * callers can report one leak per occurrence.
+ */
+export function findOwnedDomainLeaks(
+  text: string,
+  set: OwnedDomainSet,
+): string[] {
+  if (set.normalisedSuffixes.length === 0) return [];
+  const leaks: string[] = [];
+  for (const m of text.matchAll(domainCandidateRegex())) {
+    if (shouldRedactOwnedDomain(m[0], set)) leaks.push(m[0]);
+  }
+  return leaks;
+}
+
 /**
  * Build an `OwnedDomainSet` from raw suffix strings. Invalid/empty
  * suffixes are silently skipped — the admin validation layer is the

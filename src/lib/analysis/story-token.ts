@@ -32,13 +32,17 @@
 import "server-only";
 
 import {
+  EMPTY_OWNED_DOMAIN_SET,
+  findOwnedDomainLeaks,
+} from "../redaction/domains";
+import {
   isPrivateIPv4,
   isPrivateIPv6,
   parseIPv4,
   parseIPv6,
   shouldRedactPublicIP,
 } from "../redaction/ranges";
-import type { RangeSet } from "../redaction/types";
+import type { OwnedDomainSet, RangeSet } from "../redaction/types";
 
 const STORY_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_([0-9]+)>>/g;
 const EVENT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_([0-9]+)>>/g;
@@ -222,11 +226,19 @@ export interface ScanResult {
  * — otherwise the LLM faithfully echoing such an input would
  * permanently fail the job for any customer that narrowed their
  * redaction scope.
+ *
+ * Owned-domain leak detection mirrors the same policy (RFC 0001
+ * Amendment A.2): a hostname is flagged only if it matches the
+ * customer's `ownedDomains` suffix set, exactly the domains the engine
+ * would have tokenised on the input side. External domains (an attacker
+ * C2 host, an unrelated vendor) pass through, so the LLM may name them
+ * freely. An empty owned-domain set flags nothing.
  */
 export function scanStoryAnalysisForLeaks(
   analysisText: string,
   allowedTokens: ReadonlySet<string>,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet = EMPTY_OWNED_DOMAIN_SET,
 ): ScanResult {
   const leaks: AnalysisLeak[] = [];
   // Token strings already classified by a kind-specific check below, so
@@ -311,6 +323,13 @@ export function scanStoryAnalysisForLeaks(
     if (isPrivateIPv6(bytes) || shouldRedactPublicIP(bytes, 6, ranges)) {
       leaks.push({ kind: "plaintext_pii", match: m[0] });
     }
+  }
+
+  // Owned-domain leak: a customer-owned hostname echoed verbatim instead
+  // of as a token. External domains are skipped by `findOwnedDomainLeaks`,
+  // mirroring the engine's external-domain pass-through.
+  for (const match of findOwnedDomainLeaks(analysisText, ownedDomains)) {
+    leaks.push({ kind: "plaintext_pii", match });
   }
 
   return { leaks, hasLeak: leaks.length > 0 };

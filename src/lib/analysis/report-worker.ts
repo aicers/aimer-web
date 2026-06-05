@@ -40,6 +40,7 @@ import {
 import { TranslateReportDocument } from "@/lib/graphql/__generated__/translate-report";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
   buildCanonicalPinnedReportInput,
@@ -316,6 +317,7 @@ interface ProcessOptions {
   callTranslateReport?: typeof callTranslateReport;
   resolveCustomerPool?: (customerId: string) => Pool;
   loadRanges?: typeof loadCustomerRanges;
+  loadOwnedDomains?: typeof loadCustomerOwnedDomains;
 }
 
 export async function processReportJob(
@@ -700,11 +702,15 @@ async function runNativeGeneration(args: {
     opts.authPool,
     job.customer_id,
   );
+  const ownedDomains = await (
+    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
+  )(opts.authPool, job.customer_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,
     built.tokenRefs,
     ranges,
+    ownedDomains,
   );
   if (leakScan.hasLeak) {
     void auditLog({
@@ -941,8 +947,16 @@ async function runTranslation(args: {
     opts.authPool,
     job.customer_id,
   );
+  const ownedDomains = await (
+    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
+  )(opts.authPool, job.customer_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
-  const leakScan = scanReportAnalysisForLeaks(reportText, tokenRefs, ranges);
+  const leakScan = scanReportAnalysisForLeaks(
+    reportText,
+    tokenRefs,
+    ranges,
+    ownedDomains,
+  );
   if (leakScan.hasLeak) {
     void auditLog({
       ...auditBase,

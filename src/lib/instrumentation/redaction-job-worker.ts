@@ -237,6 +237,17 @@ function shortRangesHash(normalisedCidrs: readonly string[]): string {
   return createHash("sha256").update(json).digest("hex").slice(0, 12);
 }
 
+// Mirror `computePolicyVersion`'s `domains:` hashing exactly (engine.ts):
+// the SHA-256 (first 12 hex) of the sorted normalised suffixes as JSON,
+// with the fixed `empty` sentinel for an empty set. Used to validate the
+// live owned-domain set against the `|domains:` fragment of the target
+// policy version before re-redaction.
+function shortDomainsHash(normalisedSuffixes: readonly string[]): string {
+  if (normalisedSuffixes.length === 0) return "empty";
+  const json = JSON.stringify(normalisedSuffixes);
+  return createHash("sha256").update(json).digest("hex").slice(0, 12);
+}
+
 function rangeSetFromSnapshot(snapshot: RangeSnapshot): RangeSet {
   return buildRangeSet(snapshot.cidrs.map((c) => c.cidr));
 }
@@ -271,6 +282,19 @@ function targetHashFragment(targetPolicyVersion: string): string {
   return nextPipe === -1 ? after : after.slice(0, nextPipe);
 }
 
+// Isolate the `domains:` hash from a target policy version. Returns
+// `null` for a version with no `|domains:` segment — i.e. one stamped
+// before RFC 0001 Amendment A.2 — so the worker can fall back to "no
+// domain validation" for legacy jobs rather than treating the absence
+// as a drift.
+function targetDomainsFragment(targetPolicyVersion: string): string | null {
+  const idx = targetPolicyVersion.indexOf("|domains:");
+  if (idx === -1) return null;
+  const after = targetPolicyVersion.slice(idx + "|domains:".length);
+  const nextPipe = after.indexOf("|");
+  return nextPipe === -1 ? after : after.slice(0, nextPipe);
+}
+
 function validateRangeSnapshot(job: JobRow): RangeSet {
   if (!job.range_snapshot) {
     throw new SnapshotError("range_snapshot_missing");
@@ -298,6 +322,46 @@ class SnapshotError extends Error {
     super(code);
     this.code = code;
   }
+}
+
+// Load the customer's current owned domains and validate them against
+// the target policy version's `|domains:` fragment before any row is
+// re-redacted (RFC 0001 Amendment A.2).
+//
+// The retroactive job is range-keyed and carries no domain snapshot
+// (pre-release stance §A.4 — domains are never re-redacted on their own).
+// But `processItem` reconstructs the FULL plaintext payload — including
+// any `<<REDACTED_DOMAIN_NNN>>` token — and then re-redacts it with this
+// live owned-domain set. If that set has drifted from the one the target
+// policy version describes, two things go wrong: (1) the row is stamped
+// with a `domains:` hash that does not describe the set actually used,
+// and (2) a previously-tokenised owned domain restored by
+// `substituteTokens` may pass back through as plaintext. Failing the job
+// on drift — before processing any item — keeps the live set used for
+// re-redaction consistent with the stamped version and prevents the
+// leak. Legacy targets with no `|domains:` segment skip validation and
+// use the live set as-is (additive, pre-Amendment-A.2 behaviour).
+async function loadAndValidateOwnedDomains(
+  authClient: PoolClient,
+  job: Pick<JobRow, "customer_id" | "target_policy_version">,
+): Promise<OwnedDomainSet> {
+  const res = await authClient.query<{ owned_domain_suffix: string }>(
+    `SELECT owned_domain_suffix
+       FROM customer_owned_domains
+      WHERE customer_id = $1`,
+    [job.customer_id],
+  );
+  const ownedDomains = buildOwnedDomainSet(
+    res.rows.map((r) => r.owned_domain_suffix),
+  );
+  const target = targetDomainsFragment(job.target_policy_version);
+  if (
+    target !== null &&
+    shortDomainsHash(ownedDomains.normalisedSuffixes) !== target
+  ) {
+    throw new SnapshotError("domain_policy_drift");
+  }
+  return ownedDomains;
 }
 
 // Compute `completed_at - running_started_at` strictly from persisted
@@ -1515,8 +1579,14 @@ async function runJobInner(
   deps: WorkerDeps,
 ): Promise<void> {
   let ranges: RangeSet;
+  let ownedDomains: OwnedDomainSet;
   try {
     ranges = validateRangeSnapshot(job);
+    // Owned domains are validated against the target version's
+    // `|domains:` fragment here, in the same guarded block, so a drift
+    // fails the job through the existing snapshot-failure path before
+    // any row is re-redacted (RFC 0001 Amendment A.2).
+    ownedDomains = await loadAndValidateOwnedDomains(authClient, job);
   } catch (err) {
     const code =
       err instanceof SnapshotError ? err.code : "range_snapshot_error";
@@ -1670,23 +1740,11 @@ async function runJobInner(
   // emit but before the first counter checkpoint would re-fire the audit
   // on the next recovery pass.
 
-  // Load the customer's current owned domains so re-redacted rows that
-  // carry a `<<REDACTED_DOMAIN_NNN>>` token round-trip via the existing
-  // map (RFC 0001 Amendment A.2). The retroactive job is range-keyed;
-  // domains are not part of snapshot validation (pre-release §A.4), but
-  // they must be threaded so restored domain plaintext does not leak
-  // back into the stored payload.
-  const ownedDomainsRes = await authClient.query<{
-    owned_domain_suffix: string;
-  }>(
-    `SELECT owned_domain_suffix
-       FROM customer_owned_domains
-      WHERE customer_id = $1`,
-    [job.customer_id],
-  );
-  const ownedDomains = buildOwnedDomainSet(
-    ownedDomainsRes.rows.map((r) => r.owned_domain_suffix),
-  );
+  // `ownedDomains` was loaded and drift-validated above so re-redacted
+  // rows that carry a `<<REDACTED_DOMAIN_NNN>>` token round-trip via the
+  // existing map (RFC 0001 Amendment A.2): `substituteTokens` restores
+  // the token to plaintext and `processItem` re-tokenises it against this
+  // validated set, so the restored domain never leaks into stored text.
 
   let outcome: ProcessOutcome;
   try {
@@ -1866,9 +1924,12 @@ export async function runOnceForTests(deps?: WorkerDeps): Promise<void> {
 export const __testables = {
   substituteTokens,
   shortRangesHash,
+  shortDomainsHash,
   snapshotFromCidrs,
   targetHashFragment,
+  targetDomainsFragment,
   validateRangeSnapshot,
+  loadAndValidateOwnedDomains,
   rowToCandidate,
   normaliseJobRow,
   validatePrimaryKey,

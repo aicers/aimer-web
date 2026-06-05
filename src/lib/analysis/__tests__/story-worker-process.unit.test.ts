@@ -162,6 +162,12 @@ const emptyRangesLoader = async () => ({
   ranges: [],
 });
 
+// Default test stub for the owned-domain loader (RFC 0001 Amendment
+// A.2). Same rationale as `emptyRangesLoader`: the scripted auth pool
+// must not see the production `customer_owned_domains` SELECT. Owned-
+// domain leak behaviour has dedicated coverage in story-token.unit.test.
+const emptyDomainsLoader = async () => ({ normalisedSuffixes: [] });
+
 describe("processStoryJob — happy path", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -211,6 +217,7 @@ describe("processStoryJob — happy path", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     expect(llmCalls).toHaveLength(1);
@@ -298,6 +305,7 @@ describe("processStoryJob — happy path", () => {
         callAnalyzeStory: callAnalyzeStory as never,
         resolveCustomerPool: () => customerPool as never,
         loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
       },
     );
 
@@ -348,6 +356,7 @@ describe("processStoryJob — happy path", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     // The customer-DB result INSERT still ran (the work was done)...
@@ -408,6 +417,7 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
       callAnalyzeStory: (async () => goodAimerResponse()) as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
     const insertCall = customerPool.__calls.find((c) =>
       c.sql.includes("INSERT INTO story_analysis_result"),
@@ -459,6 +469,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     const insertCall = customerPool.__calls.find((c) =>
@@ -499,6 +510,7 @@ describe("processStoryJob — known_ioc_hit floor wiring (#330)", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     const insertCall = customerPool.__calls.find((c) =>
@@ -717,6 +729,7 @@ describe("processStoryJob — enrichment precondition", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     // Not ready → no LLM call, job requeued (not failed), attempts untouched.
@@ -756,6 +769,7 @@ describe("processStoryJob — enrichment precondition", () => {
       }),
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
@@ -908,6 +922,7 @@ describe("processStoryJob — hallucination scan", () => {
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
       loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
     });
 
     expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
