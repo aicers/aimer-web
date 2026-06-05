@@ -62,8 +62,8 @@ export default async function ReportsPage({ params, searchParams }: PageProps) {
 
       <PartialFailureNotice
         failed={reports.failedCustomers}
-        introLabel={tA("overview.partialFailureIntro")}
-        retryLabel={tA("overview.partialFailureRetry")}
+        locale={locale}
+        t={tA}
       />
 
       {reports.items.length === 0 ? (

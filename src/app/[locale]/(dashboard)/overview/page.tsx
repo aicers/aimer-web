@@ -95,8 +95,8 @@ export default async function OverviewPage({
           stories.failedCustomers,
           events.failedCustomers,
         )}
-        introLabel={tA("overview.partialFailureIntro")}
-        retryLabel={tA("overview.partialFailureRetry")}
+        locale={locale}
+        t={tA}
       />
 
       <div className="space-y-8">

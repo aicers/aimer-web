@@ -101,10 +101,13 @@ function PeriodSection({
   const [latest, ...rest] = group.items;
   return (
     <section
-      aria-label={`period-${group.period}`}
+      aria-labelledby={`period-heading-${group.period}`}
       data-testid={`period-section-${group.period}`}
     >
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <h2
+        id={`period-heading-${group.period}`}
+        className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground"
+      >
         {periodLabels[group.period]}
       </h2>
       <BucketCard

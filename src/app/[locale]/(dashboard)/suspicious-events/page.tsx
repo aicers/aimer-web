@@ -60,8 +60,8 @@ export default async function SuspiciousEventsPage({
 
       <PartialFailureNotice
         failed={events.failedCustomers}
-        introLabel={tA("overview.partialFailureIntro")}
-        retryLabel={tA("overview.partialFailureRetry")}
+        locale={locale}
+        t={tA}
       />
 
       {events.items.length === 0 ? (

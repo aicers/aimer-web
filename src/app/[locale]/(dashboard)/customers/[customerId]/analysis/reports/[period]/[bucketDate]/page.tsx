@@ -216,6 +216,7 @@ export default async function ReportDetailPage({
       referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
       currentQuery={currentQuery}
       periodLabels={periodLabels}
+      navLabel={tA("reportDetail.periodNavLabel")}
     />
   );
 
@@ -262,6 +263,7 @@ export default async function ReportDetailPage({
   const switcher = (
     <ReportLanguageSwitcher
       label={t("languageSwitcherLabel")}
+      navLabel={tA("reportDetail.languageNavLabel")}
       basePath={basePath}
       currentQuery={currentQuery}
       currentLocale={shownLocale}
@@ -340,7 +342,7 @@ export default async function ReportDetailPage({
         <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
             <PriorityBadge tier={data.priorityTier} />
-            <TtpChipRow tags={data.ttpTags} />
+            <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
           </div>
         </Field>
         <Field label={tA("fields.aggregateScores")}>
@@ -486,13 +488,15 @@ function PriorityBadge({ tier }: { tier: PriorityTier }) {
 
 function TtpChipRow({
   tags,
+  ariaLabel,
 }: {
   tags: ReadonlyArray<{ id: string; name: string | null }>;
+  ariaLabel: string;
 }) {
   if (tags.length === 0) return null;
   return (
     <ul
-      aria-label="ttp-tags"
+      aria-label={ariaLabel}
       data-testid="ttp-tags"
       className="flex flex-wrap gap-1"
     >

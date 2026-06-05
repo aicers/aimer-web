@@ -503,7 +503,9 @@
       "sectionStoryHighlights": "Story highlights",
       "sectionNotableEvents": "Notable events",
       "sectionSuspiciousEventTrends": "Suspicious-event trends",
-      "sectionPeriodOutlook": "Period outlook"
+      "sectionPeriodOutlook": "Period outlook",
+      "periodNavLabel": "Report period",
+      "languageNavLabel": "Report language"
     },
     "reportIndex": {
       "subtitle": "Available report buckets for this customer. Open a bucket to read its report.",
@@ -594,8 +596,7 @@
       "storyLabel": "Story {storyId}",
       "eventLabel": "Event {eventKey}",
       "scorePair": "S {severity} · L {likelihood}",
-      "partialFailureIntro": "Some customers could not be reached and are excluded from the counts and list below:",
-      "partialFailureRetry": ". Try again shortly.",
+      "partialFailure": "Some customers could not be reached and are excluded from the counts and list below: <names>{customers}</names>. Try again shortly.",
       "reportsEmpty": "No reports in scope yet.",
       "storiesEmpty": "No threat stories in scope yet.",
       "eventsEmpty": "No suspicious events in scope yet.",

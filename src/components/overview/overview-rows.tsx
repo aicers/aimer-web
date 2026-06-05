@@ -7,6 +7,7 @@
 // show their severity/likelihood scores.
 
 import Link from "next/link";
+import type { useTranslations } from "next-intl";
 import type {
   EventOverviewRow,
   FailedCustomer,
@@ -14,6 +15,8 @@ import type {
   StoryOverviewRow,
 } from "@/lib/analysis/cross-customer-overview";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
+
+type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
 const TIER_CLASSES: Record<PriorityTier, string> = {
   CRITICAL: "border-rose-500 bg-rose-100 text-rose-900",
@@ -193,29 +196,36 @@ export function SurfaceEmptyState({
 
 // Partial fan-out failure (#391): one unreachable customer DB must not zero
 // the counts nor blank the page — surface which customer degraded instead.
-// The intro/retry copy is injected pre-translated by the (server-component)
-// caller so this stays a synchronous presentational component.
+// The `analysis` translator and active locale are injected by the
+// (server-component) caller so this stays a synchronous presentational
+// component while still owning the locale-aware customer-name list.
 export function PartialFailureNotice({
   failed,
-  introLabel,
-  retryLabel,
+  locale,
+  t,
 }: {
   failed: FailedCustomer[];
-  introLabel: string;
-  retryLabel: string;
+  locale: string;
+  t: AnalysisTranslations;
 }) {
   if (failed.length === 0) return null;
+  // Join the degraded customers per locale (e.g. EN "A and B", KO "A 및 B")
+  // and feed the whole list into one ICU message via `{customers}` rather
+  // than concatenating translated fragments around a fixed comma separator.
+  const customers = new Intl.ListFormat(locale, {
+    style: "long",
+    type: "conjunction",
+  }).format(failed.map((f) => f.name));
   return (
     <div
       role="alert"
       data-testid="overview-partial-failure"
       className="mb-4 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
     >
-      {introLabel}{" "}
-      <span className="font-medium">
-        {failed.map((f) => f.name).join(", ")}
-      </span>
-      {retryLabel}
+      {t.rich("overview.partialFailure", {
+        customers,
+        names: (chunks) => <span className="font-medium">{chunks}</span>,
+      })}
     </div>
   );
 }

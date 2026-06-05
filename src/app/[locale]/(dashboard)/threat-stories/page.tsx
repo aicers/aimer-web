@@ -61,8 +61,8 @@ export default async function ThreatStoriesPage({
 
       <PartialFailureNotice
         failed={stories.failedCustomers}
-        introLabel={tA("overview.partialFailureIntro")}
-        retryLabel={tA("overview.partialFailureRetry")}
+        locale={locale}
+        t={tA}
       />
 
       {stories.items.length === 0 ? (

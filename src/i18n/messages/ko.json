@@ -503,7 +503,9 @@
       "sectionStoryHighlights": "스토리 하이라이트",
       "sectionNotableEvents": "주요 이벤트",
       "sectionSuspiciousEventTrends": "의심 이벤트 동향",
-      "sectionPeriodOutlook": "기간 전망"
+      "sectionPeriodOutlook": "기간 전망",
+      "periodNavLabel": "보고서 기간",
+      "languageNavLabel": "보고서 언어"
     },
     "reportIndex": {
       "subtitle": "이 고객의 사용 가능한 보고서 버킷입니다. 버킷을 열어 보고서를 확인하세요.",
@@ -594,8 +596,7 @@
       "storyLabel": "스토리 {storyId}",
       "eventLabel": "이벤트 {eventKey}",
       "scorePair": "S {severity} · L {likelihood}",
-      "partialFailureIntro": "일부 고객에 연결하지 못해 아래 집계와 목록에서 제외되었습니다:",
-      "partialFailureRetry": ". 잠시 후 다시 시도하세요.",
+      "partialFailure": "일부 고객에 연결하지 못해 아래 집계와 목록에서 제외되었습니다: <names>{customers}</names>. 잠시 후 다시 시도하세요.",
       "reportsEmpty": "아직 범위 내 보고서가 없습니다.",
       "storiesEmpty": "아직 범위 내 위협 스토리가 없습니다.",
       "eventsEmpty": "아직 범위 내 의심 이벤트가 없습니다.",

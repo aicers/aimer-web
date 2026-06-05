@@ -29,6 +29,8 @@ interface Props {
    * the (server-component) caller so this stays a synchronous component.
    */
   periodLabels: Record<PeriodKind, string>;
+  /** Localized accessible name for the tab-bar navigation landmark. */
+  navLabel: string;
 }
 
 const TAB_PERIODS: readonly PeriodKind[] = [
@@ -53,13 +55,14 @@ export function ReportPeriodTabs({
   referenceDate,
   currentQuery,
   periodLabels,
+  navLabel,
 }: Props) {
   // Preserve (and normalize) the current variant params on every tab link.
   const qs = mergeQuery(currentQuery, {});
   const query = qs ? `?${qs}` : "";
   const base = `/${locale}/customers/${customerId}/analysis/reports`;
   return (
-    <nav aria-label="report-period-tabs" data-testid="report-period-tabs">
+    <nav aria-label={navLabel} data-testid="report-period-tabs">
       <ul className="flex flex-wrap gap-1 border-b border-border">
         {TAB_PERIODS.map((period) => {
           const label = periodLabels[period];
