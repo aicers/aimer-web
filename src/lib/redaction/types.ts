@@ -5,15 +5,15 @@
 // (envelope-adapter.ts) converts a RedactionMap to/from the
 // (ciphertext, wrapped_dek) pair stored in `event_redaction_map`.
 
-export type EntityKind = "ip" | "email" | "mac";
+export type EntityKind = "ip" | "email" | "mac" | "domain";
 
 /**
  * The decrypted form of one `event_redaction_map.ciphertext` payload.
  *
  * Token strings look like `<<REDACTED_IP_001>>` /
- * `<<REDACTED_EMAIL_001>>` / `<<REDACTED_MAC_001>>`. The map is
- * append-only per the shared-map invariants in
- * RFC 0001 §"Shared map across ingestion paths".
+ * `<<REDACTED_EMAIL_001>>` / `<<REDACTED_MAC_001>>` /
+ * `<<REDACTED_DOMAIN_001>>`. The map is append-only per the shared-map
+ * invariants in RFC 0001 §"Shared map across ingestion paths".
  */
 export type RedactionMap = Record<string, { kind: EntityKind; value: string }>;
 
@@ -37,6 +37,19 @@ export interface RangeSet {
   ranges: ParsedRange[];
 }
 
+/**
+ * A customer's registered owned-domain suffixes (RFC 0001 Amendment
+ * A.2), normalised (lowercased, leading/trailing dots stripped,
+ * IDN-folded to punycode) and sorted. The sorted list is the input to
+ * the `policy_version` `domains:` hash. Parallel to `RangeSet`: an
+ * empty set redacts no domains, mirroring an empty `RangeSet` passing
+ * all public IPs through.
+ */
+export interface OwnedDomainSet {
+  /** Normalised owned-domain suffixes, sorted, used for policy_version hashing. */
+  normalisedSuffixes: string[];
+}
+
 export interface RedactInput {
   /** The JSON value to redact (object, array, scalar). */
   payload: unknown;
@@ -46,6 +59,12 @@ export interface RedactInput {
    */
   existingMap: RedactionMap;
   ranges: RangeSet;
+  /**
+   * Customer-owned domain suffixes (RFC 0001 Amendment A.2). Optional:
+   * defaults to an empty set (redact no domains) so payload-redaction
+   * paths not yet wired to load domains compile and behave as before.
+   */
+  ownedDomains?: OwnedDomainSet;
   /** Semantic version of the engine code (regex / IP-range logic / token format). */
   engineVersion: string;
 }
@@ -54,7 +73,7 @@ export interface RedactOutput {
   redacted: unknown;
   /** Merged map: existing entries preserved + any new tokens appended. */
   mergedMap: RedactionMap;
-  /** Composite `engine:<semver>|ranges:<sha256-short>` for this write. */
+  /** Composite `engine:<semver>|ranges:<sha256-short>|domains:<sha256-short>` for this write. */
   policyVersion: string;
   /** True if mergedMap differs from existingMap (new tokens were added). */
   mapChanged: boolean;

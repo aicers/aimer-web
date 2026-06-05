@@ -16,7 +16,7 @@
 // superseded leaf) are passed through unchanged so the page still
 // renders — same defensive posture as the story-scope restore.
 
-const REPORT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_R\d+_\d+>>/g;
+const REPORT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_R\d+_\d+>>/g;
 
 export function restoreReportAnalysisTokens(
   text: string,

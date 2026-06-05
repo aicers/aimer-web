@@ -72,6 +72,8 @@ describe("redaction-jobs POST", () => {
       .mockResolvedValueOnce({ rows: [] })
       // computeCustomerPolicyVersion's range query
       .mockResolvedValueOnce({ rows: [] })
+      // computeCustomerPolicyVersion's owned-domains query
+      .mockResolvedValueOnce({ rows: [] })
       // INSERT redaction_jobs RETURNING
       .mockResolvedValueOnce({
         rows: [
@@ -118,6 +120,7 @@ describe("redaction-jobs POST", () => {
     mockClientQuery
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockRejectedValueOnce(uniqueViolation)
       .mockResolvedValueOnce({
         rows: [
@@ -143,6 +146,7 @@ describe("redaction-jobs POST", () => {
       { code: "23505", constraint: "redaction_jobs_pkey" },
     );
     mockClientQuery
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockRejectedValueOnce(wrongViolation);

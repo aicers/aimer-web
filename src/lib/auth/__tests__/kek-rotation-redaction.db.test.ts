@@ -46,7 +46,9 @@ vi.mock("../../db/customer-db", () => ({
 
 const { ingestBaselineBatch } = await import("@/app/api/phase2/_shared/ingest");
 const { rotateAllKeks } = await import("../kek-rotation");
-const { buildRangeSet } = await import("@/lib/redaction");
+const { buildRangeSet, EMPTY_OWNED_DOMAIN_SET } = await import(
+  "@/lib/redaction"
+);
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID = 1090;
@@ -111,6 +113,7 @@ describe.skipIf(!hasPostgres)(
         CUSTOMER_ID,
         AICE_ID,
         buildRangeSet([]),
+        EMPTY_OWNED_DOMAIN_SET,
       );
 
       // Capture the pre-rotation row state.

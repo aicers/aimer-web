@@ -32,29 +32,35 @@
 import "server-only";
 
 import {
+  EMPTY_OWNED_DOMAIN_SET,
+  findOwnedDomainLeaks,
+} from "../redaction/domains";
+import {
   isPrivateIPv4,
   isPrivateIPv6,
   parseIPv4,
   parseIPv6,
   shouldRedactPublicIP,
 } from "../redaction/ranges";
-import type { RangeSet } from "../redaction/types";
+import type { OwnedDomainSet, RangeSet } from "../redaction/types";
 
 // Story-scope token: `<<REDACTED_IP_E1_001>>`. The `E{i}` group is the
 // story member ordinal; the trailing group is the event-scope token
 // number. Both are folded into the report-scope `SEQ` on rewrite.
-const STORY_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/g;
+const STORY_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/g;
 // Event-scope token: `<<REDACTED_IP_001>>`. The kind is followed directly
 // by digits (no `E{i}` segment), so this never matches a story-scope
 // token.
-const EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/g;
+const EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/g;
 
 // Report-scope token matcher used by the leak scan. The report prompt
 // SHOULD only ever contain report-scope tokens; a lower-scope token in
 // the output is a hallucination signal because the LLM never saw one.
-const REPORT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC)_R(\d+)_(\d+)>>/g;
-const RESIDUAL_STORY_SCOPE_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_E\d+_\d+>>/g;
-const RESIDUAL_EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC)_\d+>>/g;
+const REPORT_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_R(\d+)_(\d+)>>/g;
+const RESIDUAL_STORY_SCOPE_TOKEN_RE =
+  /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_E\d+_\d+>>/g;
+const RESIDUAL_EVENT_SCOPE_TOKEN_RE =
+  /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_\d+>>/g;
 
 // Kind-agnostic backstop matcher. Unlike the matchers above it is NOT
 // pinned to the kinds the redaction engine emits (`IP`/`EMAIL`/`MAC`),
@@ -325,11 +331,16 @@ function collectAllowedTokens(
  * always; public per `shouldRedactPublicIP`, empty range set ⇒ public IPs
  * pass through). Public out-of-range IPs that legitimately reached the prompt
  * are not flagged.
+ *
+ * Owned-domain leak detection mirrors the same policy (RFC 0001
+ * Amendment A.2): a hostname is flagged only when it matches the
+ * customer's `ownedDomains` suffix set; external domains pass through.
  */
 export function scanReportAnalysisForLeaks(
   reportText: string,
   refs: ReadonlyArray<ReportTokenRef>,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet = EMPTY_OWNED_DOMAIN_SET,
 ): ReportScanResult {
   const leaks: ReportAnalysisLeak[] = [];
   const allowedTokens = collectAllowedTokens(refs);
@@ -420,6 +431,13 @@ export function scanReportAnalysisForLeaks(
     if (isPrivateIPv6(bytes) || shouldRedactPublicIP(bytes, 6, ranges)) {
       leaks.push({ kind: "plaintext_pii", match: m[0] });
     }
+  }
+
+  // Owned-domain leak: a customer-owned hostname echoed verbatim instead
+  // of as a token. External domains are skipped, mirroring the engine's
+  // external-domain pass-through.
+  for (const match of findOwnedDomainLeaks(reportText, ownedDomains)) {
+    leaks.push({ kind: "plaintext_pii", match });
   }
 
   return { leaks, hasLeak: leaks.length > 0 };

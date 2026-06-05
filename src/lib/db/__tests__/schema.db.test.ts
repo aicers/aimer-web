@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(41);
+    expect(rows).toHaveLength(43);
   });
 
   // -- Built-in roles --
@@ -54,15 +54,19 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     // keys seeded by 0022_redaction_permissions.sql:
     //   read keys → User, Analyst, Manager, System Administrator (+2)
     //   write keys → Manager, System Administrator (+2)
+    // plus the owned-domains keys seeded by
+    // 0040_owned_domain_permissions.sql:
+    //   read key → User, Analyst, Manager, System Administrator (+1)
+    //   write key → Manager, System Administrator (+1)
     expect(rows).toEqual([
-      { name: "Analyst", auth_context: "general", perm_count: 14 },
-      { name: "Manager", auth_context: "general", perm_count: 15 },
+      { name: "Analyst", auth_context: "general", perm_count: 15 },
+      { name: "Manager", auth_context: "general", perm_count: 17 },
       {
         name: "System Administrator",
         auth_context: "admin",
-        perm_count: 17,
+        perm_count: 19,
       },
-      { name: "User", auth_context: "general", perm_count: 9 },
+      { name: "User", auth_context: "general", perm_count: 10 },
     ]);
   });
 
@@ -107,6 +111,40 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       "User",
     ]);
     expect(grouped["customer-retention:write"]).toEqual([
+      "Manager",
+      "System Administrator",
+    ]);
+  });
+
+  it("seeds owned-domains permissions on the right roles", async () => {
+    const { rows } = await pool.query<{
+      name: string;
+      permission: string;
+    }>(
+      `SELECT r.name, rp.permission
+       FROM roles r
+       JOIN role_permissions rp ON rp.role_id = r.id
+       WHERE rp.permission IN (
+         'customer-owned-domains:read',
+         'customer-owned-domains:write'
+       )
+       ORDER BY rp.permission, r.name`,
+    );
+
+    const grouped: Record<string, string[]> = {};
+    for (const row of rows) {
+      if (!grouped[row.permission]) grouped[row.permission] = [];
+      grouped[row.permission].push(row.name);
+    }
+    for (const key of Object.keys(grouped)) grouped[key].sort();
+
+    expect(grouped["customer-owned-domains:read"]).toEqual([
+      "Analyst",
+      "Manager",
+      "System Administrator",
+      "User",
+    ]);
+    expect(grouped["customer-owned-domains:write"]).toEqual([
       "Manager",
       "System Administrator",
     ]);

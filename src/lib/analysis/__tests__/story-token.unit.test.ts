@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import type { RedactionMap } from "@/lib/redaction";
+import { buildOwnedDomainSet } from "../../redaction/domains";
 import { buildRangeSet } from "../../redaction/ranges";
 import type { RangeSet } from "../../redaction/types";
 import { buildStoryTokenMap, scanStoryAnalysisForLeaks } from "../story-token";
@@ -44,6 +45,22 @@ describe("buildStoryTokenMap", () => {
       "<<REDACTED_IP_E1_001>>",
       "<<REDACTED_IP_E2_001>>",
       "<<REDACTED_MAC_E2_007>>",
+    ]);
+  });
+
+  it("namespaces DOMAIN tokens to story scope (RFC 0001 Amendment A.2)", () => {
+    const out = buildStoryTokenMap([
+      {
+        aiceId: "aice-1",
+        eventKey: "1001",
+        event: { host: "<<REDACTED_DOMAIN_001>>" },
+      },
+    ]);
+    expect(out.rewrittenMembers[0].event).toEqual({
+      host: "<<REDACTED_DOMAIN_E1_001>>",
+    });
+    expect(Array.from(out.allowedTokens)).toEqual([
+      "<<REDACTED_DOMAIN_E1_001>>",
     ]);
   });
 
@@ -308,6 +325,91 @@ describe("scanStoryAnalysisForLeaks", () => {
         .map((l) => l.match);
       expect(matches).toContain("10.0.0.5");
       expect(matches).toContain("fc00::1");
+    });
+  });
+
+  // RFC 0001 Amendment A.2: a customer-owned domain the LLM echoes in
+  // plaintext (instead of as a token) is a leak the engine would have
+  // tokenised on the input side; external domains stay visible.
+  describe("owned-domain policy alignment", () => {
+    const owned = buildOwnedDomainSet(["customer.example"]);
+
+    it("flags an owned domain echoed verbatim", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Beacon from vpn.customer.example observed.",
+        allowed,
+        EMPTY_RANGES,
+        owned,
+      );
+      expect(
+        r.leaks.some(
+          (l) =>
+            l.kind === "plaintext_pii" && l.match === "vpn.customer.example",
+        ),
+      ).toBe(true);
+    });
+
+    it("flags the registered apex domain itself", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Domain customer.example resolved.",
+        allowed,
+        EMPTY_RANGES,
+        owned,
+      );
+      expect(
+        r.leaks.some(
+          (l) => l.kind === "plaintext_pii" && l.match === "customer.example",
+        ),
+      ).toBe(true);
+    });
+
+    it("does not flag an external domain (pass-through)", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "C2 host evil-attacker.example contacted.",
+        allowed,
+        EMPTY_RANGES,
+        owned,
+      );
+      expect(r.leaks.some((l) => l.match === "evil-attacker.example")).toBe(
+        false,
+      );
+    });
+
+    it("does not flag a domain that only resembles an owned suffix", () => {
+      // `notcustomer.example` is NOT a subdomain of `customer.example`.
+      const r = scanStoryAnalysisForLeaks(
+        "Saw notcustomer.example in logs.",
+        allowed,
+        EMPTY_RANGES,
+        owned,
+      );
+      expect(r.leaks.some((l) => l.match === "notcustomer.example")).toBe(
+        false,
+      );
+    });
+
+    it("flags an IDN owned domain echoed in its U-label form", () => {
+      // The suffix is registered as punycode; the U-label echo must still
+      // be caught because `findOwnedDomainLeaks` folds before matching.
+      const idnOwned = buildOwnedDomainSet(["xn--80ak6aa92e.example"]);
+      const r = scanStoryAnalysisForLeaks(
+        "Phish from www.аррӏе.example seen",
+        allowed,
+        EMPTY_RANGES,
+        idnOwned,
+      );
+      expect(r.leaks.some((l) => l.kind === "plaintext_pii")).toBe(true);
+    });
+
+    it("flags nothing for domains when the owned set is empty (default)", () => {
+      const r = scanStoryAnalysisForLeaks(
+        "Beacon from vpn.customer.example observed.",
+        allowed,
+        EMPTY_RANGES,
+      );
+      expect(r.leaks.some((l) => l.match === "vpn.customer.example")).toBe(
+        false,
+      );
     });
   });
 });

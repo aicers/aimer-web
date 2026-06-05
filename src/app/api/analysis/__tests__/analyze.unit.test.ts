@@ -117,6 +117,7 @@ vi.mock("@/lib/db/customer-runtime-pool", () => ({
 // `spread argument must have a tuple type` when forwarded through the
 // `(...args) => mock(...args)` wrapper Vitest expects.
 const mockLoadCustomerRanges = vi.fn();
+const mockLoadCustomerOwnedDomains = vi.fn();
 const mockReadMapWithLock = vi.fn();
 const mockWriteMap = vi.fn();
 const mockRedact = vi.fn();
@@ -124,6 +125,7 @@ const mockScanHallucinations = vi.fn();
 
 vi.mock("@/lib/redaction", () => ({
   loadCustomerRanges: mockLoadCustomerRanges,
+  loadCustomerOwnedDomains: mockLoadCustomerOwnedDomains,
   readMapWithLock: mockReadMapWithLock,
   writeMap: mockWriteMap,
   redact: mockRedact,
@@ -236,6 +238,9 @@ beforeEach(() => {
   mockLoadCustomerRanges
     .mockReset()
     .mockResolvedValue({ normalisedCidrs: [], ranges: [] });
+  mockLoadCustomerOwnedDomains
+    .mockReset()
+    .mockResolvedValue({ normalisedSuffixes: [] });
   mockReadMapWithLock.mockReset().mockResolvedValue(null);
   mockWriteMap.mockReset().mockResolvedValue(undefined);
   mockRedact.mockReset().mockReturnValue({
@@ -250,7 +255,7 @@ beforeEach(() => {
   });
   mockScanHallucinations.mockReset().mockReturnValue({
     scanned: "analysis text",
-    counts: { ip: 0, email: 0, mac: 0 },
+    counts: { ip: 0, email: 0, mac: 0, domain: 0 },
   });
   mockGraphqlRequest.mockReset().mockResolvedValue({
     analyzeEvent: {
@@ -418,6 +423,7 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
       expect.any(String),
       storedMap,
       expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -477,6 +483,7 @@ describe("POST /api/analysis/analyze — behaviour matrix", () => {
     expect(mockScanHallucinations).toHaveBeenCalledWith(
       expect.any(String),
       storedMap,
+      expect.anything(),
       expect.anything(),
     );
   });
@@ -938,7 +945,7 @@ describe("POST /api/analysis/analyze — hallucination handling", () => {
     stubInsertAnalysisResult();
     mockScanHallucinations.mockReturnValue({
       scanned: "<<UNVERIFIED_IP_001>>",
-      counts: { ip: 1, email: 0, mac: 0 },
+      counts: { ip: 1, email: 0, mac: 0, domain: 0 },
     });
 
     const res = await callPOST(makeRequest(defaultBody()));
@@ -947,7 +954,7 @@ describe("POST /api/analysis/analyze — hallucination handling", () => {
       expect.objectContaining({
         action: "ai_analysis.hallucination_detected",
         details: expect.objectContaining({
-          counts: { ip: 1, email: 0, mac: 0 },
+          counts: { ip: 1, email: 0, mac: 0, domain: 0 },
         }),
       }),
     );

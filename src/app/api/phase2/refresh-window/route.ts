@@ -3,7 +3,7 @@ import {
   applyWindowReplaceStoryHook,
 } from "@/lib/analysis/ingest-hooks";
 import { getAuthPool } from "@/lib/db/client";
-import { loadCustomerRanges } from "@/lib/redaction";
+import { loadCustomerOwnedDomains, loadCustomerRanges } from "@/lib/redaction";
 import { createPhase2MutationHandler } from "../_shared/mutation-handler";
 import {
   executeWindowReplace,
@@ -18,12 +18,17 @@ export const POST = createPhase2MutationHandler({
   mutate: async (customerPool, verified, payload) => {
     const authPool = getAuthPool();
     const ranges = await loadCustomerRanges(authPool, verified.customerId);
+    const ownedDomains = await loadCustomerOwnedDomains(
+      authPool,
+      verified.customerId,
+    );
     const { counts, extras } = await executeWindowReplace(
       customerPool,
       payload,
       verified.customerId,
       verified.envelopeClaims.aiceId,
       ranges,
+      ownedDomains,
     );
     // RFC 0002 Phase 0 (#294) — best-effort analysis state hooks.
     // Failure is logged and swallowed (decision 2).

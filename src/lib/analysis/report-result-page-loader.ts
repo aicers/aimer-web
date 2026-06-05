@@ -54,8 +54,8 @@ export type LanguageJobStatus =
   | "failed"
   | "source_pending";
 
-const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_E(\d+)_(\d+)>>/;
-const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC)_(\d+)>>/;
+const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/;
+const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/;
 
 // Display-ready report sections, keyed by aimer's real
 // `PERIODIC_SECURITY_REPORT` output schema (schemas/aimer.graphql @ f04caba):

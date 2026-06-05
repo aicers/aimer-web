@@ -44,4 +44,16 @@ describe("restoreRedactedTokens", () => {
       "from 203.0.113.5 to a@example.com",
     );
   });
+
+  it("restores DOMAIN tokens (RFC 0001 Amendment A.2)", () => {
+    const map = {
+      "<<REDACTED_DOMAIN_001>>": {
+        kind: "domain" as const,
+        value: "vpn.customer.example",
+      },
+    };
+    expect(restoreRedactedTokens("reached <<REDACTED_DOMAIN_001>>", map)).toBe(
+      "reached vpn.customer.example",
+    );
+  });
 });

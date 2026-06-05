@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildOwnedDomainSet } from "../domains";
 import {
   computePolicyVersion,
   ENGINE_VERSION,
@@ -254,9 +255,9 @@ describe("redaction engine — CIDR parsing", () => {
 });
 
 describe("redaction engine — policy_version", () => {
-  it("computes composite engine|ranges version with sentinel for empty set", () => {
+  it("computes composite engine|ranges|domains version with sentinels for empty sets", () => {
     const version = computePolicyVersion("1.0.0", EMPTY_RANGES);
-    expect(version).toBe("engine:1.0.0|ranges:empty");
+    expect(version).toBe("engine:1.0.0|ranges:empty|domains:empty");
   });
 
   it("includes a stable hash prefix for non-empty range sets", () => {
@@ -268,7 +269,149 @@ describe("redaction engine — policy_version", () => {
     );
     // Sorted normalisation -> hash is order-independent.
     expect(a).toBe(b);
-    expect(a).toMatch(/^engine:1\.0\.0\|ranges:[0-9a-f]{12}$/);
+    expect(a).toMatch(/^engine:1\.0\.0\|ranges:[0-9a-f]{12}\|domains:empty$/);
+  });
+
+  it("changes the domains segment when the owned-domain list changes", () => {
+    const a = computePolicyVersion(
+      "1.0.0",
+      EMPTY_RANGES,
+      buildOwnedDomainSet(["domain.example"]),
+    );
+    const b = computePolicyVersion(
+      "1.0.0",
+      EMPTY_RANGES,
+      buildOwnedDomainSet(["other.example"]),
+    );
+    expect(a).toMatch(/^engine:1\.0\.0\|ranges:empty\|domains:[0-9a-f]{12}$/);
+    expect(a).not.toBe(b);
+  });
+
+  it("produces identical versions for identical owned-domain lists (order-independent)", () => {
+    const a = computePolicyVersion(
+      "1.0.0",
+      EMPTY_RANGES,
+      buildOwnedDomainSet(["a.example", "b.example"]),
+    );
+    const b = computePolicyVersion(
+      "1.0.0",
+      EMPTY_RANGES,
+      buildOwnedDomainSet(["b.example", "a.example"]),
+    );
+    expect(a).toBe(b);
+  });
+});
+
+describe("redaction engine — owned-domain redaction", () => {
+  const ownedDomains = buildOwnedDomainSet(["customer.example"]);
+
+  function makeDomainInput(payload: unknown) {
+    return {
+      payload,
+      existingMap: {},
+      ranges: EMPTY_RANGES,
+      ownedDomains,
+      engineVersion: ENGINE_VERSION,
+    };
+  }
+
+  it("redacts an owned domain to a DOMAIN token with a map entry", () => {
+    const { redacted, mergedMap } = redact(
+      makeDomainInput({ host: "vpn.customer.example" }),
+    );
+    const value = (redacted as { host: string }).host;
+    expect(value).toMatch(/^<<REDACTED_DOMAIN_\d{3}>>$/);
+    const entry = mergedMap[value];
+    expect(entry).toEqual({ kind: "domain", value: "vpn.customer.example" });
+  });
+
+  it("passes external domains through raw", () => {
+    const { redacted, mergedMap } = redact(
+      makeDomainInput({ host: "evil.attacker.test" }),
+    );
+    expect((redacted as { host: string }).host).toBe("evil.attacker.test");
+    expect(Object.keys(mergedMap)).toHaveLength(0);
+  });
+
+  it("respects suffix boundaries", () => {
+    const { redacted } = redact(
+      makeDomainInput({
+        owned: "a.customer.example",
+        bare: "customer.example",
+        notOwned: "notcustomer.example",
+      }),
+    );
+    const out = redacted as Record<string, string>;
+    expect(out.owned).toMatch(/^<<REDACTED_DOMAIN_\d{3}>>$/);
+    expect(out.bare).toMatch(/^<<REDACTED_DOMAIN_\d{3}>>$/);
+    expect(out.notOwned).toBe("notcustomer.example");
+  });
+
+  it("normalises punycode/IDN before matching (U-label and A-label both redact)", () => {
+    const idn = buildOwnedDomainSet(["пример.рф"]);
+    const uLabel = redact({
+      payload: { host: "sub.пример.рф" },
+      existingMap: {},
+      ranges: EMPTY_RANGES,
+      ownedDomains: idn,
+      engineVersion: ENGINE_VERSION,
+    });
+    const aLabel = redact({
+      payload: { host: "sub.xn--e1afmkfd.xn--p1ai" },
+      existingMap: {},
+      ranges: EMPTY_RANGES,
+      ownedDomains: idn,
+      engineVersion: ENGINE_VERSION,
+    });
+    expect((uLabel.redacted as { host: string }).host).toMatch(
+      /^<<REDACTED_DOMAIN_\d{3}>>$/,
+    );
+    expect((aLabel.redacted as { host: string }).host).toMatch(
+      /^<<REDACTED_DOMAIN_\d{3}>>$/,
+    );
+  });
+
+  it("stores the ORIGINAL matched substring even when matched via a normalised form", () => {
+    const idn = buildOwnedDomainSet(["пример.рф"]);
+    const { redacted, mergedMap } = redact({
+      payload: { host: "SUB.Пример.рф" },
+      existingMap: {},
+      ranges: EMPTY_RANGES,
+      ownedDomains: idn,
+      engineVersion: ENGINE_VERSION,
+    });
+    const token = (redacted as { host: string }).host;
+    // value is the original payload substring, not the punycode/lowercased form.
+    expect(mergedMap[token]?.value).toBe("SUB.Пример.рф");
+  });
+
+  it("composes with IP/email/mac passes without clobbering", () => {
+    const { redacted, mergedMap } = redact(
+      makeDomainInput({
+        msg: "host vpn.customer.example ip 10.0.0.1 mail a@customer.example mac 00:11:22:33:44:55",
+      }),
+    );
+    const out = (redacted as { msg: string }).msg;
+    expect(out).toContain("<<REDACTED_DOMAIN_");
+    expect(out).toContain("<<REDACTED_IP_");
+    expect(out).toContain("<<REDACTED_EMAIL_");
+    expect(out).toContain("<<REDACTED_MAC_");
+    // The email's owned-domain substring is consumed by the email pass,
+    // not double-tokenised as a domain.
+    const kinds = Object.values(mergedMap)
+      .map((e) => e.kind)
+      .sort();
+    expect(kinds).toEqual(["domain", "email", "ip", "mac"]);
+  });
+
+  it("defaults to no domain redaction when ownedDomains is omitted", () => {
+    const { redacted } = redact({
+      payload: { host: "vpn.customer.example" },
+      existingMap: {},
+      ranges: EMPTY_RANGES,
+      engineVersion: ENGINE_VERSION,
+    });
+    expect((redacted as { host: string }).host).toBe("vpn.customer.example");
   });
 });
 

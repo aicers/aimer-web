@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "@/lib/db/client";
-import type { RangeSet } from "@/lib/redaction";
+import type { OwnedDomainSet, RangeSet } from "@/lib/redaction";
 import { redactAndMaybeUpsertMap } from "./redaction";
 import type { BaselineBatch, PolicyRunPayload, StoryBatch } from "./schemas";
 
@@ -59,6 +59,7 @@ export async function ingestBaselineBatch(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): Promise<IngestCounts & BaselineIngestExtras> {
   if (payload.events.length === 0) {
     return {
@@ -79,6 +80,7 @@ export async function ingestBaselineBatch(
           aiceId: sourceAiceId,
           eventKey: event.event_key,
           ranges,
+          ownedDomains,
           client,
         },
       );
@@ -157,6 +159,7 @@ export async function ingestStoryBatch(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): Promise<StoryIngestCounts> {
   if (payload.stories.length === 0) {
     return {
@@ -235,6 +238,7 @@ export async function ingestStoryBatch(
             aiceId: sourceAiceId,
             eventKey: member.event_key,
             ranges,
+            ownedDomains,
             client,
           },
         );
@@ -297,9 +301,17 @@ export async function ingestPolicyRun(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): Promise<PolicyRunIngestCounts> {
   return withTransaction(pool, (client) =>
-    insertPolicyRunInTx(client, payload, customerId, sourceAiceId, ranges),
+    insertPolicyRunInTx(
+      client,
+      payload,
+      customerId,
+      sourceAiceId,
+      ranges,
+      ownedDomains,
+    ),
   );
 }
 
@@ -309,6 +321,7 @@ async function insertPolicyRunInTx(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): Promise<PolicyRunIngestCounts> {
   const run = payload.run;
   // `run.summary_stats` is an aggregate (not redacted in v1 per RFC 0001)
@@ -364,6 +377,7 @@ async function insertPolicyRunInTx(
         aiceId: sourceAiceId,
         eventKey: event.event_key,
         ranges,
+        ownedDomains,
         client,
       },
     );

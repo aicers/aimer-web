@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { z } from "zod";
 import { withTransaction } from "@/lib/db/client";
-import type { RangeSet } from "@/lib/redaction";
+import type { OwnedDomainSet, RangeSet } from "@/lib/redaction";
 import { redactAndMaybeUpsertMap } from "./redaction";
 import { baselineEventSchema, storySchema } from "./schemas";
 
@@ -286,6 +286,7 @@ export async function executeWindowReplace(
   customerId: string,
   sourceAiceId: string,
   ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
 ): Promise<{ counts: WindowReplaceCounts; extras: WindowReplaceExtras }> {
   return withTransaction(pool, async (client) => {
     await client.query(
@@ -345,6 +346,7 @@ export async function executeWindowReplace(
             aiceId: sourceAiceId,
             eventKey: event.event_key,
             ranges,
+            ownedDomains,
             client,
           },
         );
@@ -480,6 +482,7 @@ export async function executeWindowReplace(
             aiceId: sourceAiceId,
             eventKey: member.event_key,
             ranges,
+            ownedDomains,
             client,
           },
         );

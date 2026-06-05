@@ -39,6 +39,7 @@ import {
 } from "@/lib/graphql/__generated__/analyze-story";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
   type FactorAxis,
@@ -206,6 +207,8 @@ interface ProcessOptions {
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the customer redaction-range loader — used by tests. */
   loadRanges?: typeof loadCustomerRanges;
+  /** Override the customer owned-domain loader — used by tests. */
+  loadOwnedDomains?: typeof loadCustomerOwnedDomains;
   /**
    * Override the IOC-enrichment readiness precondition (RFC 0003 P1a
    * #361) — used by tests. Returns whether enrichment has completed for
@@ -570,10 +573,18 @@ export async function processStoryJob(
     opts.authPool,
     job.customer_id,
   );
+  // Owned domains gate the same scan for customer-owned hostnames the
+  // LLM echoed verbatim (RFC 0001 Amendment A.2). Loaded alongside
+  // ranges so a leaked owned domain fails the job before the result row
+  // is written, parallel to the runAnalyzeFlow hallucination scan.
+  const ownedDomains = await (
+    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
+  )(opts.authPool, job.customer_id);
   const leakScan = scanStoryAnalysisForLeaks(
     aimerResponse.analysis,
     allowedTokens,
     ranges,
+    ownedDomains,
   );
   if (leakScan.hasLeak) {
     void auditLog({

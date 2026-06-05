@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+import { buildOwnedDomainSet } from "../../redaction/domains";
 import { buildRangeSet } from "../../redaction/ranges";
 import type { RangeSet } from "../../redaction/types";
 import {
@@ -69,6 +70,31 @@ describe("buildReportTokenMap", () => {
         "<<REDACTED_EMAIL_R2_002>>",
       ]),
     );
+  });
+
+  it("folds DOMAIN tokens into the report namespace (RFC 0001 Amendment A.2)", () => {
+    const out = buildReportTokenMap(
+      [{ analysis: "Beacon to <<REDACTED_DOMAIN_E1_001>>." }],
+      [{ analysis: "DNS for <<REDACTED_DOMAIN_002>>." }],
+    );
+    expect(out.rewrittenStoryTexts[0]).toBe(
+      "Beacon to <<REDACTED_DOMAIN_R1_001>>.",
+    );
+    expect(out.rewrittenEventTexts[0]).toBe(
+      "DNS for <<REDACTED_DOMAIN_R2_001>>.",
+    );
+    expect(out.refs[0].tokens).toEqual([
+      {
+        reportToken: "<<REDACTED_DOMAIN_R1_001>>",
+        sourceToken: "<<REDACTED_DOMAIN_E1_001>>",
+      },
+    ]);
+    expect(out.refs[1].tokens).toEqual([
+      {
+        reportToken: "<<REDACTED_DOMAIN_R2_001>>",
+        sourceToken: "<<REDACTED_DOMAIN_002>>",
+      },
+    ]);
   });
 
   it("maps a recurring source token to one stable report token per leaf", () => {
@@ -291,5 +317,33 @@ describe("scanReportAnalysisForLeaks", () => {
     );
     expect(res.leaks.filter((l) => l.kind === "plaintext_pii")).toHaveLength(1);
     expect(res.leaks[0].match).toBe("10.0.0.5");
+  });
+
+  // RFC 0001 Amendment A.2: an owned domain echoed in plaintext in the
+  // report narrative is a leak; external domains pass through.
+  it("flags an owned domain echoed verbatim, not an external one", () => {
+    const owned = buildOwnedDomainSet(["customer.example"]);
+    const res = scanReportAnalysisForLeaks(
+      "Beacon from vpn.customer.example to evil-attacker.example.",
+      built.refs,
+      EMPTY_RANGES,
+      owned,
+    );
+    const matches = res.leaks
+      .filter((l) => l.kind === "plaintext_pii")
+      .map((l) => l.match);
+    expect(matches).toContain("vpn.customer.example");
+    expect(matches).not.toContain("evil-attacker.example");
+  });
+
+  it("flags no domain when the owned set is empty (default arg)", () => {
+    const res = scanReportAnalysisForLeaks(
+      "Beacon from vpn.customer.example.",
+      built.refs,
+      EMPTY_RANGES,
+    );
+    expect(res.leaks.some((l) => l.match === "vpn.customer.example")).toBe(
+      false,
+    );
   });
 });
