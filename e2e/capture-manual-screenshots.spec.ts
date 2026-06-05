@@ -1376,6 +1376,27 @@ base.describe.serial("Manual screenshots", () => {
     });
   }
 
+  // =========================================================================
+  // Customer hub (WS3 #392) — docs/{en,ko}/analysis/customer-hub.md. Pure
+  // navigation chrome: the section cards render from the manager's section
+  // permissions, not from any aice-web-next analysis data, so this needs no
+  // seeded analysis fixture — only the seeded customer and the manager's
+  // access. That makes it a real (non-fabricated) capture per
+  // docs/AUTHORING.md, unlike the narrative-bearing detail screens.
+  // =========================================================================
+  for (const locale of LOCALES) {
+    base(`customer-hub.${locale}.png`, async () => {
+      await mgrPage.setViewportSize(VIEWPORT);
+      await mgrPage.goto(`/${locale}/customers/${testData.customer.id}`);
+      await settle(mgrPage);
+      await expect(mgrPage.locator('[data-testid="hub"]')).toBeVisible();
+      await mgrPage.screenshot({
+        path: resolve(ASSETS, `customer-hub.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
   base("analysis-result cleanup", async () => {
     // Captures above leave the per-customer DB behind so subsequent
     // reruns are cheap; explicit cleanup here means a fresh capture
