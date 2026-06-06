@@ -199,29 +199,27 @@ The story-payload members delivered from aice-web-next must actually carry the e
 
 ### Indicator normalization
 
-Matching is only as good as normalization. A normalized indicator is the value actually matched and stored in the audit record. Rules to define (v1):
+Matching is only as good as normalization. A normalized indicator is the value actually matched against feeds. How indicators are stored is a separate concern — see "Audit / evidence model" below. Rules to define (v1):
 
 - **URL** — canonicalization (scheme/host casing, default ports, path/query normalization, percent-encoding); decide whether to match URL, host, and registered domain separately.
 - **Domain** — lowercase, trailing-dot strip, **punycode / IDN** normalization (match both U-label and A-label).
 - **IP** — IPv4/IPv6 canonical form; **CIDR** membership matching; **private/reserved vs public** classification (private/reserved never sent to Tier 2 and never floor-eligible).
 - **Hash** — distinguish hash type (MD5 / SHA-1 / SHA-256); normalize casing.
-- Record the normalization version so audit records remain interpretable as rules evolve.
+- Track the normalization version so the **matching / cache / dedupe** key stays interpretable as rules evolve (it scopes the enrichment cache key — see "Caching, freshness, and feed-refresh policy" — and the in-run dedupe key). It is **not** persisted on the evidence record: indicator storage there is redaction-consistent (raw external / customer-asset token), with no HMAC to keep interpretable.
 
 ### Audit / evidence model
 
 `reproducible / auditable` (Summary) requires storing *why* a result was produced, not just the boolean. A `known_ioc_hit = true` must be explainable after the fact, so persist an evidence record alongside the story result.
 
-**Reproducibility vs. raw-indicator storage.** By default the evidence record does **not** store the raw indicator — it is masked. But a bare redaction token cannot be re-checked against a feed snapshot later, which would undercut reproducibility. Resolve this by storing enough to re-verify *without* persisting plaintext by default:
+**Indicator storage is redaction-consistent.** The evidence record stores the indicator exactly the way the rest of the system already does — there is no separate HMAC scheme. The **`redactionToken`** carries the indicator: the **raw value for an external indicator** and a **`<<REDACTED_*_NNN>>` token for a customer-asset indicator** (whose original lives only in the existing encrypted redaction map). Each record stores:
 
-- the **`redactionToken`** (links evidence back to the masked member),
-- a **`normalizedIndicatorHmac`** (keyed HMAC of the normalized indicator — lets you confirm "this snapshot would still match" by recomputing, without storing the value in the clear),
-- an **`hmacKeyVersion`** / `evidenceKeyId` (which HMAC key produced the digest — without it, a key rotation would make all prior evidence unverifiable; rotation must retain old key versions for verification),
-- the **`normalizationVersion`** (so the HMAC stays interpretable as normalization rules evolve),
+- the **`redactionToken`** (raw external indicator, or the customer-asset token whose original is in the redaction map),
+- the **event redaction-map scope** (`sourceAiceId` + `memberEventKey`, i.e. the `(aice_id, event_key)` key) the indicator was extracted under — what recovers a customer-asset token, and provenance for a raw external one,
 - which **source** (`sourcePolicyId`) and **source/feed version** (`sourceVersion` / `feedHash`),
 - the resulting **`hitType`** and **`floorEligible`**,
 - the **match timestamp** (`checkedAt`) and cache `expiresAt`.
 
-Where full forensic reproduction is required, the **raw normalized indicator may be retained separately**, but only **encrypted (OpenBao Transit), under a short retention window, and gated by a per-customer setting** — never in the default evidence record. This preserves the no-plaintext-by-default stance while keeping a path to exact reproduction.
+**Reproducibility.** An external indicator is **self-sufficient** — the raw value in `redactionToken` can be re-checked against a feed snapshot directly. A customer-asset indicator is recoverable via the **existing redaction map**: the stored `(sourceAiceId, memberEventKey)` scope identifies the exact `event_redaction_map` row, and decrypting it demaps the token back to the original. The scope is required because token numbering restarts per event — the same `<<REDACTED_*_NNN>>` from two members maps to different values, so the token alone is ambiguous (this is the same dependency every other consumer already has). This is the same trade-off the redaction layer makes everywhere; evidence does not add a second mechanism.
 
 **Coverage status (resolves the `unknown` ↔ boolean gap).** Persist, per story result, alongside the boolean:
 
@@ -392,8 +390,8 @@ Severity-axis use of TI (whether deterministic hits may raise `severity_score`, 
 - Indicator-normalization tests: URL canonicalization, punycode/IDN, CIDR membership, private/reserved exclusion, hash-type distinction.
 - Hit-type / floor-eligibility tests: `deterministic_ioc` vs `soft_reputation`; assert soft sources never set `known_ioc_hit`; assert a `deterministic_ioc` match with `floorEligible === false` does **not** set the floor.
 - Stale-feed / source-error tests: a stale or failed deterministic source yields coverage status `unknown`/`stale` (recorded), **not** a silent `false`; assert `false-complete` vs `false-unknown` are distinguishable.
-- Audit-record tests: a `known_ioc_hit = true` persists `sourcePolicyId`, `sourceVersion`/`feedHash`, `redactionToken`, `normalizedIndicatorHmac` + `hmacKeyVersion` + `normalizationVersion`, `floorEligible`, and `checkedAt`.
-- Reproducibility test: recomputing the HMAC over a pinned feed snapshot confirms the stored evidence still matches, without any plaintext indicator stored — including across an HMAC key rotation (old `hmacKeyVersion` still verifies).
+- Audit-record tests: a `known_ioc_hit = true` persists `sourcePolicyId`, `sourceVersion`/`feedHash`, `redactionToken`, `floorEligible`, and `checkedAt`.
+- Reproducibility test: an external indicator is stored raw in `redactionToken` and re-checks against a pinned feed snapshot directly; a customer-asset indicator is stored as a token whose original is recoverable only via the existing redaction map, located by the row's `(sourceAiceId, memberEventKey)` scope (the same dependency every other consumer has). Two members reusing the same token string for different recovered values must yield distinguishable evidence rows.
 - Worker integration covering `known_ioc_hit` `true` and `false`.
 - Assertion that on-disk `likelihood_score` stays raw (floor affects only derived `priority_tier`).
 - E2E staging (mirror #361): fixture-pinned `severityScore=0.85`, `likelihoodScore=0.3`; two distinct `story_id`s identical except derived `known_ioc_hit` (`false` vs `true`); assert `false → MEDIUM` and `true → CRITICAL`. Use two distinct `story_id`s, not two `story_version`s of one id (the canonical-version tie-breaker #343 would otherwise entangle the result). Re-confirm both matrix buckets at test-authoring time.
@@ -432,8 +430,7 @@ Severity-axis use of TI (whether deterministic hits may raise `severity_score`, 
 ## Candidate implementation issues (to be written from this doc)
 
 - [ ] **(P1a)** Enricher interface + per-entity dispatch + per-match `hitType` / `floorEligible` / `sourcePolicyId` model + source-policy registry + indicator normalization (foundation).
-- [ ] **(P1a)** Tier 1 abuse.ch / Spamhaus-style **IOC**-feed import + local matching + audit/evidence record (`redactionToken` + `normalizedIndicatorHmac` + `hmacKeyVersion` + `normalizationVersion` + `sourceVersion`/`feedHash`; optional encrypted short-retention raw) + coverage status + `known_ioc_hit` wiring into `applyLikelihoodFloors` (**closes #361**).
-- [ ] **(P1a)** HMAC key management: `hmacKeyVersion`/`evidenceKeyId` stamping + key rotation that retains old versions for evidence verification.
+- [ ] **(P1a)** Tier 1 abuse.ch / Spamhaus-style **IOC**-feed import + local matching + audit/evidence record (redaction-consistent `redactionToken`: external raw / customer-asset token + `sourceVersion`/`feedHash`) + coverage status + `known_ioc_hit` wiring into `applyLikelihoodFloors` (**closes #361**).
 - [ ] **(P1a)** Feed-refresh worker + stale-feed → `unknown`/`stale` coverage status (not silent `false`) policy.
 - [ ] **(P1b)** Redaction-token-aware enrichment fact injection (RFC 0001 extension) + worker execution-order guard.
 - [ ] Per-customer enable flags + policy surface.

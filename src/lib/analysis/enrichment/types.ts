@@ -59,11 +59,14 @@ export interface DerivedUrlIndicators {
 }
 
 /**
- * The post-normalization value actually matched and stored in audit records
- * (RFC §"Indicator normalization"). Carries the canonical display `value`,
- * the equivalence set `matchValues` a feed may be keyed on, the entity type,
+ * The post-normalization value actually matched against feeds (RFC
+ * §"Indicator normalization"). Carries the canonical display `value`, the
+ * equivalence set `matchValues` a feed may be keyed on, the entity type,
  * normalization-derived classification flags, and the `normalizationVersion`
- * stamp that keeps audit records interpretable as rules evolve.
+ * stamp that scopes the enrichment cache key and in-run dedupe as rules
+ * evolve. This shape drives matching, not persistence — the evidence record
+ * stores the redaction-consistent indicator reference and map scope, not the
+ * normalized indicator or its version.
  */
 export interface NormalizedIndicator {
   entityType: EntityType;

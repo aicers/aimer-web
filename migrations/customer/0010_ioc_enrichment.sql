@@ -17,12 +17,17 @@
 --
 --   * `story_ioc_evidence` — one row per floor-supporting match, storing
 --     the RFC 0003 `EvidenceRecord` fields so a `known_ioc_hit = true`
---     is explainable after the fact. No plaintext indicator is stored by
---     default: only the keyed HMAC of the normalized indicator plus the
---     `redactionToken` identity reference. Linked to the canonical story
---     version, NOT to `story_analysis_result` (which does not yet exist
---     when enrichment runs — analysis produces it later and can join
---     back on `story_id`).
+--     is explainable after the fact. Indicators are stored the same way as
+--     the rest of the redaction layer: external indicators raw and
+--     customer-asset indicators as tokens (the original lives only in the
+--     existing encrypted redaction map), both carried by `redaction_token`.
+--     A customer-asset token is event-scoped, so the row also carries the
+--     `(source_aice_id, member_event_key)` map key that recovers it — the
+--     same `(aice_id, event_key)` the worker decrypts; without it the same
+--     token string from two members would be indistinguishable and the
+--     original unrecoverable. Linked to the canonical story version, NOT to
+--     `story_analysis_result` (which does not yet exist when enrichment runs
+--     — analysis produces it later and can join back on `story_id`).
 --
 -- Both are keyed on / FK'd to the canonical `(story_id, story_version)`
 -- and cascade-delete with the story, mirroring `story_member`.
@@ -57,17 +62,22 @@ CREATE TABLE story_ioc_evidence (
                                            PRIMARY KEY,
     story_id                  BIGINT       NOT NULL,
     story_version             TEXT         NOT NULL,
-    -- Links evidence back to the masked member (identity reference for
-    -- external raw indicators that carry no token).
+    -- The redaction-consistent indicator reference: the raw value for an
+    -- external indicator, or a `<<REDACTED_*_NNN>>` token for a
+    -- customer-asset indicator (whose original lives only in the existing
+    -- encrypted redaction map), exactly as the rest of the system stores
+    -- indicators.
     redaction_token           TEXT         NOT NULL,
-    -- Keyed HMAC of the normalized indicator + the key version that
-    -- produced it (rotation retains old versions so prior evidence stays
-    -- verifiable) + the normalization version (keeps the HMAC
-    -- interpretable as rules evolve). No plaintext indicator by default.
-    normalized_indicator_hmac TEXT         NOT NULL,
-    hmac_key_version          TEXT         NOT NULL,
-    evidence_key_id           TEXT,
-    normalization_version     TEXT         NOT NULL,
+    -- The event redaction-map scope `(source_aice_id, member_event_key)`
+    -- this evidence row was extracted under — i.e. the `(aice_id,
+    -- event_key)` key of the `event_redaction_map` row. For a customer-asset
+    -- `redaction_token` this is what makes the original recoverable: token
+    -- numbering restarts per event, so the same `<<REDACTED_IP_001>>` from
+    -- two members maps to different values and the token alone is ambiguous.
+    -- For a raw external indicator it is provenance (which member event the
+    -- hit came from). Always known — the worker extracts per member event.
+    source_aice_id            TEXT           NOT NULL,
+    member_event_key          NUMERIC(39, 0) NOT NULL,
     source_policy_id          TEXT         NOT NULL,
     source_version            TEXT,
     feed_hash                 TEXT,

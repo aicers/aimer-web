@@ -2,10 +2,11 @@
 //
 // Drives `runStoryEnrichment` against a real customer DB (story / member /
 // evidence / state) and a real auth DB (ioc_feed_snapshot), covering:
-//   - known_ioc_hit true (floor-eligible deterministic hit) + evidence +
-//     HMAC reproducibility across a key rotation,
+//   - known_ioc_hit true (floor-eligible deterministic hit) + evidence
+//     storing the external indicator raw in `redaction_token`,
 //   - false-complete (answered, no hit) vs false-unknown (missing feed),
-//   - redaction-map recovery of a tokenized customer-asset IP,
+//   - redaction-map recovery of a tokenized customer-asset IP (stored as a
+//     token whose raw value lives only in the redaction map),
 //   - the boolean stays monotonic (stale feed never flips a hit),
 //   - typed policy_event columns are scoped to the story's source_aice_id
 //     (a different source's same-event_key IOC must not flip the floor),
@@ -39,7 +40,6 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { HmacKeyRing, verifyIndicatorHmac } from "../enrichment/evidence";
 import { importFeedSnapshot } from "../enrichment/feed-import";
 import { PgFeedStore } from "../enrichment/feed-store";
 import { seedFixtureFeeds } from "../enrichment/fixture-feeds";
@@ -82,8 +82,6 @@ const FLOORING: SourcePolicy[] = [
   },
 ];
 
-const keyRing = new HmacKeyRing({ v1: "test-key-v1" }, "v1");
-
 function opts(
   authPool: Pool,
   customerPool: Pool,
@@ -93,7 +91,6 @@ function opts(
     authPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    keyRing,
     buildDispatcher: (ap, now) =>
       buildLocalFeedDispatcher(new PgFeedStore(ap), {
         now,
@@ -266,58 +263,38 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(stateRows[0].coverage_status).toBe("complete");
     expect(stateRows[0].known_ioc_hit).toBe(true);
 
-    // Evidence record carries the audit fields; no plaintext indicator.
+    // Evidence record carries the provenance fields and the
+    // redaction-consistent indicator reference.
     const { rows: ev } = await customerPool.query<{
       redaction_token: string;
-      normalized_indicator_hmac: string;
-      hmac_key_version: string;
-      normalization_version: string;
+      source_aice_id: string;
+      member_event_key: string;
       source_policy_id: string;
       source_version: string;
       feed_hash: string;
       hit_type: string;
       floor_eligible: boolean;
+      coverage_status: string;
+      checked_at: Date;
     }>(
       `SELECT * FROM story_ioc_evidence
         WHERE story_id = 1001 AND story_version = 'v1'`,
     );
     expect(ev).toHaveLength(1);
     const e = ev[0];
-    // External raw indicator → identity token is the raw value.
+    // External indicator → stored RAW in redaction_token (redaction-consistent).
     expect(e.redaction_token).toBe("45.66.230.5");
+    // Provenance: which member event the hit came from. (node-pg returns
+    // NUMERIC as a string.)
+    expect(e.source_aice_id).toBe(AICE_ID);
+    expect(e.member_event_key).toBe("1");
     expect(e.source_policy_id).toBe("abuse.ch/feodo");
     expect(e.source_version).toBe("2026-06-04");
     expect(e.feed_hash).toBeTruthy();
     expect(e.hit_type).toBe("deterministic_ioc");
     expect(e.floor_eligible).toBe(true);
-    expect(e.normalization_version).toBe("ti-norm-1");
-    // No plaintext indicator column exists; the HMAC verifies the value.
-    expect(
-      verifyIndicatorHmac(
-        normalizeIp("45.66.230.5"),
-        {
-          normalizedIndicatorHmac: e.normalized_indicator_hmac,
-          hmacKeyVersion: e.hmac_key_version,
-        },
-        keyRing,
-      ),
-    ).toBe(true);
-
-    // HMAC still verifies across a key rotation (old version retained).
-    const rotated = new HmacKeyRing(
-      { v1: "test-key-v1", v2: "test-key-v2" },
-      "v2",
-    );
-    expect(
-      verifyIndicatorHmac(
-        normalizeIp("45.66.230.5"),
-        {
-          normalizedIndicatorHmac: e.normalized_indicator_hmac,
-          hmacKeyVersion: e.hmac_key_version,
-        },
-        rotated,
-      ),
-    ).toBe(true);
+    expect(e.coverage_status).toBe("complete");
+    expect(e.checked_at).toBeTruthy();
   });
 
   it("false-complete: answered, no hit → no evidence, coverage complete", async () => {
@@ -384,12 +361,103 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(result.knownIocHit).toBe(true);
     expect(result.evidenceCount).toBe(1);
 
-    const { rows: ev } = await customerPool.query<{ redaction_token: string }>(
-      `SELECT redaction_token FROM story_ioc_evidence
+    const { rows: ev } = await customerPool.query<{
+      redaction_token: string;
+      source_aice_id: string;
+      member_event_key: string;
+    }>(
+      `SELECT redaction_token, source_aice_id,
+              member_event_key::text AS member_event_key
+         FROM story_ioc_evidence
         WHERE story_id = 1004 AND story_version = 'v1'`,
     );
-    // Recovered value → the TOKEN is the evidence reference, not the value.
+    // Customer-asset indicator → the TOKEN is the evidence reference, and the
+    // recovered raw value lives ONLY in the redaction map, never in the row.
     expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+    expect(JSON.stringify(ev[0])).not.toContain("45.66.230.5");
+    // The row also carries the `(aice_id, event_key)` map scope that recovers
+    // the token — without it the token alone would be ambiguous.
+    expect(ev[0].source_aice_id).toBe(AICE_ID);
+    expect(ev[0].member_event_key).toBe("1");
+  });
+
+  it("distinguishes two members reusing the same token for different IPs", async () => {
+    // Two members of one story each carry `<<REDACTED_IP_001>>`, but token
+    // numbering restarts per event, so the two tokens recover DIFFERENT
+    // customer-asset IPs from their own event_redaction_map rows. Both IPs
+    // are floor-eligible feed hits, so each produces an evidence row. With
+    // only the token string the two rows would be indistinguishable and the
+    // originals unrecoverable; the `(source_aice_id, member_event_key)` scope
+    // ties each row to the map that recovers it.
+    await importFeedSnapshot(authPool, {
+      sourcePolicyId: "abuse.ch/feodo",
+      entityType: "IP",
+      hitType: "deterministic_ioc",
+      classification: "c2",
+      sourceVersion: "2026-06-04",
+      sourceUpdatedAt: FRESH,
+      rows: [{ matchValue: "45.66.230.5" }, { matchValue: "45.66.230.6" }],
+    });
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (1011::bigint, 'v1', 'auto_correlated',
+               '2026-05-01T00:00:00Z', '2026-05-01T01:00:00Z',
+               '{}'::jsonb, $1, '2026-05-01T02:00:00Z')`,
+      [AICE_ID],
+    );
+    for (const eventKey of ["1", "2"]) {
+      await customerPool.query(
+        `INSERT INTO story_member
+           (story_id, story_version, member_event_key, role, event,
+            redaction_policy_version)
+         VALUES (1011::bigint, 'v1', $1::numeric, 'primary', $2::jsonb,
+                 'engine:1.0.0|ranges:empty')`,
+        [eventKey, JSON.stringify({ orig_addr: "<<REDACTED_IP_001>>" })],
+      );
+    }
+
+    // Same token, different recovered IP per event scope.
+    const recovered: Record<string, string> = {
+      "1": "45.66.230.5",
+      "2": "45.66.230.6",
+    };
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1011",
+      opts(authPool, customerPool, {
+        loadRedactionMap: async (_pool, _cid, _aice, eventKey) => ({
+          "<<REDACTED_IP_001>>": {
+            kind: "ip",
+            value: recovered[eventKey] ?? "0.0.0.0",
+          },
+        }),
+      }),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(result.evidenceCount).toBe(2);
+
+    const { rows: ev } = await customerPool.query<{
+      redaction_token: string;
+      member_event_key: string;
+    }>(
+      `SELECT redaction_token, member_event_key::text AS member_event_key
+         FROM story_ioc_evidence
+        WHERE story_id = 1011 AND story_version = 'v1'
+        ORDER BY member_event_key`,
+    );
+    expect(ev).toHaveLength(2);
+    // Both rows carry the SAME ambiguous token string...
+    expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+    expect(ev[1].redaction_token).toBe("<<REDACTED_IP_001>>");
+    // ...but are distinguishable by their map scope, so each original is
+    // recoverable from its own event_redaction_map row.
+    expect(ev[0].member_event_key).toBe("1");
+    expect(ev[1].member_event_key).toBe("2");
+    // No recovered customer-asset IP ever lands in the evidence rows.
+    expect(JSON.stringify(ev)).not.toContain("45.66.230.5");
+    expect(JSON.stringify(ev)).not.toContain("45.66.230.6");
   });
 
   it("extracts an IOC present only in the policy_event typed columns", async () => {
@@ -533,9 +601,9 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     await seedStory(customerPool, "1012", { resp_addr: "45.66.230.5" });
 
     // A hard failure reached AFTER the canonical version is known — here the
-    // dispatcher build throws, standing in for a key-ring/config/decryption/
-    // DB error. Without a marker this would requeue analysis forever with
-    // only process logs to explain it.
+    // dispatcher build throws, standing in for a config/decryption/DB error.
+    // Without a marker this would requeue analysis forever with only process
+    // logs to explain it.
     const failing = opts(authPool, customerPool, {
       buildDispatcher: () => {
         throw new Error("boom: dispatcher unavailable");
@@ -583,28 +651,6 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(stable[0].status).toBe("complete");
     expect(stable[0].known_ioc_hit).toBe(true);
     expect(stable[0].last_error).toMatch(/boom/);
-  });
-
-  it("a no-hit story completes without resolving the evidence HMAC key (lazy)", async () => {
-    await importFeodo(authPool, FRESH);
-    // Indicator that does NOT hit the feed → no evidence record is built.
-    await seedStory(customerPool, "1013", { resp_addr: "45.66.230.99" });
-
-    // No keyRing injected and NODE_ENV=production: `getEvidenceKeyRing()`
-    // would THROW (fail-closed) if it were resolved. Lazy resolution means a
-    // no-hit story never reaches it, so enrichment still completes — the
-    // fail-closed guard cannot stall a story that had nothing to record.
-    vi.stubEnv("NODE_ENV", "production");
-    try {
-      const result = await runStoryEnrichment(CUSTOMER_ID, "1013", {
-        ...opts(authPool, customerPool),
-        keyRing: undefined,
-      });
-      expect(result.status).toBe("complete");
-      expect(result.knownIocHit).toBe(false);
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it("seeds the pinned fixture feeds and matches a fixture IP via PgFeedStore", async () => {

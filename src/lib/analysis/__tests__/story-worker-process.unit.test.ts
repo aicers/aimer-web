@@ -788,7 +788,7 @@ describe("processStoryJob — enrichment precondition", () => {
         ready: false,
         knownIocHit: false,
         status: "failed",
-        lastError: "IOC_EVIDENCE_HMAC_KEY must be set in production",
+        lastError: "enrichment: failed to load redaction policy",
       }),
       callAnalyzeStory: callAnalyzeStory as never,
       resolveCustomerPool: () => customerPool as never,
@@ -807,7 +807,7 @@ describe("processStoryJob — enrichment precondition", () => {
     // so the requeue is diagnosable, not a silent spin.
     const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
     expect(log).toContain("analysis.story_enrichment_failed_requeued");
-    expect(log).toContain("IOC_EVIDENCE_HMAC_KEY");
+    expect(log).toContain("failed to load redaction policy");
     warn.mockRestore();
   });
 

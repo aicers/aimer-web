@@ -3,8 +3,11 @@
 // Matching is only as good as normalization. Each normalizer produces a
 // `NormalizedIndicator` carrying the canonical display value, the set of
 // equivalent `matchValues` a feed may key on, normalization-derived
-// classification flags, and a `normalizationVersion` stamp so audit records
-// stay interpretable as rules evolve.
+// classification flags, and a `normalizationVersion` stamp that scopes the
+// enrichment cache key and in-run dedupe so matching stays consistent as
+// rules evolve. The stamp is not persisted on the evidence record — audit
+// rows store the redaction-consistent indicator reference plus its map
+// scope, not the normalized indicator.
 //
 // IP parsing/CIDR reuse `ipaddr.js` (as `cidr-validation.ts` does) but apply
 // the broader public allow-list below — the existing `isReservedPrivate` is
@@ -21,7 +24,7 @@ import type {
 
 /**
  * Stamped on every `NormalizedIndicator`. Bump when any normalization rule
- * changes so stored HMACs / evidence records remain interpretable.
+ * changes so indicator matching stays consistent as rules evolve.
  */
 export const NORMALIZATION_VERSION = "ti-norm-1";
 
@@ -204,14 +207,14 @@ export function normalizeHash(value: string): NormalizedIndicator {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical serialization (for HMAC stamping)
+// Canonical serialization (dedupe key)
 // ---------------------------------------------------------------------------
 
 /**
  * Deterministic, version-stamped serialization of a normalized indicator,
- * used as the HMAC message so two runs over the same indicator+version
- * digest identically. Kept here (alongside the normalizer) so it stays in
- * lockstep with `NORMALIZATION_VERSION`.
+ * used as the dedupe key when extracting indicators (`indicator-extraction.ts`)
+ * so the same indicator+version is processed once. Kept here (alongside the
+ * normalizer) so it stays in lockstep with `NORMALIZATION_VERSION`.
  */
 export function serializeIndicator(indicator: NormalizedIndicator): string {
   return [

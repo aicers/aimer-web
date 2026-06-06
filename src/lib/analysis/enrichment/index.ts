@@ -14,11 +14,7 @@ export {
 export {
   type BuildEvidenceParams,
   buildEvidenceRecord,
-  computeIndicatorHmac,
   type EvidenceRecord,
-  HmacKeyRing,
-  type IndicatorHmac,
-  verifyIndicatorHmac,
 } from "./evidence";
 export { createEnrichmentFact } from "./fact";
 export {
