@@ -25,12 +25,12 @@ session, sees a permission notice rather than the report.
 > priority tier and its provenance hint and no longer renders the raw
 > aggregate scores. The **weekly and monthly** variants below are
 > real-data captures from the gauntlet live pipeline (aicers/gauntlet#149,
-> #365), which this fixture pipeline cannot reproduce, so they still show
-> the old header (a separate aggregate-score row) and this section under
-> its former heading "Baseline observations". They will be re-shot from a
-> real-data stack (the shared constraint with #429); per the manual policy
-> they are kept as real captures with this note rather than fabricated or
-> hand-edited.
+> #365), which this fixture pipeline cannot reproduce. Their pre-#450
+> captures still showed the old header (a separate aggregate-score row),
+> so — per the manual policy that a stale or fabricated shot must not
+> stand in for a real one — they have been replaced with placeholders
+> until a fresh real-data stack capture (the shared constraint with #429)
+> can be taken.
 
 ## Report index
 
@@ -104,9 +104,9 @@ No operator action is needed for any period: a background worker seeds,
 schedules, and runs the LLM calls. The **Regenerate** button (below) is
 for forcing an out-of-cadence refresh.
 
-![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge with its provenance hint, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot), and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
+![Placeholder for the weekly periodic report detail page, pending a real-data recapture — the live-pipeline weekly capture is not reproducible from the fixture stack](../../assets/report-detail-weekly.en.png)
 
-![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier with its provenance hint, technique chips) and the five narrative sections, with the executive summary and suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot) framing the month's activity from within the window](../../assets/report-detail-monthly.en.png)
+![Placeholder for the monthly periodic report detail page, pending a real-data recapture — the live-pipeline monthly capture is not reproducible from the fixture stack](../../assets/report-detail-monthly.en.png)
 
 ## Period tabs
 
@@ -398,13 +398,16 @@ to decide whether to surface a deep-link badge.
 No badge is shown when there is no report yet, or when the report's parent
 state row is missing or archived (for example after a timezone change,
 which archives the old-timezone state) — so the badge is never deep-linked
-to a report whose page would be unavailable. Otherwise the badge carries
-only the priority tier and links to this
+to a report whose page would be unavailable. Otherwise the summary
+endpoint returns the priority tier alongside the aggregate severity and
+likelihood scores (`score_kind: "aggregate"`) and a deep link to this
 page; following it opens the right report regardless of which customer the
 opening tab has selected, and opens the same variant (timezone, language,
-provider, model) the card was shown for. The badge itself (priority tier
-only, no section content) is rendered by
-aice-web-next; see the aice-web-next manual for its screenshot.
+provider, model) the card was shown for. The badge itself is rendered by
+aice-web-next, which leads with the priority tier; see the aice-web-next
+manual for its screenshot. (The aggregate scores stay in the cross-system
+contract for aice-web-next's own use — the tier-forward change in this
+release is the aimer-web report-detail view, not this endpoint's payload.)
 
 Section content, TTP tags, and factors are full-report-viewer concerns
 and stay out of the badge, so it cannot leak report detail. The deep-link
