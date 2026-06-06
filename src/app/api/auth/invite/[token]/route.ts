@@ -1,11 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { resolveInvitationType } from "@/lib/auth/analyst-invitations";
 import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
   clearConnectionIdCookie,
   setInvitationTokenCookie,
 } from "@/lib/auth/cookies";
-import { hashToken } from "@/lib/auth/invitations";
-import { getAuthPool, query } from "@/lib/db/client";
+import { getAuthPool } from "@/lib/db/client";
 
 export async function GET(
   request: NextRequest,
@@ -13,17 +13,14 @@ export async function GET(
 ): Promise<NextResponse> {
   const { token } = await params;
 
-  const tokenHash = hashToken(token);
   const pool = getAuthPool();
 
-  const rows = await query<{ id: string }>(
-    pool,
-    `SELECT id FROM invitations
-     WHERE token_hash = $1 AND status = 'pending' AND expires_at > NOW()`,
-    [tokenHash],
-  );
+  // Dual lookup: accept the token if EITHER a member or analyst invitation
+  // is pending + unexpired. Both invitation types share the single
+  // invitation_token cookie and the same sign-in redirect below.
+  const type = await resolveInvitationType(pool, token);
 
-  if (rows.length === 0) {
+  if (type === "not_found") {
     return NextResponse.redirect(
       new URL("/deny?reason=invitation_expired", canonicalOrigin(request)),
     );
