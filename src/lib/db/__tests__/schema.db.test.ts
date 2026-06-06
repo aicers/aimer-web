@@ -58,13 +58,15 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     // 0040_owned_domain_permissions.sql:
     //   read key → User, Analyst, Manager, System Administrator (+1)
     //   write key → Manager, System Administrator (+1)
+    // plus the analyst designation keys seeded by 0003_roles.sql (#266):
+    //   analysts:read + analysts:write → System Administrator only (+2)
     expect(rows).toEqual([
       { name: "Analyst", auth_context: "general", perm_count: 15 },
       { name: "Manager", auth_context: "general", perm_count: 17 },
       {
         name: "System Administrator",
         auth_context: "admin",
-        perm_count: 19,
+        perm_count: 21,
       },
       { name: "User", auth_context: "general", perm_count: 10 },
     ]);
@@ -256,9 +258,21 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     it("analyst_invitations.status", async () => {
       await expect(
         pool.query(
-          "INSERT INTO analyst_invitations (email, invited_by, token_hash, status) VALUES ('a@b.c', gen_random_uuid(), 'h2', 'invalid')",
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('a@b.c', '{}', gen_random_uuid(), 'h2', 'invalid')",
         ),
       ).rejects.toThrow();
+    });
+
+    it("analyst_invitations.status accepts 'revoked' (#266 parity)", async () => {
+      const { rows: aRows } = await pool.query<{ id: string }>(
+        "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name) VALUES ('iss-ai-rev', 'sub-ai-rev', 'u', 'd') RETURNING id",
+      );
+      await expect(
+        pool.query(
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('rev@b.c', '{}', $1, 'h-rev', 'revoked')",
+          [aRows[0].id],
+        ),
+      ).resolves.toBeDefined();
     });
 
     it("staged_event_customers.status", async () => {
@@ -358,6 +372,85 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
           "INSERT INTO trust_registry (aice_id, issuer, kid, public_key) VALUES ('aice_uniq', 'iss', 'kid1', '{}')",
         ),
       ).rejects.toThrow();
+    });
+  });
+
+  // -- analyst_invitations parity with invitations (#266) --
+
+  describe("analyst_invitations schema parity (#266)", () => {
+    async function newAccountId(subject: string): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name) VALUES ('iss-ai', $1, 'u', 'd') RETURNING id",
+        [subject],
+      );
+      return rows[0].id;
+    }
+
+    it("customer_ids is NOT NULL", async () => {
+      const invitedBy = await newAccountId("ai-notnull");
+      await expect(
+        pool.query(
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash) VALUES ('nn@b.c', NULL, $1, 'h-nn')",
+          [invitedBy],
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("accepts an empty customer_ids array for an unassigned analyst", async () => {
+      const invitedBy = await newAccountId("ai-empty");
+      await expect(
+        pool.query(
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash) VALUES ('empty@b.c', '{}', $1, 'h-empty')",
+          [invitedBy],
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it("allows one pending invitation per email (partial unique on lower(email))", async () => {
+      const invitedBy = await newAccountId("ai-uniq");
+      await pool.query(
+        "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('Dup@Test.com', '{}', $1, 'h-uniq-1', 'pending')",
+        [invitedBy],
+      );
+      // Same email (case-insensitive), different token → rejected while pending
+      await expect(
+        pool.query(
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('dup@test.com', '{}', $1, 'h-uniq-2', 'pending')",
+          [invitedBy],
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("permits a new pending invitation once the prior one is no longer pending", async () => {
+      const invitedBy = await newAccountId("ai-reissue");
+      await pool.query(
+        "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('reissue@test.com', '{}', $1, 'h-re-1', 'revoked')",
+        [invitedBy],
+      );
+      await expect(
+        pool.query(
+          "INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash, status) VALUES ('reissue@test.com', '{}', $1, 'h-re-2', 'pending')",
+          [invitedBy],
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it("has the pending partial indexes (token_hash, expires_at, lower(email))", async () => {
+      const { rows } = await pool.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+         WHERE tablename = 'analyst_invitations'
+           AND indexname IN (
+             'idx_analyst_invitations_pending_unique',
+             'idx_analyst_invitations_token_hash',
+             'idx_analyst_invitations_expires'
+           )
+         ORDER BY indexname`,
+      );
+      expect(rows.map((r) => r.indexname)).toEqual([
+        "idx_analyst_invitations_expires",
+        "idx_analyst_invitations_pending_unique",
+        "idx_analyst_invitations_token_hash",
+      ]);
     });
   });
 
