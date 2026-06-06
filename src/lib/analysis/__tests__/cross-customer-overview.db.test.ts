@@ -140,13 +140,13 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
-          priority_tier, analysis_text, input_event_refs, input_hash,
-          redaction_policy_version, requested_by, superseded_at)
+          priority_tier, analysis_text, input_event_refs, input_fact_refs,
+          input_hash, redaction_policy_version, requested_by, superseded_at)
        VALUES ($1, $2::bigint, $3, $4, $5,
                'mv', 'pv', $6,
                $7, $8,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-               $9, 'text', '[]'::jsonb, 'h',
+               $9, 'text', '[]'::jsonb, '[]'::jsonb, 'h',
                'baseline-only', NULL,
                CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
       [

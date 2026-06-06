@@ -162,12 +162,13 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       expect(pk.map((r) => r.attname)).toEqual(["fact_id"]);
     });
 
-    it("story_analysis_result has input_fact_refs JSONB NOT NULL", async () => {
+    it("story_analysis_result has input_fact_refs JSONB NOT NULL with no default", async () => {
       const { rows } = await pool.query<{
         data_type: string;
         is_nullable: string;
+        column_default: string | null;
       }>(
-        `SELECT data_type, is_nullable
+        `SELECT data_type, is_nullable, column_default
            FROM information_schema.columns
           WHERE table_schema = 'public'
             AND table_name = 'story_analysis_result'
@@ -176,6 +177,10 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       expect(rows).toHaveLength(1);
       expect(rows[0].data_type).toBe("jsonb");
       expect(rows[0].is_nullable).toBe("NO");
+      // Pre-release stance: required, no compat default (parallel to
+      // `input_event_refs`). An omitted write must fail loudly rather
+      // than silently default to `[]` and become undemappable.
+      expect(rows[0].column_default).toBeNull();
     });
   });
 
@@ -270,12 +275,13 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
              (customer_id, story_id, lang, model_name, model,
               model_actual_version, prompt_version, generation,
               severity_score, likelihood_score, priority_tier,
-              analysis_text, input_event_refs, input_hash,
+              analysis_text, input_event_refs, input_fact_refs, input_hash,
               redaction_policy_version)
            VALUES (gen_random_uuid(), 1, 'ENGLISH', 'openai', 'gpt-4o',
                    'v1', 'p1', 1,
                    0.5, 0.4, 'EXTREME',
-                   't', '[]'::jsonb, 'h', 'engine:1.0.0|ranges:empty')`,
+                   't', '[]'::jsonb, '[]'::jsonb, 'h',
+                   'engine:1.0.0|ranges:empty')`,
         ),
       ).rejects.toThrow();
       await expect(
@@ -1241,12 +1247,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
            (customer_id, story_id, lang, model_name, model,
             model_actual_version, prompt_version, generation,
             severity_score, likelihood_score, priority_tier,
-            analysis_text, input_event_refs, input_hash,
+            analysis_text, input_event_refs, input_fact_refs, input_hash,
             redaction_policy_version, requested_by)
          VALUES ($1, 9001, 'ENGLISH', 'openai', 'gpt-4o',
                  'v1', 'p1', 1,
                  0.5, 0.4, 'LOW',
-                 'narr', '[]'::jsonb, 'h',
+                 'narr', '[]'::jsonb, '[]'::jsonb, 'h',
                  'engine:1.0.0|ranges:empty', gen_random_uuid())`,
         [customerId],
       );

@@ -264,13 +264,13 @@ async function seedStoryLeafLang(
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
-        priority_tier, analysis_text, input_event_refs, input_hash,
-        redaction_policy_version)
+        priority_tier, analysis_text, input_event_refs, input_fact_refs,
+        input_hash, redaction_policy_version)
      VALUES ($1, $2::bigint, $3, 'openai', 'gpt-4o',
              'mv', 'pv', 1,
              0.8, 0.7,
              '[]'::jsonb, '[]'::jsonb, '["T1078"]'::jsonb,
-             'MEDIUM', $4, '[]'::jsonb, 'h', 'v1')`,
+             'MEDIUM', $4, '[]'::jsonb, '[]'::jsonb, 'h', 'v1')`,
     [customerId, storyId, lang, analysis],
   );
 }
