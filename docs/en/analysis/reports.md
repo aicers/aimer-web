@@ -18,12 +18,12 @@ or a request for a report that does not exist — sees a `404`, while a
 member without the `reports:read` permission, or a rejected bridge
 session, sees a permission notice rather than the report.
 
-![Periodic report detail page, showing the priority-tier badge with its provenance hint, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
+![Periodic report detail page, showing the priority-tier badge with its provenance hint, the aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
 
 > **Weekly/monthly screenshots pending recapture (#430, #450).** The
 > DAILY capture above is fixture-driven and current: it leads with the
-> priority tier and its provenance hint and no longer renders the raw
-> aggregate scores. The **weekly and monthly** variants below are
+> priority tier and its provenance hint and shows the aggregate severity
+> and likelihood scores. The **weekly and monthly** variants below are
 > currently placeholder graphics. Their real-data captures come from the
 > gauntlet live pipeline (aicers/gauntlet#149, #365), which this fixture
 > pipeline cannot reproduce; the pre-#450 captures still showed the old
@@ -212,9 +212,10 @@ to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx, hallucination detected,
 missing or mismatched redaction policy versions across the included
 analyses) mark the job `failed` immediately.
 
-## Priority tier
+## Priority tier and aggregate scores
 
-The header leads with the report's priority tier and its provenance:
+The header leads with the report's priority tier and its provenance, and
+shows the two aggregate scores:
 
 - **Priority tier** — `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`, rendered
   as a colored badge. The tier is the **maximum** over every included
@@ -227,18 +228,16 @@ The header leads with the report's priority tier and its provenance:
 - **Provenance hint** — a muted "N stories · M events" line beneath the
   badge, recording how many cited analyses fed the report. It is the same
   count the Sources panel header shows.
-
-Clumit Insight still derives aggregate severity and likelihood values
-internally (`score_kind: "aggregate"`) to order reports, but they are
-**not displayed** on this page. The score-combination method is
-non-exposed, and a raw 3-digit number both invites "how was this
-derived?" and implies a precision the aggregate does not carry — so the
-tier, not a number, is the report's forward-facing severity signal.
+- **Aggregate severity / likelihood scores** — `0.000`–`1.000`.
+  Informational display values (`score_kind: "aggregate"`) that summarize
+  the report's severity and likelihood; they are not the input to the
+  tier.
 
 The period's **suspicious-event trend** can raise the report's priority
 when the window's activity deviates from the prior comparable period. The
 trend itself is narrated in the report's **Suspicious-event trends**
-section; only the resulting priority tier surfaces in the header.
+section; only the resulting priority tier and aggregate scores surface in
+the header.
 
 ## MITRE ATT&CK techniques
 

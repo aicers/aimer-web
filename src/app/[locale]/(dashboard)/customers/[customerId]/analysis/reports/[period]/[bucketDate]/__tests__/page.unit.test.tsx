@@ -4,7 +4,7 @@
 //   - uppercase-period case lock (lowercase period → notFound)
 //   - LIVE pinned to the synthetic epoch bucket
 //   - WEEKLY/MONTHLY render (Phase 3 / #298)
-//   - ok render shows tier badge, provenance hint, TTP chips, sections
+//   - ok render shows tier badge, aggregate scores, provenance hint, TTP chips, sections
 //   - pending render shows the banner
 
 import { cleanup, render, screen } from "@testing-library/react";
@@ -174,19 +174,20 @@ describe("report detail page", () => {
   });
   afterEach(() => cleanup());
 
-  it("renders tier badge, provenance hint, TTP chips, and all sections", async () => {
+  it("renders tier badge, aggregate scores, provenance hint, TTP chips, and all sections", async () => {
     await renderPage("DAILY", "2026-05-26");
     expect(
       screen.getByTestId("priority-tier-badge").getAttribute("data-tier"),
     ).toBe("HIGH");
-    // The raw aggregate severity/likelihood scores must never render
-    // (the score-combination method is not exposed, per #386). 0.850 is
-    // the fixture's aggregate severity and appears on no leaf, so its
-    // absence proves the aggregate score is gone. (Leaf scores like the
-    // cited story's 0.700 still render in the Sources panel — that is
-    // allowed disclosure and intentionally not asserted against.)
-    expect(screen.queryByTestId("aggregate-scores")).toBeNull();
-    expect(document.body.textContent).not.toContain("0.850");
+    // The aggregate severity/likelihood values carry useful information and
+    // are displayed (only the score-combination method stays non-exposed,
+    // per #386). Scope the assertion to the aggregate-scores block: 0.850 is
+    // the fixture's aggregate severity (unique to the aggregate), while
+    // 0.700 (the aggregate likelihood) also appears on a cited leaf story in
+    // the Sources panel, so it is ambiguous against the whole body.
+    const aggregateScores = screen.getByTestId("aggregate-scores").textContent;
+    expect(aggregateScores).toContain("0.850");
+    expect(aggregateScores).toContain("0.700");
     // Provenance ("N stories · M events") is allowed disclosure and is
     // relocated under the priority tier.
     expect(screen.getByTestId("aggregate-hint").textContent).toContain(
