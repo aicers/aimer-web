@@ -19,6 +19,7 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { restoreStoryFactTokens } from "./fact-token";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreStoryAnalysisTokens } from "./story-token-restore";
@@ -205,6 +206,7 @@ export async function loadStoryResultPage(
       aiceId: string;
       eventKey: string;
     }>;
+    input_fact_refs: Array<{ index: number; factId: string }>;
     model_actual_version: string;
     prompt_version: string;
     generation: number;
@@ -222,6 +224,7 @@ export async function loadStoryResultPage(
            ttp_tags,
            analysis_text,
            input_event_refs,
+           input_fact_refs,
            model_actual_version,
            prompt_version,
            generation,
@@ -244,6 +247,7 @@ export async function loadStoryResultPage(
            ttp_tags,
            analysis_text,
            input_event_refs,
+           input_fact_refs,
            model_actual_version,
            prompt_version,
            generation,
@@ -339,10 +343,81 @@ export async function loadStoryResultPage(
       }
     }
   }
-  const restoredText = restoreStoryAnalysisTokens(
+  const eventRestoredText = restoreStoryAnalysisTokens(
     row.analysis_text,
     mapsByIndex,
   );
+
+  // Restore fact-scope tokens to plaintext (RFC 0003 C1 #440). Parallel
+  // two-hop to the `E{i}` path above: each `F{k}` references an entry in
+  // `input_fact_refs` carrying the producing `fact_id`, which anchors that
+  // fact's `enrichment_redaction_map` row. The same customer-scope
+  // authorize() that entitles the viewer to event plaintext entitles them
+  // to the fact's customer-asset plaintext (the fact was derived from this
+  // customer's own story). Decrypt each referenced map once, keyed by `k`.
+  const factRefs = Array.isArray(row.input_fact_refs)
+    ? row.input_fact_refs
+    : [];
+  const factMapsByIndex = new Map<number, RedactionMap>();
+  if (factRefs.length > 0) {
+    const factMapRows = await customerPool.query<{
+      fact_id: string;
+      ciphertext: Buffer;
+      wrapped_dek: string;
+    }>(
+      `SELECT fact_id::text AS fact_id, ciphertext, wrapped_dek
+         FROM enrichment_redaction_map
+        WHERE fact_id IN (${factRefs
+          .map((_, i) => `$${i + 1}::bigint`)
+          .join(", ")})`,
+      factRefs.map((r) => r.factId),
+    );
+    const byFactId = new Map<
+      string,
+      { ciphertext: Buffer; wrapped_dek: string }
+    >();
+    for (const r of factMapRows.rows) {
+      byFactId.set(r.fact_id, {
+        ciphertext: r.ciphertext,
+        wrapped_dek: r.wrapped_dek,
+      });
+    }
+    for (const ref of factRefs) {
+      const found = byFactId.get(ref.factId);
+      if (!found) continue;
+      try {
+        const map = await decryptRedactionMap(
+          input.customerId,
+          found.ciphertext,
+          found.wrapped_dek,
+        );
+        factMapsByIndex.set(ref.index, map);
+      } catch {
+        // Decrypt failure (KEK rotation race / vault outage) — skip this
+        // index; its `F{k}` tokens fall through unchanged so the page
+        // still renders.
+      }
+    }
+  }
+  const restoredText = restoreStoryFactTokens(
+    eventRestoredText,
+    factMapsByIndex,
+  );
+
+  // Score factors run through the SAME two-hop restore as the narrative
+  // body (#440). A factor can legitimately carry an `E{i}` member token or
+  // an `F{k}` fact token (the pre-storage leak scan rejects only UNMAPPED
+  // tokens and decoded plaintext), so without this the authorized viewer
+  // would see a raw `<<REDACTED_*_F1_001>>` in a factor while the narrative
+  // shows the resolved customer-asset value. Resolve `E{i}` first, then
+  // `F{k}`, identical to the narrative pipeline above.
+  const restoreFactorTokens = (factor: string): string =>
+    restoreStoryFactTokens(
+      restoreStoryAnalysisTokens(factor, mapsByIndex),
+      factMapsByIndex,
+    );
+  const severityFactors = row.severity_factors.map(restoreFactorTokens);
+  const likelihoodFactors = row.likelihood_factors.map(restoreFactorTokens);
 
   // Member suspicious events for the story → member drill-down (T2 #396).
   // Fetched at the canonical event variant so the cards match the
@@ -363,8 +438,8 @@ export async function loadStoryResultPage(
       severityScore: row.severity_score,
       likelihoodScore: row.likelihood_score,
       priorityTier: row.priority_tier,
-      severityFactors: row.severity_factors,
-      likelihoodFactors: row.likelihood_factors,
+      severityFactors,
+      likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
       analysisText: restoredText,
       requestedBy: row.requested_by,

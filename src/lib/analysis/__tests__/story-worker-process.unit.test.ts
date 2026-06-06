@@ -422,7 +422,9 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     const insertCall = customerPool.__calls.find((c) =>
       c.sql.includes("INSERT INTO story_analysis_result"),
     );
-    return insertCall?.params?.[16] as string;
+    // input_hash is param 17 after `input_fact_refs` (#440) was inserted
+    // between `input_event_refs` (15) and `input_hash`.
+    return insertCall?.params?.[17] as string;
   }
 
   it("changes input_hash when only a member event_time differs", async () => {
@@ -431,6 +433,68 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     expect(hashA).toBeTruthy();
     expect(hashB).toBeTruthy();
     expect(hashA).not.toBe(hashB);
+  });
+
+  // RFC 0003 C1 (#440) — the redacted enrichment-fact text is folded into
+  // `input_hash`. Two runs with identical members/refs but different fact
+  // wording/classification feed the LLM different input and MUST hash
+  // differently — refs alone are insufficient (same fact_ids, different
+  // bodies).
+  async function runAndCaptureFactHashAndRefs(
+    facts: Array<{ factId: string; text: string }>,
+  ): Promise<{ hash: string; factRefs: string }> {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+      clientQueryPlan: [{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }],
+    });
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: (async () => goodAimerResponse()) as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+      loadEnrichmentFacts: async () => facts,
+    });
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    return {
+      hash: insertCall?.params?.[17] as string,
+      factRefs: insertCall?.params?.[16] as string,
+    };
+  }
+
+  it("folds enrichmentFacts into input_hash and writes input_fact_refs", async () => {
+    const a = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    // Same fact_id (so same refs), different wording/classification.
+    const b = await runAndCaptureFactHashAndRefs([
+      {
+        factId: "100",
+        text: "1.2.3.4 is listed by abuse.ch/feodo as botnet",
+      },
+    ]);
+    expect(a.hash).not.toBe(b.hash);
+    // input_fact_refs is persisted (the ordered k -> fact_id mapping).
+    expect(JSON.parse(a.factRefs)).toEqual([{ index: 1, factId: "100" }]);
+  });
+
+  it("input_hash is identical across runs with the same members and facts", async () => {
+    const a = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    const b = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    expect(a.hash).toBe(b.hash);
   });
 });
 
@@ -932,6 +996,81 @@ describe("processStoryJob — hallucination scan", () => {
       c.sql.includes("status = 'failed'"),
     );
     expect(failCall?.params?.[6]).toBe(1); // attempts bumped (LLM call consumed)
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
+
+  // #440 review (Author Round 1): the leak scan must cover the persisted
+  // score factors too, not just the narrative body — otherwise a fact
+  // token echoed (or decoded to a customer-asset plaintext) inside a short
+  // factor slips past the shape filter and reaches the report LLM input.
+  it("fails the job when a score factor decodes a fact token to a customer-asset IP", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn(async () => ({
+      ...goodAimerResponse(),
+      // A private IP is always redaction-eligible, so a factor echoing one
+      // verbatim is a decoded-plaintext leak regardless of the range set.
+      severityFactors: ["beacon to 10.0.0.5 internal host"],
+    }));
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+    });
+
+    expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
+    // Result INSERT must NOT have been attempted.
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1);
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
+
+  it("fails the job when a score factor carries an unmapped fact token", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn(async () => ({
+      ...goodAimerResponse(),
+      // No facts were injected, so `F1` is not an allowed token — the
+      // kind-agnostic backstop must flag it as an unmapped token leak.
+      likelihoodFactors: ["<<REDACTED_IP_F1_001>> listed by feed"],
+    }));
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+    });
+
+    expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1);
     expect(failCall?.params?.[7]).toBe("hallucination_detected");
   });
 });

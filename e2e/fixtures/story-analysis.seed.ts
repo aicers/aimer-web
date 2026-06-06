@@ -163,13 +163,13 @@ export async function seedStoryAnalysisFixture(opts: {
             model_actual_version, prompt_version, generation,
             severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
-            priority_tier, analysis_text, input_event_refs, input_hash,
-            redaction_policy_version, requested_by, requested_at)
+            priority_tier, analysis_text, input_event_refs, input_fact_refs,
+            input_hash, redaction_policy_version, requested_by, requested_at)
          VALUES ($1, $2::bigint, $3, $4, $5,
                  $6, $7, 1,
                  $8, $9,
                  $10::jsonb, $11::jsonb, $12::jsonb,
-                 $13, $14, '[]'::jsonb, $15,
+                 $13, $14, '[]'::jsonb, '[]'::jsonb, $15,
                  $16, NULL, $17::timestamptz)
          ON CONFLICT (customer_id, story_id, lang, model_name, model, generation)
          DO UPDATE SET

@@ -21,6 +21,7 @@ export {
   decryptRedactionMap,
   encryptRedactionMap,
 } from "./envelope-adapter";
+export { readFactMap, writeFactMap } from "./fact-map-write";
 export { loadCustomerOwnedDomains } from "./load-domains";
 export { loadCustomerRanges } from "./load-ranges";
 export { readMapWithLock, writeMap } from "./map-write";

@@ -265,11 +265,12 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
          (customer_id, story_id, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score, priority_tier, analysis_text,
-          input_event_refs, input_hash, redaction_policy_version, requested_at)
+          input_event_refs, input_fact_refs, input_hash,
+          redaction_policy_version, requested_at)
        VALUES ($1, $2::bigint, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 1,
                0, 0, 'HIGH', 'n',
-               $3::jsonb, 'h', 'baseline-only', NOW())`,
+               $3::jsonb, '[]'::jsonb, 'h', 'baseline-only', NOW())`,
       [
         CUSTOMER_ID,
         "888",

@@ -27,8 +27,16 @@ import "server-only";
 
 import type { Pool } from "pg";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { ENGINE_VERSION, redact } from "@/lib/redaction/engine";
 import { decryptRedactionMap } from "@/lib/redaction/envelope-adapter";
-import type { RedactionMap } from "@/lib/redaction/types";
+import { writeFactMap } from "@/lib/redaction/fact-map-write";
+import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
+import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import type {
+  OwnedDomainSet,
+  RangeSet,
+  RedactionMap,
+} from "@/lib/redaction/types";
 import type { EnrichmentDispatcher } from "./enrichment/dispatcher";
 import {
   buildEvidenceRecord,
@@ -42,7 +50,21 @@ import {
 } from "./enrichment/indicator-extraction";
 import { buildLocalFeedDispatcher } from "./enrichment/local-feed-enricher";
 import { matchSatisfiesFloor } from "./enrichment/source-policy";
-import type { CoverageStatus } from "./enrichment/types";
+import type { CoverageStatus, EnrichmentFact } from "./enrichment/types";
+
+/**
+ * A fact after DB-write redaction: the redacted narrative `text` (with
+ * self-scoped `<<REDACTED_*_NNN>>` tokens for customer-asset indicators,
+ * external ones raw), the composite `policyVersion` it was redacted
+ * under, and the self-scoped `map` (`token -> { kind, value }`) that the
+ * render path decrypts to demap fact-scope tokens. The map is empty for
+ * facts that referenced only external indicators.
+ */
+interface RedactedFact {
+  text: string;
+  policyVersion: string;
+  map: RedactionMap;
+}
 
 // ---------------------------------------------------------------------------
 // Evidence HMAC key ring
@@ -271,6 +293,14 @@ export interface EnrichmentWorkerOptions {
   now?: () => Date;
   /** Override redaction-map recovery — used by tests (no OpenBao). */
   loadRedactionMap?: LoadRedactionMap;
+  /**
+   * Override the customer redaction-range loader (RFC 0003 C1 #440) —
+   * used by tests. Drives fact redaction-at-write: customer-asset IPs in
+   * a fact become self-scoped tokens.
+   */
+  loadRanges?: typeof loadCustomerRanges;
+  /** Override the customer owned-domain loader (#440) — used by tests. */
+  loadOwnedDomains?: typeof loadCustomerOwnedDomains;
 }
 
 export interface EnrichmentOutcome {
@@ -278,6 +308,8 @@ export interface EnrichmentOutcome {
   knownIocHit: boolean;
   coverageStatus: CoverageStatus;
   evidenceCount: number;
+  /** Number of redacted enrichment facts persisted (RFC 0003 C1 #440). */
+  factCount: number;
   storyVersion?: string;
 }
 
@@ -322,6 +354,7 @@ export async function runStoryEnrichment(
       knownIocHit: false,
       coverageStatus: "unknown",
       evidenceCount: 0,
+      factCount: 0,
     };
   }
 
@@ -339,6 +372,9 @@ export async function runStoryEnrichment(
       loadMap,
       buildDispatcher: () => buildDispatcher(opts.authPool, now),
       resolveKeyRing,
+      authPool: opts.authPool,
+      loadRanges: opts.loadRanges ?? loadCustomerRanges,
+      loadOwnedDomains: opts.loadOwnedDomains ?? loadCustomerOwnedDomains,
     });
   } catch (err) {
     await persistEnrichmentFailure(customerPool, {
@@ -363,6 +399,9 @@ interface EnrichCanonicalArgs {
   loadMap: LoadRedactionMap;
   buildDispatcher: () => EnrichmentDispatcher;
   resolveKeyRing: () => HmacKeyRing;
+  authPool: Pool;
+  loadRanges: typeof loadCustomerRanges;
+  loadOwnedDomains: typeof loadCustomerOwnedDomains;
 }
 
 /** Run the dispatch + persist for one canonical version (throws on hard error). */
@@ -383,6 +422,14 @@ async function enrichCanonicalVersion(
   // No indicators to check means nothing was missed — complete coverage.
   let coverage: CoverageStatus = "complete";
   const evidence: EvidenceRecord[] = [];
+  // RFC 0003 C1 (#440) — narrative facts across ALL matches (incl.
+  // `soft_reputation` / floor-ineligible), accumulated raw then redacted
+  // once below at the DB-write boundary. The same indicator can recur
+  // across members (e.g. one C2 IP seen in many events), each producing
+  // an identical fact; dedup by raw text so the prompt and the persisted
+  // fact rows carry each narrative once.
+  const rawFacts: EnrichmentFact[] = [];
+  const seenFactText = new Set<string>();
 
   for (const member of members) {
     // Combine both redacted sources for this event_key: the member JSONB
@@ -413,6 +460,14 @@ async function enrichCanonicalVersion(
     )) {
       const merged = await dispatcher.dispatch(indicator);
       coverage = worseCoverage(coverage, merged.coverage.status);
+      // Collect every fact the dispatch produced (narrative for all
+      // matches, not just the floor-supporting ones below), skipping
+      // exact-text duplicates already gathered from another member.
+      for (const fact of merged.facts) {
+        if (seenFactText.has(fact.text)) continue;
+        seenFactText.add(fact.text);
+        rawFacts.push(fact);
+      }
       for (const match of merged.matches) {
         if (!matchSatisfiesFloor(match)) continue;
         knownIocHit = true;
@@ -432,12 +487,27 @@ async function enrichCanonicalVersion(
     }
   }
 
+  // Redact each fact's text at the DB-write boundary (RFC 0001 Amendment
+  // A.1, fact side). External indicators stay raw; customer-asset IPs (in
+  // a registered range) and owned domains become self-scoped tokens whose
+  // raw value lives only in the per-fact encrypted map. Policy is loaded
+  // once and shared — facts in one story redact under one policy version.
+  const redactedFacts = await redactFacts(
+    rawFacts,
+    args.authPool,
+    customerId,
+    args.loadRanges,
+    args.loadOwnedDomains,
+  );
+
   await persistEnrichment(customerPool, {
+    customerId,
     storyId,
     storyVersion: canonical.storyVersion,
     knownIocHit,
     coverage,
     evidence,
+    redactedFacts,
     completedAt: checkedAt,
   });
 
@@ -446,16 +516,66 @@ async function enrichCanonicalVersion(
     knownIocHit,
     coverageStatus: coverage,
     evidenceCount: evidence.length,
+    factCount: redactedFacts.length,
     storyVersion: canonical.storyVersion,
   };
 }
 
+/**
+ * Redact every accumulated fact's text via the pure redaction engine
+ * (RFC 0003 C1 #440). Loads the customer's ranges + owned domains once
+ * (skipped entirely when there are no facts, so a story with no IOC
+ * matches never touches the policy tables). Each fact gets its OWN
+ * self-scoped map (`existingMap: {}`), so token numbering restarts per
+ * fact and the map carries no cross-fact/story linkage.
+ */
+async function redactFacts(
+  rawFacts: ReadonlyArray<EnrichmentFact>,
+  authPool: Pool,
+  customerId: string,
+  loadRanges: typeof loadCustomerRanges,
+  loadOwnedDomains: typeof loadCustomerOwnedDomains,
+): Promise<RedactedFact[]> {
+  if (rawFacts.length === 0) return [];
+  let ranges: RangeSet;
+  let ownedDomains: OwnedDomainSet;
+  try {
+    ranges = await loadRanges(authPool, customerId);
+    ownedDomains = await loadOwnedDomains(authPool, customerId);
+  } catch (err) {
+    // A policy-load failure must not silently drop facts to raw plaintext
+    // (which could leak a customer-asset value into the prompt). Fail the
+    // run; the visible `failed` marker lets it recover on a later tick.
+    throw err instanceof Error
+      ? err
+      : new Error(
+          `enrichment: failed to load redaction policy: ${String(err)}`,
+        );
+  }
+  return rawFacts.map((fact) => {
+    const { redacted, mergedMap, policyVersion } = redact({
+      payload: fact.text,
+      existingMap: {},
+      ranges,
+      ownedDomains,
+      engineVersion: ENGINE_VERSION,
+    });
+    return {
+      text: typeof redacted === "string" ? redacted : fact.text,
+      policyVersion,
+      map: mergedMap,
+    };
+  });
+}
+
 interface PersistArgs {
+  customerId: string;
   storyId: string;
   storyVersion: string;
   knownIocHit: boolean;
   coverage: CoverageStatus;
   evidence: readonly EvidenceRecord[];
+  redactedFacts: readonly RedactedFact[];
   completedAt: string;
 }
 
@@ -524,6 +644,37 @@ async function persistEnrichment(
           e.expiresAt ?? null,
         ],
       );
+    }
+
+    // Enrichment facts (RFC 0003 C1 #440). Always replace this version's
+    // facts with the current run's: unlike the monotonic floor / evidence,
+    // facts are pure narrative derived from the latest dispatch and carry
+    // no monotonic guarantee, so the freshest set is authoritative. The
+    // DELETE cascades to `enrichment_redaction_map`. Each fact gets a new
+    // IDENTITY `fact_id`; its self-scoped map is written only when it
+    // actually has customer-asset tokens, so external-only facts never
+    // touch the envelope encryptor.
+    await client.query(
+      `DELETE FROM story_enrichment_fact
+        WHERE story_id = $1::bigint AND story_version = $2`,
+      [args.storyId, args.storyVersion],
+    );
+    for (const fact of args.redactedFacts) {
+      const inserted = await client.query<{ fact_id: string }>(
+        `INSERT INTO story_enrichment_fact
+           (story_id, story_version, fact_text, redaction_policy_version)
+         VALUES ($1::bigint, $2, $3, $4)
+         RETURNING fact_id::text AS fact_id`,
+        [args.storyId, args.storyVersion, fact.text, fact.policyVersion],
+      );
+      if (Object.keys(fact.map).length > 0) {
+        await writeFactMap(
+          client,
+          args.customerId,
+          inserted.rows[0].fact_id,
+          fact.map,
+        );
+      }
     }
 
     // Completion marker — written even on zero matches. `known_ioc_hit` is

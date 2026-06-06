@@ -48,7 +48,12 @@ import {
   maxTier,
   type PriorityTier,
 } from "./priority-tier";
-import { buildReportTokenMap, type ReportTokenRef } from "./report-token";
+import {
+  buildReportTokenMap,
+  maskFactScopeTokens,
+  type ReportLeafText,
+  type ReportTokenRef,
+} from "./report-token";
 
 export type PeriodicPeriod = "LIVE" | "DAILY" | "WEEKLY" | "MONTHLY";
 
@@ -125,6 +130,26 @@ interface StoryLeafRow {
   /** Canonical story window bounds → aimer's `timeRangeStart`/`timeRangeEnd`. */
   time_window_start: Date;
   time_window_end: Date;
+}
+
+/**
+ * Build a story leaf's report-input text with fact-scope `F{k}` tokens
+ * re-masked to a stable placeholder (RFC 0003 C1 #440). A story analysis
+ * can carry `F{k}` tokens from injected enrichment facts; the report
+ * builder strips them BEFORE the `E{i}`->`R{j}` rewrite so neither a live
+ * `F{k}` (the `R{j}` pass cannot renamespace it) nor any customer-asset
+ * plaintext reaches the report LLM. Event leaves never carry `F{k}`.
+ */
+function maskedStoryLeaf(s: {
+  analysis_text: string;
+  severity_factors: ReadonlyArray<string>;
+  likelihood_factors: ReadonlyArray<string>;
+}): ReportLeafText {
+  return {
+    analysis: maskFactScopeTokens(s.analysis_text),
+    severityFactors: s.severity_factors.map(maskFactScopeTokens),
+    likelihoodFactors: s.likelihood_factors.map(maskFactScopeTokens),
+  };
 }
 
 interface EventLeafRow {
@@ -731,11 +756,7 @@ async function assembleReportInput(
     refs,
     allowedTokens,
   } = buildReportTokenMap(
-    stories.map((s) => ({
-      analysis: s.analysis_text,
-      severityFactors: s.severity_factors,
-      likelihoodFactors: s.likelihood_factors,
-    })),
+    stories.map(maskedStoryLeaf),
     events.map((e) => ({
       analysis: e.analysis_text,
       severityFactors: e.severity_factors,
@@ -1122,11 +1143,7 @@ export async function buildPinnedTokenRefs(
   const events = await fetchEventLeavesByRefs(customerPool, variant, eventRefs);
   if (events === null) return null;
   const { refs } = buildReportTokenMap(
-    stories.map((s) => ({
-      analysis: s.analysis_text,
-      severityFactors: s.severity_factors,
-      likelihoodFactors: s.likelihood_factors,
-    })),
+    stories.map(maskedStoryLeaf),
     events.map((e) => ({
       analysis: e.analysis_text,
       severityFactors: e.severity_factors,

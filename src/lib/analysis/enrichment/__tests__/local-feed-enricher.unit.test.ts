@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  buildFactsFromMatches,
   buildLocalFeedDispatcher,
   type FeedMatchRow,
   type FeedSnapshotMeta,
@@ -296,7 +297,7 @@ describe("local-feed enricher — coverage / staleness", () => {
     expect(result.coverage.status).toBe("stale");
   });
 
-  it("an allowlisted (non-listed) domain produces no match", async () => {
+  it("an allowlisted (non-listed) domain produces no match (fact-free)", async () => {
     const urlPolicy: SourcePolicy[] = [
       {
         sourcePolicyId: "abuse.ch/urlhaus",
@@ -317,5 +318,78 @@ describe("local-feed enricher — coverage / staleness", () => {
     const result = await dispatcher.dispatch(normalizeDomain("good.example"));
     expect(result.matches).toHaveLength(0);
     expect(result.coverage.status).toBe("complete");
+    // No match → no fact.
+    expect(result.facts).toHaveLength(0);
+  });
+});
+
+describe("local-feed enricher — fact generation (#440)", () => {
+  it("emits one narrative fact per match, carrying the raw indicator", async () => {
+    const store = new FakeFeedStore({
+      exact: { "abuse.ch/feodo": ["45.66.230.5"] },
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, {
+      now: fresh,
+      policies: FEODO_FLOORING,
+    });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    expect(result.matches).toHaveLength(1);
+    expect(result.facts).toHaveLength(1);
+    // Raw indicator value at generation (redaction happens later, at write).
+    expect(result.facts[0].text).toContain("45.66.230.5");
+    expect(result.facts[0].text).toContain("abuse.ch/feodo");
+    expect(result.facts[0].redactionTokens).toEqual([]);
+  });
+
+  it("generates a fact for a soft_reputation / floor-ineligible match too", async () => {
+    const store = new FakeFeedStore({
+      exact: { "abuse.ch/feodo": ["45.66.230.5"] },
+      hitType: "soft_reputation",
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, {
+      now: fresh,
+      policies: FEODO_FLOORING,
+    });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    // Never drives the floor, but still narrates.
+    expect(result.matches.some(matchSatisfiesFloor)).toBe(false);
+    expect(result.facts).toHaveLength(1);
+    expect(result.facts[0].text).toContain("45.66.230.5");
+  });
+
+  it("emits no facts when there is no match", async () => {
+    const store = new FakeFeedStore({
+      exact: { "abuse.ch/feodo": ["45.66.230.5"] },
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, {
+      now: fresh,
+      policies: FEODO_FLOORING,
+    });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.99"));
+    expect(result.facts).toHaveLength(0);
+  });
+
+  it("buildFactsFromMatches appends the classification when present", () => {
+    const facts = buildFactsFromMatches(normalizeDomain("malware.example"), [
+      {
+        source: "abuse.ch/urlhaus",
+        sourcePolicyId: "abuse.ch/urlhaus",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+        classification: "malware_download",
+      },
+      {
+        source: "abuse.ch/urlhaus",
+        sourcePolicyId: "abuse.ch/urlhaus",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+      },
+    ]);
+    expect(facts).toHaveLength(2);
+    expect(facts[0].text).toBe(
+      "malware.example is listed by abuse.ch/urlhaus as malware_download",
+    );
+    // No classification → no trailing "as ...".
+    expect(facts[1].text).toBe("malware.example is listed by abuse.ch/urlhaus");
   });
 });

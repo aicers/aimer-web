@@ -29,6 +29,17 @@ CREATE TABLE story_analysis_result (
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
     analysis_text            TEXT             NOT NULL,
     input_event_refs         JSONB            NOT NULL,
+    -- RFC 0003 C1 (#440) — ordered `k -> fact_id` mapping for the
+    -- `<<REDACTED_*_F{k}_*>>` fact-scope tokens carried by the redacted
+    -- `enrichmentFacts` sent to aimer. Parallel to `input_event_refs`:
+    -- the renderer reads it to resolve each `F{k}` back to its
+    -- `story_enrichment_fact` row (and that fact's `enrichment_redaction_map`).
+    -- Written for every result row alongside `input_event_refs` (`[]` when
+    -- the story carried no enrichment facts); no compat default, so an
+    -- omitted write fails loudly rather than silently producing a row that
+    -- cannot demap `F{k}` tokens (pre-release stance, parallel to
+    -- `input_event_refs`).
+    input_fact_refs          JSONB            NOT NULL,
     input_hash               TEXT             NOT NULL,
     redaction_policy_version TEXT             NOT NULL,
     requested_by             UUID,

@@ -313,7 +313,7 @@ type Mutation {
 	- LLM analysis fails (transport error, provider error envelope,
 	structured-output parse failure, factor/TTP shape violation)
 	"""
-	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
+	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, enrichmentFacts: [String!]!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
 }
 
 type OllamaChatMessage {

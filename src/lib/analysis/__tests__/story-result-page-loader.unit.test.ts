@@ -30,12 +30,18 @@ vi.mock("@/lib/auth/session-policy", () => ({
 vi.mock("@/lib/auth/session-validator", () => ({
   validateSession: (...args: unknown[]) => mockValidateSession(...args),
 }));
+const mockDecryptRedactionMap = vi.fn();
 vi.mock("@/lib/redaction", () => ({
-  decryptRedactionMap: vi.fn(),
+  decryptRedactionMap: (...args: unknown[]) => mockDecryptRedactionMap(...args),
 }));
 vi.mock("../mitre-ttp", () => ({ lookupTtpName: () => null }));
+// `restoreStoryAnalysisTokens` (the `E{i}` hop) is stubbed to a recognizable
+// transform so a test can assert factors run through the SAME restore as the
+// narrative body. `restoreStoryFactTokens` (the `F{k}` hop) is intentionally
+// NOT mocked — its real implementation runs against the decrypted fact map.
 vi.mock("../story-token-restore", () => ({
-  restoreStoryAnalysisTokens: (s: string) => s,
+  restoreStoryAnalysisTokens: (s: string) =>
+    s.replaceAll("<<REDACTED_IP_E1_001>>", "203.0.113.7"),
 }));
 
 let stateRows: Array<{ status: string }> = [];
@@ -43,6 +49,9 @@ let resultRows: Array<Record<string, unknown>> = [];
 // Member-event display rows returned for the `event_analysis_result`
 // batch SELECT the loader runs to populate the story's member list (T2).
 let eventDisplayRows: Array<Record<string, unknown>> = [];
+// Rows returned for the `enrichment_redaction_map` SELECT (the `F{k}`
+// render-demap two-hop). Empty unless a test exercises fact restoration.
+let factMapRows: Array<Record<string, unknown>> = [];
 
 const authPool = {
   query: vi.fn(async (sql: string) => {
@@ -56,6 +65,9 @@ const customerPool = {
     if (sql.includes("FROM story_analysis_result")) return { rows: resultRows };
     if (sql.includes("FROM event_analysis_result")) {
       return { rows: eventDisplayRows };
+    }
+    if (sql.includes("FROM enrichment_redaction_map")) {
+      return { rows: factMapRows };
     }
     return { rows: [] };
   }),
@@ -114,6 +126,8 @@ beforeEach(() => {
   stateRows = [{ status: "ready" }];
   resultRows = [];
   eventDisplayRows = [];
+  factMapRows = [];
+  mockDecryptRedactionMap.mockReset();
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
   mockVerifyJwtFull
     .mockReset()
@@ -243,5 +257,37 @@ describe("loadStoryResultPage — member events (T2 #396)", () => {
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.memberEvents).toEqual([]);
+  });
+});
+
+describe("loadStoryResultPage — score-factor token demap (#440)", () => {
+  it("restores E{i} and F{k} tokens in factors, mirroring the narrative body", async () => {
+    // A `fact_id`-keyed encrypted map for the single injected fact, decrypted
+    // to the self-scoped entry the `F{k}` restore resolves against.
+    factMapRows = [
+      { fact_id: "7", ciphertext: Buffer.from("ct"), wrapped_dek: "dek" },
+    ];
+    mockDecryptRedactionMap.mockResolvedValue({
+      "<<REDACTED_IP_001>>": { kind: "IP", value: "198.51.100.4" },
+    });
+    resultRows = [
+      resultRow({
+        // E-scope token in a severity factor → resolved by the (stubbed)
+        // narrative `E{i}` restore, proving factors share that hop.
+        severity_factors: ["beacon from <<REDACTED_IP_E1_001>>"],
+        // F-scope token in a likelihood factor → resolved by the real
+        // `F{k}` restore against the decrypted fact map.
+        likelihood_factors: ["<<REDACTED_IP_F1_001>> flagged by feed"],
+        input_fact_refs: [{ factId: "7", index: 1 }],
+      }),
+    ];
+
+    const outcome = await callLoader();
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.severityFactors).toEqual(["beacon from 203.0.113.7"]);
+    expect(outcome.data.likelihoodFactors).toEqual([
+      "198.51.100.4 flagged by feed",
+    ]);
   });
 });
