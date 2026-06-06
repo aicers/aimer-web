@@ -3,6 +3,12 @@ import { setNextLocaleCookie } from "@/i18n/locale-cookie";
 import { auditLog } from "@/lib/audit";
 import { withCorrelationId } from "@/lib/audit/correlation";
 import { countAccessibleCustomers, upsertAccount } from "@/lib/auth/account";
+import {
+  acceptAnalystInvitation,
+  analystReasonToDenyKey,
+  diagnoseTerminalInvitation,
+  resolveInvitationType,
+} from "@/lib/auth/analyst-invitations";
 import { processBridgeCallback } from "@/lib/auth/bridge";
 import { canonicalOrigin } from "@/lib/auth/canonical-origin";
 import {
@@ -160,45 +166,147 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       await setNextLocaleCookie(resolvedLocale);
     }
 
-    // Invitation processing (#77): accept invitation if token cookie exists
+    // Invitation processing (#77, #268): accept invitation if token cookie
+    // exists. Resolve the invitation TYPE before consuming so analyst tokens
+    // are not mis-classified as expired member invitations.
     const invitationToken = request.cookies.get("invitation_token")?.value;
     if (invitationToken) {
-      const result = await acceptInvitation(pool, {
-        token: invitationToken,
-        accountId: account.id,
-        email: idClaims.email,
-        emailVerified: idClaims.email_verified,
-      });
+      const invitationType = await resolveInvitationType(pool, invitationToken);
 
-      if (result.deny) {
-        // Clear cookie for non-retryable denials to avoid blocking
-        // subsequent sign-in attempts with a stale token.
+      if (invitationType === "member") {
+        // Existing member path — unchanged (#77).
+        const result = await acceptInvitation(pool, {
+          token: invitationToken,
+          accountId: account.id,
+          email: idClaims.email,
+          emailVerified: idClaims.email_verified,
+        });
+
+        if (result.deny) {
+          // Clear cookie for non-retryable denials to avoid blocking
+          // subsequent sign-in attempts with a stale token.
+          await clearInvitationTokenCookie();
+          void auditLog({
+            actorId: account.id,
+            authContext: "general",
+            action:
+              result.deny === "invitation_expired"
+                ? "invitation.expired"
+                : "invitation.failed",
+            targetType: "invitation",
+            details: { reason: result.deny },
+            ipAddress: meta.ipAddress,
+          });
+          return denyRedirect(request, result.deny);
+        }
+
         await clearInvitationTokenCookie();
+
         void auditLog({
           actorId: account.id,
           authContext: "general",
-          action:
-            result.deny === "invitation_expired"
-              ? "invitation.expired"
-              : "invitation.failed",
+          action: "invitation.accepted",
           targetType: "invitation",
-          details: { reason: result.deny },
+          targetId: result.invitationId,
+          details: { customerId: result.customerId },
           ipAddress: meta.ipAddress,
         });
-        return denyRedirect(request, result.deny);
+      } else if (invitationType === "analyst") {
+        // Analyst path (#268). The invitation_token cookie is cleared on
+        // EVERY exit (accept / retryable / non-retryable) to match member
+        // behavior and avoid stale-token races. "Retryable" means the DB row
+        // stays pending, NOT that the cookie is reused — a retry re-clicks the
+        // email link, which re-sets the cookie via the invite entry endpoint.
+        // Do not add a "keep cookie on retryable" optimization here.
+        const result = await acceptAnalystInvitation(pool, {
+          token: invitationToken,
+          accountId: account.id,
+          email: idClaims.email,
+          emailVerified: idClaims.email_verified,
+        });
+
+        await clearInvitationTokenCookie();
+
+        if (result.outcome === "accepted") {
+          void auditLog({
+            actorId: account.id,
+            authContext: "general",
+            action: "invitation.accepted",
+            targetType: "analyst_invitation",
+            targetId: result.invitationId,
+            details: { customerIds: result.customerIds },
+            ipAddress: meta.ipAddress,
+          });
+          // Fall through to the standard sign-in qualification check.
+        } else {
+          // Retryable and non-retryable failures both audit as
+          // invitation.failed (the analyst path deliberately does not use
+          // invitation.expired) and deny via the reused member-side keys.
+          void auditLog({
+            actorId: account.id,
+            authContext: "general",
+            action: "invitation.failed",
+            targetType: "analyst_invitation",
+            targetId: result.invitationId,
+            details: { reason: result.reason },
+            ipAddress: meta.ipAddress,
+          });
+          return denyRedirect(request, analystReasonToDenyKey(result.reason));
+        }
+      } else {
+        // not_found: the primary resolver matched no pending + unexpired row
+        // in either table. Run the diagnostic to classify the terminal state
+        // and branch on the SOURCE TABLE so the member path stays unchanged.
+        const diagnostic = await diagnoseTerminalInvitation(
+          pool,
+          invitationToken,
+        );
+        await clearInvitationTokenCookie();
+
+        if (diagnostic.source === "invitation") {
+          // Member-terminal carve-out — preserve the legacy member audit and
+          // action verbatim (a terminal member token historically routed
+          // through acceptInvitation and collapsed to invitation_expired).
+          void auditLog({
+            actorId: account.id,
+            authContext: "general",
+            action: "invitation.expired",
+            targetType: "invitation",
+            details: { reason: "invitation_expired" },
+            ipAddress: meta.ipAddress,
+          });
+          return denyRedirect(request, "invitation_expired");
+        }
+
+        if (diagnostic.source === "analyst_invitation") {
+          void auditLog({
+            actorId: account.id,
+            authContext: "general",
+            action: "invitation.failed",
+            targetType: "analyst_invitation",
+            targetId: diagnostic.id,
+            details: { reason: diagnostic.reason },
+            ipAddress: meta.ipAddress,
+          });
+          return denyRedirect(
+            request,
+            analystReasonToDenyKey(diagnostic.reason),
+          );
+        }
+
+        // No row in either table. The original token type is unknowable, so
+        // this analyst-scoped path defaults target_type to analyst_invitation
+        // and omits targetId (no row exists to reference).
+        void auditLog({
+          actorId: account.id,
+          authContext: "general",
+          action: "invitation.failed",
+          targetType: "analyst_invitation",
+          details: { reason: "not_found" },
+          ipAddress: meta.ipAddress,
+        });
+        return denyRedirect(request, "invitation_expired");
       }
-
-      await clearInvitationTokenCookie();
-
-      void auditLog({
-        actorId: account.id,
-        authContext: "general",
-        action: "invitation.accepted",
-        targetType: "invitation",
-        targetId: result.invitationId,
-        details: { customerId: result.customerId },
-        ipAddress: meta.ipAddress,
-      });
     }
 
     // Bridge flow (#33): check for connection_id cookie
