@@ -549,7 +549,6 @@
     },
     "fields": {
       "priorityTier": "우선순위 등급",
-      "aggregateScores": "종합 점수",
       "language": "언어",
       "provider": "제공자",
       "model": "모델",

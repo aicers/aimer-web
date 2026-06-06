@@ -344,15 +344,10 @@ export default async function ReportDetailPage({
             <PriorityBadge tier={data.priorityTier} />
             <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
           </div>
-        </Field>
-        <Field label={tA("fields.aggregateScores")}>
-          <div data-testid="aggregate-scores">
-            {tA("common.severityLikelihood", {
-              severity: data.aggregateSeverityScore.toFixed(3),
-              likelihood: data.aggregateLikelihoodScore.toFixed(3),
-            })}
-          </div>
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div
+            className="mt-1 text-xs text-muted-foreground"
+            data-testid="aggregate-hint"
+          >
             {tA("reportDetail.aggregateHint", {
               storyCount: data.topStoryCount,
               eventCount: data.topEventCount,

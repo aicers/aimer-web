@@ -1410,9 +1410,9 @@ base.describe.serial("Manual screenshots", () => {
   // =========================================================================
   // Periodic report page (issue #297) — RFC 0002 Phase 2. Capture targets
   // driven from the deterministic seed in `fixtures/report-analysis.seed`:
-  //   - report-detail          — DAILY report; priority badge, aggregate
-  //                              scores, TTP chips, and the five narrative
-  //                              sections.
+  //   - report-detail          — DAILY report; priority-tier badge with its
+  //                              provenance hint, TTP chips, and the five
+  //                              narrative sections.
   //   - report-regenerate-modal — the confirmation modal opened from the
   //                              detail page.
   //   - report-summary-badge   — the aice-web-next deep-link badge. That
