@@ -3,8 +3,11 @@
 // Matching is only as good as normalization. Each normalizer produces a
 // `NormalizedIndicator` carrying the canonical display value, the set of
 // equivalent `matchValues` a feed may key on, normalization-derived
-// classification flags, and a `normalizationVersion` stamp so audit records
-// stay interpretable as rules evolve.
+// classification flags, and a `normalizationVersion` stamp that scopes the
+// enrichment cache key and in-run dedupe so matching stays consistent as
+// rules evolve. The stamp is not persisted on the evidence record — audit
+// rows store the redaction-consistent indicator reference plus its map
+// scope, not the normalized indicator.
 //
 // IP parsing/CIDR reuse `ipaddr.js` (as `cidr-validation.ts` does) but apply
 // the broader public allow-list below — the existing `isReservedPrivate` is

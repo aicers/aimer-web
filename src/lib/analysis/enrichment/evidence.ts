@@ -1,6 +1,6 @@
 // RFC 0003 P1a — evidence-record model (RFC §"Audit / evidence model").
-// MODEL + LOGIC ONLY: no table, no DB write — persistence is the #361
-// follow-up.
+// This is the populated model; persistence lives in `enrichment-worker.ts`
+// (the evidence-persist path writing `story_ioc_evidence`).
 //
 // Evidence stores indicators exactly like the rest of the redaction layer:
 // external indicators raw and customer-asset indicators as tokens (the
@@ -16,8 +16,8 @@ import type { CoverageReport, EnrichmentMatch, HitType } from "./types";
 /**
  * The evidence record (RFC §"Audit / evidence model"). Stores enough to
  * explain a `known_ioc_hit` after the fact: the redaction-consistent
- * indicator reference plus the source/provenance fields. Persistence is out
- * of P1a scope; this is the populated model only.
+ * indicator reference plus the source/provenance fields. Persisted as a
+ * `story_ioc_evidence` row by the worker's evidence-persist path.
  */
 export interface EvidenceRecord {
   /**
@@ -48,7 +48,7 @@ export interface EvidenceRecord {
   /**
    * The coverage report for the dispatch this match came from (RFC §6 — "record
    * the raw counts ... alongside the enum on the result/evidence"). Carrying it
-   * here gives the #361 persistence follow-up a typed home for `coverageStatus`
+   * here gives the evidence-persist path a typed home for `coverageStatus`
    * + counts so it need not invent fields outside this foundation. It is the
    * same per-indicator `CoverageReport` the dispatcher puts on
    * `MergedEnrichmentResult`; stamping it onto each per-match record keeps every
@@ -72,8 +72,9 @@ export interface BuildEvidenceParams {
 }
 
 /**
- * Populate an evidence record from a match + its indicator. No persistence —
- * the returned object is what the #361 follow-up will write.
+ * Populate an evidence record from a match + its indicator. The returned
+ * object is what the worker's evidence-persist path writes as a
+ * `story_ioc_evidence` row.
  */
 export function buildEvidenceRecord(
   params: BuildEvidenceParams,
