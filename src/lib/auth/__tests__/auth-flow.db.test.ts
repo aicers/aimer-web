@@ -291,6 +291,10 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
       const total = await countAccessibleCustomers(pool, accountId);
       expect(total).toBeGreaterThanOrEqual(1);
     });
+
+    // The analyst-eligible sign-in gate (#266) is covered by account.db.test.ts,
+    // which migrates its own database and therefore runs in CI — unlike this
+    // suite, which clones a pre-migrated template1 and is local-only.
   });
 
   // -- Sign-out-all: revoke all + bump token_version --

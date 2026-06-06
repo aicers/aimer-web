@@ -50,15 +50,35 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Analyst invitations (separate flow from customer membership invitations)
+-- Analyst invitations (separate flow from customer membership invitations).
+-- Kept at parity with the final state of `invitations` (incl. the 'revoked'
+-- status that `invitations` itself only gains in 0013). Unlike member
+-- invitations, analyst invitations are not per-customer: an empty
+-- customer_ids array ('{}') is valid for an as-yet-unassigned analyst, and
+-- the pending-uniqueness key is the email alone.
 CREATE TABLE analyst_invitations (
   id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   email        TEXT        NOT NULL,
-  customer_ids UUID[],
+  customer_ids UUID[]      NOT NULL,
   invited_by   UUID        NOT NULL REFERENCES accounts(id),
   token_hash   TEXT        NOT NULL UNIQUE,
   status       TEXT        NOT NULL DEFAULT 'pending'
-               CHECK (status IN ('pending', 'accepted', 'expired')),
+               CHECK (status IN ('pending', 'accepted', 'expired', 'revoked')),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at   TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days'
 );
+
+-- One pending analyst invitation per email (not per customer+email)
+CREATE UNIQUE INDEX idx_analyst_invitations_pending_unique
+  ON analyst_invitations (lower(email))
+  WHERE status = 'pending';
+
+-- token_hash is already NOT NULL UNIQUE; this partial index is redundant
+-- but kept for parity with `invitations`' idx_invitations_token_hash.
+CREATE INDEX idx_analyst_invitations_token_hash
+  ON analyst_invitations (token_hash)
+  WHERE status = 'pending';
+
+CREATE INDEX idx_analyst_invitations_expires
+  ON analyst_invitations (expires_at)
+  WHERE status = 'pending';

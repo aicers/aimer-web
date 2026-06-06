@@ -32,6 +32,7 @@ LATERAL (VALUES
   ('aice-environments:read'), ('aice-environments:write'),
   ('aice-environments:access-all'),
   ('trust-registry:read'), ('trust-registry:write'),
+  ('analysts:read'), ('analysts:write'),
   ('audit-logs:read'),
   ('system-settings:read'), ('system-settings:write')
 ) AS p(permission)

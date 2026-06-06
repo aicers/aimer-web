@@ -48,6 +48,12 @@ export async function upsertAccount(
 /**
  * Count the number of accessible customers for an account
  * (memberships + analyst assignments).
+ *
+ * The analyst branch joins `accounts` and requires `analyst_eligible = true`
+ * so a stale `analyst_customer_assignments` row cannot qualify an account
+ * for sign-in after its analyst eligibility has been revoked. This mirrors
+ * the gating join every other analyst-assignment reader applies
+ * (`authorize`, `listAccessibleCustomers`, etc.).
  */
 export async function countAccessibleCustomers(
   pool: Pool,
@@ -58,7 +64,9 @@ export async function countAccessibleCustomers(
     `SELECT COUNT(*)::int AS total FROM (
        SELECT account_id FROM account_customer_memberships WHERE account_id = $1
        UNION ALL
-       SELECT account_id FROM analyst_customer_assignments WHERE account_id = $1
+       SELECT aca.account_id FROM analyst_customer_assignments aca
+       JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
+       WHERE aca.account_id = $1
      ) AS combined`,
     [accountId],
   );
