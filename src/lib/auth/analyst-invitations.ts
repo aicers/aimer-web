@@ -1,5 +1,9 @@
-import type { Pool } from "pg";
+import { randomBytes } from "node:crypto";
+import type { Pool, PoolClient } from "pg";
+import type { AuditLogParams } from "../audit";
 import { query, withTransaction } from "../db/client";
+import type { AnalystInvitationEmailParams } from "../email/analyst-invitation";
+import { HttpError } from "./errors";
 import { hashToken } from "./invitations";
 
 // ---------------------------------------------------------------------------
@@ -324,4 +328,342 @@ export function analystReasonToDenyKey(
       // expired, already_consumed, revoked, not_found
       return "invitation_expired";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface CreateAnalystInvitationParams {
+  accountId: string;
+  email: string;
+  customerIds: string[];
+}
+
+export interface CreatedAnalystInvitation {
+  id: string;
+  email: string;
+  customerIds: string[];
+  expiresAt: Date;
+  /** True when an existing pending row was refreshed in place. */
+  refreshed: boolean;
+  /** Raw token — used only to build the email link. Never persisted/returned. */
+  token: string;
+  /** Names of the validated customers — used for the email body. */
+  customerNames: string[];
+}
+
+export interface PendingAnalystInvitation {
+  id: string;
+  email: string;
+  customerIds: string[];
+  invitedBy: string;
+  expiresAt: string;
+}
+
+export type RevokeAnalystInvitationResult = {
+  id: string;
+  status: "revoked";
+};
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Pragmatic email-syntax check: non-empty, single @, no whitespace, a dot in
+// the domain. Mirrors the loose validation used elsewhere — authoritative
+// verification happens via the email round-trip, not a regex.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function generateToken(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString("base64url");
+  return { raw, hash: hashToken(raw) };
+}
+
+/**
+ * Validate the requested customer IDs and return their names (for the email).
+ *
+ * Rejects with `400 invalid_customer_ids` when the array is empty, contains a
+ * non-UUID, or references a customer that does not exist or is not `active`.
+ * The `analyst_invitations.customer_ids` column permits an empty array for an
+ * eligible-but-unassigned analyst (#269), but the *invitation* create path
+ * deliberately requires ≥1 active customer.
+ */
+async function validateCustomerIds(
+  client: PoolClient,
+  customerIds: string[],
+): Promise<{ ids: string[]; names: string[] }> {
+  if (!Array.isArray(customerIds) || customerIds.length === 0) {
+    throw new HttpError("invalid_customer_ids", 400);
+  }
+  if (customerIds.some((id) => typeof id !== "string" || !UUID_RE.test(id))) {
+    throw new HttpError("invalid_customer_ids", 400);
+  }
+
+  // De-duplicate before comparing counts so a repeated id is not mistaken for
+  // a missing customer.
+  const uniqueIds = [...new Set(customerIds)];
+
+  const result = await client.query<{ id: string; name: string }>(
+    `SELECT id, name FROM customers
+     WHERE id = ANY($1::uuid[]) AND status = 'active'`,
+    [uniqueIds],
+  );
+
+  if (result.rows.length !== uniqueIds.length) {
+    throw new HttpError("invalid_customer_ids", 400);
+  }
+
+  return {
+    ids: uniqueIds,
+    names: result.rows.map((r) => r.name),
+  };
+}
+
+/**
+ * Throw `409 already_assigned` only when **every** requested customer already
+ * has an `analyst_customer_assignments` row whose account email matches
+ * (case-insensitive) AND `analyst_eligible = true`. Stale rows on a revoked
+ * (`analyst_eligible = false`) account do not count — revocation keeps the
+ * rows by policy. If at least one requested customer is unassigned, the
+ * request proceeds (no partial 409).
+ */
+async function assertNotFullyAssigned(
+  client: PoolClient,
+  email: string,
+  customerIds: string[],
+): Promise<void> {
+  const result = await client.query<{ customer_id: string }>(
+    `SELECT DISTINCT aca.customer_id
+     FROM analyst_customer_assignments aca
+     JOIN accounts a ON a.id = aca.account_id
+     WHERE aca.customer_id = ANY($1::uuid[])
+       AND lower(a.email) = lower($2)
+       AND a.analyst_eligible = true`,
+    [customerIds, email],
+  );
+
+  const assigned = new Set(result.rows.map((r) => r.customer_id));
+  const allAssigned = customerIds.every((id) => assigned.has(id));
+  if (allAssigned) {
+    throw new HttpError("already_assigned", 409);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Create (or refresh) — transactional
+// ---------------------------------------------------------------------------
+
+export async function createAnalystInvitation(
+  client: PoolClient,
+  params: CreateAnalystInvitationParams,
+): Promise<CreatedAnalystInvitation> {
+  const email = typeof params.email === "string" ? params.email.trim() : "";
+  if (!email || !EMAIL_RE.test(email)) {
+    throw new HttpError("invalid_email", 400);
+  }
+
+  const { ids, names } = await validateCustomerIds(client, params.customerIds);
+  await assertNotFullyAssigned(client, email, ids);
+
+  const { raw, hash } = generateToken();
+
+  // Refresh the existing pending row for lower(email) in place: new token,
+  // new expiry, replaced customer_ids. Mirrors the member upsert in
+  // `invitations.ts`. The (xmax <> 0) trick reports whether the row was
+  // updated (refresh) vs inserted (new).
+  const result = await client.query<{
+    id: string;
+    expires_at: Date;
+    refreshed: boolean;
+  }>(
+    `INSERT INTO analyst_invitations (email, customer_ids, invited_by, token_hash)
+     VALUES (lower($1), $2::uuid[], $3, $4)
+     ON CONFLICT (lower(email)) WHERE status = 'pending'
+     DO UPDATE SET
+       customer_ids = EXCLUDED.customer_ids,
+       invited_by = EXCLUDED.invited_by,
+       token_hash = EXCLUDED.token_hash,
+       expires_at = NOW() + INTERVAL '7 days',
+       created_at = NOW()
+     RETURNING id, expires_at, (xmax <> 0) AS refreshed`,
+    [email, ids, params.accountId, hash],
+  );
+
+  const row = result.rows[0];
+  return {
+    id: row.id,
+    email: email.toLowerCase(),
+    customerIds: ids,
+    expiresAt: row.expires_at,
+    refreshed: row.refreshed,
+    token: raw,
+    customerNames: names,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// List pending
+// ---------------------------------------------------------------------------
+
+export async function listPendingAnalystInvitations(
+  pool: Pool,
+): Promise<PendingAnalystInvitation[]> {
+  // The `expires_at > NOW()` predicate is required: no sweeper rewrites
+  // expired rows to 'expired', so a pending-but-expired row would otherwise
+  // appear here yet fail revoke with 409 already_expired.
+  const result = await pool.query<{
+    id: string;
+    email: string;
+    customer_ids: string[];
+    invited_by: string;
+    expires_at: Date;
+  }>(
+    `SELECT id, email, customer_ids, invited_by, expires_at
+     FROM analyst_invitations
+     WHERE status = 'pending' AND expires_at > NOW()
+     ORDER BY created_at DESC`,
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    email: row.email,
+    customerIds: row.customer_ids,
+    invitedBy: row.invited_by,
+    expiresAt: row.expires_at.toISOString(),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Revoke — classify by effective status (no background sweeper exists)
+// ---------------------------------------------------------------------------
+
+export async function revokeAnalystInvitation(
+  client: PoolClient,
+  invitationId: string,
+): Promise<RevokeAnalystInvitationResult> {
+  const inv = await client.query<{
+    id: string;
+    status: string;
+    expired: boolean;
+  }>(
+    `SELECT id, status, (expires_at <= NOW()) AS expired
+     FROM analyst_invitations
+     WHERE id = $1
+     FOR UPDATE`,
+    [invitationId],
+  );
+
+  if (inv.rows.length === 0) {
+    throw new HttpError("not_found", 404);
+  }
+
+  const { status, expired } = inv.rows[0];
+
+  if (status === "revoked") {
+    // Idempotent.
+    return { id: invitationId, status: "revoked" };
+  }
+  if (status === "accepted") {
+    throw new HttpError("already_consumed", 409);
+  }
+  if (status === "expired") {
+    // Defensive: no sweeper currently writes this status.
+    throw new HttpError("already_expired", 409);
+  }
+  // status === 'pending'
+  if (expired) {
+    throw new HttpError("already_expired", 409);
+  }
+
+  await client.query(
+    `UPDATE analyst_invitations SET status = 'revoked' WHERE id = $1`,
+    [invitationId],
+  );
+  return { id: invitationId, status: "revoked" };
+}
+
+// ---------------------------------------------------------------------------
+// Post-commit email delivery + audit
+//
+// Runs AFTER the invitation row is committed (via Next.js `after()` in the
+// route, or inline as a fallback). Sends the analyst email, derives the
+// `emailDelivery` outcome, then emits the `invitation.created` audit event
+// carrying that real outcome. The invitation already exists at this point —
+// an email failure is logged but never rolls anything back.
+// ---------------------------------------------------------------------------
+
+export interface DeliverAnalystInvitationParams {
+  invitationId: string;
+  email: string;
+  token: string;
+  customerNames: string[];
+  customerIds: string[];
+  expiresAt: Date;
+  baseUrl: string;
+  refreshed: boolean;
+  actor: {
+    accountId: string;
+    ipAddress?: string;
+    sid?: string;
+    correlationId?: string;
+  };
+}
+
+export interface DeliverAnalystInvitationDeps {
+  send?: (params: AnalystInvitationEmailParams) => Promise<void>;
+  audit?: (params: AuditLogParams) => Promise<void>;
+}
+
+export async function deliverAnalystInvitation(
+  params: DeliverAnalystInvitationParams,
+  deps: DeliverAnalystInvitationDeps = {},
+): Promise<void> {
+  // Default implementations are imported lazily so this module's load-time
+  // dependency graph stays free of `server-only` (the email + audit modules
+  // pull it in). The acceptance-path callers — the OIDC callback and invite
+  // entry routes — import this module but never reach delivery, and their
+  // unit tests must remain importable without a `server-only` stub.
+  const send =
+    deps.send ??
+    (await import("../email/analyst-invitation")).sendAnalystInvitationEmail;
+  const audit = deps.audit ?? (await import("../audit")).auditLog;
+
+  let emailDelivery: "sent" | "failed" = "sent";
+  try {
+    await send({
+      to: params.email,
+      token: params.token,
+      customerNames: params.customerNames,
+      expiresAt: params.expiresAt,
+      baseUrl: params.baseUrl,
+    });
+  } catch (err) {
+    emailDelivery = "failed";
+    console.error(
+      `[email] Failed to send analyst invitation ${params.invitationId}:`,
+      err,
+    );
+  }
+
+  // Manual audit (NOT the declarative withAuth auto-emit, which fires at
+  // response-build time and cannot observe a send that resolves later).
+  await audit({
+    actorId: params.actor.accountId,
+    authContext: "admin",
+    action: "invitation.created",
+    targetType: "analyst_invitation",
+    targetId: params.invitationId,
+    details: {
+      refreshed: params.refreshed,
+      emailDelivery,
+      customerIds: params.customerIds,
+    },
+    ipAddress: params.actor.ipAddress,
+    sid: params.actor.sid,
+    correlationId: params.actor.correlationId,
+  });
 }
