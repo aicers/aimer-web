@@ -549,7 +549,6 @@
     },
     "fields": {
       "priorityTier": "Priority tier",
-      "aggregateScores": "Aggregate scores",
       "language": "Language",
       "provider": "Provider",
       "model": "Model",

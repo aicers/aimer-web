@@ -6,8 +6,8 @@ time window for one customer — it weaves together the threat stories and
 plus the trends across the period's suspicious events. Unlike a story
 analysis (one LLM call about one story), a report aggregates many
 individual analyses into one
-narrative and does **not** ask the LLM for scores: Clumit Insight computes
-the aggregate scores itself from the included story and event analyses
+narrative and does **not** ask the LLM for scores: Clumit Insight derives
+the report's priority itself from the included story and event analyses
 and the suspicious-event trend.
 
 The page is reached from an aice-web-next dashboard card deep link, or by
@@ -18,14 +18,19 @@ or a request for a report that does not exist — sees a `404`, while a
 member without the `reports:read` permission, or a rejected bridge
 session, sees a permission notice rather than the report.
 
-![Periodic report detail page, showing the priority badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot), and period outlook sections](../../assets/report-detail.en.png)
+![Periodic report detail page, showing the priority-tier badge with its provenance hint, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
 
-> **Screenshot pending recapture (#430).** This capture — and the weekly
-> and monthly variants below — still show this section under its former
-> heading "Baseline observations" (with the old drift wording). They will
-> be re-shot from a real-data stack (the shared constraint with #429);
-> per the manual policy they are not fabricated or hand-edited to show the
-> renamed "Suspicious-event trends" heading.
+> **Weekly/monthly screenshots pending recapture (#430, #450).** The
+> DAILY capture above is fixture-driven and current: it leads with the
+> priority tier and its provenance hint and no longer renders the raw
+> aggregate scores. The **weekly and monthly** variants below are
+> currently placeholder graphics. Their real-data captures come from the
+> gauntlet live pipeline (aicers/gauntlet#149, #365), which this fixture
+> pipeline cannot reproduce; the pre-#450 captures still showed the old
+> header (a separate aggregate-score row), so — per the manual policy that
+> a stale or fabricated shot must not stand in for a real one — they have
+> been replaced with placeholders until a fresh real-data stack capture
+> (the shared constraint with #429) can be taken.
 
 ## Report index
 
@@ -99,9 +104,9 @@ No operator action is needed for any period: a background worker seeds,
 schedules, and runs the LLM calls. The **Regenerate** button (below) is
 for forcing an out-of-cadence refresh.
 
-![Weekly periodic report detail page with the Weekly tab active — a CRITICAL week-in-review showing the priority-tier badge, aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot), and period outlook sections; the summary abstracts the week's activity into one narrative rather than re-listing each day](../../assets/report-detail-weekly.en.png)
+![Placeholder for the weekly periodic report detail page, pending a real-data recapture — the live-pipeline weekly capture is not reproducible from the fixture stack](../../assets/report-detail-weekly.en.png)
 
-![Monthly periodic report detail page with the Monthly tab active — a CRITICAL month-in-review showing the same header (priority tier, aggregate scores, technique chips) and the five narrative sections, with the executive summary and suspicious-event trends (still captioned "Baseline observations" in this not-yet-recaptured screenshot) framing the month's activity from within the window](../../assets/report-detail-monthly.en.png)
+![Placeholder for the monthly periodic report detail page, pending a real-data recapture — the live-pipeline monthly capture is not reproducible from the fixture stack](../../assets/report-detail-monthly.en.png)
 
 ## Period tabs
 
@@ -207,27 +212,33 @@ to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx, hallucination detected,
 missing or mismatched redaction policy versions across the included
 analyses) mark the job `failed` immediately.
 
-## Priority tier and aggregate scores
+## Priority tier
 
-The header shows the report's priority and its two aggregate scores:
+The header leads with the report's priority tier and its provenance:
 
 - **Priority tier** — `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`, rendered
   as a colored badge. The tier is the **maximum** over every included
   analysis's own priority tier and the tier the period's suspicious-event
   trend maps to. Deriving it from the individual analyses directly
-  (rather than from the aggregate scores) means a report is never tagged
+  (rather than from an aggregate score) means a report is never tagged
   below the worst analysis it cites, even when that analysis's tier was
   raised by an IOC or member-count floor that the raw score does not
   reflect.
-- **Aggregate severity / likelihood scores** — `0.000`–`1.000`. Each is
-  the maximum, per axis independently, over the included analyses' scores
-  and the period's suspicious-event trend. They are **informational**
-  display values (`score_kind: "aggregate"`), not the input to the tier.
+- **Provenance hint** — a muted "N stories · M events" line beneath the
+  badge, recording how many cited analyses fed the report. It is the same
+  count the Sources panel header shows.
+
+Clumit Insight still derives aggregate severity and likelihood values
+internally (`score_kind: "aggregate"`) to order reports, but they are
+**not displayed** on this page. The score-combination method is
+non-exposed, and a raw 3-digit number both invites "how was this
+derived?" and implies a precision the aggregate does not carry — so the
+tier, not a number, is the report's forward-facing severity signal.
 
 The period's **suspicious-event trend** can raise the report's priority
 when the window's activity deviates from the prior comparable period. The
 trend itself is narrated in the report's **Suspicious-event trends**
-section; only the resulting priority and scores surface in the header.
+section; only the resulting priority tier surfaces in the header.
 
 ## MITRE ATT&CK techniques
 
@@ -387,13 +398,16 @@ to decide whether to surface a deep-link badge.
 No badge is shown when there is no report yet, or when the report's parent
 state row is missing or archived (for example after a timezone change,
 which archives the old-timezone state) — so the badge is never deep-linked
-to a report whose page would be unavailable. Otherwise the badge carries
-only the priority tier and the two aggregate scores and links to this
+to a report whose page would be unavailable. Otherwise the summary
+endpoint returns the priority tier alongside the aggregate severity and
+likelihood scores (`score_kind: "aggregate"`) and a deep link to this
 page; following it opens the right report regardless of which customer the
 opening tab has selected, and opens the same variant (timezone, language,
-provider, model) the card was shown for. The badge itself (priority tier
-and aggregate scores only, no section content) is rendered by
-aice-web-next; see the aice-web-next manual for its screenshot.
+provider, model) the card was shown for. The badge itself is rendered by
+aice-web-next, which leads with the priority tier; see the aice-web-next
+manual for its screenshot. (The aggregate scores stay in the cross-system
+contract for aice-web-next's own use — the tier-forward change in this
+release is the aimer-web report-detail view, not this endpoint's payload.)
 
 Section content, TTP tags, and factors are full-report-viewer concerns
 and stay out of the badge, so it cannot leak report detail. The deep-link

@@ -1410,9 +1410,9 @@ base.describe.serial("Manual screenshots", () => {
   // =========================================================================
   // Periodic report page (issue #297) — RFC 0002 Phase 2. Capture targets
   // driven from the deterministic seed in `fixtures/report-analysis.seed`:
-  //   - report-detail          — DAILY report; priority badge, aggregate
-  //                              scores, TTP chips, and the five narrative
-  //                              sections.
+  //   - report-detail          — DAILY report; priority-tier badge with its
+  //                              provenance hint, TTP chips, and the five
+  //                              narrative sections.
   //   - report-regenerate-modal — the confirmation modal opened from the
   //                              detail page.
   //   - report-summary-badge   — the aice-web-next deep-link badge. That
@@ -1421,20 +1421,22 @@ base.describe.serial("Manual screenshots", () => {
   //                              the aice-web-next capture pipeline rather
   //                              than here; the manual page references it as
   //                              a cross-repo deliverable.
-  //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail shots are
-  //     report-detail-monthly      real captures from the gauntlet live
-  //                              multi-host stack (real gpt-4o reports), not
-  //                              this fixture pipeline; they are produced by
-  //                              the gauntlet periodic-report-screenshots
-  //                              scenario (aicers/gauntlet#149, #365). Only
-  //                              the DAILY shot is fixture-driven here. The
-  //                              #382 Markdown renderer does not invalidate
-  //                              the live weekly/monthly assets: those gpt-4o
-  //                              narratives are plain prose with no Markdown
-  //                              syntax, so they render identically before
-  //                              and after the change. The DAILY fixture
-  //                              below deliberately carries Markdown to
-  //                              exercise the renderer.
+  //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail assets
+  //     report-detail-monthly      currently in the repo are explicit
+  //                              placeholder graphics (#450), not real
+  //                              captures: their pre-#450 live shots showed
+  //                              the now-removed raw aggregate-score row, so
+  //                              they were replaced with placeholders pending
+  //                              a fresh real-data recapture. The real
+  //                              captures come from the gauntlet live
+  //                              multi-host stack (real gpt-4o reports) via
+  //                              the periodic-report-screenshots scenario
+  //                              (aicers/gauntlet#149, #365), not this
+  //                              fixture pipeline; that scenario is the
+  //                              source for the future real captures. Only
+  //                              the DAILY shot is fixture-driven here, and
+  //                              its fixture below deliberately carries
+  //                              Markdown to exercise the #382 renderer.
   // Reuses the per-customer DB provisioned for the analysis-result
   // captures; the `analysis-result cleanup` test drops it.
   // =========================================================================
