@@ -455,6 +455,15 @@ describe("PATCH /api/admin/analysts/[accountId]", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects analystEligible: true (revocation only, no write)", async () => {
+    const { PATCH } = await import("../[accountId]/route");
+    const res = await PATCH(makePatchRequest({ analystEligible: true }));
+    expect(res.status).toBe(400);
+    // Re-enablement must go through POST designation: no DB write, no audit.
+    expect(mockTxQuery).not.toHaveBeenCalled();
+    expect(mockAuditLog).not.toHaveBeenCalled();
+  });
+
   it("revokes and emits audit", async () => {
     const { PATCH } = await import("../[accountId]/route");
     const res = await PATCH(makePatchRequest({ analystEligible: false }));

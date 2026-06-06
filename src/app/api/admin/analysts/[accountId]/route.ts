@@ -143,9 +143,14 @@ export const PATCH = withAuth(
     }
 
     const { analystEligible } = raw as Record<string, unknown>;
-    if (typeof analystEligible !== "boolean") {
+    // This endpoint is revocation only: per the #269 contract the body must be
+    // `{ "analystEligible": false }`. Re-enablement goes through
+    // `POST /api/admin/analysts`, which enforces an active account and
+    // non-empty, active `customerIds`. Accepting `true` here would re-enable a
+    // suspended/disabled account and bypass that validation and audit path.
+    if (analystEligible !== false) {
       return Response.json(
-        { error: "analystEligible must be a boolean" },
+        { error: "analystEligible must be false (revocation only)" },
         { status: 400 },
       );
     }
