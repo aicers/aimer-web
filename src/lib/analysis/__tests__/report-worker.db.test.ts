@@ -57,14 +57,18 @@ const TZ = "Asia/Seoul";
 const LIVE_BUCKET = "1970-01-01";
 
 // aimer returns a single JSON-encoded `sections` string (#360), matching its
-// PERIODIC_SECURITY_REPORT output schema: `executive_summary` / `period_outlook`
-// are strings, while `story_highlights` / `notable_events` /
-// `baseline_observations` are arrays of Markdown strings. The worker stores the
-// parsed object verbatim and recursively scans every string value (incl. array
-// entries) for residual tokens / PII.
+// PERIODIC_SECURITY_REPORT output schema (prompt v5, #449): the three
+// leaf-derived sections (`executive_summary` / `story_highlights` /
+// `notable_events`) are arrays of citation units `{ text, source? }`;
+// `baseline_observations` is an array of Markdown strings and `period_outlook`
+// a plain string. These units are deliberately uncited so the generic tests do
+// not trip the citation-source guard; a fabricated `source` is exercised
+// separately below. The worker stores the parsed object verbatim and
+// recursively scans every string value (incl. unit text) for residual
+// tokens / PII.
 const AIMER_SECTIONS = {
-  executive_summary: "Quiet period.",
-  story_highlights: ["No notable stories."],
+  executive_summary: [{ text: "Quiet period." }],
+  story_highlights: [{ text: "No notable stories." }],
   notable_events: [],
   baseline_observations: ["Baseline stable."],
   period_outlook: "Maintain monitoring.",
@@ -611,6 +615,49 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT 1 FROM periodic_report_result
         WHERE customer_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-30' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it("fails on a fabricated citation source before any result-row INSERT (#449)", async () => {
+    await seedState(authPool, "DAILY", "2026-05-31", "ready");
+    await seedQueuedJob(authPool, "DAILY", "2026-05-31");
+
+    // A baseline-only report has no input leaves, so ANY unit `source` is
+    // fabricated. aimer-web's defense-in-depth guard must reject it and refuse
+    // to persist a row carrying an out-of-bundle citation.
+    await processReportJob(makeJob({ bucket_date: "2026-05-31" }), {
+      ...opts(),
+      callGenerateReport: async () => ({
+        ...AIMER_RESPONSE,
+        sections: JSON.stringify({
+          ...AIMER_SECTIONS,
+          executive_summary: [
+            {
+              text: "A claim citing a leaf never in the bundle.",
+              source: { type: "story", story_id: "does-not-exist" },
+            },
+          ],
+        }),
+      }),
+    });
+
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-05-31' AND tz = $2`,
+      [CUSTOMER_ID, TZ],
+    );
+    expect(job[0].status).toBe("failed");
+    expect(job[0].last_error).toBe("citation_source_invalid");
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = '2026-05-31' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
     expect(result).toHaveLength(0);
@@ -1538,6 +1585,77 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].translation_model_name).toBe("openai");
     expect(job[0].translation_model).toBe("gpt-4o");
     expect(job[0].translation_prompt_version).toBe("translate-pv-1");
+  });
+
+  it("fails the translate path on a fabricated citation source, no translated row (#449)", async () => {
+    // The translate path re-emits each unit's `source`, so the citation-source
+    // guard must run here too (#449 AC: both worker paths). A translator that
+    // rewrote a citation to a leaf absent from the canonical's input bundle
+    // must fail the job before the customer-DB write — never orphaning a
+    // citation in a persisted translated row.
+    aimerCalls = 0;
+    const bucket = "2026-07-14";
+    const eventKey = "5101";
+    let translateCalls = 0;
+    // The canonical (seedCanonicalResult) cites only event `aice-1:5101` and no
+    // stories, so a `story` source is fabricated by construction.
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        executive_summary: [
+          {
+            text: "번역 중 만들어진 출처.",
+            source: { type: "story", story_id: "ghost-story" },
+          },
+        ],
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    // English leaf exists (canonical refs resolve), but NO Korean leaf — so the
+    // worker takes the translate path rather than generating natively.
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    // The translate call happened, but its fabricated citation is rejected.
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("failed");
+    expect(job[0].last_error).toBe("citation_source_invalid");
+    // No translated row was persisted.
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(result).toHaveLength(0);
   });
 
   it("aborts the translate write when the watchdog requeues mid-call (audit not lost)", async () => {

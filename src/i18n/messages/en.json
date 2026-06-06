@@ -657,6 +657,11 @@
       "cardScores": "severity {severity} • likelihood {likelihood}",
       "unavailable": "Evidence version no longer available."
     },
+    "citations": {
+      "ariaLabel": "Cited evidence for this sentence",
+      "storyLink": "Story {storyId}",
+      "eventLink": "Event {aiceId} · {eventKey}"
+    },
     "citedBy": {
       "heading": "Cited by",
       "description": "Periodic reports that cited this evidence, newest first. Each link opens the exact report generation that consumed it.",

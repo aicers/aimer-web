@@ -107,7 +107,7 @@ function resultRow(lang: string): Record<string, unknown> {
     aggregate_likelihood_score: 0.5,
     aggregate_ttp_tags: [],
     sections_jsonb: {
-      executive_summary: "x",
+      executive_summary: [{ text: "x" }],
       story_highlights: [],
       notable_events: [],
       baseline_observations: [],
@@ -429,6 +429,157 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       String(c[0]).includes("FROM story_analysis_result"),
     );
     expect(leafCall?.[1]?.[3]).toBe("ENGLISH");
+  });
+});
+
+describe("loadReportResultPage — sentence-level citations (#449)", () => {
+  it("decodes story/event unit sources and pins them to the leaf variant", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [
+          { aice_id: "aice-9", event_key: "777", generation: 4 },
+        ],
+        sections_jsonb: {
+          executive_summary: [
+            {
+              text: "story claim",
+              source: { type: "story", story_id: "555" },
+            },
+            { text: "uncited synthesis" },
+          ],
+          story_highlights: [],
+          notable_events: [
+            {
+              text: "event claim",
+              source: { type: "event", event_ref: "aice-9:777" },
+            },
+          ],
+          baseline_observations: [],
+          period_outlook: "y",
+        },
+      },
+    ];
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    const exec = outcome.data.sections.executive_summary;
+    expect(exec).toHaveLength(2);
+    expect(exec[0]).toEqual({
+      text: "story claim",
+      source: {
+        sourceType: "story",
+        storyId: "555",
+        variant: {
+          generation: 2,
+          lang: "ENGLISH",
+          modelName: "openai",
+          model: "gpt-4o",
+        },
+      },
+    });
+    // The uncited unit keeps its text but carries no source.
+    expect(exec[1]).toEqual({ text: "uncited synthesis" });
+
+    const events = outcome.data.sections.notable_events;
+    expect(events[0]).toEqual({
+      text: "event claim",
+      source: {
+        sourceType: "event",
+        aiceId: "aice-9",
+        eventKey: "777",
+        variant: {
+          generation: 4,
+          lang: "ENGLISH",
+          modelName: "openai",
+          model: "gpt-4o",
+        },
+      },
+    });
+  });
+
+  it("drops a citation whose source is not in the input refs (no dangling link)", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [],
+        sections_jsonb: {
+          executive_summary: [
+            // story 999 is not in the refs → the citation is dropped, the
+            // text still renders.
+            {
+              text: "claim with stale source",
+              source: { type: "story", story_id: "999" },
+            },
+          ],
+          story_highlights: [],
+          notable_events: [],
+          baseline_observations: [],
+          period_outlook: "y",
+        },
+      },
+    ];
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.sections.executive_summary).toEqual([
+      { text: "claim with stale source" },
+    ]);
+  });
+
+  it("pins a translated report's citation to the canonical (restoration_lang) variant", async () => {
+    availRows = [{ lang: "KOREAN" }];
+    resultRows = [
+      {
+        ...resultRow("KOREAN"),
+        restoration_lang: "ENGLISH",
+        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_event_refs: [],
+        sections_jsonb: {
+          executive_summary: [
+            { text: "번역된 주장", source: { type: "story", story_id: "555" } },
+          ],
+          story_highlights: [],
+          notable_events: [],
+          baseline_observations: [],
+          period_outlook: "y",
+        },
+      },
+    ];
+
+    const outcome = await callLoader({ locale: "ko" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    const source = outcome.data.sections.executive_summary[0].source;
+    expect(source?.variant.lang).toBe("ENGLISH");
+  });
+
+  it("tolerates a legacy plain-string section as a single uncited unit", async () => {
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        sections_jsonb: {
+          executive_summary: "legacy prose",
+          story_highlights: ["legacy entry"],
+          notable_events: [],
+          baseline_observations: [],
+          period_outlook: "y",
+        },
+      },
+    ];
+
+    const outcome = await callLoader({ locale: "en" });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.sections.executive_summary).toEqual([
+      { text: "legacy prose" },
+    ]);
+    expect(outcome.data.sections.story_highlights).toEqual([
+      { text: "legacy entry" },
+    ]);
   });
 });
 

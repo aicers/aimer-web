@@ -253,6 +253,80 @@ function collectSectionStrings(value: unknown): string[] {
   return [];
 }
 
+// The three leaf-derived sections that carry per-unit citation `source`
+// annotations (prompt v5, #449). `baseline_observations` / `period_outlook`
+// are not leaf-derived and never carry a `source`.
+const LEAF_DERIVED_SECTION_KEYS = [
+  "executive_summary",
+  "story_highlights",
+  "notable_events",
+] as const;
+
+/**
+ * Citation-source hallucination guard (#449), defense-in-depth mirroring
+ * aimer's own generation-time guard. Walks the leaf-derived sections'
+ * citation units and returns a descriptor for every unit `source` that does
+ * NOT reference a leaf present in the input bundle — a `story` source whose
+ * `story_id` is absent from `allowedStoryIds`, an `event` source whose opaque
+ * `event_ref` is absent from `allowedEventRefs` (matched whole, never split),
+ * or a `source` that is present but ill-formed (unknown `type` / missing
+ * id field). An empty result means every citation grounds in a real input
+ * leaf. Uncited units (no `source`) are ignored.
+ */
+function findInvalidCitationSources(
+  sections: ReportSectionsJson,
+  allowedStoryIds: ReadonlySet<string>,
+  allowedEventRefs: ReadonlySet<string>,
+): string[] {
+  const invalid: string[] = [];
+  for (const key of LEAF_DERIVED_SECTION_KEYS) {
+    const section = sections[key];
+    if (!Array.isArray(section)) continue;
+    for (const unit of section) {
+      if (unit === null || typeof unit !== "object") continue;
+      const source = (unit as { source?: unknown }).source;
+      // Uncited unit (cross-cutting prose) — nothing to validate.
+      if (source === undefined || source === null) continue;
+      if (typeof source !== "object") {
+        invalid.push(`${key}: malformed source`);
+        continue;
+      }
+      const s = source as {
+        type?: unknown;
+        story_id?: unknown;
+        event_ref?: unknown;
+      };
+      if (s.type === "story" && typeof s.story_id === "string") {
+        if (!allowedStoryIds.has(s.story_id)) {
+          invalid.push(`${key}: story ${s.story_id}`);
+        }
+      } else if (s.type === "event" && typeof s.event_ref === "string") {
+        if (!allowedEventRefs.has(s.event_ref)) {
+          invalid.push(`${key}: event ${s.event_ref}`);
+        }
+      } else {
+        invalid.push(`${key}: malformed source`);
+      }
+    }
+  }
+  return invalid;
+}
+
+/**
+ * Build the allowed citation-source key sets from the input refs: the set of
+ * `story_id`s and the set of opaque `event_ref`s (`"{aice_id}:{event_key}"`,
+ * the exact packed token sent to aimer) the report was built from.
+ */
+function allowedCitationKeys(
+  storyRefs: StoryRef[],
+  eventRefs: EventRef[],
+): { storyIds: Set<string>; eventRefs: Set<string> } {
+  return {
+    storyIds: new Set(storyRefs.map((r) => r.story_id)),
+    eventRefs: new Set(eventRefs.map((r) => `${r.aice_id}:${r.event_key}`)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Pickup query
 // ---------------------------------------------------------------------------
@@ -728,6 +802,34 @@ async function runNativeGeneration(args: {
     return;
   }
 
+  // Citation-source guard (#449): re-validate every unit `source` against the
+  // input bundle — a distinct mechanism from the leak scan above. aimer
+  // already rejects out-of-bundle ids at generation; aimer-web re-checks the
+  // decoded set as defense-in-depth and refuses to persist a fabricated
+  // citation that slipped through.
+  const allowed = allowedCitationKeys(built.storyRefs, built.eventRefs);
+  const invalidSources = findInvalidCitationSources(
+    parsedSections,
+    allowed.storyIds,
+    allowed.eventRefs,
+  );
+  if (invalidSources.length > 0) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "citation_source",
+        invalid_sources: invalidSources.slice(0, 20),
+      },
+    });
+    await failJob(opts.authPool, job, "citation_source_invalid", claimMarker, {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
   const inputWatermark =
     job.cursor_watermark_quality === "strict" ? job.cursor_watermark : null;
 
@@ -969,6 +1071,35 @@ async function runTranslation(args: {
       },
     });
     await failJob(opts.authPool, job, "hallucination_detected", claimMarker, {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
+  // Citation-source guard on the translated output (#449): the translation
+  // re-emits each unit's `source`, so re-validate the decoded set against the
+  // canonical's input bundle here too — a translator that dropped, added, or
+  // rewrote a citation to an out-of-bundle leaf must not orphan a citation in
+  // a persisted translated row. Allowed keys come from the canonical's refs
+  // (the translated row copies them verbatim).
+  const allowed = allowedCitationKeys(canonical.storyRefs, canonical.eventRefs);
+  const invalidSources = findInvalidCitationSources(
+    parsedSections,
+    allowed.storyIds,
+    allowed.eventRefs,
+  );
+  if (invalidSources.length > 0) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "translate_citation_source",
+        invalid_sources: invalidSources.slice(0, 20),
+      },
+    });
+    await failJob(opts.authPool, job, "citation_source_invalid", claimMarker, {
       attempts: job.attempts + 1,
     });
     return;

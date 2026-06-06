@@ -33,7 +33,9 @@ const TIER_CLASSES: Record<PriorityTier, string> = {
 // are always carried so the leaf page pins the exact cited variant rather
 // than resolving its latest generation (parent #386 generation-pin
 // contract). Keys match what each leaf page parses (`model_name`/`model`).
-function pinQuery(variant: CitedLeafVariant): string {
+// Exported so the per-unit sentence citations (#449) pin leaf links the same
+// way without duplicating the contract.
+export function pinQuery(variant: CitedLeafVariant): string {
   return new URLSearchParams({
     generation: String(variant.generation),
     lang: variant.lang,

@@ -173,6 +173,21 @@ const COMPONENTS = {
   "unverified-marker": UnverifiedMarker,
 } as Components;
 
+// Render a Markdown string as design-system elements with the
+// `<<UNVERIFIED_*>>` badge treatment, WITHOUT the bordered card chrome.
+// Shared by `AnalysisBody` and the per-unit sentence citations (#449), which
+// stack several markdown chunks inside one card.
+export function AnalysisMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      rehypePlugins={[rehypeUnverifiedMarkers]}
+      components={COMPONENTS}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
+
 export function AnalysisBody({
   text,
   testid,
@@ -190,16 +205,7 @@ export function AnalysisBody({
       data-testid={testid}
       className="rounded border border-border bg-card px-4 py-3 text-sm text-foreground"
     >
-      {isEmpty ? (
-        (emptyFallback ?? "")
-      ) : (
-        <ReactMarkdown
-          rehypePlugins={[rehypeUnverifiedMarkers]}
-          components={COMPONENTS}
-        >
-          {text}
-        </ReactMarkdown>
-      )}
+      {isEmpty ? (emptyFallback ?? "") : <AnalysisMarkdown text={text} />}
     </div>
   );
 }
