@@ -404,6 +404,21 @@ export async function loadStoryResultPage(
     factMapsByIndex,
   );
 
+  // Score factors run through the SAME two-hop restore as the narrative
+  // body (#440). A factor can legitimately carry an `E{i}` member token or
+  // an `F{k}` fact token (the pre-storage leak scan rejects only UNMAPPED
+  // tokens and decoded plaintext), so without this the authorized viewer
+  // would see a raw `<<REDACTED_*_F1_001>>` in a factor while the narrative
+  // shows the resolved customer-asset value. Resolve `E{i}` first, then
+  // `F{k}`, identical to the narrative pipeline above.
+  const restoreFactorTokens = (factor: string): string =>
+    restoreStoryFactTokens(
+      restoreStoryAnalysisTokens(factor, mapsByIndex),
+      factMapsByIndex,
+    );
+  const severityFactors = row.severity_factors.map(restoreFactorTokens);
+  const likelihoodFactors = row.likelihood_factors.map(restoreFactorTokens);
+
   // Member suspicious events for the story → member drill-down (T2 #396).
   // Fetched at the canonical event variant so the cards match the
   // Suspicious Events list; ordered by the member ordinal (`index`).
@@ -423,8 +438,8 @@ export async function loadStoryResultPage(
       severityScore: row.severity_score,
       likelihoodScore: row.likelihood_score,
       priorityTier: row.priority_tier,
-      severityFactors: row.severity_factors,
-      likelihoodFactors: row.likelihood_factors,
+      severityFactors,
+      likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
       analysisText: restoredText,
       requestedBy: row.requested_by,

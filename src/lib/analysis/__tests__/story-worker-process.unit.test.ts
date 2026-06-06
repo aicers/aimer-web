@@ -998,6 +998,81 @@ describe("processStoryJob — hallucination scan", () => {
     expect(failCall?.params?.[6]).toBe(1); // attempts bumped (LLM call consumed)
     expect(failCall?.params?.[7]).toBe("hallucination_detected");
   });
+
+  // #440 review (Author Round 1): the leak scan must cover the persisted
+  // score factors too, not just the narrative body — otherwise a fact
+  // token echoed (or decoded to a customer-asset plaintext) inside a short
+  // factor slips past the shape filter and reaches the report LLM input.
+  it("fails the job when a score factor decodes a fact token to a customer-asset IP", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn(async () => ({
+      ...goodAimerResponse(),
+      // A private IP is always redaction-eligible, so a factor echoing one
+      // verbatim is a decoded-plaintext leak regardless of the range set.
+      severityFactors: ["beacon to 10.0.0.5 internal host"],
+    }));
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+    });
+
+    expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
+    // Result INSERT must NOT have been attempted.
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1);
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
+
+  it("fails the job when a score factor carries an unmapped fact token", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn(async () => ({
+      ...goodAimerResponse(),
+      // No facts were injected, so `F1` is not an allowed token — the
+      // kind-agnostic backstop must flag it as an unmapped token leak.
+      likelihoodFactors: ["<<REDACTED_IP_F1_001>> listed by feed"],
+    }));
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: callAnalyzeStory as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+    });
+
+    expect(callAnalyzeStory).toHaveBeenCalledTimes(1);
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1);
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
 });
 
 describe("processStoryJob — retryable + fatal aimer errors", () => {

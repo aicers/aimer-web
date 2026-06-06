@@ -189,7 +189,10 @@ referenced event's redaction map, and substitutes the original
 value. Tokens that cannot be restored (decrypt failure, missing map
 row, out-of-range index) are passed through unchanged so the page
 still renders. Hallucinated decodes are blocked at write time and
-never reach this view.
+never reach this view. This restoration — and the write-time leak
+guard behind it — covers the score-factor chips above as well as the
+narrative body, so a token (or a customer-asset value the model
+decoded) embedded in a factor is handled exactly the same way.
 
 The same threat-intelligence matching that produces the `known_ioc_hit`
 floor signal (see [Priority and scores](#priority-and-scores)) also

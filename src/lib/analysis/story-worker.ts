@@ -624,8 +624,33 @@ export async function processStoryJob(
   const ownedDomains = await (
     opts.loadOwnedDomains ?? loadCustomerOwnedDomains
   )(opts.authPool, job.customer_id);
+
+  // Shape-filter the score factors BEFORE the leak scan so the scan can
+  // cover the persisted factor strings, not just the narrative body.
+  // With `enrichmentFacts` (`F{k}`) now in the prompt (#440), aimer can
+  // echo a fact token — or worse, decode it to a customer-asset IP/domain
+  // — inside a short score factor. The shape filter alone (length /
+  // sentence-start) waves such a factor through, and the report-input
+  // builder can re-mask a live `F{k}` token but CANNOT recover a decoded
+  // plaintext value, so it would reach the report LLM input and violate
+  // the #440 report-scope guarantee. Scanning `kept` (exactly what
+  // `writeResultRow` persists and the report builder later reads) closes
+  // that gap. `validateTtpTags` is deferred until after the gate — TTP
+  // ids come from a fixed enum and cannot carry free-text plaintext.
+  const severityFilter = filterFactors(
+    aimerResponse.severityFactors,
+    "severity",
+  );
+  const likelihoodFilter = filterFactors(
+    aimerResponse.likelihoodFactors,
+    "likelihood",
+  );
   const leakScan = scanStoryAnalysisForLeaks(
-    aimerResponse.analysis,
+    [
+      aimerResponse.analysis,
+      ...severityFilter.kept,
+      ...likelihoodFilter.kept,
+    ].join("\n"),
     allowedTokens,
     ranges,
     ownedDomains,
@@ -650,14 +675,6 @@ export async function processStoryJob(
   }
 
   // Pre-storage validation.
-  const severityFilter = filterFactors(
-    aimerResponse.severityFactors,
-    "severity",
-  );
-  const likelihoodFilter = filterFactors(
-    aimerResponse.likelihoodFactors,
-    "likelihood",
-  );
   const ttpResult = validateTtpTags(aimerResponse.ttpTags);
 
   emitFactorAuditRows({
