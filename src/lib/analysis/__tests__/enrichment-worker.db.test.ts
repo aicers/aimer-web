@@ -2,10 +2,11 @@
 //
 // Drives `runStoryEnrichment` against a real customer DB (story / member /
 // evidence / state) and a real auth DB (ioc_feed_snapshot), covering:
-//   - known_ioc_hit true (floor-eligible deterministic hit) + evidence +
-//     HMAC reproducibility across a key rotation,
+//   - known_ioc_hit true (floor-eligible deterministic hit) + evidence
+//     storing the external indicator raw in `redaction_token`,
 //   - false-complete (answered, no hit) vs false-unknown (missing feed),
-//   - redaction-map recovery of a tokenized customer-asset IP,
+//   - redaction-map recovery of a tokenized customer-asset IP (stored as a
+//     token whose raw value lives only in the redaction map),
 //   - the boolean stays monotonic (stale feed never flips a hit),
 //   - typed policy_event columns are scoped to the story's source_aice_id
 //     (a different source's same-event_key IOC must not flip the floor),
@@ -39,7 +40,6 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { HmacKeyRing, verifyIndicatorHmac } from "../enrichment/evidence";
 import { importFeedSnapshot } from "../enrichment/feed-import";
 import { PgFeedStore } from "../enrichment/feed-store";
 import { seedFixtureFeeds } from "../enrichment/fixture-feeds";
@@ -82,8 +82,6 @@ const FLOORING: SourcePolicy[] = [
   },
 ];
 
-const keyRing = new HmacKeyRing({ v1: "test-key-v1" }, "v1");
-
 function opts(
   authPool: Pool,
   customerPool: Pool,
@@ -93,7 +91,6 @@ function opts(
     authPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    keyRing,
     buildDispatcher: (ap, now) =>
       buildLocalFeedDispatcher(new PgFeedStore(ap), {
         now,
@@ -266,58 +263,32 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(stateRows[0].coverage_status).toBe("complete");
     expect(stateRows[0].known_ioc_hit).toBe(true);
 
-    // Evidence record carries the audit fields; no plaintext indicator.
+    // Evidence record carries the provenance fields and the
+    // redaction-consistent indicator reference.
     const { rows: ev } = await customerPool.query<{
       redaction_token: string;
-      normalized_indicator_hmac: string;
-      hmac_key_version: string;
-      normalization_version: string;
       source_policy_id: string;
       source_version: string;
       feed_hash: string;
       hit_type: string;
       floor_eligible: boolean;
+      coverage_status: string;
+      checked_at: Date;
     }>(
       `SELECT * FROM story_ioc_evidence
         WHERE story_id = 1001 AND story_version = 'v1'`,
     );
     expect(ev).toHaveLength(1);
     const e = ev[0];
-    // External raw indicator → identity token is the raw value.
+    // External indicator → stored RAW in redaction_token (redaction-consistent).
     expect(e.redaction_token).toBe("45.66.230.5");
     expect(e.source_policy_id).toBe("abuse.ch/feodo");
     expect(e.source_version).toBe("2026-06-04");
     expect(e.feed_hash).toBeTruthy();
     expect(e.hit_type).toBe("deterministic_ioc");
     expect(e.floor_eligible).toBe(true);
-    expect(e.normalization_version).toBe("ti-norm-1");
-    // No plaintext indicator column exists; the HMAC verifies the value.
-    expect(
-      verifyIndicatorHmac(
-        normalizeIp("45.66.230.5"),
-        {
-          normalizedIndicatorHmac: e.normalized_indicator_hmac,
-          hmacKeyVersion: e.hmac_key_version,
-        },
-        keyRing,
-      ),
-    ).toBe(true);
-
-    // HMAC still verifies across a key rotation (old version retained).
-    const rotated = new HmacKeyRing(
-      { v1: "test-key-v1", v2: "test-key-v2" },
-      "v2",
-    );
-    expect(
-      verifyIndicatorHmac(
-        normalizeIp("45.66.230.5"),
-        {
-          normalizedIndicatorHmac: e.normalized_indicator_hmac,
-          hmacKeyVersion: e.hmac_key_version,
-        },
-        rotated,
-      ),
-    ).toBe(true);
+    expect(e.coverage_status).toBe("complete");
+    expect(e.checked_at).toBeTruthy();
   });
 
   it("false-complete: answered, no hit → no evidence, coverage complete", async () => {
@@ -388,8 +359,10 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
       `SELECT redaction_token FROM story_ioc_evidence
         WHERE story_id = 1004 AND story_version = 'v1'`,
     );
-    // Recovered value → the TOKEN is the evidence reference, not the value.
+    // Customer-asset indicator → the TOKEN is the evidence reference, and the
+    // recovered raw value lives ONLY in the redaction map, never in the row.
     expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+    expect(JSON.stringify(ev[0])).not.toContain("45.66.230.5");
   });
 
   it("extracts an IOC present only in the policy_event typed columns", async () => {
@@ -533,9 +506,9 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     await seedStory(customerPool, "1012", { resp_addr: "45.66.230.5" });
 
     // A hard failure reached AFTER the canonical version is known — here the
-    // dispatcher build throws, standing in for a key-ring/config/decryption/
-    // DB error. Without a marker this would requeue analysis forever with
-    // only process logs to explain it.
+    // dispatcher build throws, standing in for a config/decryption/DB error.
+    // Without a marker this would requeue analysis forever with only process
+    // logs to explain it.
     const failing = opts(authPool, customerPool, {
       buildDispatcher: () => {
         throw new Error("boom: dispatcher unavailable");
@@ -583,28 +556,6 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(stable[0].status).toBe("complete");
     expect(stable[0].known_ioc_hit).toBe(true);
     expect(stable[0].last_error).toMatch(/boom/);
-  });
-
-  it("a no-hit story completes without resolving the evidence HMAC key (lazy)", async () => {
-    await importFeodo(authPool, FRESH);
-    // Indicator that does NOT hit the feed → no evidence record is built.
-    await seedStory(customerPool, "1013", { resp_addr: "45.66.230.99" });
-
-    // No keyRing injected and NODE_ENV=production: `getEvidenceKeyRing()`
-    // would THROW (fail-closed) if it were resolved. Lazy resolution means a
-    // no-hit story never reaches it, so enrichment still completes — the
-    // fail-closed guard cannot stall a story that had nothing to record.
-    vi.stubEnv("NODE_ENV", "production");
-    try {
-      const result = await runStoryEnrichment(CUSTOMER_ID, "1013", {
-        ...opts(authPool, customerPool),
-        keyRing: undefined,
-      });
-      expect(result.status).toBe("complete");
-      expect(result.knownIocHit).toBe(false);
-    } finally {
-      vi.unstubAllEnvs();
-    }
   });
 
   it("seeds the pinned fixture feeds and matches a fixture IP via PgFeedStore", async () => {

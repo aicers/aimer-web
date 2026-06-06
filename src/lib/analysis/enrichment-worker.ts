@@ -41,7 +41,6 @@ import type { EnrichmentDispatcher } from "./enrichment/dispatcher";
 import {
   buildEvidenceRecord,
   type EvidenceRecord,
-  HmacKeyRing,
 } from "./enrichment/evidence";
 import { PgFeedStore } from "./enrichment/feed-store";
 import {
@@ -64,44 +63,6 @@ interface RedactedFact {
   text: string;
   policyVersion: string;
   map: RedactionMap;
-}
-
-// ---------------------------------------------------------------------------
-// Evidence HMAC key ring
-// ---------------------------------------------------------------------------
-
-// The key ring is injected (in-memory / config) per RFC 0003 — persisting
-// and rotating keys via OpenBao is the separate HMAC-key-management
-// follow-up. Evidence still stamps `hmacKeyVersion` and verifies across
-// versions. Production must supply `IOC_EVIDENCE_HMAC_KEY` (+ optional
-// `_VERSION`); a dev/test fallback keeps local runs working.
-let cachedKeyRing: HmacKeyRing | undefined;
-
-export function getEvidenceKeyRing(): HmacKeyRing {
-  if (cachedKeyRing) return cachedKeyRing;
-  const version = process.env.IOC_EVIDENCE_HMAC_KEY_VERSION ?? "v1";
-  const key = process.env.IOC_EVIDENCE_HMAC_KEY;
-  if (!key) {
-    // Fail closed in production. The evidence table deliberately stores
-    // only the keyed HMAC of each indicator — raw IP/domain/URL/hash
-    // values are sensitive and often dictionaryable, so a public default
-    // key would let any DB reader recompute likely plaintext and undo
-    // that privacy property. Refuse to write evidence without a real key
-    // configured; the dev fallback is for local/test only.
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "IOC_EVIDENCE_HMAC_KEY must be set in production: refusing to write " +
-          "IOC evidence with a public default HMAC key.",
-      );
-    }
-    cachedKeyRing = new HmacKeyRing(
-      { [version]: "dev-insecure-ioc-evidence-hmac-key" },
-      version,
-    );
-    return cachedKeyRing;
-  }
-  cachedKeyRing = new HmacKeyRing({ [version]: key }, version);
-  return cachedKeyRing;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,8 +248,6 @@ export interface EnrichmentWorkerOptions {
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the dispatcher builder — used by tests (in-memory feed store). */
   buildDispatcher?: (authPool: Pool, now: () => Date) => EnrichmentDispatcher;
-  /** Override the evidence HMAC key ring — used by tests. */
-  keyRing?: HmacKeyRing;
   /** Injectable clock for deterministic `checkedAt` / stale computation. */
   now?: () => Date;
   /** Override redaction-map recovery — used by tests (no OpenBao). */
@@ -335,18 +294,6 @@ export async function runStoryEnrichment(
     ((authPool, clock) =>
       buildLocalFeedDispatcher(new PgFeedStore(authPool), { now: clock }));
 
-  // The evidence HMAC key ring is resolved lazily — only when a
-  // floor-supporting match actually needs an evidence record. A story with
-  // no floor-eligible hit (the common case, and the only case while every
-  // feed ships `floorEligible: false`) never touches the key store, so the
-  // fail-closed production guard in `getEvidenceKeyRing()` cannot stall an
-  // analysis job that would have had nothing to record anyway.
-  let keyRing: HmacKeyRing | undefined = opts.keyRing;
-  const resolveKeyRing = (): HmacKeyRing => {
-    if (!keyRing) keyRing = getEvidenceKeyRing();
-    return keyRing;
-  };
-
   const canonical = await loadCanonicalVersion(customerPool, storyId);
   if (!canonical) {
     return {
@@ -358,8 +305,8 @@ export async function runStoryEnrichment(
     };
   }
 
-  // Once the canonical version is known, any hard failure (key-ring config,
-  // redaction-map decryption, DB error) must leave a VISIBLE, recoverable
+  // Once the canonical version is known, any hard failure (redaction-map
+  // decryption, DB error) must leave a VISIBLE, recoverable
   // marker. Without it the analysis precondition would requeue forever with
   // nothing but process logs to explain the stall. A `failed` marker is
   // recoverable: a later successful run flips it back to `complete`.
@@ -371,7 +318,6 @@ export async function runStoryEnrichment(
       now,
       loadMap,
       buildDispatcher: () => buildDispatcher(opts.authPool, now),
-      resolveKeyRing,
       authPool: opts.authPool,
       loadRanges: opts.loadRanges ?? loadCustomerRanges,
       loadOwnedDomains: opts.loadOwnedDomains ?? loadCustomerOwnedDomains,
@@ -398,7 +344,6 @@ interface EnrichCanonicalArgs {
   now: () => Date;
   loadMap: LoadRedactionMap;
   buildDispatcher: () => EnrichmentDispatcher;
-  resolveKeyRing: () => HmacKeyRing;
   authPool: Pool;
   loadRanges: typeof loadCustomerRanges;
   loadOwnedDomains: typeof loadCustomerOwnedDomains;
@@ -473,11 +418,8 @@ async function enrichCanonicalVersion(
         knownIocHit = true;
         evidence.push(
           buildEvidenceRecord({
-            indicator,
             match,
             redactionToken,
-            // Resolved only here — the first floor-supporting match.
-            keyRing: args.resolveKeyRing(),
             checkedAt,
             expiresAt: merged.expiresAt,
             coverage: merged.coverage,
@@ -618,21 +560,14 @@ async function persistEnrichment(
       await client.query(
         `INSERT INTO story_ioc_evidence
            (story_id, story_version, redaction_token,
-            normalized_indicator_hmac, hmac_key_version, evidence_key_id,
-            normalization_version, source_policy_id, source_version,
-            feed_hash, source_updated_at, hit_type, floor_eligible,
-            coverage_status, checked_at, expires_at)
-         VALUES ($1::bigint, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11::timestamptz, $12, $13, $14, $15::timestamptz,
-                 $16::timestamptz)`,
+            source_policy_id, source_version, feed_hash, source_updated_at,
+            hit_type, floor_eligible, coverage_status, checked_at, expires_at)
+         VALUES ($1::bigint, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9,
+                 $10, $11::timestamptz, $12::timestamptz)`,
         [
           args.storyId,
           args.storyVersion,
           e.redactionToken,
-          e.normalizedIndicatorHmac,
-          e.hmacKeyVersion,
-          e.evidenceKeyId ?? null,
-          e.normalizationVersion,
           e.sourcePolicyId,
           e.sourceVersion ?? null,
           e.feedHash ?? null,

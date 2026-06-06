@@ -17,12 +17,13 @@
 --
 --   * `story_ioc_evidence` — one row per floor-supporting match, storing
 --     the RFC 0003 `EvidenceRecord` fields so a `known_ioc_hit = true`
---     is explainable after the fact. No plaintext indicator is stored by
---     default: only the keyed HMAC of the normalized indicator plus the
---     `redactionToken` identity reference. Linked to the canonical story
---     version, NOT to `story_analysis_result` (which does not yet exist
---     when enrichment runs — analysis produces it later and can join
---     back on `story_id`).
+--     is explainable after the fact. Indicators are stored the same way as
+--     the rest of the redaction layer: external indicators raw and
+--     customer-asset indicators as tokens (the original lives only in the
+--     existing encrypted redaction map), both carried by `redaction_token`.
+--     Linked to the canonical story version, NOT to `story_analysis_result`
+--     (which does not yet exist when enrichment runs — analysis produces it
+--     later and can join back on `story_id`).
 --
 -- Both are keyed on / FK'd to the canonical `(story_id, story_version)`
 -- and cascade-delete with the story, mirroring `story_member`.
@@ -57,17 +58,12 @@ CREATE TABLE story_ioc_evidence (
                                            PRIMARY KEY,
     story_id                  BIGINT       NOT NULL,
     story_version             TEXT         NOT NULL,
-    -- Links evidence back to the masked member (identity reference for
-    -- external raw indicators that carry no token).
+    -- The redaction-consistent indicator reference: the raw value for an
+    -- external indicator, or a `<<REDACTED_*_NNN>>` token for a
+    -- customer-asset indicator (whose original lives only in the existing
+    -- encrypted redaction map), exactly as the rest of the system stores
+    -- indicators.
     redaction_token           TEXT         NOT NULL,
-    -- Keyed HMAC of the normalized indicator + the key version that
-    -- produced it (rotation retains old versions so prior evidence stays
-    -- verifiable) + the normalization version (keeps the HMAC
-    -- interpretable as rules evolve). No plaintext indicator by default.
-    normalized_indicator_hmac TEXT         NOT NULL,
-    hmac_key_version          TEXT         NOT NULL,
-    evidence_key_id           TEXT,
-    normalization_version     TEXT         NOT NULL,
     source_policy_id          TEXT         NOT NULL,
     source_version            TEXT,
     feed_hash                 TEXT,

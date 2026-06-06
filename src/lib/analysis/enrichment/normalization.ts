@@ -21,7 +21,7 @@ import type {
 
 /**
  * Stamped on every `NormalizedIndicator`. Bump when any normalization rule
- * changes so stored HMACs / evidence records remain interpretable.
+ * changes so indicator matching stays consistent as rules evolve.
  */
 export const NORMALIZATION_VERSION = "ti-norm-1";
 
@@ -204,14 +204,14 @@ export function normalizeHash(value: string): NormalizedIndicator {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical serialization (for HMAC stamping)
+// Canonical serialization (dedupe key)
 // ---------------------------------------------------------------------------
 
 /**
  * Deterministic, version-stamped serialization of a normalized indicator,
- * used as the HMAC message so two runs over the same indicator+version
- * digest identically. Kept here (alongside the normalizer) so it stays in
- * lockstep with `NORMALIZATION_VERSION`.
+ * used as the dedupe key when extracting indicators (`indicator-extraction.ts`)
+ * so the same indicator+version is processed once. Kept here (alongside the
+ * normalizer) so it stays in lockstep with `NORMALIZATION_VERSION`.
  */
 export function serializeIndicator(indicator: NormalizedIndicator): string {
   return [
