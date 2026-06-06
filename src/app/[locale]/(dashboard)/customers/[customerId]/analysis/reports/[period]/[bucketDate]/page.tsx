@@ -354,6 +354,14 @@ export default async function ReportDetailPage({
             })}
           </div>
         </Field>
+        <Field label={tA("fields.aggregateScores")}>
+          <div data-testid="aggregate-scores">
+            {tA("common.severityLikelihood", {
+              severity: data.aggregateSeverityScore.toFixed(3),
+              likelihood: data.aggregateLikelihoodScore.toFixed(3),
+            })}
+          </div>
+        </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
         <Field label={tA("fields.model")}>
           {data.modelName} / {data.model}

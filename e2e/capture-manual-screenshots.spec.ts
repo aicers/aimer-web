@@ -1411,7 +1411,8 @@ base.describe.serial("Manual screenshots", () => {
   // Periodic report page (issue #297) — RFC 0002 Phase 2. Capture targets
   // driven from the deterministic seed in `fixtures/report-analysis.seed`:
   //   - report-detail          — DAILY report; priority-tier badge with its
-  //                              provenance hint, TTP chips, and the five
+  //                              provenance hint, the aggregate severity and
+  //                              likelihood scores, TTP chips, and the five
   //                              narrative sections.
   //   - report-regenerate-modal — the confirmation modal opened from the
   //                              detail page.
