@@ -292,36 +292,9 @@ describe.skipIf(!hasPostgres)("auth flow integration", () => {
       expect(total).toBeGreaterThanOrEqual(1);
     });
 
-    it("does not count analyst assignments when analyst_eligible = false (#266)", async () => {
-      // A stale analyst_customer_assignments row must not qualify an
-      // account for sign-in once its analyst eligibility is revoked.
-      const cust = await pool.query<{ id: string }>(
-        `INSERT INTO customers (external_key, name) VALUES ('cust-analyst-gate', 'Analyst Gate') RETURNING id`,
-      );
-      const customerId = cust.rows[0].id;
-      const acct = await pool.query<{ id: string }>(
-        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, analyst_eligible)
-         VALUES ('test-issuer', 'analyst-gate-user', 'agate', 'Analyst Gate', false)
-         RETURNING id`,
-      );
-      const analystId = acct.rows[0].id;
-
-      await pool.query(
-        `INSERT INTO analyst_customer_assignments (account_id, customer_id, assigned_by)
-         VALUES ($1, $2, $1)`,
-        [analystId, customerId],
-      );
-
-      // Stale assignment + analyst_eligible = false → still denied.
-      expect(await countAccessibleCustomers(pool, analystId)).toBe(0);
-
-      // Flip eligibility on → the same assignment now qualifies.
-      await pool.query(
-        `UPDATE accounts SET analyst_eligible = true WHERE id = $1`,
-        [analystId],
-      );
-      expect(await countAccessibleCustomers(pool, analystId)).toBe(1);
-    });
+    // The analyst-eligible sign-in gate (#266) is covered by account.db.test.ts,
+    // which migrates its own database and therefore runs in CI — unlike this
+    // suite, which clones a pre-migrated template1 and is local-only.
   });
 
   // -- Sign-out-all: revoke all + bump token_version --
