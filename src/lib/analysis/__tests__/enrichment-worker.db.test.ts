@@ -267,6 +267,8 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     // redaction-consistent indicator reference.
     const { rows: ev } = await customerPool.query<{
       redaction_token: string;
+      source_aice_id: string;
+      member_event_key: string;
       source_policy_id: string;
       source_version: string;
       feed_hash: string;
@@ -282,6 +284,10 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const e = ev[0];
     // External indicator → stored RAW in redaction_token (redaction-consistent).
     expect(e.redaction_token).toBe("45.66.230.5");
+    // Provenance: which member event the hit came from. (node-pg returns
+    // NUMERIC as a string.)
+    expect(e.source_aice_id).toBe(AICE_ID);
+    expect(e.member_event_key).toBe("1");
     expect(e.source_policy_id).toBe("abuse.ch/feodo");
     expect(e.source_version).toBe("2026-06-04");
     expect(e.feed_hash).toBeTruthy();
@@ -355,14 +361,103 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     expect(result.knownIocHit).toBe(true);
     expect(result.evidenceCount).toBe(1);
 
-    const { rows: ev } = await customerPool.query<{ redaction_token: string }>(
-      `SELECT redaction_token FROM story_ioc_evidence
+    const { rows: ev } = await customerPool.query<{
+      redaction_token: string;
+      source_aice_id: string;
+      member_event_key: string;
+    }>(
+      `SELECT redaction_token, source_aice_id,
+              member_event_key::text AS member_event_key
+         FROM story_ioc_evidence
         WHERE story_id = 1004 AND story_version = 'v1'`,
     );
     // Customer-asset indicator → the TOKEN is the evidence reference, and the
     // recovered raw value lives ONLY in the redaction map, never in the row.
     expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
     expect(JSON.stringify(ev[0])).not.toContain("45.66.230.5");
+    // The row also carries the `(aice_id, event_key)` map scope that recovers
+    // the token — without it the token alone would be ambiguous.
+    expect(ev[0].source_aice_id).toBe(AICE_ID);
+    expect(ev[0].member_event_key).toBe("1");
+  });
+
+  it("distinguishes two members reusing the same token for different IPs", async () => {
+    // Two members of one story each carry `<<REDACTED_IP_001>>`, but token
+    // numbering restarts per event, so the two tokens recover DIFFERENT
+    // customer-asset IPs from their own event_redaction_map rows. Both IPs
+    // are floor-eligible feed hits, so each produces an evidence row. With
+    // only the token string the two rows would be indistinguishable and the
+    // originals unrecoverable; the `(source_aice_id, member_event_key)` scope
+    // ties each row to the map that recovers it.
+    await importFeedSnapshot(authPool, {
+      sourcePolicyId: "abuse.ch/feodo",
+      entityType: "IP",
+      hitType: "deterministic_ioc",
+      classification: "c2",
+      sourceVersion: "2026-06-04",
+      sourceUpdatedAt: FRESH,
+      rows: [{ matchValue: "45.66.230.5" }, { matchValue: "45.66.230.6" }],
+    });
+    await customerPool.query(
+      `INSERT INTO story
+         (story_id, story_version, kind, time_window_start, time_window_end,
+          summary_payload, source_aice_id, received_at)
+       VALUES (1011::bigint, 'v1', 'auto_correlated',
+               '2026-05-01T00:00:00Z', '2026-05-01T01:00:00Z',
+               '{}'::jsonb, $1, '2026-05-01T02:00:00Z')`,
+      [AICE_ID],
+    );
+    for (const eventKey of ["1", "2"]) {
+      await customerPool.query(
+        `INSERT INTO story_member
+           (story_id, story_version, member_event_key, role, event,
+            redaction_policy_version)
+         VALUES (1011::bigint, 'v1', $1::numeric, 'primary', $2::jsonb,
+                 'engine:1.0.0|ranges:empty')`,
+        [eventKey, JSON.stringify({ orig_addr: "<<REDACTED_IP_001>>" })],
+      );
+    }
+
+    // Same token, different recovered IP per event scope.
+    const recovered: Record<string, string> = {
+      "1": "45.66.230.5",
+      "2": "45.66.230.6",
+    };
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1011",
+      opts(authPool, customerPool, {
+        loadRedactionMap: async (_pool, _cid, _aice, eventKey) => ({
+          "<<REDACTED_IP_001>>": {
+            kind: "ip",
+            value: recovered[eventKey] ?? "0.0.0.0",
+          },
+        }),
+      }),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(result.evidenceCount).toBe(2);
+
+    const { rows: ev } = await customerPool.query<{
+      redaction_token: string;
+      member_event_key: string;
+    }>(
+      `SELECT redaction_token, member_event_key::text AS member_event_key
+         FROM story_ioc_evidence
+        WHERE story_id = 1011 AND story_version = 'v1'
+        ORDER BY member_event_key`,
+    );
+    expect(ev).toHaveLength(2);
+    // Both rows carry the SAME ambiguous token string...
+    expect(ev[0].redaction_token).toBe("<<REDACTED_IP_001>>");
+    expect(ev[1].redaction_token).toBe("<<REDACTED_IP_001>>");
+    // ...but are distinguishable by their map scope, so each original is
+    // recoverable from its own event_redaction_map row.
+    expect(ev[0].member_event_key).toBe("1");
+    expect(ev[1].member_event_key).toBe("2");
+    // No recovered customer-asset IP ever lands in the evidence rows.
+    expect(JSON.stringify(ev)).not.toContain("45.66.230.5");
+    expect(JSON.stringify(ev)).not.toContain("45.66.230.6");
   });
 
   it("extracts an IOC present only in the policy_event typed columns", async () => {

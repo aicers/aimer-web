@@ -420,6 +420,11 @@ async function enrichCanonicalVersion(
           buildEvidenceRecord({
             match,
             redactionToken,
+            // The `(aice_id, event_key)` scope that recovers a
+            // customer-asset token (the original lives only in that
+            // event_redaction_map row); provenance for a raw external one.
+            sourceAiceId: canonical.sourceAiceId,
+            memberEventKey: member.member_event_key,
             checkedAt,
             expiresAt: merged.expiresAt,
             coverage: merged.coverage,
@@ -560,14 +565,18 @@ async function persistEnrichment(
       await client.query(
         `INSERT INTO story_ioc_evidence
            (story_id, story_version, redaction_token,
+            source_aice_id, member_event_key,
             source_policy_id, source_version, feed_hash, source_updated_at,
             hit_type, floor_eligible, coverage_status, checked_at, expires_at)
-         VALUES ($1::bigint, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9,
-                 $10, $11::timestamptz, $12::timestamptz)`,
+         VALUES ($1::bigint, $2, $3, $4, $5::numeric, $6, $7, $8,
+                 $9::timestamptz, $10, $11, $12, $13::timestamptz,
+                 $14::timestamptz)`,
         [
           args.storyId,
           args.storyVersion,
           e.redactionToken,
+          e.sourceAiceId,
+          e.memberEventKey,
           e.sourcePolicyId,
           e.sourceVersion ?? null,
           e.feedHash ?? null,

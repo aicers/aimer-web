@@ -19,6 +19,8 @@ function buildRecord() {
   return buildEvidenceRecord({
     match,
     redactionToken: "45.66.230.5",
+    sourceAiceId: "aice-1",
+    memberEventKey: "1",
     checkedAt: "2026-06-04T12:00:00.000Z",
     expiresAt: "2026-06-04T18:00:00.000Z",
   });
@@ -37,6 +39,10 @@ describe("evidence record", () => {
     expect(record.floorEligible).toBe(true);
     expect(record.checkedAt).toBe("2026-06-04T12:00:00.000Z");
     expect(record.expiresAt).toBe("2026-06-04T18:00:00.000Z");
+    // The event redaction-map scope is carried so a customer-asset token is
+    // recoverable and a raw external hit records which member event it came from.
+    expect(record.sourceAiceId).toBe("aice-1");
+    expect(record.memberEventKey).toBe("1");
   });
 
   it("carries the coverage report computed from a merged result", () => {
@@ -68,6 +74,8 @@ describe("evidence record", () => {
     const record = buildEvidenceRecord({
       match,
       redactionToken: "45.66.230.5",
+      sourceAiceId: "aice-1",
+      memberEventKey: "1",
       checkedAt,
       coverage,
     });

@@ -21,9 +21,13 @@
 --     the rest of the redaction layer: external indicators raw and
 --     customer-asset indicators as tokens (the original lives only in the
 --     existing encrypted redaction map), both carried by `redaction_token`.
---     Linked to the canonical story version, NOT to `story_analysis_result`
---     (which does not yet exist when enrichment runs — analysis produces it
---     later and can join back on `story_id`).
+--     A customer-asset token is event-scoped, so the row also carries the
+--     `(source_aice_id, member_event_key)` map key that recovers it — the
+--     same `(aice_id, event_key)` the worker decrypts; without it the same
+--     token string from two members would be indistinguishable and the
+--     original unrecoverable. Linked to the canonical story version, NOT to
+--     `story_analysis_result` (which does not yet exist when enrichment runs
+--     — analysis produces it later and can join back on `story_id`).
 --
 -- Both are keyed on / FK'd to the canonical `(story_id, story_version)`
 -- and cascade-delete with the story, mirroring `story_member`.
@@ -64,6 +68,16 @@ CREATE TABLE story_ioc_evidence (
     -- encrypted redaction map), exactly as the rest of the system stores
     -- indicators.
     redaction_token           TEXT         NOT NULL,
+    -- The event redaction-map scope `(source_aice_id, member_event_key)`
+    -- this evidence row was extracted under — i.e. the `(aice_id,
+    -- event_key)` key of the `event_redaction_map` row. For a customer-asset
+    -- `redaction_token` this is what makes the original recoverable: token
+    -- numbering restarts per event, so the same `<<REDACTED_IP_001>>` from
+    -- two members maps to different values and the token alone is ambiguous.
+    -- For a raw external indicator it is provenance (which member event the
+    -- hit came from). Always known — the worker extracts per member event.
+    source_aice_id            TEXT           NOT NULL,
+    member_event_key          NUMERIC(39, 0) NOT NULL,
     source_policy_id          TEXT         NOT NULL,
     source_version            TEXT,
     feed_hash                 TEXT,

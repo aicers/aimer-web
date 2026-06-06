@@ -26,6 +26,17 @@ export interface EvidenceRecord {
    * indicator (whose original lives only in the existing redaction map).
    */
   redactionToken: string;
+  /**
+   * The event redaction-map scope this evidence was extracted under: the
+   * `(aice_id, event_key)` key of the `event_redaction_map` row. For a
+   * customer-asset `redactionToken` this is what makes the original
+   * recoverable — token numbering restarts per event, so the same
+   * `<<REDACTED_*_NNN>>` from two members maps to different values and the
+   * token alone is ambiguous. For a raw external indicator it is provenance
+   * (which member event the hit came from).
+   */
+  sourceAiceId: string;
+  memberEventKey: string;
   sourcePolicyId: string;
   sourceVersion?: string;
   feedHash?: string;
@@ -51,6 +62,9 @@ export interface EvidenceRecord {
 export interface BuildEvidenceParams {
   match: EnrichmentMatch;
   redactionToken: string;
+  /** The `(aice_id, event_key)` map scope (see `EvidenceRecord`). */
+  sourceAiceId: string;
+  memberEventKey: string;
   checkedAt: string;
   expiresAt?: string;
   /** Coverage report from the merged dispatch result (see `EvidenceRecord`). */
@@ -66,6 +80,8 @@ export function buildEvidenceRecord(
 ): EvidenceRecord {
   return {
     redactionToken: params.redactionToken,
+    sourceAiceId: params.sourceAiceId,
+    memberEventKey: params.memberEventKey,
     sourcePolicyId: params.match.sourcePolicyId,
     sourceVersion: params.match.sourceVersion,
     feedHash: params.match.feedHash,
