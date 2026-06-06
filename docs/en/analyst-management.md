@@ -20,9 +20,12 @@ customer and account pickers read other resources:
     search.
 
 The System Administrator role holds all four. If the customer or account
-list cannot be loaded (for example, a `403` from a missing permission),
-the page shows a warning banner and disables the affected pickers; the
-rest of the page keeps working.
+list cannot be loaded, the page shows a warning banner and disables the
+affected pickers; the rest of the page keeps working. The banner
+distinguishes a permission denial (a `403`, a stable configuration
+problem) from a transient load failure (for example a `500` or network
+error, which a page reload can retry), so an outage is never mistaken for
+an empty tenant.
 
 ## Analyst table
 

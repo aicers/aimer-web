@@ -127,6 +127,8 @@ export function AnalystsPage() {
   const [error, setError] = useState<string | null>(null);
   const [customersForbidden, setCustomersForbidden] = useState(false);
   const [accountsForbidden, setAccountsForbidden] = useState(false);
+  const [customersLoadError, setCustomersLoadError] = useState(false);
+  const [accountsLoadError, setAccountsLoadError] = useState(false);
 
   // Invite dialog
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -194,6 +196,19 @@ export function AnalystsPage() {
     [customers],
   );
 
+  // A picker dependency is unavailable when it was denied (403) OR failed to
+  // load (500/network). Either way the dependent flows must be blocked rather
+  // than silently presenting an empty/degraded picker.
+  const customersUnavailable = customersForbidden || customersLoadError;
+  const accountsUnavailable = accountsForbidden || accountsLoadError;
+
+  // The account chosen in the designate dialog, resolved against the loaded
+  // accounts so the dialog can show an explicit selected-account summary.
+  const selectedDesignateAccount = useMemo(
+    () => accounts.find((a) => a.id === designateAccountId) ?? null,
+    [accounts, designateAccountId],
+  );
+
   const matchingAccounts = useMemo(() => {
     const q = designateSearch.trim().toLowerCase();
     const active = accounts.filter((a) => a.status === "active");
@@ -252,13 +267,19 @@ export function AnalystsPage() {
       );
       setCustomers(data.customers);
       setCustomersForbidden(false);
+      setCustomersLoadError(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
         return;
       }
+      // Distinguish a permission denial (a stable config issue) from a
+      // transient load failure (500/network) so the banner and disabled
+      // actions don't masquerade as "tenant has no active customers".
       if (err instanceof ApiError && err.status === 403) {
         setCustomersForbidden(true);
+      } else {
+        setCustomersLoadError(true);
       }
     }
   }, []);
@@ -270,13 +291,18 @@ export function AnalystsPage() {
       );
       setAccounts(data.accounts);
       setAccountsForbidden(false);
+      setAccountsLoadError(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
         return;
       }
+      // See fetchCustomers: a 403 is a permission problem, anything else is a
+      // transient load failure that must not look like "no matching accounts".
       if (err instanceof ApiError && err.status === 403) {
         setAccountsForbidden(true);
+      } else {
+        setAccountsLoadError(true);
       }
     }
   }, []);
@@ -360,6 +386,16 @@ export function AnalystsPage() {
     setDesignateAccountId("");
     setDesignateCustomerIds([]);
     setDesignateOpen(true);
+  };
+
+  // Clear the selected account whenever the query changes. Otherwise an admin
+  // could pick an account, retype the search so a different account is now
+  // visible, and submit the stale (no-longer-shown) selection — the submit
+  // button only checks that *some* account id is set. Clearing guarantees the
+  // selection always corresponds to a row currently visible in the list.
+  const handleDesignateSearchChange = (value: string) => {
+    setDesignateSearch(value);
+    setDesignateAccountId("");
   };
 
   const handleDesignate = async () => {
@@ -577,15 +613,25 @@ export function AnalystsPage() {
         </div>
       )}
 
-      {/* Permission warnings for picker dependencies */}
+      {/* Warnings for picker dependencies: 403 (permission) vs load failure. */}
       {customersForbidden && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {t("customersUnavailable")}
         </div>
       )}
+      {customersLoadError && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t("customersLoadFailed")}
+        </div>
+      )}
       {accountsForbidden && (
         <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
           {t("accountsUnavailable")}
+        </div>
+      )}
+      {accountsLoadError && (
+        <div className="rounded-lg border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {t("accountsLoadFailed")}
         </div>
       )}
 
@@ -595,14 +641,14 @@ export function AnalystsPage() {
           type="button"
           variant="outline"
           onClick={openDesignate}
-          disabled={loading || customersForbidden || accountsForbidden}
+          disabled={loading || customersUnavailable || accountsUnavailable}
         >
           {t("designate")}
         </Button>
         <Button
           type="button"
           onClick={openInvite}
-          disabled={loading || customersForbidden}
+          disabled={loading || customersUnavailable}
         >
           {t("invite")}
         </Button>
@@ -689,7 +735,7 @@ export function AnalystsPage() {
                           variant="outline"
                           size="sm"
                           onClick={() => openManage(analyst)}
-                          disabled={customersForbidden}
+                          disabled={customersUnavailable}
                         >
                           {t("manage")}
                         </Button>
@@ -853,7 +899,7 @@ export function AnalystsPage() {
               <Input
                 id="designate-search"
                 value={designateSearch}
-                onChange={(e) => setDesignateSearch(e.target.value)}
+                onChange={(e) => handleDesignateSearchChange(e.target.value)}
                 placeholder={t("accountSearchPlaceholder")}
                 disabled={designateLoading}
               />
@@ -885,6 +931,15 @@ export function AnalystsPage() {
                   ))
                 )}
               </div>
+              <p className="text-sm text-muted-foreground">
+                {selectedDesignateAccount
+                  ? t("designateSelectedAccount", {
+                      name:
+                        selectedDesignateAccount.displayName ||
+                        selectedDesignateAccount.username,
+                    })
+                  : t("designateNoSelection")}
+              </p>
             </div>
             <div className="space-y-2">
               <span className="text-sm font-medium text-foreground">
