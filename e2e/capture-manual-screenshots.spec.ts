@@ -1421,22 +1421,21 @@ base.describe.serial("Manual screenshots", () => {
   //                              the aice-web-next capture pipeline rather
   //                              than here; the manual page references it as
   //                              a cross-repo deliverable.
-  //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail shots are
-  //     report-detail-monthly      real captures from the gauntlet live
-  //                              multi-host stack (real gpt-4o reports), not
-  //                              this fixture pipeline; the gauntlet
-  //                              periodic-report-screenshots scenario
-  //                              (aicers/gauntlet#149, #365) is the source
-  //                              for future real captures. Only the DAILY
-  //                              shot is fixture-driven here. NOTE (#450):
-  //                              the repo currently carries explicit
-  //                              placeholder graphics for the weekly/monthly
-  //                              assets, not real captures. The pre-#450 live
-  //                              shots showed the now-removed raw
-  //                              aggregate-score row, so they were replaced
-  //                              with placeholders pending a fresh real-data
-  //                              recapture from the gauntlet scenario above.
-  //                              The DAILY fixture below deliberately carries
+  //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail assets
+  //     report-detail-monthly      currently in the repo are explicit
+  //                              placeholder graphics (#450), not real
+  //                              captures: their pre-#450 live shots showed
+  //                              the now-removed raw aggregate-score row, so
+  //                              they were replaced with placeholders pending
+  //                              a fresh real-data recapture. The real
+  //                              captures come from the gauntlet live
+  //                              multi-host stack (real gpt-4o reports) via
+  //                              the periodic-report-screenshots scenario
+  //                              (aicers/gauntlet#149, #365), not this
+  //                              fixture pipeline; that scenario is the
+  //                              source for the future real captures. Only
+  //                              the DAILY shot is fixture-driven here, and
+  //                              its fixture below deliberately carries
   //                              Markdown to exercise the #382 renderer.
   // Reuses the per-customer DB provisioned for the analysis-result
   // captures; the `analysis-result cleanup` test drops it.

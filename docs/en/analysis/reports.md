@@ -24,13 +24,13 @@ session, sees a permission notice rather than the report.
 > DAILY capture above is fixture-driven and current: it leads with the
 > priority tier and its provenance hint and no longer renders the raw
 > aggregate scores. The **weekly and monthly** variants below are
-> real-data captures from the gauntlet live pipeline (aicers/gauntlet#149,
-> #365), which this fixture pipeline cannot reproduce. Their pre-#450
-> captures still showed the old header (a separate aggregate-score row),
-> so — per the manual policy that a stale or fabricated shot must not
-> stand in for a real one — they have been replaced with placeholders
-> until a fresh real-data stack capture (the shared constraint with #429)
-> can be taken.
+> currently placeholder graphics. Their real-data captures come from the
+> gauntlet live pipeline (aicers/gauntlet#149, #365), which this fixture
+> pipeline cannot reproduce; the pre-#450 captures still showed the old
+> header (a separate aggregate-score row), so — per the manual policy that
+> a stale or fabricated shot must not stand in for a real one — they have
+> been replaced with placeholders until a fresh real-data stack capture
+> (the shared constraint with #429) can be taken.
 
 ## Report index
 
