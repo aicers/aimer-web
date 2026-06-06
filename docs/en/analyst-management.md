@@ -114,6 +114,12 @@ them.
 The list view's assignment chips and this editor stay in sync — both
 refresh after each add or remove.
 
+If the lazy detail request fails, the dialog shows a load error instead of
+an empty assignment list and disables **Add** until the data loads —
+reopen the dialog to retry. This prevents a transient outage from looking
+like the analyst has no assignments and from offering an already-assigned
+customer as an add candidate.
+
 ## Pending invitations
 
 Below the analyst table, the **Pending Invitations** section lists
@@ -121,6 +127,10 @@ invitations that have not yet been accepted. Each row shows the invited
 email, the customers the invitation will assign, and the expiry time.
 
 - Click **Revoke** to cancel a pending invitation.
+
+If the pending-invitation list fails to load, the section shows a load
+error rather than "No pending invitations." — a failed load must not hide
+invitations that still need revoking. Reload the page to retry.
 
 Revoking a pending invitation can report:
 

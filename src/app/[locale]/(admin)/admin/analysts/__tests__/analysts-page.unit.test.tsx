@@ -134,6 +134,81 @@ describe("AnalystsPage direct designation", () => {
   });
 });
 
+describe("AnalystsPage read load failures", () => {
+  it("shows an error instead of an empty state when invitations fail to load", async () => {
+    adminFetch.mockImplementation((url: string) => {
+      if (url === "/api/admin/analysts") {
+        return Promise.resolve({ analysts: [] });
+      }
+      if (url === "/api/admin/analysts/invitations") {
+        return Promise.reject(new ApiError("internal", 500));
+      }
+      if (url === "/api/admin/customers") {
+        return Promise.resolve({ customers: CUSTOMERS });
+      }
+      if (url === "/api/admin/accounts") {
+        return Promise.resolve({ accounts: ACCOUNTS });
+      }
+      return Promise.resolve({});
+    });
+    renderPage();
+
+    // The failed load must surface an explicit error, never the misleading
+    // "No pending invitations." empty state.
+    await screen.findByText(
+      "Pending invitations could not be loaded. Reload the page to retry — invitations that need revoking may exist but are not shown here.",
+    );
+    expect(screen.queryByText("No pending invitations.")).toBeNull();
+  });
+
+  it("shows an error and disables adding when analyst detail fails to load", async () => {
+    const ANALYST = {
+      accountId: "acc-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      analystEligible: true,
+      assignedCustomerIds: ["cust-1"],
+      lastSignInAt: null,
+    };
+    adminFetch.mockImplementation((url: string) => {
+      if (url === "/api/admin/analysts") {
+        return Promise.resolve({ analysts: [ANALYST] });
+      }
+      if (url === "/api/admin/analysts/invitations") {
+        return Promise.resolve({ invitations: [] });
+      }
+      if (url === "/api/admin/customers") {
+        return Promise.resolve({ customers: CUSTOMERS });
+      }
+      if (url === "/api/admin/accounts") {
+        return Promise.resolve({ accounts: ACCOUNTS });
+      }
+      // The lazy per-analyst detail fetch fails.
+      if (url === "/api/admin/analysts/acc-alice") {
+        return Promise.reject(new ApiError("internal", 500));
+      }
+      return Promise.resolve({});
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Assignments" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Current assignments show the load error, not a misleading "None", and
+    // the add control is replaced by an unavailable note so an already-assigned
+    // customer can never be offered as an add candidate.
+    await within(dialog).findByText(
+      "Current assignments could not be loaded. Reload or reopen this dialog to retry.",
+    );
+    expect(
+      within(dialog).queryByText(
+        "Adding assignments is unavailable until current assignments load. Reopen this dialog to retry.",
+      ),
+    ).not.toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Add" })).toBeNull();
+  });
+});
+
 describe("AnalystsPage picker load failures", () => {
   it("surfaces a load error and disables actions when customers fail (non-403)", async () => {
     adminFetch.mockImplementation((url: string) => {

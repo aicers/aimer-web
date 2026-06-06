@@ -123,6 +123,7 @@ export function AnalystsPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [invitationsLoadError, setInvitationsLoadError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customersForbidden, setCustomersForbidden] = useState(false);
@@ -161,6 +162,7 @@ export function AnalystsPage() {
   const [manageTarget, setManageTarget] = useState<Analyst | null>(null);
   const [manageDetail, setManageDetail] = useState<AnalystDetail | null>(null);
   const [manageDetailLoading, setManageDetailLoading] = useState(false);
+  const [manageDetailError, setManageDetailError] = useState(false);
   const [manageActionLoading, setManageActionLoading] = useState(false);
   const [addCustomerId, setAddCustomerId] = useState("");
 
@@ -252,11 +254,16 @@ export function AnalystsPage() {
         "/api/admin/analysts/invitations",
       );
       setInvitations(data.invitations);
+      setInvitationsLoadError(false);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
+        return;
       }
-      // Non-critical — leave the pending list empty on failure.
+      // A failed load must not look like "no pending invitations" — that would
+      // hide invites the admin still needs to revoke. Surface an explicit
+      // error state instead of silently leaving the list empty.
+      setInvitationsLoadError(true);
     }
   }, []);
 
@@ -502,6 +509,7 @@ export function AnalystsPage() {
 
   const fetchManageDetail = useCallback(async (accountId: string) => {
     setManageDetailLoading(true);
+    setManageDetailError(false);
     try {
       const data = await adminFetch<AnalystDetail>(
         `/api/admin/analysts/${accountId}`,
@@ -512,7 +520,13 @@ export function AnalystsPage() {
         window.location.href = "/api/admin-auth/sign-in";
         return;
       }
+      // Distinguish a failed detail load from a genuinely empty assignment
+      // list. Without this, a transient outage renders "None" current
+      // assignments and (because assignedIds is then empty) offers
+      // already-assigned customers as add candidates. Flag the error and gate
+      // the add control on it.
       setManageDetail(null);
+      setManageDetailError(true);
     } finally {
       setManageDetailLoading(false);
     }
@@ -764,7 +778,9 @@ export function AnalystsPage() {
           <h2 className="text-lg font-semibold text-foreground">
             {t("pendingTitle")}
           </h2>
-          {invitations.length === 0 ? (
+          {invitationsLoadError ? (
+            <p className="text-sm text-destructive">{t("pendingLoadFailed")}</p>
+          ) : invitations.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {t("noPendingInvitations")}
             </p>
@@ -1064,6 +1080,10 @@ export function AnalystsPage() {
                 <p className="text-sm text-muted-foreground">
                   {tCommon("loading")}
                 </p>
+              ) : manageDetailError ? (
+                <p className="text-sm text-destructive">
+                  {t("assignmentsLoadFailed")}
+                </p>
               ) : !manageDetail ||
                 manageDetail.assignedCustomers.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
@@ -1095,7 +1115,14 @@ export function AnalystsPage() {
               <span className="text-sm font-medium text-foreground">
                 {t("addAssignment")}
               </span>
-              {assignableCustomers.length === 0 ? (
+              {manageDetailError ? (
+                // Assignment data failed to load, so we can't know which
+                // customers are already assigned. Disable adding rather than
+                // risk offering an already-assigned customer.
+                <p className="text-sm text-muted-foreground">
+                  {t("addAssignmentUnavailable")}
+                </p>
+              ) : assignableCustomers.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   {t("noActiveCustomers")}
                 </p>

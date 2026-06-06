@@ -273,6 +273,7 @@
     "pendingCustomers": "Customers",
     "pendingExpires": "Expires",
     "noPendingInvitations": "No pending invitations.",
+    "pendingLoadFailed": "Pending invitations could not be loaded. Reload the page to retry — invitations that need revoking may exist but are not shown here.",
     "revokeInvitation": "Revoke",
     "revokeInvitationTitle": "Revoke Invitation",
     "revokeInvitationConfirm": "Are you sure you want to revoke the pending invitation for {email}?",
@@ -290,6 +291,8 @@
     "assignmentAddSuccess": "Customer assigned.",
     "assignmentRemoveSuccess": "Assignment removed.",
     "noActiveCustomers": "No active customers available to assign.",
+    "assignmentsLoadFailed": "Current assignments could not be loaded. Reload or reopen this dialog to retry.",
+    "addAssignmentUnavailable": "Adding assignments is unavailable until current assignments load. Reopen this dialog to retry.",
     "selectCustomer": "Select a customer",
     "customersPickerEmpty": "No active customers available."
   },
