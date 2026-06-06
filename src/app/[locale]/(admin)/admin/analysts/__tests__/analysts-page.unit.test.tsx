@@ -209,6 +209,106 @@ describe("AnalystsPage read load failures", () => {
   });
 });
 
+describe("AnalystsPage lazy detail race", () => {
+  it("ignores a stale analyst-detail response from a previously opened analyst", async () => {
+    const ALICE = {
+      accountId: "acc-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      analystEligible: true,
+      assignedCustomerIds: ["cust-1"],
+      lastSignInAt: null,
+    };
+    const BOB = {
+      accountId: "acc-bob",
+      email: "bob@example.com",
+      displayName: "Bob",
+      analystEligible: true,
+      assignedCustomerIds: ["cust-2"],
+      lastSignInAt: null,
+    };
+    const TWO_CUSTOMERS = [
+      { id: "cust-1", name: "Acme", externalKey: "ACME", status: "active" },
+      { id: "cust-2", name: "Globex", externalKey: "GLOBEX", status: "active" },
+    ];
+    let resolveAlice: (value: unknown) => void = () => {};
+    const aliceDetail = new Promise((resolve) => {
+      resolveAlice = resolve;
+    });
+    adminFetch.mockImplementation((url: string) => {
+      if (url === "/api/admin/analysts") {
+        return Promise.resolve({ analysts: [ALICE, BOB] });
+      }
+      if (url === "/api/admin/analysts/invitations") {
+        return Promise.resolve({ invitations: [] });
+      }
+      if (url === "/api/admin/customers") {
+        return Promise.resolve({ customers: TWO_CUSTOMERS });
+      }
+      if (url === "/api/admin/accounts") {
+        return Promise.resolve({ accounts: ACCOUNTS });
+      }
+      // Alice's detail resolves only when the test releases it (after Bob's
+      // dialog is open), simulating a slow response for a closed analyst.
+      if (url === "/api/admin/analysts/acc-alice") return aliceDetail;
+      if (url === "/api/admin/analysts/acc-bob") {
+        return Promise.resolve({
+          accountId: "acc-bob",
+          email: "bob@example.com",
+          displayName: "Bob",
+          analystEligible: true,
+          assignedCustomers: [
+            {
+              id: "cust-2",
+              externalKey: "GLOBEX",
+              name: "Globex",
+              status: "active",
+            },
+          ],
+        });
+      }
+      return Promise.resolve({});
+    });
+    renderPage();
+
+    // Open Alice's dialog; her detail request is left pending.
+    const assignmentButtons = await screen.findAllByRole("button", {
+      name: "Assignments",
+    });
+    fireEvent.click(assignmentButtons[0]);
+    let dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Loading...");
+
+    // Close it before Alice's detail resolves, then open Bob's dialog.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(assignmentButtons[1]);
+    dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Globex");
+
+    // Releasing Alice's now-stale response must not overwrite Bob's dialog.
+    resolveAlice({
+      accountId: "acc-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      analystEligible: true,
+      assignedCustomers: [
+        { id: "cust-1", externalKey: "ACME", name: "Acme", status: "active" },
+      ],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The single current-assignment row (the only place a name appears with a
+    // Remove control — Acme is merely an add option in Bob's dialog) must still
+    // be Bob's "Globex", never Alice's stale "Acme".
+    const removeRow = within(dialog)
+      .getByRole("button", { name: "Remove" })
+      .closest("div");
+    expect(removeRow?.textContent).toContain("Globex");
+    expect(removeRow?.textContent).not.toContain("Acme");
+  });
+});
+
 describe("AnalystsPage picker load failures", () => {
   it("surfaces a load error and disables actions when customers fail (non-403)", async () => {
     adminFetch.mockImplementation((url: string) => {

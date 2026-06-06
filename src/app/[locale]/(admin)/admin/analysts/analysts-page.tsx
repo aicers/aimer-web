@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
@@ -165,6 +165,11 @@ export function AnalystsPage() {
   const [manageDetailError, setManageDetailError] = useState(false);
   const [manageActionLoading, setManageActionLoading] = useState(false);
   const [addCustomerId, setAddCustomerId] = useState("");
+  // Monotonic token for the lazy analyst-detail fetch. Each fetch captures the
+  // current value; only the latest request is allowed to apply its result, so
+  // a slow response for a previously opened analyst can never populate the
+  // dialog that is now showing a different (or no) analyst.
+  const manageDetailRequestRef = useRef(0);
 
   const [toast, setToast] = useState<{
     message: string;
@@ -508,18 +513,26 @@ export function AnalystsPage() {
   // -----------------------------------------------------------------------
 
   const fetchManageDetail = useCallback(async (accountId: string) => {
+    const requestId = ++manageDetailRequestRef.current;
+    const isStale = () => requestId !== manageDetailRequestRef.current;
     setManageDetailLoading(true);
     setManageDetailError(false);
     try {
       const data = await adminFetch<AnalystDetail>(
         `/api/admin/analysts/${accountId}`,
       );
+      // Ignore a response whose request has been superseded (the dialog was
+      // closed and/or reopened for a different analyst before it resolved);
+      // otherwise it would render one analyst's assignments under another's
+      // dialog while the action handlers target manageTarget.accountId.
+      if (isStale()) return;
       setManageDetail(data);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
         return;
       }
+      if (isStale()) return;
       // Distinguish a failed detail load from a genuinely empty assignment
       // list. Without this, a transient outage renders "None" current
       // assignments and (because assignedIds is then empty) offers
@@ -528,7 +541,7 @@ export function AnalystsPage() {
       setManageDetail(null);
       setManageDetailError(true);
     } finally {
-      setManageDetailLoading(false);
+      if (!isStale()) setManageDetailLoading(false);
     }
   }, []);
 
