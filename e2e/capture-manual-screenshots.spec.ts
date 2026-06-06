@@ -597,6 +597,170 @@ base.describe.serial("Manual screenshots", () => {
     await adminPage.getByRole("button", { name: "Cancel" }).click();
   });
 
+  type Locale = "en" | "ko";
+  const LOCALES: readonly Locale[] = ["en", "ko"] as const;
+
+  // =========================================================================
+  // Analyst management (issue #270) — docs/{en,ko}/analyst-management.md.
+  // Pure admin chrome over auth_db rows seeded by seedTestData (analyst
+  // accounts + customer assignments, plus active customers/accounts for the
+  // pickers). No aice-web-next data, so these are real captures per
+  // docs/AUTHORING.md. Captured per-locale (EN + KO) so the manual embeds
+  // locale-specific PNGs that match the app's i18n strings.
+  // =========================================================================
+
+  const ANALYST_LABELS: Record<
+    Locale,
+    {
+      heading: RegExp;
+      invite: string;
+      inviteHeading: RegExp;
+      designate: string;
+      designateHeading: RegExp;
+      revoke: string;
+      revokeHeading: RegExp;
+      assignments: string;
+      assignmentsHeading: RegExp;
+    }
+  > = {
+    en: {
+      heading: /^Analysts$/,
+      invite: "Invite Analyst",
+      inviteHeading: /Invite Analyst/,
+      designate: "Designate Analyst",
+      designateHeading: /Designate Analyst/,
+      revoke: "Revoke",
+      revokeHeading: /Revoke Analyst/,
+      assignments: "Assignments",
+      assignmentsHeading: /Customer Assignments/,
+    },
+    ko: {
+      heading: /^분석가$/,
+      invite: "분석가 초대",
+      inviteHeading: /분석가 초대/,
+      designate: "분석가 지정",
+      designateHeading: /분석가 지정/,
+      revoke: "해제",
+      revokeHeading: /분석가 해제/,
+      assignments: "배정 관리",
+      assignmentsHeading: /고객 배정/,
+    },
+  };
+
+  for (const locale of LOCALES) {
+    base(`admin-analysts-table.${locale}.png`, async () => {
+      const labels = ANALYST_LABELS[locale];
+      await adminPage.setViewportSize(VIEWPORT);
+      await adminPage.goto(`/${locale}/admin/analysts`);
+      await settle(adminPage);
+      await expect(
+        adminPage.getByRole("heading", { name: labels.heading, level: 1 }),
+      ).toBeVisible();
+      await adminPage.waitForSelector("table tbody tr");
+
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-analysts-table.${locale}.png`),
+        fullPage: true,
+      });
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`admin-analysts-invite-dialog.${locale}.png`, async () => {
+      const labels = ANALYST_LABELS[locale];
+      await adminPage.setViewportSize(VIEWPORT);
+      await adminPage.goto(`/${locale}/admin/analysts`);
+      await settle(adminPage);
+
+      await adminPage.getByRole("button", { name: labels.invite }).click();
+      await expect(
+        adminPage.getByRole("heading", { name: labels.inviteHeading }),
+      ).toBeVisible();
+
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-analysts-invite-dialog.${locale}.png`),
+      });
+
+      await adminPage.keyboard.press("Escape");
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`admin-analysts-designate-dialog.${locale}.png`, async () => {
+      const labels = ANALYST_LABELS[locale];
+      await adminPage.setViewportSize(VIEWPORT);
+      await adminPage.goto(`/${locale}/admin/analysts`);
+      await settle(adminPage);
+
+      await adminPage.getByRole("button", { name: labels.designate }).click();
+      await expect(
+        adminPage.getByRole("heading", { name: labels.designateHeading }),
+      ).toBeVisible();
+
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-analysts-designate-dialog.${locale}.png`),
+      });
+
+      await adminPage.keyboard.press("Escape");
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`admin-analysts-revoke-dialog.${locale}.png`, async () => {
+      const labels = ANALYST_LABELS[locale];
+      await adminPage.setViewportSize(VIEWPORT);
+      await adminPage.goto(`/${locale}/admin/analysts`);
+      await settle(adminPage);
+      await adminPage.waitForSelector("table tbody tr");
+
+      // The first Revoke button in the analyst table (no pending invitations
+      // are seeded, so the only Revoke controls belong to analyst rows).
+      await adminPage
+        .getByRole("button", { name: labels.revoke, exact: true })
+        .first()
+        .click();
+      await expect(
+        adminPage.getByRole("heading", { name: labels.revokeHeading }),
+      ).toBeVisible();
+
+      await adminPage.screenshot({
+        path: resolve(ASSETS, `admin-analysts-revoke-dialog.${locale}.png`),
+      });
+
+      await adminPage.keyboard.press("Escape");
+    });
+  }
+
+  for (const locale of LOCALES) {
+    base(`admin-analysts-assignments-dialog.${locale}.png`, async () => {
+      const labels = ANALYST_LABELS[locale];
+      await adminPage.setViewportSize(VIEWPORT);
+      await adminPage.goto(`/${locale}/admin/analysts`);
+      await settle(adminPage);
+      await adminPage.waitForSelector("table tbody tr");
+
+      await adminPage
+        .getByRole("button", { name: labels.assignments })
+        .first()
+        .click();
+      await expect(
+        adminPage.getByRole("heading", { name: labels.assignmentsHeading }),
+      ).toBeVisible();
+      // Wait for the lazy detail fetch to resolve so the current-assignment
+      // rows are rendered rather than the loading placeholder.
+      await adminPage.waitForTimeout(500);
+
+      await adminPage.screenshot({
+        path: resolve(
+          ASSETS,
+          `admin-analysts-assignments-dialog.${locale}.png`,
+        ),
+      });
+
+      await adminPage.keyboard.press("Escape");
+    });
+  }
+
   // =========================================================================
   // Environment management — docs/{en,ko}/environment-management.md
   // =========================================================================
@@ -708,9 +872,6 @@ base.describe.serial("Manual screenshots", () => {
   // capture flow drives the app in the matching locale and the manual embeds
   // its locale-specific PNG. See #203 for the slot ↔ placeholder mapping.
   // =========================================================================
-
-  type Locale = "en" | "ko";
-  const LOCALES: readonly Locale[] = ["en", "ko"] as const;
 
   const LOCALE_LABELS: Record<
     Locale,

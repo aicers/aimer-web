@@ -40,6 +40,7 @@ plugins:
             - Members: members.md
             - Account Management: account-management.md
             - Admin Designation: admin-designation.md
+            - Analyst Management: analyst-management.md
             - Customer Management: customer-management.md
             - Cross-System Customer Identification: cross-system-customer-identification.md
             - Environment Management: environment-management.md
@@ -71,6 +72,7 @@ plugins:
             - Members: members.md
             - Account Management: account-management.md
             - Admin Designation: admin-designation.md
+            - Analyst Management: analyst-management.md
             - Customer Management: customer-management.md
             - Cross-System Customer Identification: cross-system-customer-identification.md
             - Environment Management: environment-management.md
@@ -100,6 +102,7 @@ plugins:
             Account Management: 계정 관리
             Account Anomalies: 계정 이상징후
             Admin Designation: 관리자 지정
+            Analyst Management: 분석가 관리
             Customer Management: 고객 관리
             Cross-System Customer Identification: 시스템 간 고객 식별
             Environment Management: 환경 관리
