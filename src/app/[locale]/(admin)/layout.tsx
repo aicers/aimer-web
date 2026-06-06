@@ -8,6 +8,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  UserSearch,
   Users,
 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
@@ -39,6 +40,11 @@ function useAdminNavItems(): NavItem[] {
       href: `/${locale}/admin/admins`,
       label: t("admins"),
       icon: ShieldCheck,
+    },
+    {
+      href: `/${locale}/admin/analysts`,
+      label: t("analysts"),
+      icon: UserSearch,
     },
     {
       href: `/${locale}/admin/customers`,
