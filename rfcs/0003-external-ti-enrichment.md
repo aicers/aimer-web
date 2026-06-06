@@ -199,7 +199,7 @@ The story-payload members delivered from aice-web-next must actually carry the e
 
 ### Indicator normalization
 
-Matching is only as good as normalization. A normalized indicator is the value actually matched and stored in the audit record. Rules to define (v1):
+Matching is only as good as normalization. A normalized indicator is the value actually matched against feeds. How indicators are stored is a separate concern — see "Audit / evidence model" below. Rules to define (v1):
 
 - **URL** — canonicalization (scheme/host casing, default ports, path/query normalization, percent-encoding); decide whether to match URL, host, and registered domain separately.
 - **Domain** — lowercase, trailing-dot strip, **punycode / IDN** normalization (match both U-label and A-label).
