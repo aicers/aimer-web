@@ -33,6 +33,7 @@ export interface AnalyzeStoryVariables {
   storyId: string;
   members: Array<StoryMemberInput>;
   storyMetadata: StoryMetadataInput;
+  enrichmentFacts: Array<string>;
   name: string;
   model: string;
   lang?: "KOREAN" | "ENGLISH" | null;
@@ -58,6 +59,7 @@ export const ANALYZE_STORY_SOURCE = `mutation AnalyzeStory(
   $storyId: ID!
   $members: [StoryMemberInput!]!
   $storyMetadata: StoryMetadataInput!
+  $enrichmentFacts: [String!]!
   $name: String!
   $model: String!
   $lang: Language
@@ -67,6 +69,7 @@ export const ANALYZE_STORY_SOURCE = `mutation AnalyzeStory(
     storyId: $storyId
     members: $members
     storyMetadata: $storyMetadata
+    enrichmentFacts: $enrichmentFacts
     name: $name
     model: $model
     lang: $lang

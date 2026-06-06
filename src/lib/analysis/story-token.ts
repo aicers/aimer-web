@@ -57,13 +57,16 @@ const RESIDUAL_EVENT_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_[0-9]+>>/g;
 // pinned to the kinds the redaction engine emits (`IP`/`EMAIL`/`MAC`),
 // so it also catches an unknown-kind token the engine never produces —
 // e.g. a hallucinated `<<REDACTED_HOSTNAME_E1_001>>` synthesised
-// upstream (aicers/aimer#445). It matches all three token scopes: bare
-// event `<<REDACTED_KIND_NNN>>`, story `<<REDACTED_KIND_E{i}_NNN>>`, and
-// report `<<REDACTED_KIND_R{j}_NNN>>`. Any match not in `allowedTokens`
-// is a token shape the scan cannot account for and must fail the job —
-// defense-in-depth that survives even after the upstream synthesis is
-// fixed (#380).
-const REDACTION_TOKEN_SHAPE_RE = /<<REDACTED_[A-Z]+(?:_[ER]\d+)?_\d+>>/g;
+// upstream (aicers/aimer#445). It matches all token scopes: bare event
+// `<<REDACTED_KIND_NNN>>`, story `<<REDACTED_KIND_E{i}_NNN>>`, fact
+// `<<REDACTED_KIND_F{k}_NNN>>` (RFC 0003 C1 #440), and report
+// `<<REDACTED_KIND_R{j}_NNN>>`. Any match not in `allowedTokens` is a
+// token shape the scan cannot account for and must fail the job — a
+// legitimate `F{k}` the LLM echoes from an injected fact IS in
+// `allowedTokens` (the worker merges the fact-scope tokens), so only a
+// fabricated one trips here. Defense-in-depth that survives even after
+// the upstream synthesis is fixed (#380).
+const REDACTION_TOKEN_SHAPE_RE = /<<REDACTED_[A-Z]+(?:_[ERF]\d+)?_\d+>>/g;
 
 // Plaintext-PII leak heuristics. Email + MAC are always-redacted
 // kinds in the event-scope engine, so any match here is a leak or a

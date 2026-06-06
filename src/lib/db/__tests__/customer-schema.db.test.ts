@@ -40,7 +40,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0007_analysis_result_tables (RFC 0002 Phase 0, #294),
     // 0008_event_analysis_result_generation (RFC 0002 Phase 2, #297),
     // 0009_citation_reverse_lookup_gin (T2, #396),
-    // 0010_ioc_enrichment (RFC 0003 P1a, #361)
+    // 0010_ioc_enrichment (RFC 0003 P1a, #361),
+    // 0011_enrichment_facts (RFC 0003 C1, #440)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -53,6 +54,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0008",
       "0009",
       "0010",
+      "0011",
     ]);
   });
 
@@ -99,6 +101,82 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "event_analysis_result",
       "event_redaction_map",
     ]);
+  });
+
+  // -- RFC 0003 C1 (#440) enrichment-fact tables --
+
+  describe("RFC 0003 C1 (#440) enrichment-fact storage", () => {
+    it("creates story_enrichment_fact and enrichment_redaction_map", async () => {
+      const { rows } = await pool.query(`
+        SELECT table_name FROM information_schema.tables
+         WHERE table_schema = 'public'
+           AND table_name IN ('story_enrichment_fact', 'enrichment_redaction_map')
+         ORDER BY table_name`);
+      expect(rows.map((r) => r.table_name)).toEqual([
+        "enrichment_redaction_map",
+        "story_enrichment_fact",
+      ]);
+    });
+
+    it("story_enrichment_fact has its own IDENTITY fact_id + redacted body", async () => {
+      const { rows } = await pool.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+        is_identity: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable, is_identity
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'story_enrichment_fact'`,
+      );
+      const byName = new Map(rows.map((c) => [c.column_name, c]));
+      expect(byName.get("fact_id")?.is_identity).toBe("YES");
+      expect(byName.get("fact_text")?.is_nullable).toBe("NO");
+      expect(byName.get("redaction_policy_version")?.is_nullable).toBe("NO");
+    });
+
+    it("enrichment_redaction_map is keyed on fact_id with the envelope columns", async () => {
+      const { rows } = await pool.query<{
+        column_name: string;
+        data_type: string;
+      }>(
+        `SELECT column_name, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'enrichment_redaction_map'`,
+      );
+      const byName = new Map(rows.map((c) => [c.column_name, c.data_type]));
+      expect(byName.get("fact_id")).toBe("bigint");
+      expect(byName.get("ciphertext")).toBe("bytea");
+      expect(byName.get("wrapped_dek")).toBe("text");
+      // PK is fact_id.
+      const { rows: pk } = await pool.query<{ attname: string }>(
+        `SELECT a.attname
+           FROM pg_index i
+           JOIN pg_attribute a
+             ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+          WHERE i.indrelid = 'enrichment_redaction_map'::regclass
+            AND i.indisprimary`,
+      );
+      expect(pk.map((r) => r.attname)).toEqual(["fact_id"]);
+    });
+
+    it("story_analysis_result has input_fact_refs JSONB NOT NULL", async () => {
+      const { rows } = await pool.query<{
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT data_type, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'story_analysis_result'
+            AND column_name = 'input_fact_refs'`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].data_type).toBe("jsonb");
+      expect(rows[0].is_nullable).toBe("NO");
+    });
   });
 
   // -- RFC 0002 Phase 0 (#294) analysis result tables --

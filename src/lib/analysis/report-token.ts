@@ -53,6 +53,29 @@ const STORY_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/g;
 // token.
 const EVENT_SCOPE_TOKEN_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/g;
 
+// Fact-scope token (RFC 0003 C1 #440): `<<REDACTED_IP_F1_001>>`. A story
+// leaf's analysis can carry these when the story worker injected
+// enrichment facts. They carry no `(aice_id, event_key)`, so the
+// `E{i}`->`R{j}` rewrite cannot renamespace them; the report INPUT
+// builder re-masks them to a stable placeholder via `maskFactScopeTokens`
+// BEFORE the rewrite runs. Demapping `F{k}` to plaintext belongs ONLY to
+// the user-facing render path (under the viewer's authorization), never
+// to an LLM input — so the report builder strips, never resolves.
+const FACT_SCOPE_TOKEN_RE = /<<REDACTED_(?:IP|EMAIL|MAC|DOMAIN)_F\d+_\d+>>/g;
+const FACT_SCOPE_PLACEHOLDER = "[redacted]";
+
+/**
+ * Replace every fact-scope `<<REDACTED_*_F{k}_*>>` token with a stable,
+ * report-safe placeholder. Applied to story leaves BEFORE the
+ * report-scope rewrite so a live `F{k}` (which the `R{j}` pass cannot
+ * renamespace) never reaches the report LLM input — and, critically, so
+ * no customer-asset plaintext is ever fed to the report model.
+ */
+export function maskFactScopeTokens(text: string): string {
+  FACT_SCOPE_TOKEN_RE.lastIndex = 0;
+  return text.replace(FACT_SCOPE_TOKEN_RE, FACT_SCOPE_PLACEHOLDER);
+}
+
 // Report-scope token matcher used by the leak scan. The report prompt
 // SHOULD only ever contain report-scope tokens; a lower-scope token in
 // the output is a hallucination signal because the LLM never saw one.
@@ -71,8 +94,11 @@ const RESIDUAL_EVENT_SCOPE_TOKEN_RE =
 // `<<REDACTED_KIND_NNN>>`, story `<<REDACTED_KIND_E{i}_NNN>>`, and
 // report `<<REDACTED_KIND_R{j}_NNN>>`. Any match not in the report's
 // `allowedTokens` is a token shape the scan cannot restore and must
-// fail the job — defense-in-depth per RFC 0002.
-const REDACTION_TOKEN_SHAPE_RE = /<<REDACTED_[A-Z]+(?:_[ER]\d+)?_\d+>>/g;
+// fail the job — defense-in-depth per RFC 0002. The `[ERF]` class also
+// covers a stray fact-scope `<<REDACTED_*_F{k}_*>>` (RFC 0003 C1 #440):
+// the input builder re-masks those before the prompt, so any `F{k}` in
+// the OUTPUT is unaccounted-for and must fail the job.
+const REDACTION_TOKEN_SHAPE_RE = /<<REDACTED_[A-Z]+(?:_[ERF]\d+)?_\d+>>/g;
 
 // Plaintext-PII leak heuristics — identical policy to story-token.ts.
 // Email + MAC are always-redacted kinds, so any match is a leak. IPv4/

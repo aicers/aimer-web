@@ -18,11 +18,13 @@
 // policy on every match.
 
 import { EnrichmentDispatcher } from "./dispatcher";
+import { createEnrichmentFact } from "./fact";
 import type { SourcePolicy } from "./source-policy";
 import { SourcePolicyRegistry } from "./source-policy";
 import type {
   Enricher,
   EnricherError,
+  EnrichmentFact,
   EnrichmentMatch,
   EnrichmentResult,
   EntityType,
@@ -30,6 +32,27 @@ import type {
   NormalizedIndicator,
   SourceOutcome,
 } from "./types";
+
+/**
+ * Build one narrative fact per match (RFC 0003 C1 / #440). Facts carry
+ * the RAW indicator text at generation — redaction happens later at the
+ * DB-write boundary in the enrichment worker, where customer-asset
+ * indicators are tokenized and external ones stay raw. Facts are
+ * produced for EVERY match, including `soft_reputation` /
+ * floor-ineligible ones: a non-flooring hit still has narrative value
+ * for the analyst even though it never drives the binary floor.
+ */
+export function buildFactsFromMatches(
+  indicator: NormalizedIndicator,
+  matches: ReadonlyArray<EnrichmentMatch>,
+): EnrichmentFact[] {
+  return matches.map((match) =>
+    createEnrichmentFact(
+      `${indicator.value} is listed by ${match.source}` +
+        (match.classification ? ` as ${match.classification}` : ""),
+    ),
+  );
+}
 
 /** Snapshot-level provenance/freshness for one feed (per `source_policy_id`). */
 export interface FeedSnapshotMeta {
@@ -154,11 +177,13 @@ export class LocalFeedEnricher implements Enricher {
       sourceUpdatedAt: probe.sourceUpdatedAt,
     };
 
-    // C1 fact injection is the separate #318 issue — P1a emits no facts.
+    // RFC 0003 C1 (#440) — one narrative fact per match (incl.
+    // `soft_reputation` / floor-ineligible). Raw indicator at
+    // generation; the worker redacts at write.
     return {
       indicator,
       matches,
-      facts: [],
+      facts: buildFactsFromMatches(indicator, matches),
       errors: [],
       outcomes: [outcome],
       checkedAt: "",

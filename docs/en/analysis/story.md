@@ -127,7 +127,6 @@ generally want the rationale on screen by default.
 
 ![LOW-tier story analysis page, with the severity and likelihood factor rows collapsed behind Show severity factors / Show likelihood factors disclosures](../../assets/story-detail-low.en.png)
 
-
 ## MITRE ATT&CK techniques
 
 Next to the priority badge, the page renders a row of MITRE ATT&CK
@@ -191,6 +190,23 @@ value. Tokens that cannot be restored (decrypt failure, missing map
 row, out-of-range index) are passed through unchanged so the page
 still renders. Hallucinated decodes are blocked at write time and
 never reach this view.
+
+The same threat-intelligence matching that produces the `known_ioc_hit`
+floor signal (see [Priority and scores](#priority-and-scores)) also
+contributes short narrative **enrichment facts** to the analysis input —
+for example, "this indicator is listed by a known-bad feed as C2". Any
+customer-asset value inside a fact — an indicator in your registered IP
+ranges or owned domains — is redacted before the fact reaches the model
+and carries a fact-scope token (`<<REDACTED_*_F{k}_*>>`); external
+indicators (an attacker host, a public IP) are passed through unredacted.
+On this page the fact-scope tokens are restored to their original
+plaintext exactly as the `E{i}` tokens are — parsing each `F{k}`, looking
+up the producing fact in `input_fact_refs`, decrypting that fact's map,
+and substituting the value — under the same authorization. The
+customer-asset plaintext only ever appears here, on the authorized render;
+it is never sent to the report model (a periodic report re-masks any
+fact-scope token before its own prompt). As with `E{i}`, a fact-scope
+token that cannot be restored is passed through unchanged.
 
 ## Member suspicious events
 

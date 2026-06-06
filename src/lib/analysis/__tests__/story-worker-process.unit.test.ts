@@ -422,7 +422,9 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     const insertCall = customerPool.__calls.find((c) =>
       c.sql.includes("INSERT INTO story_analysis_result"),
     );
-    return insertCall?.params?.[16] as string;
+    // input_hash is param 17 after `input_fact_refs` (#440) was inserted
+    // between `input_event_refs` (15) and `input_hash`.
+    return insertCall?.params?.[17] as string;
   }
 
   it("changes input_hash when only a member event_time differs", async () => {
@@ -431,6 +433,68 @@ describe("processStoryJob — input_hash canonical bundle (#344)", () => {
     expect(hashA).toBeTruthy();
     expect(hashB).toBeTruthy();
     expect(hashA).not.toBe(hashB);
+  });
+
+  // RFC 0003 C1 (#440) — the redacted enrichment-fact text is folded into
+  // `input_hash`. Two runs with identical members/refs but different fact
+  // wording/classification feed the LLM different input and MUST hash
+  // differently — refs alone are insufficient (same fact_ids, different
+  // bodies).
+  async function runAndCaptureFactHashAndRefs(
+    facts: Array<{ factId: string; text: string }>,
+  ): Promise<{ hash: string; factRefs: string }> {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 },
+        { rows: [], rowCount: 1 },
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+      clientQueryPlan: [{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }],
+    });
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: (async () => goodAimerResponse()) as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+      loadEnrichmentFacts: async () => facts,
+    });
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    return {
+      hash: insertCall?.params?.[17] as string,
+      factRefs: insertCall?.params?.[16] as string,
+    };
+  }
+
+  it("folds enrichmentFacts into input_hash and writes input_fact_refs", async () => {
+    const a = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    // Same fact_id (so same refs), different wording/classification.
+    const b = await runAndCaptureFactHashAndRefs([
+      {
+        factId: "100",
+        text: "1.2.3.4 is listed by abuse.ch/feodo as botnet",
+      },
+    ]);
+    expect(a.hash).not.toBe(b.hash);
+    // input_fact_refs is persisted (the ordered k -> fact_id mapping).
+    expect(JSON.parse(a.factRefs)).toEqual([{ index: 1, factId: "100" }]);
+  });
+
+  it("input_hash is identical across runs with the same members and facts", async () => {
+    const a = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    const b = await runAndCaptureFactHashAndRefs([
+      { factId: "100", text: "1.2.3.4 is listed by abuse.ch/feodo as c2" },
+    ]);
+    expect(a.hash).toBe(b.hash);
   });
 });
 

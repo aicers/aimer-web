@@ -7,10 +7,49 @@ import { buildRangeSet } from "../../redaction/ranges";
 import type { RangeSet } from "../../redaction/types";
 import {
   buildReportTokenMap,
+  maskFactScopeTokens,
   scanReportAnalysisForLeaks,
 } from "../report-token";
 
 const EMPTY_RANGES: RangeSet = buildRangeSet([]);
+
+describe("maskFactScopeTokens — F{k} re-mask before report-scope rewrite (#440)", () => {
+  it("replaces fact-scope tokens with a stable, non-token placeholder", () => {
+    const masked = maskFactScopeTokens(
+      "Indicator <<REDACTED_IP_F1_001>> and <<REDACTED_DOMAIN_F2_003>> seen.",
+    );
+    expect(masked).toBe("Indicator [redacted] and [redacted] seen.");
+    // The placeholder is not itself a redaction-token shape.
+    expect(masked).not.toMatch(/<<REDACTED_/);
+  });
+
+  it("leaves E{i} / bare event tokens untouched (only F{k} is masked)", () => {
+    const masked = maskFactScopeTokens(
+      "<<REDACTED_IP_E1_001>> and <<REDACTED_IP_001>> stay.",
+    );
+    expect(masked).toBe("<<REDACTED_IP_E1_001>> and <<REDACTED_IP_001>> stay.");
+  });
+
+  it("a story leaf carrying F{k} yields NO live F token after report rewrite", () => {
+    // The builder masks F{k} before the E{i}->R{j} pass, so the rewritten
+    // report text the LLM sees never carries a fact-scope token (or any
+    // customer-asset plaintext, which never reached this text either).
+    const out = buildReportTokenMap(
+      [
+        {
+          analysis: maskFactScopeTokens(
+            "Member <<REDACTED_IP_E1_001>> matched fact <<REDACTED_IP_F1_001>>.",
+          ),
+        },
+      ],
+      [],
+    );
+    expect(out.rewrittenStoryTexts[0]).toBe(
+      "Member <<REDACTED_IP_R1_001>> matched fact [redacted].",
+    );
+    expect(out.rewrittenStoryTexts[0]).not.toMatch(/_F\d+_/);
+  });
+});
 
 describe("buildReportTokenMap", () => {
   it("folds story-scope (E{i}) and event-scope tokens into one R{j} namespace", () => {

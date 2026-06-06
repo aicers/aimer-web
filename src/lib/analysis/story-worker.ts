@@ -41,6 +41,7 @@ import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import { buildFactTokenMap, type FactInput, type FactRef } from "./fact-token";
 import {
   type FactorAxis,
   type FilterFactorsResult,
@@ -222,6 +223,16 @@ interface ProcessOptions {
     storyId: string,
     storyVersion: string,
   ) => Promise<EnrichmentReadiness>;
+  /**
+   * Override the enrichment-fact loader (RFC 0003 C1 #440) — used by
+   * tests. Returns the redacted fact bodies for the canonical
+   * `(story_id, story_version)`, ordered by `fact_id`.
+   */
+  loadEnrichmentFacts?: (
+    customerPool: Pool,
+    storyId: string,
+    storyVersion: string,
+  ) => Promise<FactInput[]>;
 }
 
 /**
@@ -463,6 +474,25 @@ export async function processStoryJob(
       event: m.event,
     })),
   );
+
+  // RFC 0003 C1 (#440) — load this story's redacted enrichment facts
+  // (guaranteed present + complete by the enrichment precondition above)
+  // and rename each customer-asset fact's self-scoped token to fact-scope
+  // `F{k}`. External fact indicators stay raw. `enrichmentFacts` is the
+  // redacted, F-scoped text sent to aimer; `inputFactRefs` (the ordered
+  // `k -> fact_id` mapping) is persisted so the renderer can demap. Fact
+  // tokens join the hallucination allow-list so a legitimate `F{k}` the
+  // LLM echoes from a fact is not mistaken for a leak.
+  const factRows = await (
+    opts.loadEnrichmentFacts ?? defaultLoadEnrichmentFacts
+  )(customerPool, job.story_id, canonical.storyVersion);
+  const {
+    rewrittenFacts: enrichmentFacts,
+    refs: inputFactRefs,
+    allowedTokens: factTokens,
+  } = buildFactTokenMap(factRows);
+  for (const t of factTokens) allowedTokens.add(t);
+
   const force = job.force_requested_at !== null;
 
   // Build the structured aimer payload. `rewrittenMembers` preserves the
@@ -502,12 +532,25 @@ export async function processStoryJob(
   // `members[].eventTime`, and the whole `storyMetadata` object are part
   // of the canonical input but absent from `rewrittenMembers`, so hashing
   // the latter alone would collide two runs that differ only in
-  // role/event-time/metadata and defeat drift attribution. Each component
-  // is built in deterministic order (members follow the canonical member
-  // order; metadata fields and `refs` are positional), so the bundle is
-  // stable across runs with identical input.
+  // role/event-time/metadata and defeat drift attribution. RFC 0003 C1
+  // (#440) folds in BOTH the redacted `enrichmentFacts` text AND the
+  // `inputFactRefs` mapping: two runs with identical members/refs but
+  // different fact wording/classification produce different LLM input and
+  // must hash differently — parallel to how member `event` strings (not
+  // just `refs`) are already covered via `storyMembers`. Each component is
+  // built in deterministic order (members + facts follow their canonical
+  // order; metadata/refs are positional), so the bundle is stable across
+  // runs with identical input.
   const inputHash = createHash("sha256")
-    .update(JSON.stringify({ members: storyMembers, storyMetadata, refs }))
+    .update(
+      JSON.stringify({
+        members: storyMembers,
+        storyMetadata,
+        refs,
+        enrichmentFacts,
+        inputFactRefs,
+      }),
+    )
     .digest("hex");
 
   void auditLog({
@@ -532,6 +575,7 @@ export async function processStoryJob(
       storyId: job.story_id,
       members: storyMembers,
       storyMetadata,
+      enrichmentFacts,
       modelName: job.model_name,
       model: job.model,
       lang: job.lang,
@@ -661,6 +705,7 @@ export async function processStoryJob(
       ttpValid: ttpResult.valid,
       priorityTier,
       inputEventRefs: refs,
+      inputFactRefs,
       inputHash,
       redactionPolicyVersion: policyCheck.version,
       requestedBy: job.force_requested_by,
@@ -886,6 +931,8 @@ async function callAnalyzeStory(args: {
   storyId: string;
   members: StoryMemberInput[];
   storyMetadata: StoryMetadataInput;
+  /** RFC 0003 C1 (#440) — redacted, F-scoped enrichment fact texts. */
+  enrichmentFacts: string[];
   modelName: string;
   model: string;
   lang: string;
@@ -901,6 +948,7 @@ async function callAnalyzeStory(args: {
       storyId: args.storyId,
       members: args.members,
       storyMetadata: args.storyMetadata,
+      enrichmentFacts: args.enrichmentFacts,
       name: args.modelName,
       model: args.model,
       lang: args.lang as "KOREAN" | "ENGLISH",
@@ -947,6 +995,7 @@ async function writeResultRow(
       aiceId: string;
       eventKey: string;
     }>;
+    inputFactRefs: ReadonlyArray<FactRef>;
     inputHash: string;
     redactionPolicyVersion: string;
     requestedBy: string | null;
@@ -962,15 +1011,15 @@ async function writeResultRow(
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier, analysis_text,
-          input_event_refs, input_hash,
+          input_event_refs, input_fact_refs, input_hash,
           redaction_policy_version, requested_by)
        VALUES ($1, $2::bigint, $3, $4, $5,
                $6, $7, $8,
                $9, $10,
                $11::jsonb, $12::jsonb, $13::jsonb,
                $14, $15,
-               $16::jsonb, $17,
-               $18, $19::uuid)`,
+               $16::jsonb, $17::jsonb, $18,
+               $19, $20::uuid)`,
       [
         args.job.customer_id,
         args.job.story_id,
@@ -988,6 +1037,7 @@ async function writeResultRow(
         args.priorityTier,
         args.aimerResponse.analysis,
         JSON.stringify(args.inputEventRefs),
+        JSON.stringify(args.inputFactRefs),
         args.inputHash,
         args.redactionPolicyVersion,
         args.requestedBy,
@@ -1180,6 +1230,30 @@ async function defaultCheckEnrichmentReady(
     status: rows[0]?.status ?? null,
     lastError: rows[0]?.last_error ?? null,
   };
+}
+
+/**
+ * RFC 0003 C1 (#440) default enrichment-fact loader: the redacted fact
+ * bodies for the canonical `(story_id, story_version)`, ordered by
+ * `fact_id` so the `F{k}` fact-scope index is stable across runs with the
+ * same facts. Empty when the story produced no enrichment facts.
+ */
+async function defaultLoadEnrichmentFacts(
+  customerPool: Pool,
+  storyId: string,
+  storyVersion: string,
+): Promise<FactInput[]> {
+  const { rows } = await customerPool.query<{
+    fact_id: string;
+    fact_text: string;
+  }>(
+    `SELECT fact_id::text AS fact_id, fact_text
+       FROM story_enrichment_fact
+      WHERE story_id = $1::bigint AND story_version = $2
+      ORDER BY fact_id`,
+    [storyId, storyVersion],
+  );
+  return rows.map((r) => ({ factId: r.fact_id, text: r.fact_text }));
 }
 
 /**
