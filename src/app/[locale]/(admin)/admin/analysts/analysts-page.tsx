@@ -170,6 +170,11 @@ export function AnalystsPage() {
   // a slow response for a previously opened analyst can never populate the
   // dialog that is now showing a different (or no) analyst.
   const manageDetailRequestRef = useRef(0);
+  // Tracks the analyst the Assignments dialog is currently open for (null when
+  // closed). Post-action refreshes consult this to avoid loading a stale
+  // analyst's detail into a dialog that has since been reopened for another
+  // analyst — see refreshAfterAssignmentChange.
+  const manageTargetRef = useRef<Analyst | null>(null);
 
   const [toast, setToast] = useState<{
     message: string;
@@ -546,6 +551,7 @@ export function AnalystsPage() {
   }, []);
 
   const openManage = (analyst: Analyst) => {
+    manageTargetRef.current = analyst;
     setManageTarget(analyst);
     setManageDetail(null);
     setAddCustomerId("");
@@ -553,23 +559,35 @@ export function AnalystsPage() {
     void fetchManageDetail(analyst.accountId);
   };
 
+  // Refresh the analyst list after an add/remove and, only if the dialog is
+  // still open for the same analyst, its detail. The Back button stays
+  // available while an add/remove request is in flight, so the admin can close
+  // the dialog and reopen it for a different analyst before the request
+  // resolves. Refreshing detail unconditionally would then start a fresh
+  // fetchManageDetail for the original analyst whose monotonic token postdates
+  // the reopen, letting it win and render the original analyst's assignments
+  // under the now-visible different analyst's dialog — the exact mismatch the
+  // token guard otherwise prevents.
+  const refreshAfterAssignmentChange = async (accountId: string) => {
+    const tasks: Promise<unknown>[] = [fetchAnalysts()];
+    if (manageTargetRef.current?.accountId === accountId) {
+      tasks.push(fetchManageDetail(accountId));
+    }
+    await Promise.all(tasks);
+  };
+
   const handleAddAssignment = async () => {
     if (!manageTarget || !addCustomerId) return;
+    const { accountId } = manageTarget;
     setManageActionLoading(true);
     try {
-      await adminFetch(
-        `/api/admin/analysts/${manageTarget.accountId}/assignments`,
-        {
-          method: "POST",
-          body: JSON.stringify({ customerId: addCustomerId }),
-        },
-      );
+      await adminFetch(`/api/admin/analysts/${accountId}/assignments`, {
+        method: "POST",
+        body: JSON.stringify({ customerId: addCustomerId }),
+      });
       setAddCustomerId("");
       showToast(t("assignmentAddSuccess"), "success");
-      await Promise.all([
-        fetchManageDetail(manageTarget.accountId),
-        fetchAnalysts(),
-      ]);
+      await refreshAfterAssignmentChange(accountId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
@@ -583,17 +601,15 @@ export function AnalystsPage() {
 
   const handleRemoveAssignment = async (customerId: string) => {
     if (!manageTarget) return;
+    const { accountId } = manageTarget;
     setManageActionLoading(true);
     try {
       await adminFetch(
-        `/api/admin/analysts/${manageTarget.accountId}/assignments/${customerId}`,
+        `/api/admin/analysts/${accountId}/assignments/${customerId}`,
         { method: "DELETE" },
       );
       showToast(t("assignmentRemoveSuccess"), "success");
-      await Promise.all([
-        fetchManageDetail(manageTarget.accountId),
-        fetchAnalysts(),
-      ]);
+      await refreshAfterAssignmentChange(accountId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         window.location.href = "/api/admin-auth/sign-in";
@@ -1074,7 +1090,15 @@ export function AnalystsPage() {
       </Dialog>
 
       {/* Manage assignments dialog */}
-      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+      <Dialog
+        open={manageOpen}
+        onOpenChange={(open) => {
+          setManageOpen(open);
+          // Clear the open-target ref on close so a post-action refresh for the
+          // just-closed analyst is skipped (see refreshAfterAssignmentChange).
+          if (!open) manageTargetRef.current = null;
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t("manageTitle")}</DialogTitle>

@@ -309,6 +309,116 @@ describe("AnalystsPage lazy detail race", () => {
   });
 });
 
+describe("AnalystsPage assignment-action race", () => {
+  it("does not refresh a closed analyst's detail after its in-flight add/remove resolves", async () => {
+    const ALICE = {
+      accountId: "acc-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      analystEligible: true,
+      assignedCustomerIds: ["cust-1"],
+      lastSignInAt: null,
+    };
+    const BOB = {
+      accountId: "acc-bob",
+      email: "bob@example.com",
+      displayName: "Bob",
+      analystEligible: true,
+      assignedCustomerIds: ["cust-2"],
+      lastSignInAt: null,
+    };
+    const TWO_CUSTOMERS = [
+      { id: "cust-1", name: "Acme", externalKey: "ACME", status: "active" },
+      { id: "cust-2", name: "Globex", externalKey: "GLOBEX", status: "active" },
+    ];
+    const ALICE_DETAIL = {
+      accountId: "acc-alice",
+      email: "alice@example.com",
+      displayName: "Alice",
+      analystEligible: true,
+      assignedCustomers: [
+        { id: "cust-1", externalKey: "ACME", name: "Acme", status: "active" },
+      ],
+    };
+    const BOB_DETAIL = {
+      accountId: "acc-bob",
+      email: "bob@example.com",
+      displayName: "Bob",
+      analystEligible: true,
+      assignedCustomers: [
+        {
+          id: "cust-2",
+          externalKey: "GLOBEX",
+          name: "Globex",
+          status: "active",
+        },
+      ],
+    };
+    // Alice's remove request is held pending until the test releases it, after
+    // Bob's dialog is open — simulating an action that finishes for a
+    // since-closed analyst.
+    let resolveRemove: (value: unknown) => void = () => {};
+    const removePending = new Promise((resolve) => {
+      resolveRemove = resolve;
+    });
+    adminFetch.mockImplementation((url: string) => {
+      if (url === "/api/admin/analysts") {
+        return Promise.resolve({ analysts: [ALICE, BOB] });
+      }
+      if (url === "/api/admin/analysts/invitations") {
+        return Promise.resolve({ invitations: [] });
+      }
+      if (url === "/api/admin/customers") {
+        return Promise.resolve({ customers: TWO_CUSTOMERS });
+      }
+      if (url === "/api/admin/accounts") {
+        return Promise.resolve({ accounts: ACCOUNTS });
+      }
+      if (url === "/api/admin/analysts/acc-alice/assignments/cust-1") {
+        return removePending;
+      }
+      // Both detail fetches resolve immediately. If the post-action refresh for
+      // the closed Alice were not guarded, this Alice detail would win the
+      // monotonic token after Bob's open and overwrite Bob's dialog.
+      if (url === "/api/admin/analysts/acc-alice") {
+        return Promise.resolve(ALICE_DETAIL);
+      }
+      if (url === "/api/admin/analysts/acc-bob") {
+        return Promise.resolve(BOB_DETAIL);
+      }
+      return Promise.resolve({});
+    });
+    renderPage();
+
+    // Open Alice's dialog and start removing her assignment (request pending).
+    const assignmentButtons = await screen.findAllByRole("button", {
+      name: "Assignments",
+    });
+    fireEvent.click(assignmentButtons[0]);
+    let dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Acme");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    // Close Alice's dialog and open Bob's while the remove is still in flight.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(assignmentButtons[1]);
+    dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Globex");
+
+    // Let Alice's remove finish; its post-action refresh must not load Alice's
+    // detail into Bob's dialog.
+    resolveRemove({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const removeRow = within(dialog)
+      .getByRole("button", { name: "Remove" })
+      .closest("div");
+    expect(removeRow?.textContent).toContain("Globex");
+    expect(removeRow?.textContent).not.toContain("Acme");
+  });
+});
+
 describe("AnalystsPage picker load failures", () => {
   it("surfaces a load error and disables actions when customers fail (non-403)", async () => {
     adminFetch.mockImplementation((url: string) => {
