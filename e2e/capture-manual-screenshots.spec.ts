@@ -1424,17 +1424,20 @@ base.describe.serial("Manual screenshots", () => {
   //   - report-detail-weekly /  — the WEEKLY/MONTHLY report-detail shots are
   //     report-detail-monthly      real captures from the gauntlet live
   //                              multi-host stack (real gpt-4o reports), not
-  //                              this fixture pipeline; they are produced by
-  //                              the gauntlet periodic-report-screenshots
-  //                              scenario (aicers/gauntlet#149, #365). Only
-  //                              the DAILY shot is fixture-driven here. The
-  //                              #382 Markdown renderer does not invalidate
-  //                              the live weekly/monthly assets: those gpt-4o
-  //                              narratives are plain prose with no Markdown
-  //                              syntax, so they render identically before
-  //                              and after the change. The DAILY fixture
-  //                              below deliberately carries Markdown to
-  //                              exercise the renderer.
+  //                              this fixture pipeline; the gauntlet
+  //                              periodic-report-screenshots scenario
+  //                              (aicers/gauntlet#149, #365) is the source
+  //                              for future real captures. Only the DAILY
+  //                              shot is fixture-driven here. NOTE (#450):
+  //                              the repo currently carries explicit
+  //                              placeholder graphics for the weekly/monthly
+  //                              assets, not real captures. The pre-#450 live
+  //                              shots showed the now-removed raw
+  //                              aggregate-score row, so they were replaced
+  //                              with placeholders pending a fresh real-data
+  //                              recapture from the gauntlet scenario above.
+  //                              The DAILY fixture below deliberately carries
+  //                              Markdown to exercise the #382 renderer.
   // Reuses the per-customer DB provisioned for the analysis-result
   // captures; the `analysis-result cleanup` test drops it.
   // =========================================================================
