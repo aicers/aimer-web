@@ -126,6 +126,8 @@ export default async function AnalysisResultPage({
       aiceId: data.aiceId,
       eventKey: data.eventKey,
       generation: data.generation,
+      modelName: data.modelName,
+      model: data.model,
     },
   });
 

@@ -97,6 +97,8 @@ describe("loadCitedByReports — permission gate", () => {
         aiceId: "aice-9",
         eventKey: "777",
         generation: 4,
+        modelName: "openai",
+        model: "gpt-4o",
       }),
     ).toEqual([]);
     expect(customerPool.query).not.toHaveBeenCalled();
@@ -106,38 +108,71 @@ describe("loadCitedByReports — permission gate", () => {
     mockAuthorize.mockResolvedValue({ authorized: false });
     citingRows = [citingRow()];
     expect(
-      await callLoader({ kind: "story", storyId: "555", generation: 2 }),
+      await callLoader({
+        kind: "story",
+        storyId: "555",
+        generation: 2,
+        modelName: "openai",
+        model: "gpt-4o",
+      }),
     ).toEqual([]);
     expect(customerPool.query).not.toHaveBeenCalled();
   });
 });
 
 describe("loadCitedByReports — query + shaping", () => {
-  it("probes input_event_refs with the snake_case + generation shape for an event leaf", async () => {
+  it("probes input_event_refs with the snake_case + generation + model shape for an event leaf", async () => {
     citingRows = [citingRow()];
     await callLoader({
       kind: "event",
       aiceId: "aice-9",
       eventKey: "777",
       generation: 4,
+      modelName: "openai",
+      model: "gpt-4o",
     });
     const [sql, params] = customerPool.query.mock.calls[0];
+    // Model-bearing branch: exact containment including model_name/model.
     expect(String(sql)).toContain("input_event_refs @> $2::jsonb");
+    // Legacy branch: key-absence + citing-row model == leaf model, NOT a naive
+    // model-less @> (which would over-match a different model's leaf).
+    expect(String(sql)).toContain("NOT (elem ? 'model_name')");
+    expect(String(sql)).toContain("model_name = $3 AND model = $4");
     expect(params?.[0]).toBe(CUSTOMER_ID);
-    // The probe pins `generation` so the trail only matches reports that
-    // cited THIS generation, not other generations of the same event.
+    // The probe pins `generation` AND the leaf's model so the trail only
+    // matches reports that cited THIS generation of THIS model's leaf.
     expect(JSON.parse(String(params?.[1]))).toEqual([
-      { aice_id: "aice-9", event_key: "777", generation: 4 },
+      {
+        aice_id: "aice-9",
+        event_key: "777",
+        generation: 4,
+        model_name: "openai",
+        model: "gpt-4o",
+      },
     ]);
+    // The legacy branch's model gate uses the requested leaf's model.
+    expect(params?.[2]).toBe("openai");
+    expect(params?.[3]).toBe("gpt-4o");
   });
 
-  it("probes input_story_refs with the generation pin for a story leaf", async () => {
+  it("probes input_story_refs with the generation + model pin for a story leaf", async () => {
     citingRows = [citingRow()];
-    await callLoader({ kind: "story", storyId: "555", generation: 2 });
+    await callLoader({
+      kind: "story",
+      storyId: "555",
+      generation: 2,
+      modelName: "openai",
+      model: "gpt-4o",
+    });
     const [sql, params] = customerPool.query.mock.calls[0];
     expect(String(sql)).toContain("input_story_refs @> $2::jsonb");
     expect(JSON.parse(String(params?.[1]))).toEqual([
-      { story_id: "555", generation: 2 },
+      {
+        story_id: "555",
+        generation: 2,
+        model_name: "openai",
+        model: "gpt-4o",
+      },
     ]);
   });
 
@@ -147,6 +182,8 @@ describe("loadCitedByReports — query + shaping", () => {
       kind: "story",
       storyId: "555",
       generation: 2,
+      modelName: "openai",
+      model: "gpt-4o",
     });
     expect(out).toEqual([
       {
@@ -190,6 +227,8 @@ describe("loadCitedByReports — query + shaping", () => {
       kind: "story",
       storyId: "555",
       generation: 2,
+      modelName: "openai",
+      model: "gpt-4o",
     });
     expect(out).toHaveLength(2);
     expect(out[0]).toMatchObject({
@@ -207,7 +246,13 @@ describe("loadCitedByReports — query + shaping", () => {
   it("returns an empty trail when no report cites the leaf", async () => {
     citingRows = [];
     expect(
-      await callLoader({ kind: "story", storyId: "555", generation: 2 }),
+      await callLoader({
+        kind: "story",
+        storyId: "555",
+        generation: 2,
+        modelName: "openai",
+        model: "gpt-4o",
+      }),
     ).toEqual([]);
   });
 
@@ -219,6 +264,8 @@ describe("loadCitedByReports — query + shaping", () => {
         aiceId: "aice-9",
         eventKey: "777",
         generation: 4,
+        modelName: "openai",
+        model: "gpt-4o",
       }),
     ).toEqual([]);
   });

@@ -43,6 +43,7 @@ import {
   type CategoryCount,
   computeBaselineDrift,
 } from "./baseline-drift";
+import { getDefaultModelPair, getModelCatalog } from "./model-catalog";
 import {
   computePriorityTier,
   maxTier,
@@ -87,12 +88,25 @@ export type RedactionPolicyResult =
 export interface StoryRef {
   story_id: string;
   generation: number;
+  /**
+   * The `(model_name, model)` of the leaf this ref points at (#465 Scope 3).
+   * Under the never-drop fallback a default report can cite a leaf from a
+   * non-report model, so each ref records its own model rather than inheriting
+   * the report row's. Optional for backward-compatible reads: a pre-#465 ref
+   * lacking these resolves as the report's own model (the only model a ref
+   * could ever have pointed at before fallback existed).
+   */
+  model_name?: string;
+  model?: string;
 }
 
 export interface EventRef {
   aice_id: string;
   event_key: string;
   generation: number;
+  /** Per-leaf model, same backward-compatible contract as `StoryRef` (#465). */
+  model_name?: string;
+  model?: string;
 }
 
 export interface PeriodicReportBuildResult {
@@ -118,6 +132,11 @@ export interface PeriodicReportBuildResult {
 interface StoryLeafRow {
   story_id: string;
   generation: number;
+  /** The selected leaf's own model (#465 Scope 2) — surfaced so ref
+   *  persistence and the hybrid report-model partition read it without a
+   *  re-query. Under the fallback this may differ from the report's model. */
+  model_name: string;
+  model: string;
   severity_score: number;
   likelihood_score: number;
   priority_tier: PriorityTier;
@@ -156,6 +175,9 @@ interface EventLeafRow {
   aice_id: string;
   event_key: string;
   generation: number;
+  /** The selected leaf's own model (#465 Scope 2). See `StoryLeafRow`. */
+  model_name: string;
+  model: string;
   severity_score: number;
   likelihood_score: number;
   priority_tier: PriorityTier;
@@ -171,6 +193,47 @@ interface EventLeafRow {
 const TIER_RANK_SQL = `(CASE priority_tier
     WHEN 'CRITICAL' THEN 3 WHEN 'HIGH' THEN 2
     WHEN 'MEDIUM' THEN 1 ELSE 0 END)`;
+
+/**
+ * Deterministic leaf-selection preference order for a report variant (#465
+ * Scope 1 / Scope 7 — never-drop coverage).
+ *
+ * The report's OWN `(model_name, model)` is always rank 1. For a DEFAULT report
+ * (report model == `getDefaultModelPair()`) the configured `getModelCatalog()`
+ * order then supplies the fallback ranks (report pair removed, since it is
+ * already rank 1) so a candidate story/event whose report-model leaf is missing
+ * still surfaces from the first available fallback model — never silently
+ * dropped. For an ALTERNATE-model report (an analyst A/B variant, #458) the list
+ * is JUST the report pair, so selection stays a strict exact-match: the strict
+ * path is the degenerate single-entry case of the same preference-ordered
+ * query, and fallback can NEVER apply off the default path. `lang` is strict on
+ * both paths (a real variant axis, not a fallback axis) — handled by the
+ * callers, not here.
+ *
+ * The catalog order is env-fixed (not data-dependent "most-used"), so the
+ * preference order — and therefore the selected leaf set and its `R{j}` token
+ * numbering — is stable across regenerations (#465 Scope 9).
+ */
+function leafPreferenceOrder(
+  variant: ReportVariant,
+): Array<{ modelName: string; model: string }> {
+  const reportPair = { modelName: variant.modelName, model: variant.model };
+  const def = getDefaultModelPair();
+  const isDefaultReport =
+    variant.modelName === def.modelName && variant.model === def.model;
+  if (!isDefaultReport) return [reportPair];
+  const order = [reportPair];
+  for (const entry of getModelCatalog()) {
+    if (
+      entry.modelName === reportPair.modelName &&
+      entry.model === reportPair.model
+    ) {
+      continue;
+    }
+    order.push({ modelName: entry.modelName, model: entry.model });
+  }
+  return order;
+}
 
 // Cap on the `topTechniques` / `topSensors` baseline-aggregate lists sent
 // to aimer. The prompt renders these as a leaderboard, so a small bound
@@ -290,6 +353,17 @@ async function selectTopStories(
   },
 ): Promise<StoryLeafRow[]> {
   if (args.readyStoryIds.length === 0) return [];
+  const pref = leafPreferenceOrder(args.variant);
+  const prefModelNames = pref.map((p) => p.modelName);
+  const prefModels = pref.map((p) => p.model);
+  // Two-phase, deliberately NOT collapsed (#465 Scope 1):
+  //   (a) `ranked` — per story, DISTINCT ON picks the single rank-1 leaf across
+  //       all non-superseded rows by the preference order (catalog rank, then
+  //       newest generation as a stable inner tie-break). `lang` stays strict.
+  //   (b) the outer query then applies the existing tier/score/story_id top-K
+  //       ordering over that one-leaf-per-story set.
+  // Mixing the per-leaf preference ordering into the final top-K ORDER BY in one
+  // pass would break both the per-candidate pick and the top-K result.
   const { rows } = await customerPool.query<StoryLeafRow>(
     `WITH canonical_story AS (
        SELECT DISTINCT ON (story_id)
@@ -298,32 +372,51 @@ async function selectTopStories(
          FROM story
         WHERE story_id = ANY($1::bigint[])
         ORDER BY story_id, received_at DESC, story_version DESC
+     ),
+     pref AS (
+       SELECT model_name, model, rank
+         FROM unnest($4::text[], $5::text[])
+              WITH ORDINALITY AS u(model_name, model, rank)
+     ),
+     ranked AS (
+       SELECT DISTINCT ON (r.story_id)
+              r.story_id,
+              r.generation, r.model_name, r.model,
+              r.severity_score, r.likelihood_score,
+              r.priority_tier,
+              r.ttp_tags, r.severity_factors, r.likelihood_factors,
+              r.analysis_text, r.redaction_policy_version,
+              cs.source_aice_id,
+              cs.time_window_start, cs.time_window_end
+         FROM story_analysis_result r
+         JOIN canonical_story cs ON cs.story_id = r.story_id
+         JOIN pref p ON p.model_name = r.model_name AND p.model = r.model
+        WHERE r.customer_id = $2
+          AND r.lang = $3
+          AND r.superseded_at IS NULL
+          AND cs.time_window_start < $7::timestamptz
+          AND cs.time_window_end   > $6::timestamptz
+        ORDER BY r.story_id, p.rank ASC, r.generation DESC
      )
-     SELECT r.story_id::text AS story_id,
-            r.generation,
-            r.severity_score, r.likelihood_score,
-            r.priority_tier,
-            r.ttp_tags, r.severity_factors, r.likelihood_factors,
-            r.analysis_text, r.redaction_policy_version,
-            cs.source_aice_id,
-            cs.time_window_start, cs.time_window_end
-       FROM story_analysis_result r
-       JOIN canonical_story cs ON cs.story_id = r.story_id
-      WHERE r.customer_id = $2
-        AND r.lang = $3 AND r.model_name = $4 AND r.model = $5
-        AND r.superseded_at IS NULL
-        AND cs.time_window_start < $7::timestamptz
-        AND cs.time_window_end   > $6::timestamptz
-      ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "r.priority_tier")} DESC,
-               (r.severity_score + r.likelihood_score) DESC,
-               r.story_id ASC
+     SELECT rk.story_id::text AS story_id,
+            rk.generation, rk.model_name, rk.model,
+            rk.severity_score, rk.likelihood_score,
+            rk.priority_tier,
+            rk.ttp_tags, rk.severity_factors, rk.likelihood_factors,
+            rk.analysis_text, rk.redaction_policy_version,
+            rk.source_aice_id,
+            rk.time_window_start, rk.time_window_end
+       FROM ranked rk
+      ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "rk.priority_tier")} DESC,
+               (rk.severity_score + rk.likelihood_score) DESC,
+               rk.story_id ASC
       LIMIT $8`,
     [
       args.readyStoryIds,
       args.customerId,
       args.variant.lang,
-      args.variant.modelName,
-      args.variant.model,
+      prefModelNames,
+      prefModels,
       args.windows.curStart,
       args.windows.curEnd,
       args.limit,
@@ -371,6 +464,9 @@ async function selectTopEvents(
 ): Promise<EventLeafRow[]> {
   const coveredAice = args.covered.map((c) => c.aice_id);
   const coveredKey = args.covered.map((c) => c.event_key);
+  const pref = leafPreferenceOrder(args.variant);
+  const prefModelNames = pref.map((p) => p.modelName);
+  const prefModels = pref.map((p) => p.model);
   const { rows } = await customerPool.query<EventLeafRow>(
     // Dedupe baseline_event to one canonical row per (source_aice_id,
     // event_key) FIRST (no window predicate inside the CTE), THEN apply
@@ -378,39 +474,62 @@ async function selectTopEvents(
     // issue locks this order (round-14 item 2): filtering before the
     // dedupe could select an older in-window duplicate even when the
     // canonical latest row's event_time is outside the bucket.
+    //
+    // Two-phase preference selection (#465 Scope 1), same structure as
+    // `selectTopStories`: `ranked` picks the single rank-1 leaf per
+    // (aice_id, event_key) across the preference order; the outer query then
+    // applies the existing tier/score/(aice_id, event_key) top-K ordering.
     `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
               source_aice_id, event_key, event_time
          FROM baseline_event
         ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
+     ),
+     pref AS (
+       SELECT model_name, model, rank
+         FROM unnest($2::text[], $3::text[])
+              WITH ORDINALITY AS u(model_name, model, rank)
+     ),
+     ranked AS (
+       SELECT DISTINCT ON (e.aice_id, e.event_key)
+              e.aice_id, e.event_key,
+              e.generation, e.model_name, e.model,
+              e.severity_score, e.likelihood_score,
+              e.priority_tier,
+              e.ttp_tags, e.severity_factors, e.likelihood_factors,
+              e.analysis_text, e.redaction_policy_version,
+              lb.event_time
+         FROM event_analysis_result e
+         JOIN latest_baseline lb
+           ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
+         JOIN pref p ON p.model_name = e.model_name AND p.model = e.model
+        WHERE e.lang = $1
+          AND e.superseded_at IS NULL
+          AND lb.event_time >= $4::timestamptz AND lb.event_time < $5::timestamptz
+          AND NOT EXISTS (
+            SELECT 1
+              FROM unnest($6::text[], $7::numeric[]) AS c(a, k)
+             WHERE c.a = e.aice_id AND c.k = e.event_key
+          )
+        ORDER BY e.aice_id, e.event_key, p.rank ASC, e.generation DESC
      )
-     SELECT e.aice_id,
-            e.event_key::text AS event_key,
-            e.generation,
-            e.severity_score, e.likelihood_score,
-            e.priority_tier,
-            e.ttp_tags, e.severity_factors, e.likelihood_factors,
-            e.analysis_text, e.redaction_policy_version,
-            lb.event_time
-       FROM event_analysis_result e
-       JOIN latest_baseline lb
-         ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
-      WHERE e.lang = $1 AND e.model_name = $2 AND e.model = $3
-        AND e.superseded_at IS NULL
-        AND lb.event_time >= $4::timestamptz AND lb.event_time < $5::timestamptz
-        AND NOT EXISTS (
-          SELECT 1
-            FROM unnest($6::text[], $7::numeric[]) AS c(a, k)
-           WHERE c.a = e.aice_id AND c.k = e.event_key
-        )
-      ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "e.priority_tier")} DESC,
-               (e.severity_score + e.likelihood_score) DESC,
-               e.aice_id ASC, e.event_key ASC
+     SELECT rk.aice_id,
+            rk.event_key::text AS event_key,
+            rk.generation, rk.model_name, rk.model,
+            rk.severity_score, rk.likelihood_score,
+            rk.priority_tier,
+            rk.ttp_tags, rk.severity_factors, rk.likelihood_factors,
+            rk.analysis_text, rk.redaction_policy_version,
+            rk.event_time
+       FROM ranked rk
+      ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "rk.priority_tier")} DESC,
+               (rk.severity_score + rk.likelihood_score) DESC,
+               rk.aice_id ASC, rk.event_key ASC
       LIMIT $8`,
     [
       args.variant.lang,
-      args.variant.modelName,
-      args.variant.model,
+      prefModelNames,
+      prefModels,
       args.windows.curStart,
       args.windows.curEnd,
       coveredAice,
@@ -766,28 +885,50 @@ async function assembleReportInput(
   void allowedTokens; // the scan re-derives from refs at hallucination time
 
   // --- Aggregations ----------------------------------------------------
+  // Hybrid calibration (#465 Scope 5, P2): coverage and calibration are
+  // separate concerns. The narrative/leaf-derived facets render the FULL
+  // selected set (including any fallback-model leaves), but the *calibrated
+  // scores* — aggregate severity/likelihood (`Math.max`) and `priority_tier`
+  // (`maxTier`) — are computed over the REPORT-MODEL subset only (plus drift),
+  // never the fallback leaves. `MAX` lets a single off-model (differently
+  // calibrated) leaf dominate the headline, so a report labeled as model X must
+  // carry model-X-meaningful scores. The transient understatement right after a
+  // model change is bounded, surfaced via the coverage indicator (Scope 6), and
+  // shortened by the operator-triggered leaf backfill (#466). For an
+  // alternate-model report every selected leaf already equals the report model,
+  // so the subset is the full set and this is a no-op.
+  const isReportModelStory = (s: StoryLeafRow): boolean =>
+    s.model_name === ctx.variant.modelName && s.model === ctx.variant.model;
+  const isReportModelEvent = (e: EventLeafRow): boolean =>
+    e.model_name === ctx.variant.modelName && e.model === ctx.variant.model;
+  const reportModelStories = stories.filter(isReportModelStory);
+  const reportModelEvents = events.filter(isReportModelEvent);
+
+  // TTP tags are a coverage/narrative facet, NOT a cross-model-calibrated
+  // score, so `aggregate_ttp_tags` (and the derived `topTechniques` below) stay
+  // on the FULL selected set (#465 Scope 5).
   const aggregateTtpTags = dedupeSorted([
     ...stories.flatMap((s) => s.ttp_tags),
     ...events.flatMap((e) => e.ttp_tags),
   ]);
 
   const leafTiers: PriorityTier[] = [
-    ...stories.map((s) => s.priority_tier),
-    ...events.map((e) => e.priority_tier),
+    ...reportModelStories.map((s) => s.priority_tier),
+    ...reportModelEvents.map((e) => e.priority_tier),
   ];
   const driftTier = computePriorityTier(drift.severity, drift.likelihood);
   const priorityTier = maxTier(...leafTiers, driftTier);
 
   const aggregateSeverityScore = Math.max(
     drift.severity,
-    ...stories.map((s) => s.severity_score),
-    ...events.map((e) => e.severity_score),
+    ...reportModelStories.map((s) => s.severity_score),
+    ...reportModelEvents.map((e) => e.severity_score),
     0,
   );
   const aggregateLikelihoodScore = Math.max(
     drift.likelihood,
-    ...stories.map((s) => s.likelihood_score),
-    ...events.map((e) => e.likelihood_score),
+    ...reportModelStories.map((s) => s.likelihood_score),
+    ...reportModelEvents.map((e) => e.likelihood_score),
     0,
   );
 
@@ -850,14 +991,21 @@ async function assembleReportInput(
     aggregateTtpTags,
   };
 
+  // Each ref records the leaf's OWN model (#465 Scope 3) so the read/restore
+  // path can pin a fallback-model leaf by its real model instead of the report
+  // row's. Persisted additively into the `input_*_refs` JSONB — no migration.
   const storyRefs: StoryRef[] = stories.map((s) => ({
     story_id: s.story_id,
     generation: s.generation,
+    model_name: s.model_name,
+    model: s.model,
   }));
   const eventRefs: EventRef[] = events.map((e) => ({
     aice_id: e.aice_id,
     event_key: e.event_key,
     generation: e.generation,
+    model_name: e.model_name,
+    model: e.model,
   }));
 
   const inputHash = computeInputHash({
@@ -997,6 +1145,13 @@ async function fetchStoryLeavesByRefs(
   if (refs.length === 0) return [];
   const storyIds = refs.map((r) => r.story_id);
   const generations = refs.map((r) => r.generation);
+  // Pin each leaf by ITS OWN ref model (#465 Scope 3), not a single report
+  // variant: under the never-drop fallback a ref can point at an off-model
+  // leaf. A pre-#465 ref lacking a model resolves as the report variant's model
+  // (`variant.modelName`/`variant.model`) — the only model it could have
+  // pointed at before fallback existed. `lang` stays the variant's.
+  const refModelNames = refs.map((r) => r.model_name ?? variant.modelName);
+  const refModels = refs.map((r) => r.model ?? variant.model);
   const { rows } = await customerPool.query<StoryLeafRow>(
     `WITH canonical_story AS (
        SELECT DISTINCT ON (story_id)
@@ -1007,7 +1162,7 @@ async function fetchStoryLeavesByRefs(
         ORDER BY story_id, received_at DESC, story_version DESC
      )
      SELECT r.story_id::text AS story_id,
-            r.generation,
+            r.generation, r.model_name, r.model,
             r.severity_score, r.likelihood_score,
             r.priority_tier,
             r.ttp_tags, r.severity_factors, r.likelihood_factors,
@@ -1016,24 +1171,20 @@ async function fetchStoryLeavesByRefs(
             cs.time_window_start, cs.time_window_end
        FROM story_analysis_result r
        JOIN canonical_story cs ON cs.story_id = r.story_id
-       JOIN unnest($1::bigint[], $2::int[]) AS ref(story_id, generation)
+       JOIN unnest($1::bigint[], $2::int[], $4::text[], $5::text[])
+              AS ref(story_id, generation, model_name, model)
          ON ref.story_id = r.story_id AND ref.generation = r.generation
+        AND ref.model_name = r.model_name AND ref.model = r.model
       WHERE r.customer_id = $6
-        AND r.lang = $3 AND r.model_name = $4 AND r.model = $5`,
-    [
-      storyIds,
-      generations,
-      variant.lang,
-      variant.modelName,
-      variant.model,
-      customerId,
-    ],
+        AND r.lang = $3`,
+    [storyIds, generations, variant.lang, refModelNames, refModels, customerId],
   );
   return orderByRefs(
     rows,
     refs,
-    (row) => `${row.story_id}|${row.generation}`,
-    (ref) => `${ref.story_id}|${ref.generation}`,
+    (row) => `${row.story_id}|${row.generation}|${row.model_name}|${row.model}`,
+    (ref) =>
+      `${ref.story_id}|${ref.generation}|${ref.model_name ?? variant.modelName}|${ref.model ?? variant.model}`,
   );
 }
 
@@ -1052,6 +1203,10 @@ async function fetchEventLeavesByRefs(
   const aiceIds = refs.map((r) => r.aice_id);
   const eventKeys = refs.map((r) => r.event_key);
   const generations = refs.map((r) => r.generation);
+  // Pin each leaf by its own ref model (#465 Scope 3), with the report
+  // variant's model as the backward-compatible default for a pre-#465 ref.
+  const refModelNames = refs.map((r) => r.model_name ?? variant.modelName);
+  const refModels = refs.map((r) => r.model ?? variant.model);
   const { rows } = await customerPool.query<EventLeafRow>(
     `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
@@ -1061,7 +1216,7 @@ async function fetchEventLeavesByRefs(
      )
      SELECT e.aice_id,
             e.event_key::text AS event_key,
-            e.generation,
+            e.generation, e.model_name, e.model,
             e.severity_score, e.likelihood_score,
             e.priority_tier,
             e.ttp_tags, e.severity_factors, e.likelihood_factors,
@@ -1070,25 +1225,21 @@ async function fetchEventLeavesByRefs(
        FROM event_analysis_result e
        JOIN latest_baseline lb
          ON lb.source_aice_id = e.aice_id AND lb.event_key = e.event_key
-       JOIN unnest($1::text[], $2::numeric[], $3::int[])
-              AS ref(aice_id, event_key, generation)
+       JOIN unnest($1::text[], $2::numeric[], $3::int[], $5::text[], $6::text[])
+              AS ref(aice_id, event_key, generation, model_name, model)
          ON ref.aice_id = e.aice_id AND ref.event_key = e.event_key
         AND ref.generation = e.generation
-      WHERE e.lang = $4 AND e.model_name = $5 AND e.model = $6`,
-    [
-      aiceIds,
-      eventKeys,
-      generations,
-      variant.lang,
-      variant.modelName,
-      variant.model,
-    ],
+        AND ref.model_name = e.model_name AND ref.model = e.model
+      WHERE e.lang = $4`,
+    [aiceIds, eventKeys, generations, variant.lang, refModelNames, refModels],
   );
   return orderByRefs(
     rows,
     refs,
-    (row) => `${row.aice_id}|${row.event_key}|${row.generation}`,
-    (ref) => `${ref.aice_id}|${ref.event_key}|${ref.generation}`,
+    (row) =>
+      `${row.aice_id}|${row.event_key}|${row.generation}|${row.model_name}|${row.model}`,
+    (ref) =>
+      `${ref.aice_id}|${ref.event_key}|${ref.generation}|${ref.model_name ?? variant.modelName}|${ref.model ?? variant.model}`,
   );
 }
 

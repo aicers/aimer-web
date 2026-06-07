@@ -229,6 +229,17 @@ export interface ReportResultPageData {
   topStoryCount: number;
   topEventCount: number;
   /**
+   * Hybrid-scoring coverage indicator (#465 Scope 6): how many of the cited
+   * leaves are on the report's own model (`reportModel`) versus the total
+   * selected (`total`). Under the never-drop fallback a default report can cite
+   * leaves from other models, but the aggregate scores are calibrated from the
+   * report-model subset only — this surfaces the gap honestly ("scores from N
+   * of M leaves"). Derived read-time from `input_*_refs` by comparing each
+   * ref's model against the row's, so no DB column is added and audit rows stay
+   * immutable. Exposes COUNTS only, never the score-combination method (#386).
+   */
+  leafCoverage: { reportModel: number; total: number };
+  /**
    * Report-level cited story/event leaf sources at the pinned variant,
    * with display fields when the pinned row is available (T1 Sources
    * panel). Counts match `topStoryCount` / `topEventCount`.
@@ -326,14 +337,23 @@ export interface ReportResultPageInput {
   };
 }
 
+// Stored `input_*_refs` shapes. `model_name`/`model` are present on refs
+// written post-#465 (the leaf's own model, which under the never-drop fallback
+// can differ from the report row's); a pre-#465 ref lacks them and is read back
+// as the report row's own model (the only model it could have pointed at before
+// fallback existed).
 interface StoryRef {
   story_id: string;
   generation: number;
+  model_name?: string;
+  model?: string;
 }
 interface EventRef {
   aice_id: string;
   event_key: string;
   generation: number;
+  model_name?: string;
+  model?: string;
 }
 
 // Wire form of a citation `source` as aimer emits it inside `sections_jsonb`
@@ -639,8 +659,11 @@ export async function loadReportResultPage(
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: row.model_name,
-          model: row.model,
+          // Each citation resolves to its ref's OWN model (#465 Scope 4): a
+          // fallback leaf lives under a different model than the report row.
+          // A pre-#465 ref lacking a model falls back to the row's model.
+          modelName: ref.model_name ?? row.model_name,
+          model: ref.model ?? row.model,
         },
         display:
           d && !d.superseded
@@ -664,8 +687,8 @@ export async function loadReportResultPage(
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: row.model_name,
-          model: row.model,
+          modelName: ref.model_name ?? row.model_name,
+          model: ref.model ?? row.model,
         },
         display:
           d && !d.superseded
@@ -686,6 +709,23 @@ export async function loadReportResultPage(
     eventRefs,
     plaintextByReportToken,
   );
+
+  // Coverage indicator (#465 Scope 6): count cited leaves on the report's own
+  // model vs the total. A ref lacking a model (pre-#465) resolves as the report
+  // model, so legacy rows report full coverage. Counts only — never the
+  // score-combination method (#386).
+  const allRefs: Array<{ model_name?: string; model?: string }> = [
+    ...storyRefs,
+    ...eventRefs,
+  ];
+  const leafCoverage = {
+    reportModel: allRefs.filter(
+      (r) =>
+        (r.model_name ?? row.model_name) === row.model_name &&
+        (r.model ?? row.model) === row.model,
+    ).length,
+    total: allRefs.length,
+  };
 
   // Analyst-only compare column (#458): an EXACT, side-effect-free lookup of
   // the compare model at the primary's shown language. It deliberately does
@@ -729,6 +769,7 @@ export async function loadReportResultPage(
       sections,
       topStoryCount: storyRefs.length,
       topEventCount: eventRefs.length,
+      leafCoverage,
       citedSources,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
@@ -833,8 +874,9 @@ function restoreReportSectionsFromRow(
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: row.model_name,
-          model: row.model,
+          // Per-ref model (#465 Scope 4), row model as the pre-#465 fallback.
+          modelName: ref.model_name ?? row.model_name,
+          model: ref.model ?? row.model,
         },
       };
     }
@@ -851,8 +893,8 @@ function restoreReportSectionsFromRow(
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: row.model_name,
-          model: row.model,
+          modelName: ref.model_name ?? row.model_name,
+          model: ref.model ?? row.model,
         },
       };
     }
@@ -1084,6 +1126,10 @@ async function buildReportTokenPlaintext(
     Array<{ index: number; aiceId: string; eventKey: string }>
   > = [];
   for (const ref of storyRefs) {
+    // Pin each leaf by ITS OWN ref model (#465 Scope 4): a fallback leaf lives
+    // under a different model than the report row, so a row-model pin would
+    // return no row and leave report tokens unrestored / visible. A pre-#465
+    // ref lacking a model falls back to the report variant's model.
     const { rows } = await customerPool.query(
       `SELECT analysis_text, severity_factors, likelihood_factors,
               input_event_refs, priority_tier, severity_score,
@@ -1097,8 +1143,8 @@ async function buildReportTokenPlaintext(
         ref.story_id,
         ref.generation,
         variant.lang,
-        variant.modelName,
-        variant.model,
+        ref.model_name ?? variant.modelName,
+        ref.model ?? variant.model,
       ],
     );
     storyLeaves.push({
@@ -1124,6 +1170,7 @@ async function buildReportTokenPlaintext(
     likelihoodFactors: string[];
   }> = [];
   for (const ref of eventRefs) {
+    // Per-ref model pin (#465 Scope 4), same as the story leaves above.
     const { rows } = await customerPool.query(
       `SELECT analysis_text, severity_factors, likelihood_factors,
               priority_tier, severity_score, likelihood_score, ttp_tags,
@@ -1137,8 +1184,8 @@ async function buildReportTokenPlaintext(
         ref.event_key,
         ref.generation,
         variant.lang,
-        variant.modelName,
-        variant.model,
+        ref.model_name ?? variant.modelName,
+        ref.model ?? variant.model,
       ],
     );
     eventLeaves.push({

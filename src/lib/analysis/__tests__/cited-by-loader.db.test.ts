@@ -66,6 +66,8 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
     bucketDate: string;
     tz?: string;
     lang?: string;
+    modelName?: string;
+    model?: string;
     generation: number;
     tier: string;
     requestedAt: string;
@@ -81,7 +83,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
           aggregate_ttp_tags, priority_tier, sections_jsonb,
           input_event_refs, input_story_refs, input_hash,
           redaction_policy_version, requested_by, requested_at, superseded_at)
-       VALUES ($1, $2, $3::date, $4, $5, 'openai', 'gpt-4o',
+       VALUES ($1, $2, $3::date, $4, $5, $12, $13,
                'mv', 'pv', $6,
                0, 0,
                '[]'::jsonb, $7, '{}'::jsonb,
@@ -101,6 +103,8 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
         JSON.stringify(args.storyRefs ?? []),
         args.requestedAt,
         args.superseded ?? false,
+        args.modelName ?? "openai",
+        args.model ?? "gpt-4o",
       ],
     );
   }
@@ -195,6 +199,56 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       requestedAt: "2026-05-17T00:00:00Z",
       storyRefs: [{ story_id: "555", generation: 5 }],
     });
+
+    // #465 model-bearing ref: a DEFAULT (gpt-4o) report that, under the
+    // never-drop fallback, cited a gpt-5.5 fallback leaf. The ref carries its
+    // OWN model (gpt-5.5), not the report row's. A probe for the gpt-5.5 leaf
+    // must match (exact model-bearing containment); a probe for a gpt-4o leaf
+    // of the SAME id/generation must NOT (the over-match guard — a model-less
+    // @> would wrongly match this).
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-06-01",
+      modelName: "openai",
+      model: "gpt-4o",
+      generation: 1,
+      tier: "HIGH",
+      requestedAt: "2026-06-01T08:00:00Z",
+      eventRefs: [
+        {
+          aice_id: "aice-cov",
+          event_key: "900",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-5.5",
+        },
+      ],
+    });
+
+    // #465 legacy (pre-#465) ref: model-less, written under the row's own
+    // model. Matched by the legacy branch ONLY when the citing row's model
+    // equals the probed leaf's model. Two rows for the same model-less leaf id
+    // under different row models prove the row-model gate.
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-06-02",
+      modelName: "openai",
+      model: "gpt-4o",
+      generation: 1,
+      tier: "HIGH",
+      requestedAt: "2026-06-02T08:00:00Z",
+      eventRefs: [{ aice_id: "aice-leg", event_key: "901", generation: 1 }],
+    });
+    await seedReport({
+      period: "DAILY",
+      bucketDate: "2026-06-03",
+      modelName: "openai",
+      model: "gpt-5.5",
+      generation: 1,
+      tier: "HIGH",
+      requestedAt: "2026-06-03T08:00:00Z",
+      eventRefs: [{ aice_id: "aice-leg", event_key: "901", generation: 1 }],
+    });
   });
 
   afterAll(async () => {
@@ -206,7 +260,14 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   it("finds citing reports for an event at the probed generation, deduped per bucket, newest-first", async () => {
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777", generation: 4 },
+      leaf: {
+        kind: "event",
+        aiceId: "aice-9",
+        eventKey: "777",
+        generation: 4,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
     });
     // DAILY 2026-05-26 (en/ko collapse to one) then WEEKLY 2026-05-24; the
     // superseded DAILY 2026-05-25, the aice-other report, and the report
@@ -224,7 +285,14 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
     // generation pin keeps the gen-4 citers out (review round 1).
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "event", aiceId: "aice-9", eventKey: "777", generation: 3 },
+      leaf: {
+        kind: "event",
+        aiceId: "aice-9",
+        eventKey: "777",
+        generation: 3,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
     });
     expect(trail.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
       "DAILY:2026-05-22",
@@ -234,7 +302,13 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   it("finds citing reports for a story via input_story_refs at the probed generation", async () => {
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "story", storyId: "555", generation: 2 },
+      leaf: {
+        kind: "story",
+        storyId: "555",
+        generation: 2,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
     });
     // Only the MONTHLY report cited story generation 2; the WEEKLY report
     // cited generation 5 and is excluded by the pin.
@@ -250,7 +324,13 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   it("returns an empty trail for a leaf no report cites", async () => {
     const trail = await loadCitedByReports({
       customerId: CUSTOMER_ID,
-      leaf: { kind: "story", storyId: "999", generation: 1 },
+      leaf: {
+        kind: "story",
+        storyId: "999",
+        generation: 1,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
     });
     expect(trail).toEqual([]);
   });
@@ -286,6 +366,76 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       [CUSTOMER_ID, JSON.stringify([{ aiceId: "aice-9", eventKey: "777" }])],
     );
     expect(rows.map((r) => r.story_id)).toEqual(["888"]);
+  });
+
+  it("matches a model-bearing ref by exact model and does NOT over-match a different model's leaf (#465)", async () => {
+    // The gpt-5.5 leaf is cited by the gpt-4o report's fallback ref → match.
+    const hit = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: {
+        kind: "event",
+        aiceId: "aice-cov",
+        eventKey: "900",
+        generation: 1,
+        modelName: "openai",
+        model: "gpt-5.5",
+      },
+    });
+    expect(hit.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-06-01",
+    ]);
+
+    // A gpt-4o leaf of the SAME id/generation must NOT match: the stored ref is
+    // for gpt-5.5. A naive model-less `@>` would wrongly match here — the
+    // two-branch contract (exact model-bearing + key-absence legacy) does not.
+    const miss = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: {
+        kind: "event",
+        aiceId: "aice-cov",
+        eventKey: "900",
+        generation: 1,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
+    });
+    expect(miss).toEqual([]);
+  });
+
+  it("attributes a legacy (model-less) ref only to a citing row of the same model (#465)", async () => {
+    // The legacy ref lacks model_name; it is attributed to the row's own model.
+    // Probing the gpt-4o leaf surfaces only the gpt-4o row, not the gpt-5.5 one.
+    const gpt4o = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: {
+        kind: "event",
+        aiceId: "aice-leg",
+        eventKey: "901",
+        generation: 1,
+        modelName: "openai",
+        model: "gpt-4o",
+      },
+    });
+    expect(gpt4o.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-06-02",
+    ]);
+
+    // Probing the gpt-5.5 leaf surfaces only the gpt-5.5 row — the legacy
+    // branch's `citing-row model == leaf model` gate keeps the gpt-4o row out.
+    const gpt55 = await loadCitedByReports({
+      customerId: CUSTOMER_ID,
+      leaf: {
+        kind: "event",
+        aiceId: "aice-leg",
+        eventKey: "901",
+        generation: 1,
+        modelName: "openai",
+        model: "gpt-5.5",
+      },
+    });
+    expect(gpt55.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
+      "DAILY:2026-06-03",
+    ]);
   });
 
   it("created the GIN indexes the reverse lookup relies on", async () => {

@@ -419,6 +419,24 @@ export default async function ReportDetailPage({
               likelihood: data.aggregateLikelihoodScore.toFixed(3),
             })}
           </div>
+          {/* Hybrid-scoring coverage indicator (#465): aggregate scores are
+              calibrated from the report-model leaf subset only, so when the
+              never-drop fallback fills in other-model leaves the headline can
+              understate. Surface the count honestly. Counts only — never the
+              score-combination method (#386). Shown only when the subset is a
+              strict minority of the selected set (an actual gap). */}
+          {data.leafCoverage.total > 0 &&
+          data.leafCoverage.reportModel < data.leafCoverage.total ? (
+            <div
+              className="mt-1 text-xs text-muted-foreground"
+              data-testid="leaf-coverage"
+            >
+              {tA("reportDetail.leafCoverageNote", {
+                reportModel: data.leafCoverage.reportModel,
+                total: data.leafCoverage.total,
+              })}
+            </div>
+          ) : null}
         </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
         {/* Model/prompt provenance is operator-facing detail about how the
