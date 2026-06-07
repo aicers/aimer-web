@@ -227,6 +227,18 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       params.eventKey,
     );
 
+    // Redaction cache: once a `detection_events` row exists for this
+    // (aice_id, event_key), reuse its stored `redacted_event` and skip
+    // `redact()` entirely — the incoming `eventData` is NOT re-redacted.
+    // This is the redaction-cache layer; `force` (in `runAnalyzeEvent`)
+    // only bypasses the separate *analysis-result* cache, not this one.
+    // Consequence for Force re-run (aice-web-next sends `force=true`,
+    // aice-web-next#629): a forced call re-runs the model on the SAME
+    // stored redacted event, so redaction is refreshed under the current
+    // policy ONLY if aice-web-next first removes/replaces this row (e.g.
+    // by re-ingesting from source). aimer-web alone does not guarantee a
+    // redaction refresh on Force re-run; the in-app regenerate path
+    // likewise holds redaction constant by design.
     const existingEvent = await client.query<{ redacted_event: unknown }>(
       `SELECT redacted_event FROM detection_events
        WHERE aice_id = $1 AND event_key = $2::numeric`,
@@ -345,7 +357,7 @@ function buildViewUrl(
   );
 }
 
-interface AuditEmissionBase {
+export interface AuditEmissionBase {
   actorId: string;
   authContext: "general";
   targetType: string;
@@ -474,6 +486,310 @@ function computeAnalysisPolicyVersion(
       ? "empty"
       : createHash("sha256").update(domainsJson).digest("hex").slice(0, 12);
   return `engine:${ENGINE_VERSION}|ranges:${short}|domains:${domainsShort}`;
+}
+
+// ---------------------------------------------------------------------------
+// Shared aimer-call + result-write core
+// ---------------------------------------------------------------------------
+
+export interface AnalyzeAndStoreEventParams {
+  customerPool: Pool;
+  aiceId: string;
+  eventKey: string;
+  /**
+   * The redacted event object that gets serialized into the `event`
+   * argument. Both callers source this from `detection_events.
+   * redacted_event` (the initial analyze flow via {@link ingestAndRedact},
+   * which returns the stored row when one already exists; the regenerate
+   * endpoint by reading it directly) so aimer never sees raw payload.
+   */
+  redactedEvent: unknown;
+  /**
+   * RFC 3339 `event_time` for the `analyzeEvent` call, already recovered
+   * (preferring the stored `redacted_event.event_time`).
+   */
+  eventTimeForAimer: string;
+  /**
+   * SDL `Language` variable (nullable). `undefined` omits it so aimer
+   * applies its server default; {@link langForStorage} is the concrete
+   * value written to the cache PK.
+   */
+  lang: SupportedLang | undefined;
+  langForStorage: SupportedLang;
+  modelName: string;
+  model: string;
+  accountId: string;
+  /** Redaction map used by the hallucination scan over the LLM output. */
+  mergedMap: import("@/lib/redaction").RedactionMap;
+  ranges: import("@/lib/redaction").RangeSet;
+  ownedDomains: import("@/lib/redaction").OwnedDomainSet;
+  /**
+   * Value stamped into `event_analysis_result.redaction_policy_version`.
+   * The initial analyze path passes the freshly computed analysis policy
+   * version; the in-app regenerate path passes the STORED
+   * `detection_events.redaction_policy_version`, because it holds redaction
+   * constant rather than re-redacting under current policy (#463).
+   */
+  redactionPolicyVersion: string;
+  auditBase: AuditEmissionBase;
+  /** Audit-only flag distinguishing a forced (re)generation. */
+  force: boolean;
+}
+
+export type AnalyzeAndStoreEventResult =
+  | { kind: "success"; generation: number }
+  | { kind: "error"; errorCode: AnalyzeErrorCode; message: string };
+
+/**
+ * Call aimer's `analyzeEvent` with an already-redacted event, run the
+ * output through the hallucination scan + factor/TTP shape filters, then
+ * supersede the prior latest generation and INSERT a fresh
+ * `generation = N+1` row for the `(aice_id, event_key, lang, model_name,
+ * model)` variant. Returns the new generation.
+ *
+ * Shared by {@link runAnalyzeFlow} (the ingest-then-analyze path) and the
+ * in-app event regenerate endpoint (which skips ingest/redact and sources
+ * the redacted event from storage, #463). The supersede + insert run in a
+ * single customer-DB transaction under a per-variant advisory lock so a
+ * concurrent reader never sees two live rows and concurrent writers do not
+ * collide on the generation sequence.
+ */
+export async function analyzeAndStoreEventResult(
+  params: AnalyzeAndStoreEventParams,
+): Promise<AnalyzeAndStoreEventResult> {
+  const { auditBase } = params;
+  let aimerResponse: {
+    severityScore: number;
+    likelihoodScore: number;
+    severityFactors: string[];
+    likelihoodFactors: string[];
+    ttpTags: string[];
+    analysis: string;
+  };
+  try {
+    // `event: String!` — aimer's auth-mtls resolver consumes a string
+    // payload that its redact-and-LLM pipeline parses on the other side.
+    // We serialize the BFF's structured redacted event with
+    // `JSON.stringify` (default key order; aimer's downstream stages do not
+    // require any canonical ordering, only valid JSON).
+    //
+    // `eventTime: DateTime!` — an RFC 3339 date-time string that aimer
+    // parses with `jiff::Timestamp`, recovered by the caller from the
+    // stored `redacted_event.event_time` (cache-poisoning guard).
+    //
+    // `lang: Language` — nullable on the SDL side. When the caller omits
+    // `lang` we omit the variable entirely so aimer applies its server
+    // default; the stored cache row uses {@link langForStorage}.
+    const result = await graphqlRequest(
+      AnalyzeEventDocument,
+      {
+        event: JSON.stringify(params.redactedEvent),
+        eventTime: params.eventTimeForAimer,
+        name: params.modelName,
+        model: params.model,
+        ...(params.lang !== undefined ? { lang: params.lang } : {}),
+      },
+      { accountId: params.accountId, aiceId: params.aiceId },
+    );
+    aimerResponse = result.analyzeEvent;
+  } catch (err) {
+    const code = mapAimerError(err);
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: `${params.aiceId}/${params.eventKey}`,
+      details: {
+        stage: "graphql_call",
+        code,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return {
+      kind: "error",
+      errorCode: code,
+      message: err instanceof Error ? err.message : "aimer call failed",
+    };
+  }
+
+  const scan = scanHallucinations(
+    aimerResponse.analysis,
+    params.mergedMap,
+    params.ranges,
+    params.ownedDomains,
+  );
+  if (
+    scan.counts.ip + scan.counts.email + scan.counts.mac + scan.counts.domain >
+    0
+  ) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: `${params.aiceId}/${params.eventKey}`,
+      details: {
+        lang: params.lang ?? null,
+        modelName: params.modelName,
+        model: params.model,
+        counts: scan.counts,
+      },
+    });
+  }
+
+  const priorityTier = computePriorityTier(
+    aimerResponse.severityScore,
+    aimerResponse.likelihoodScore,
+  );
+
+  // ---- Score factor + TTP tag shape filters ----------------------------
+  // RFC 0002 §"Score factor articulation" + §"MITRE ATT&CK TTP tagging":
+  // run LLM-returned arrays through their respective filters before
+  // storage, and emit per-`(row, reason)` audit rows.
+  const severityFilter = filterFactors(
+    aimerResponse.severityFactors,
+    "severity",
+  );
+  const likelihoodFilter = filterFactors(
+    aimerResponse.likelihoodFactors,
+    "likelihood",
+  );
+  const ttpResult = validateTtpTags(aimerResponse.ttpTags);
+
+  emitFactorAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    axis: "severity",
+    rawInput: aimerResponse.severityFactors,
+    filter: severityFilter,
+  });
+  emitFactorAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    axis: "likelihood",
+    rawInput: aimerResponse.likelihoodFactors,
+    filter: likelihoodFilter,
+  });
+  emitTtpDropAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    dropped: ttpResult.dropped,
+  });
+
+  let nextGeneration: number;
+  try {
+    // RFC 0002 #297 round-14 item 1: re-analysis no longer overwrites.
+    // Stamp `superseded_at` on the prior latest generation and INSERT a
+    // fresh `generation = N+1` row, so periodic-report citations
+    // (`input_event_refs[].generation`) always point at a durable row.
+    // Wrapped in a single customer-DB tx so the supersede + insert are
+    // atomic and a concurrent reader never sees two live rows.
+    const writeClient = await params.customerPool.connect();
+    try {
+      await writeClient.query("BEGIN");
+      // Serialize the read-MAX/supersede/insert sequence per event variant.
+      // Without this, two concurrent analyzes for the same
+      // (aice_id, event_key, lang, model_name, model) both read the same
+      // MAX(generation), both compute N+1, and the second loses the INSERT
+      // race on the extended PK (#297 review round 1, item 4). The lock is
+      // transaction-scoped, so it releases on COMMIT/ROLLBACK below.
+      await writeClient.query("SELECT pg_advisory_xact_lock($1, $2)", [
+        EVENT_GENERATION_LOCK_NAMESPACE,
+        eventVariantLockKey(
+          params.aiceId,
+          params.eventKey,
+          params.langForStorage,
+          params.modelName,
+          params.model,
+        ),
+      ]);
+      const { rows: genRows } = await writeClient.query<{
+        next_generation: number;
+      }>(
+        `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
+           FROM event_analysis_result
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5`,
+        [
+          params.aiceId,
+          params.eventKey,
+          params.langForStorage,
+          params.modelName,
+          params.model,
+        ],
+      );
+      nextGeneration = genRows[0]?.next_generation ?? 1;
+      await writeClient.query(
+        `UPDATE event_analysis_result
+            SET superseded_at = NOW()
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5
+            AND generation < $6
+            AND superseded_at IS NULL`,
+        [
+          params.aiceId,
+          params.eventKey,
+          params.langForStorage,
+          params.modelName,
+          params.model,
+          nextGeneration,
+        ],
+      );
+      await writeClient.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model, generation,
+            severity_score, likelihood_score,
+            severity_factors, likelihood_factors, ttp_tags,
+            priority_tier,
+            analysis_text, redaction_policy_version, requested_by)
+         VALUES ($1, $2::numeric, $3, $4, $5, $6,
+                 $7, $8,
+                 $9::jsonb, $10::jsonb, $11::jsonb,
+                 $12,
+                 $13, $14, $15::uuid)`,
+        [
+          params.aiceId,
+          params.eventKey,
+          params.langForStorage,
+          params.modelName,
+          params.model,
+          nextGeneration,
+          aimerResponse.severityScore,
+          aimerResponse.likelihoodScore,
+          JSON.stringify(severityFilter.kept),
+          JSON.stringify(likelihoodFilter.kept),
+          JSON.stringify(ttpResult.valid),
+          priorityTier,
+          scan.scanned,
+          params.redactionPolicyVersion,
+          params.accountId,
+        ],
+      );
+      await writeClient.query("COMMIT");
+    } catch (err) {
+      await writeClient.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      writeClient.release();
+    }
+  } catch (err) {
+    return {
+      kind: "error",
+      errorCode: "storage_failed",
+      message: err instanceof Error ? err.message : "storage failed",
+    };
+  }
+
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.result_stored",
+    targetId: `${params.aiceId}/${params.eventKey}`,
+    details: {
+      lang: params.lang ?? null,
+      modelName: params.modelName,
+      model: params.model,
+      force: params.force,
+    },
+  });
+
+  return { kind: "success", generation: nextGeneration };
 }
 
 // ---------------------------------------------------------------------------
@@ -683,256 +999,44 @@ export async function runAnalyzeFlow(
     });
   }
 
-  let aimerResponse: {
-    severityScore: number;
-    likelihoodScore: number;
-    severityFactors: string[];
-    likelihoodFactors: string[];
-    ttpTags: string[];
-    analysis: string;
-  };
-  try {
-    // `event: String!` — aimer's auth-mtls resolver consumes a string
-    // payload that its redact-and-LLM pipeline parses on the other side.
-    // We serialize the BFF's structured redacted event with `JSON.stringify`
-    // (default key order; aimer's downstream stages do not require any
-    // canonical ordering, only valid JSON).
-    //
-    // `eventTime: DateTime!` — sourced from `event_data.event_time`, an
-    // RFC 3339 date-time string that aimer parses with
-    // `jiff::Timestamp`. We do NOT reuse `event_key`: this codebase
-    // treats `event_key` as a NUMERIC(39, 0) row identifier with no
-    // timestamp semantics (see `src/lib/event-key.ts`).
-    //
-    // When the event already exists in `detection_events`, the call
-    // uses the STORED `redacted_event` (cache-poisoning guard) and
-    // re-extracts `event_time` from it; absent that, we fall back to
-    // the caller's value (already validated above).
-    //
-    // `lang: Language` — nullable on the SDL side. When the BFF
-    // caller omits `lang` we omit the variable entirely so aimer
-    // applies its server default; the stored cache row uses
-    // {@link DEFAULT_LANG} so a follow-up explicit ENGLISH call
-    // collapses to the same row.
-    const storedEventTime =
-      typeof redactedEvent === "object" && redactedEvent !== null
-        ? parseEventTime((redactedEvent as Record<string, unknown>).event_time)
-        : null;
-    const eventTimeForAimer = storedEventTime ?? requestEventTime;
-    const result = await graphqlRequest(
-      AnalyzeEventDocument,
-      {
-        event: JSON.stringify(redactedEvent),
-        eventTime: eventTimeForAimer,
-        name: params.modelName,
-        model: params.model,
-        ...(params.lang !== undefined ? { lang: params.lang } : {}),
-      },
-      { accountId: params.accountId, aiceId: params.aiceId },
-    );
-    aimerResponse = result.analyzeEvent;
-  } catch (err) {
-    const code = mapAimerError(err);
-    void auditLog({
-      ...auditBase,
-      action: "ai_analysis.aimer_call_failed",
-      targetId: `${params.aiceId}/${params.eventKey}`,
-      details: {
-        stage: "graphql_call",
-        code,
-        error: err instanceof Error ? err.message : String(err),
-      },
-    });
-    return {
-      kind: "error",
-      errorCode: code,
-      message: err instanceof Error ? err.message : "aimer call failed",
-    };
-  }
+  // Prefer the STORED `redacted_event.event_time` (cache-poisoning guard)
+  // and fall back to the caller's already-validated request value. We do
+  // NOT reuse `event_key`: this codebase treats it as a NUMERIC(39, 0) row
+  // identifier with no timestamp semantics (see `src/lib/event-key.ts`).
+  const storedEventTime =
+    typeof redactedEvent === "object" && redactedEvent !== null
+      ? parseEventTime((redactedEvent as Record<string, unknown>).event_time)
+      : null;
+  const eventTimeForAimer = storedEventTime ?? requestEventTime;
 
-  const scan = scanHallucinations(
-    aimerResponse.analysis,
-    mergedMap,
-    ranges,
-    ownedDomains,
-  );
-  if (
-    scan.counts.ip + scan.counts.email + scan.counts.mac + scan.counts.domain >
-    0
-  ) {
-    void auditLog({
-      ...auditBase,
-      action: "ai_analysis.hallucination_detected",
-      targetId: `${params.aiceId}/${params.eventKey}`,
-      details: {
-        lang: params.lang ?? null,
-        modelName: params.modelName,
-        model: params.model,
-        counts: scan.counts,
-      },
-    });
-  }
-
+  // The initial analyze path stamps the freshly computed analysis policy
+  // version onto the result row.
   const analysisPolicyVersion = computeAnalysisPolicyVersion(
     ranges,
     ownedDomains,
   );
-  const priorityTier = computePriorityTier(
-    aimerResponse.severityScore,
-    aimerResponse.likelihoodScore,
-  );
 
-  // ---- Score factor + TTP tag shape filters ----------------------------
-  // RFC 0002 §"Score factor articulation" + §"MITRE ATT&CK TTP tagging":
-  // run LLM-returned arrays through their respective filters before
-  // storage, and emit per-`(row, reason)` audit rows (RFC 0001 §"Audit
-  // logging — new actions", amended in this PR — see issue #317 for the
-  // cardinality rationale).
-  const severityFilter = filterFactors(
-    aimerResponse.severityFactors,
-    "severity",
-  );
-  const likelihoodFilter = filterFactors(
-    aimerResponse.likelihoodFactors,
-    "likelihood",
-  );
-  const ttpResult = validateTtpTags(aimerResponse.ttpTags);
-
-  emitFactorAuditRows({
-    auditBase,
+  const stored = await analyzeAndStoreEventResult({
+    customerPool,
+    aiceId: params.aiceId,
     eventKey: params.eventKey,
-    axis: "severity",
-    rawInput: aimerResponse.severityFactors,
-    filter: severityFilter,
-  });
-  emitFactorAuditRows({
+    redactedEvent,
+    eventTimeForAimer,
+    lang: params.lang,
+    langForStorage,
+    modelName: params.modelName,
+    model: params.model,
+    accountId: params.accountId,
+    mergedMap,
+    ranges,
+    ownedDomains,
+    redactionPolicyVersion: analysisPolicyVersion,
     auditBase,
-    eventKey: params.eventKey,
-    axis: "likelihood",
-    rawInput: aimerResponse.likelihoodFactors,
-    filter: likelihoodFilter,
+    force: params.force,
   });
-  emitTtpDropAuditRows({
-    auditBase,
-    eventKey: params.eventKey,
-    dropped: ttpResult.dropped,
-  });
-
-  try {
-    // RFC 0002 #297 round-14 item 1: re-analysis no longer overwrites.
-    // Stamp `superseded_at` on the prior latest generation and INSERT a
-    // fresh `generation = N+1` row, so periodic-report citations
-    // (`input_event_refs[].generation`) always point at a durable row.
-    // Wrapped in a single customer-DB tx so the supersede + insert are
-    // atomic and a concurrent reader never sees two live rows.
-    const writeClient = await customerPool.connect();
-    try {
-      await writeClient.query("BEGIN");
-      // Serialize the read-MAX/supersede/insert sequence per event variant.
-      // Without this, two concurrent analyzes for the same
-      // (aice_id, event_key, lang, model_name, model) both read the same
-      // MAX(generation), both compute N+1, and the second loses the INSERT
-      // race on the extended PK — a user-visible failure the prior UPSERT
-      // path did not have (#297 review round 1, item 4). The lock is
-      // transaction-scoped, so it releases on COMMIT/ROLLBACK below.
-      await writeClient.query("SELECT pg_advisory_xact_lock($1, $2)", [
-        EVENT_GENERATION_LOCK_NAMESPACE,
-        eventVariantLockKey(
-          params.aiceId,
-          params.eventKey,
-          langForStorage,
-          params.modelName,
-          params.model,
-        ),
-      ]);
-      const { rows: genRows } = await writeClient.query<{
-        next_generation: number;
-      }>(
-        `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
-           FROM event_analysis_result
-          WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5`,
-        [
-          params.aiceId,
-          params.eventKey,
-          langForStorage,
-          params.modelName,
-          params.model,
-        ],
-      );
-      const nextGeneration = genRows[0]?.next_generation ?? 1;
-      await writeClient.query(
-        `UPDATE event_analysis_result
-            SET superseded_at = NOW()
-          WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5
-            AND generation < $6
-            AND superseded_at IS NULL`,
-        [
-          params.aiceId,
-          params.eventKey,
-          langForStorage,
-          params.modelName,
-          params.model,
-          nextGeneration,
-        ],
-      );
-      await writeClient.query(
-        `INSERT INTO event_analysis_result
-           (aice_id, event_key, lang, model_name, model, generation,
-            severity_score, likelihood_score,
-            severity_factors, likelihood_factors, ttp_tags,
-            priority_tier,
-            analysis_text, redaction_policy_version, requested_by)
-         VALUES ($1, $2::numeric, $3, $4, $5, $6,
-                 $7, $8,
-                 $9::jsonb, $10::jsonb, $11::jsonb,
-                 $12,
-                 $13, $14, $15::uuid)`,
-        [
-          params.aiceId,
-          params.eventKey,
-          langForStorage,
-          params.modelName,
-          params.model,
-          nextGeneration,
-          aimerResponse.severityScore,
-          aimerResponse.likelihoodScore,
-          JSON.stringify(severityFilter.kept),
-          JSON.stringify(likelihoodFilter.kept),
-          JSON.stringify(ttpResult.valid),
-          priorityTier,
-          scan.scanned,
-          analysisPolicyVersion,
-          params.accountId,
-        ],
-      );
-      await writeClient.query("COMMIT");
-    } catch (err) {
-      await writeClient.query("ROLLBACK").catch(() => {});
-      throw err;
-    } finally {
-      writeClient.release();
-    }
-  } catch (err) {
-    return {
-      kind: "error",
-      errorCode: "storage_failed",
-      message: err instanceof Error ? err.message : "storage failed",
-    };
+  if (stored.kind === "error") {
+    return stored;
   }
-
-  void auditLog({
-    ...auditBase,
-    action: "ai_analysis.result_stored",
-    targetId: `${params.aiceId}/${params.eventKey}`,
-    details: {
-      lang: params.lang ?? null,
-      modelName: params.modelName,
-      model: params.model,
-      force: params.force,
-    },
-  });
 
   return { kind: "success", viewUrl, cached: false, customerId: customer.id };
 }

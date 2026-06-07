@@ -25,6 +25,15 @@ vi.mock("@/lib/analysis/cited-by-loader", () => ({
   loadCitedByReports: async () => [],
 }));
 
+// Render an identifiable element (not `null`) so present/absent assertions
+// on the analyst / canRegenerate gate (#463) are meaningful. The real
+// button is a client component pulling next-intl + next/navigation.
+vi.mock("../regenerate-button", () => ({
+  EventRegenerateButton: () => (
+    <button type="button" data-testid="event-regenerate-button" />
+  ),
+}));
+
 // biome-ignore lint/suspicious/noExplicitAny: captured loader input
 let lastArgs: any;
 
@@ -113,5 +122,98 @@ describe("AnalysisResultPage — generation pin", () => {
       renderPage({ lang: "ENGLISH", generation: "5" }),
     ).rejects.toThrow("NEXT_NOT_FOUND");
     expect(mockLoad).not.toHaveBeenCalled();
+  });
+});
+
+function okOutcome(
+  viewer: {
+    isViewerAnalyst?: boolean;
+    canRegenerate?: boolean;
+    sourceEventPresent?: boolean;
+  } = {},
+): ResultPageOutcome {
+  return {
+    kind: "ok",
+    data: {
+      customerId: CUSTOMER_ID,
+      aiceId: AICE_ID,
+      eventKey: EVENT_KEY,
+      lang: "ENGLISH",
+      modelName: "openai",
+      model: "gpt-4o",
+      generation: 1,
+      modelActualVersion: "2026-05-01",
+      promptVersion: "v3",
+      severityScore: 0.42,
+      likelihoodScore: 0.81,
+      priorityTier: "HIGH",
+      severityFactors: ["broad blast radius"],
+      likelihoodFactors: ["lateral movement"],
+      ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
+      analysisText: "narrative",
+      requestedBy: "acc-1",
+      requestedAt: new Date("2026-05-20T00:00:00Z"),
+      isViewerAnalyst: viewer.isViewerAnalyst ?? false,
+      canRegenerate: viewer.canRegenerate ?? false,
+      sourceEventPresent: viewer.sourceEventPresent ?? true,
+      parentStories: [],
+    },
+  };
+}
+
+describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () => {
+  it("shows provenance + regenerate button for an analyst (no bridge)", async () => {
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({ isViewerAnalyst: true, canRegenerate: true }),
+    );
+    await renderPage(VARIANT);
+    // Provenance fields are analyst-only.
+    expect(screen.getByText("Provider")).toBeTruthy();
+    expect(screen.getByText("Model snapshot")).toBeTruthy();
+    expect(screen.getByText("Requested by")).toBeTruthy();
+    expect(screen.getByTestId("event-regenerate-button")).toBeTruthy();
+  });
+
+  it("hides provenance + regenerate button for a non-analyst", async () => {
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({ isViewerAnalyst: false, canRegenerate: false }),
+    );
+    await renderPage(VARIANT);
+    // Analytically-meaningful fields stay visible.
+    expect(screen.getByText("Language")).toBeTruthy();
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    // Provenance is gone.
+    expect(screen.queryByText("Provider")).toBeNull();
+    expect(screen.queryByText("Model snapshot")).toBeNull();
+    expect(screen.queryByText("Requested by")).toBeNull();
+    expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
+  });
+
+  it("hides the regenerate button for a bridge-session analyst (canRegenerate false)", async () => {
+    // A bridge-session analyst can read provenance, but the regenerate
+    // endpoint authorizes a write a bridge session can never pass — so the
+    // button is hidden to avoid a click that would 403.
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({ isViewerAnalyst: true, canRegenerate: false }),
+    );
+    await renderPage(VARIANT);
+    expect(screen.getByText("Provider")).toBeTruthy();
+    expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
+    // Force re-run shares the sourceEventPresent gate and is still shown.
+    expect(screen.getByTestId("force-rerun-link")).toBeTruthy();
+  });
+
+  it("hides both re-run paths when the source event was swept by retention", async () => {
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({
+        isViewerAnalyst: true,
+        canRegenerate: true,
+        sourceEventPresent: false,
+      }),
+    );
+    await renderPage(VARIANT);
+    expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
+    expect(screen.queryByTestId("force-rerun-link")).toBeNull();
+    expect(screen.getByTestId("retention-banner")).toBeTruthy();
   });
 });

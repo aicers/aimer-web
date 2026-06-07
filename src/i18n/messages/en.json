@@ -609,18 +609,23 @@
       "partOfThreat": "{count, plural, one {Part of threat story} other {Part of threat stories}}",
       "storyLabel": "Story {storyId}",
       "viewSourceEvent": "View source event in aice-web-next",
-      "forceRerun": "Force re-run in aice-web-next"
+      "forceRerun": "Force re-run in aice-web-next",
+      "rerunDistinction": "Regenerate re-runs the AI analysis on this already-ingested event within aimer-web, holding redaction constant. Force re-run hands off to aice-web-next, which re-submits the event from its original source to bypass the cached result; the redaction is refreshed only when aice-web-next re-ingests that source event."
     },
     "regenerate": {
       "button": "Regenerate",
       "cancel": "Cancel",
       "submitting": "Submitting…",
       "queued": "Regenerate queued (generation {generation}). Refresh the page once processing completes.",
+      "navigating": "New analysis ready (generation {generation}); loading…",
       "error": "Could not queue regenerate: {message}",
+      "eventError": "Could not regenerate: {message}",
       "reportTitle": "Regenerate this report?",
       "reportBody": "This issues a fresh LLM call across the period's analyzed stories, events, and suspicious-event trends, and supersedes the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp.",
       "storyTitle": "Regenerate story analysis?",
       "storyBody": "This issues a fresh LLM call against the canonical story members and overwrites the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp.",
+      "eventTitle": "Regenerate event analysis?",
+      "eventBody": "This re-runs the AI analysis on this already-ingested event, holding redaction constant, and supersedes the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp. To re-ingest the raw event from source instead, use Force re-run.",
       "modelLabel": "Model"
     },
     "lists": {
