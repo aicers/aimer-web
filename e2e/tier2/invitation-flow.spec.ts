@@ -64,7 +64,7 @@ test.describe("@tier2 Analyst invitation full flow — 42", () => {
       const createRes = await adminPage.request.post(
         "/api/admin/analysts/invitations",
         {
-          headers: { origin: ORIGIN, "x-csrf-token": csrf ?? "" },
+          headers: { origin: ORIGIN, "X-CSRF-Token-Admin": csrf ?? "" },
           data: { email: SUCCESS_EMAIL, customerIds: [testData.customer.id] },
         },
       );
