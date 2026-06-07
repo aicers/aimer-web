@@ -265,6 +265,8 @@ beforeEach(() => {
       likelihoodFactors: ["lateral movement potential"],
       ttpTags: [],
       analysis: "analysis text",
+      promptVersion: "pv-1",
+      modelActualVersion: "mv-1",
     },
   });
   authPool.query.mockClear();
@@ -1177,18 +1179,53 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
 
     const params = captureInsertParams();
     expect(params).not.toBeNull();
-    // Position-dependent on the route's bound parameters; severity_factors
-    // is the 8th bound parameter and likelihood_factors the 9th.
+    // Position-dependent on the route's bound parameters. The column order
+    // is aice_id, event_key, lang, model_name, model,
+    // model_actual_version, prompt_version, generation, severity_score,
+    // likelihood_score, severity_factors, likelihood_factors, ttp_tags...
+    // so factor arrays land at params[10] (severity) / params[11]
+    // (likelihood).
     if (params) {
-      // `generation` is bound at position 6, so factor arrays shift to
-      // params[8] (severity) / params[9] (likelihood).
-      const sev = JSON.parse(params[8] as string);
-      const lik = JSON.parse(params[9] as string);
+      const sev = JSON.parse(params[10] as string);
+      const lik = JSON.parse(params[11] as string);
       expect(sev).toEqual(["broad blast radius", "lateral movement"]);
       expect(lik).toEqual(["clean POST", "unusual UA"]);
     }
     expect(auditCallsByAction("ai_analysis.factor_dropped")).toHaveLength(0);
     expect(auditCallsByAction("ai_analysis.ttp_tag_dropped")).toHaveLength(0);
+  });
+
+  it("persists model_actual_version / prompt_version bound from the aimer response", async () => {
+    // aimer#480 (#474): the event result now carries provenance the BFF
+    // writes to `event_analysis_result`. The shared helper binds them at
+    // params[5] (model_actual_version) / params[6] (prompt_version),
+    // right after `model` and before `generation`.
+    stubActiveCustomerLookup();
+    stubCacheMiss();
+    stubInsertDetectionEvent();
+    stubInsertAnalysisResult();
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.4,
+        likelihoodScore: 0.5,
+        severityFactors: ["one"],
+        likelihoodFactors: ["two"],
+        ttpTags: [],
+        analysis: "ok",
+        promptVersion: "v7",
+        modelActualVersion: "gpt-4o-2026-05-01",
+      },
+    });
+
+    const res = await callPOST(makeRequest(defaultBody()));
+    expect(res.status).toBe(200);
+
+    const params = captureInsertParams();
+    expect(params).not.toBeNull();
+    if (params) {
+      expect(params[5]).toBe("gpt-4o-2026-05-01");
+      expect(params[6]).toBe("v7");
+    }
   });
 
   it("oversized + empty drops in one axis emit two rows, one per reason", async () => {
@@ -1288,7 +1325,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
 
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[8] as string)).toEqual(seven.slice(0, 5));
+      expect(JSON.parse(params[10] as string)).toEqual(seven.slice(0, 5));
     }
     const sevDrops = auditCallsByAction("ai_analysis.factor_dropped").filter(
       (c) => (c.details as Record<string, unknown>).axis === "severity",
@@ -1321,7 +1358,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
     // UPSERT writes the sentinel — every input item was filtered out.
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[8] as string)).toEqual([
+      expect(JSON.parse(params[10] as string)).toEqual([
         "insufficient evidence",
       ]);
     }
@@ -1380,7 +1417,7 @@ describe("POST /api/analysis/analyze — factor + TTP filter integration", () =>
 
     const params = captureInsertParams();
     if (params) {
-      expect(JSON.parse(params[10] as string)).toEqual(["T1078", "T1110"]);
+      expect(JSON.parse(params[12] as string)).toEqual(["T1078", "T1110"]);
     }
 
     const ttpRows = auditCallsByAction("ai_analysis.ttp_tag_dropped");

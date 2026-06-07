@@ -30,6 +30,17 @@ type AnalysisResult {
 	Markdown-formatted analysis
 	"""
 	analysis: String!
+	"""
+	Identifier of the prompt template that produced this response. Bumped
+	whenever `ANALYSIS_PROMPT` or `JSON_SCHEMA` changes in a way downstream
+	consumers should distinguish.
+	"""
+	promptVersion: String!
+	"""
+	Provider-reported model snapshot for the formatting call. Falls back to
+	the requested `model` argument when the provider does not report one.
+	"""
+	modelActualVersion: String!
 }
 
 """
@@ -98,6 +109,16 @@ type ChatChoice {
 }
 
 scalar DateTime
+
+"""
+One enrichment fact: pre-redacted threat-intel narrative text.
+"""
+input EnrichmentFactInput {
+	"""
+	May contain `<<REDACTED_TYPE_F{k}_NNN>>` tokens, forwarded verbatim.
+	"""
+	text: String!
+}
 
 """
 One already-analyzed single-event leaf included in the periodic-report
@@ -215,11 +236,11 @@ type Mutation {
 	report into `targetLang`, returning the same 5-field `sections` shape
 	`generatePeriodicSecurityReport` produces, with all narrative prose
 	localized and every redaction token preserved verbatim.
-
+	
 	Stateless under `auth-mtls`: aimer stores nothing, performs no caching,
 	and accepts no `force`. `customerId` is accepted for observability and
 	prompt context only.
-
+	
 	The input `sections` is the JSON string `generatePeriodicSecurityReport`
 	returns (executive summary, story highlights, notable events, baseline
 	observations, period outlook). It is validated against that shape before
@@ -228,7 +249,7 @@ type Mutation {
 	is limited to the `Language` enum's current variants (Korean / English);
 	`targetLang: ENGLISH` on an English canonical report is a no-op
 	round-trip.
-
+	
 	Exactly one LLM call is issued per invocation (no retry). Three defensive
 	checks run on the response: an element-count check rejects any merge /
 	split / drop / add of the array sections (including `executive_summary`,
@@ -239,9 +260,9 @@ type Mutation {
 	string or array element. A pure reorder of token-free, uncited prose is
 	not separately detected; it is left to the prompt's same-order
 	constraint.
-
+	
 	# Errors
-
+	
 	Returns an error if:
 	- Input validation fails (empty `customerId` / `model` / `name`, or
 	`sections` that does not deserialize into the canonical report shape)
@@ -293,12 +314,15 @@ type Mutation {
 	context only — aimer performs no lookup or storage keyed by them.
 	
 	PII redaction is the caller's responsibility. aimer-web owns the
-	per-event redaction map; `members[].event` and `storyMetadata` strings
-	are forwarded to the LLM unchanged. Redaction tokens present in the
-	input are preserved verbatim in the analysis output. A real token looks
-	like `<<REDACTED_IP_E1_001>>`; the `TYPE`/`NNN`/`*`/`{i}` in the
-	`<<REDACTED_TYPE_E{i}_NNN>>` and `<<REDACTED_*_E{i}_*>>` shapes are
-	wildcards, not literal characters.
+	per-event redaction map; `members[].event`, `enrichmentFacts[].text`,
+	and `storyMetadata` strings are forwarded to the LLM unchanged.
+	Redaction tokens present in the input are preserved verbatim in the
+	analysis output. A real member token looks like `<<REDACTED_IP_E1_001>>`
+	and a fact token like `<<REDACTED_DOMAIN_F1_001>>`; the
+	`TYPE`/`NNN`/`*`/`{i}`/`{k}` in the `<<REDACTED_TYPE_E{i}_NNN>>`,
+	`<<REDACTED_*_E{i}_*>>`, and `<<REDACTED_*_F{k}_*>>` shapes are
+	wildcards, not literal characters. Fact tokens are opaque: aimer never
+	validates or restores them.
 	
 	Exactly one LLM call is issued per invocation (no two-stage formatter
 	pass). The response always includes `promptVersion` and
@@ -311,12 +335,12 @@ type Mutation {
 	contiguous `1..N`, `memberCount` mismatch, role-frequency mismatch,
 	duplicate role keys, `storyMetadata.storyId` mismatch,
 	`firstSeenAt > lastSeenAt`, empty `event` / `role` / `model` /
-	`name`)
+	`name` / `enrichmentFacts[].text`)
 	- The requested LLM server `name` is not registered
 	- LLM analysis fails (transport error, provider error envelope,
 	structured-output parse failure, factor/TTP shape violation)
 	"""
-	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, enrichmentFacts: [String!]!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
+	analyzeStory(customerId: ID!, storyId: ID!, members: [StoryMemberInput!]!, storyMetadata: StoryMetadataInput!, enrichmentFacts: [EnrichmentFactInput!]!, name: String!, model: String!, lang: Language): StoryAnalysisResult!
 }
 
 type OllamaChatMessage {
@@ -613,9 +637,12 @@ type StoryAnalysisResult {
 	ttpTags: [String!]!
 	"""
 	Markdown narrative reconstructing the attacker hypothesis across the
-	story. May contain redaction tokens preserved verbatim from the input.
-	A real token looks like `<<REDACTED_IP_E1_001>>`; the `*`/`{i}` in the
-	`<<REDACTED_*_E{i}_*>>` shape are wildcards, not literal characters.
+	story. May contain redaction tokens preserved verbatim from the input,
+	drawn from both `members[].event` and `enrichmentFacts[].text`. A real
+	member token looks like `<<REDACTED_IP_E1_001>>` and a fact token like
+	`<<REDACTED_DOMAIN_F1_001>>`; the `*`/`{i}`/`{k}` in the
+	`<<REDACTED_*_E{i}_*>>` and `<<REDACTED_*_F{k}_*>>` shapes are
+	wildcards, not literal characters.
 	"""
 	analysis: String!
 	"""

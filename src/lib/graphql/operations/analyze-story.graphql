@@ -3,7 +3,7 @@ mutation AnalyzeStory(
   $storyId: ID!
   $members: [StoryMemberInput!]!
   $storyMetadata: StoryMetadataInput!
-  $enrichmentFacts: [String!]!
+  $enrichmentFacts: [EnrichmentFactInput!]!
   $name: String!
   $model: String!
   $lang: Language

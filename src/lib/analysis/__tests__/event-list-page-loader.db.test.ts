@@ -51,10 +51,12 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
   }): Promise<void> {
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model, generation,
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
           severity_score, likelihood_score, priority_tier, analysis_text,
           redaction_policy_version, requested_by, requested_at, superseded_at)
-       VALUES ($1, $2::numeric, $3, 'openai', 'gpt-4o', $4,
+       VALUES ($1, $2::numeric, $3, 'openai', 'gpt-4o',
+               'mv', 'pv', $4,
                $5, $6, $7, 'text', 'v1', $8::uuid, $9::timestamptz,
                CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
       [

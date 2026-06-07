@@ -198,10 +198,9 @@ export default async function AnalysisResultPage({
         {/* Model/prompt provenance is operator-facing detail about how the
             artifact was produced — restricted to analysts (#457/#463). A
             non-analyst keeps every analytically-meaningful field above.
-            Snapshot / prompt version stay conditional inside the analyst
-            block: they are nullable for events (populated only once
-            aimer#480 exposes them), so they render real values rather than
-            blanks. */}
+            Snapshot / prompt version are populated for every fresh analysis
+            now that aimer#480 returns them (#474); the conditional stays as
+            a defensive guard for legacy rows predating the populated path. */}
         {data.isViewerAnalyst ? (
           <>
             <Field label={tA("fields.provider")}>{data.modelName}</Field>

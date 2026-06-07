@@ -18,5 +18,7 @@ mutation AnalyzeEvent(
     likelihoodFactors
     ttpTags
     analysis
+    promptVersion
+    modelActualVersion
   }
 }

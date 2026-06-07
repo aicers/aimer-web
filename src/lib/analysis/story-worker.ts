@@ -965,7 +965,10 @@ async function callAnalyzeStory(args: {
       storyId: args.storyId,
       members: args.members,
       storyMetadata: args.storyMetadata,
-      enrichmentFacts: args.enrichmentFacts,
+      // aimer#480 wraps each fact text in `EnrichmentFactInput { text }`.
+      // We keep the internal `enrichmentFacts: string[]` shape and wrap
+      // only at the GraphQL boundary.
+      enrichmentFacts: args.enrichmentFacts.map((text) => ({ text })),
       name: args.modelName,
       model: args.model,
       lang: args.lang as "KOREAN" | "ENGLISH",

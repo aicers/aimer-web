@@ -131,11 +131,13 @@ async function seedEventResult(
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO event_analysis_result
-       (aice_id, event_key, lang, model_name, model, generation,
+       (aice_id, event_key, lang, model_name, model,
+        model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
         priority_tier, analysis_text, redaction_policy_version, requested_by)
-     VALUES ($7, $1::numeric, $2, $3, $4, 1,
+     VALUES ($7, $1::numeric, $2, $3, $4,
+             'mv', 'pv', 1,
              0.6, 0.6,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
              $5, $6, 'policy-A', gen_random_uuid())`,
