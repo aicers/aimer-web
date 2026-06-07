@@ -37,7 +37,10 @@ export async function loginViaKeycloak(
   await expect(page.locator("#username")).toBeVisible({ timeout: 15_000 });
   await page.locator("#username").fill(creds.username);
   await page.locator("#password").fill(creds.password);
-  await page.locator("#kc-login").click();
+  // Submit by the form's submit input rather than a fixed button id: the
+  // stock theme uses `#kc-login`, the custom "aimer" theme uses `#login-btn`,
+  // but both wrap it in `#kc-form-login`.
+  await page.locator('#kc-form-login [type="submit"]').click();
 
   // Wait for the browser to land back on the app (the OIDC callback then
   // redirects to `/` on success or `/deny` on failure — both are app-origin).
