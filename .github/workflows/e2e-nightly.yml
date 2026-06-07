@@ -13,6 +13,13 @@ on:
   schedule:
     - cron: "15 15 * * *"
   workflow_dispatch: {}
+  # TEMPORARY (#452 pre-merge validation): run on pushes to the feature branch
+  # so the full Keycloak + Mailpit stack can be exercised before merge.
+  # REMOVE this block before merging — nightly must trigger only via schedule
+  # and workflow_dispatch.
+  push:
+    branches:
+      - sehkone/issue-452
 
 permissions:
   contents: read
@@ -30,8 +37,10 @@ jobs:
       - id: gate
         name: Decide whether to run
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual dispatch — running unconditionally."
+          # Only scheduled runs are date-gated. Manual dispatch (and the
+          # temporary push trigger used for pre-merge validation) always run.
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "Event '${{ github.event_name }}' — running unconditionally."
             echo "should_run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
