@@ -72,6 +72,8 @@ create_user() {
       '{
         username: $email,
         email: $email,
+        firstName: "E2E",
+        lastName: "Tester",
         enabled: true,
         emailVerified: true,
         requiredActions: []
