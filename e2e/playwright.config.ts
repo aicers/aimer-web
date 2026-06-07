@@ -28,8 +28,20 @@ export default defineConfig({
   },
   projects: [
     {
+      // Default per-PR regression project. Tier-2 specs (real Keycloak OIDC +
+      // Mailpit, #452) are excluded here via grepInvert so `pnpm test:e2e`
+      // never needs those services; they run only in the nightly workflow.
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+      grepInvert: /@tier2/,
+    },
+    {
+      // Tier-2 project: selects ONLY @tier2 specs. Run via
+      // `pnpm test:e2e:tier2` in .github/workflows/e2e-nightly.yml against a
+      // full stack (Keycloak + Mailpit + Postgres + OpenBao).
+      name: "tier2-chromium",
+      use: { ...devices["Desktop Chrome"] },
+      grep: /@tier2/,
     },
   ],
   webServer: {
