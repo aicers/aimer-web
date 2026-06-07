@@ -317,16 +317,18 @@ written the new result.
 ## Model selection and comparison
 
 Analysts can evaluate analysis quality across LLM models — generate the
-same story analysis under a different model and compare the results. Both
-controls are **analyst-only**, gated like the other [analyst-only
-fields](#analyst-only-fields): the model dropdown follows the same
-condition as the Regenerate button (analyst **and** not in a bridge
-session), while the read-only **Compare with** selector and per-column
-provenance are shown to any analyst for the customer. The models offered
-come from a configured catalog (`ANALYSIS_MODEL_CATALOG`), which always
-includes the deployment's default model; it is a display/allow-list for
-the picker only — the regenerate endpoint stays tolerant of its existing
-inputs.
+same story analysis under a different model and compare the results. These
+controls are **analyst-only**. The model identities they offer come from a
+configured catalog (`ANALYSIS_MODEL_CATALOG`), which always includes the
+deployment's default model; it is a display/allow-list for the picker only
+— the regenerate endpoint stays tolerant of its existing inputs. Because
+the catalog is tied to the regenerate permission, both the Regenerate
+**model** dropdown and the **Compare with** selector follow the same
+condition as the Regenerate button (analyst **and** not in a [bridge
+session](#analyst-only-fields)). The comparison view itself and its
+per-column provenance render for any analyst for the customer, so a shared
+`?compareModel` link still resolves — but only an analyst who can
+regenerate sees the **Compare with** selector to build one.
 
 ### Choosing a model on regenerate
 

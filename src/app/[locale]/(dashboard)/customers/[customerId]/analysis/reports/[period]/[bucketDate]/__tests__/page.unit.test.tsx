@@ -22,6 +22,7 @@ vi.mock("@/lib/analysis/report-result-page-loader", () => ({
 // analyst-only compare controls out of these (non-compare) render assertions.
 vi.mock("@/lib/analysis/model-catalog", () => ({
   getModelCatalog: () => [],
+  getDefaultModelPair: () => ({ modelName: "openai", model: "gpt-4o" }),
 }));
 
 vi.mock("next/navigation", () => ({

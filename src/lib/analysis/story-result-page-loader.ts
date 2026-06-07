@@ -173,6 +173,21 @@ export interface StoryResultPageInput {
     model?: string;
   };
   /**
+   * Unpinned primary variant selected by model (#458): the latest
+   * non-superseded row for `(lang, modelName, model)`. Unlike `pin` this
+   * carries NO generation, so a `?model_name=&model=` link (no `?generation`)
+   * opens that model as the primary column rather than silently resolving the
+   * env default — the report loader already supports this via
+   * `variant.{model_name, model}`. Ignored when `pin` is present (a generation
+   * pin already carries its own `lang`/`modelName`/`model`). Fields default to
+   * the env-configured variant when omitted.
+   */
+  variant?: {
+    lang?: string;
+    modelName?: string;
+    model?: string;
+  };
+  /**
    * Analyst-only compare variant (#458). The second column's model pair; the
    * loader resolves it via a read-only EXACT unpinned model-only lookup at the
    * primary's language (latest non-superseded row for that
@@ -271,11 +286,15 @@ export async function loadStoryResultPage(
   if (stateRows.rows[0].status === "archived") return { kind: "not_found" };
 
   // Variant resolution: a pin (T1 Sources link) selects the exact cited
-  // variant; otherwise the env-configured default variant. `lang` is the
+  // variant; an unpinned `variant` selects a model by latest non-superseded
+  // generation (#458, a `?model_name=&model=` link with no `?generation`);
+  // otherwise the env-configured default variant. `pin` wins over `variant`
+  // (a generation pin already carries its own variant fields). `lang` is the
   // report-language enum the leaf row is keyed on.
-  const lang = input.pin?.lang ?? DEFAULT_LANG;
-  const modelName = input.pin?.modelName ?? DEFAULT_MODEL_NAME;
-  const model = input.pin?.model ?? DEFAULT_MODEL;
+  const lang = input.pin?.lang ?? input.variant?.lang ?? DEFAULT_LANG;
+  const modelName =
+    input.pin?.modelName ?? input.variant?.modelName ?? DEFAULT_MODEL_NAME;
+  const model = input.pin?.model ?? input.variant?.model ?? DEFAULT_MODEL;
   const pinnedGeneration = input.pin?.generation ?? null;
 
   const customerPool = getCustomerRuntimePool(input.customerId);

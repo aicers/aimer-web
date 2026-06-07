@@ -64,15 +64,22 @@ function Provenance({
 
 export function ReportCompareView({
   primary,
+  primaryLabel,
   compare,
   compareTargetLabel,
+  defaultModel,
   regenerateCta,
   t,
 }: {
   primary: ProvenanceColumn & { sections: ReportSections };
+  /** Display label for the primary (currently-open) model. */
+  primaryLabel: string;
   compare: ReportCompareOutcome;
   /** Display label for the compare-target model (for the not-generated copy). */
   compareTargetLabel: string;
+  /** The configured default `(modelName, model)`; the #379 note applies only
+   *  to displayed columns whose model is NOT this pair. */
+  defaultModel: { modelName: string; model: string };
   /** Regenerate CTA shown when the compare variant is not generated. */
   regenerateCta: React.ReactNode;
   t: AnalysisTranslations;
@@ -107,12 +114,30 @@ export function ReportCompareView({
 
   // #379: a non-default-model report aggregates only same-model leaves, so
   // `story_highlights` / `notable_events` can be empty until the underlying
-  // leaves are re-analyzed under that model. Surface a note when the compare
-  // column's leaf-derived sections are empty.
-  const leafCoverageIncomplete =
+  // leaves are re-analyzed under that model. The caveat is specific to
+  // NON-default columns, and EITHER displayed column can be the non-default
+  // one (the primary is the currently-open variant, which may itself be a
+  // non-default model). So drive the note off any displayed non-default column
+  // with an empty leaf-derived section — not the compare column alone, and not
+  // a default column that merely happens to have an empty section.
+  const isDefaultModel = (col: { modelName: string; model: string }): boolean =>
+    col.modelName === defaultModel.modelName &&
+    col.model === defaultModel.model;
+  const hasEmptyLeafSection = (s: ReportSections): boolean =>
+    sectionString(s, "story_highlights").length === 0 ||
+    sectionString(s, "notable_events").length === 0;
+  const incompleteModels: string[] = [];
+  if (!isDefaultModel(primary) && hasEmptyLeafSection(primary.sections)) {
+    incompleteModels.push(primaryLabel);
+  }
+  if (
     compareData !== null &&
-    (sectionString(compareData.sections, "story_highlights").length === 0 ||
-      sectionString(compareData.sections, "notable_events").length === 0);
+    !isDefaultModel(compareData) &&
+    hasEmptyLeafSection(compareData.sections)
+  ) {
+    incompleteModels.push(compareTargetLabel);
+  }
+  const leafCoverageIncomplete = incompleteModels.length > 0;
 
   return (
     <section className="mt-8" data-testid="compare-view">
@@ -140,7 +165,9 @@ export function ReportCompareView({
           data-testid="compare-leaf-coverage"
           className="mb-4 rounded border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-900"
         >
-          {t("compare.leafCoverageNote", { model: compareTargetLabel })}
+          {t("compare.leafCoverageNote", {
+            model: incompleteModels.join(", "),
+          })}
         </div>
       ) : null}
 

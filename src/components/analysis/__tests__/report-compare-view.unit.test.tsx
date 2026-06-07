@@ -38,6 +38,8 @@ const primary = {
   sections: sections(),
 };
 
+const DEFAULT_MODEL = { modelName: "openai", model: "gpt-4o" };
+
 afterEach(cleanup);
 
 describe("ReportCompareView", () => {
@@ -62,8 +64,10 @@ describe("ReportCompareView", () => {
     const { getByTestId, queryByTestId } = render(
       <ReportCompareView
         primary={primary}
+        primaryLabel="GPT-4o"
         compare={compare}
         compareTargetLabel="Claude 3.5"
+        defaultModel={DEFAULT_MODEL}
         regenerateCta={<div data-testid="cta" />}
         t={t}
       />,
@@ -98,8 +102,10 @@ describe("ReportCompareView", () => {
     const { getByTestId, queryByTestId } = render(
       <ReportCompareView
         primary={primary}
+        primaryLabel="GPT-4o"
         compare={compare}
         compareTargetLabel="Claude 3.5"
+        defaultModel={DEFAULT_MODEL}
         regenerateCta={<div data-testid="cta" />}
         t={t}
       />,
@@ -111,8 +117,9 @@ describe("ReportCompareView", () => {
     expect(queryByTestId("compare-compare-executive_summary")).toBeNull();
   });
 
-  it("surfaces the #379 leaf-coverage note when compare leaf sections are empty", () => {
-    const compare: ReportCompareOutcome = {
+  // A non-default compare column with empty leaf-derived sections.
+  function nonDefaultEmptyLeafCompare(): ReportCompareOutcome {
+    return {
       kind: "ok",
       data: {
         modelName: "anthropic",
@@ -128,15 +135,90 @@ describe("ReportCompareView", () => {
         sections: sections({ story_highlights: [], notable_events: [] }),
       },
     };
+  }
+
+  it("surfaces the #379 leaf-coverage note when a non-default compare column has empty leaf sections", () => {
     const { getByTestId } = render(
       <ReportCompareView
         primary={primary}
-        compare={compare}
+        primaryLabel="GPT-4o"
+        compare={nonDefaultEmptyLeafCompare()}
         compareTargetLabel="Claude 3.5"
+        defaultModel={DEFAULT_MODEL}
         regenerateCta={<div data-testid="cta" />}
         t={t}
       />,
     );
     expect(getByTestId("compare-leaf-coverage")).toBeTruthy();
+  });
+
+  it("surfaces the note when the PRIMARY column is a non-default model with empty leaf sections (compare complete)", () => {
+    // The currently-open variant can itself be a non-default model. Driving
+    // the note off the compare column alone would miss this case.
+    const nonDefaultPrimary = {
+      ...primary,
+      modelName: "anthropic",
+      model: "claude-3-5",
+      sections: sections({ story_highlights: [], notable_events: [] }),
+    };
+    const compare: ReportCompareOutcome = {
+      kind: "ok",
+      data: {
+        modelName: "openai",
+        model: "gpt-4o",
+        modelActualVersion: "2026-01",
+        promptVersion: "v5",
+        generation: 2,
+        lang: "ENGLISH",
+        priorityTier: "HIGH",
+        aggregateSeverityScore: 0.5,
+        aggregateLikelihoodScore: 0.5,
+        sections: sections(), // default model, fully populated
+      },
+    };
+    const { getByTestId } = render(
+      <ReportCompareView
+        primary={nonDefaultPrimary}
+        primaryLabel="Claude 3.5"
+        compare={compare}
+        compareTargetLabel="GPT-4o"
+        defaultModel={DEFAULT_MODEL}
+        regenerateCta={<div data-testid="cta" />}
+        t={t}
+      />,
+    );
+    expect(getByTestId("compare-leaf-coverage")).toBeTruthy();
+  });
+
+  it("does NOT show the note when an empty leaf section belongs to the DEFAULT model", () => {
+    // A default-model column with a genuinely empty leaf section is not the
+    // #379 coverage caveat (that is specific to non-default models).
+    const compare: ReportCompareOutcome = {
+      kind: "ok",
+      data: {
+        modelName: "openai",
+        model: "gpt-4o",
+        modelActualVersion: "2026-01",
+        promptVersion: "v5",
+        generation: 2,
+        lang: "ENGLISH",
+        priorityTier: "HIGH",
+        aggregateSeverityScore: 0.5,
+        aggregateLikelihoodScore: 0.5,
+        sections: sections({ story_highlights: [], notable_events: [] }),
+      },
+    };
+    const { queryByTestId } = render(
+      <ReportCompareView
+        primary={primary}
+        primaryLabel="GPT-4o"
+        compare={compare}
+        compareTargetLabel="GPT-4o"
+        defaultModel={DEFAULT_MODEL}
+        regenerateCta={<div data-testid="cta" />}
+        t={t}
+      />,
+    );
+    expect(queryByTestId("compare-leaf-coverage")).toBeNull();
   });
 });

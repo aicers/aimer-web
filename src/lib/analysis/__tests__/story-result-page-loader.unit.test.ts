@@ -119,17 +119,21 @@ function resultRow(extras: Record<string, unknown> = {}) {
   };
 }
 
-async function callLoader(pin?: {
-  generation: number;
-  lang?: string;
-  modelName?: string;
-  model?: string;
-}) {
+async function callLoader(
+  pin?: {
+    generation: number;
+    lang?: string;
+    modelName?: string;
+    model?: string;
+  },
+  variant?: { lang?: string; modelName?: string; model?: string },
+) {
   const mod = await import("../story-result-page-loader");
   return mod.loadStoryResultPage({
     customerId: CUSTOMER_ID,
     storyId: STORY_ID,
     pin,
+    variant,
   });
 }
 
@@ -203,6 +207,51 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     resultRows = [resultRow({ generation: 2, superseded_at: new Date() })];
     const outcome = await callLoader({ generation: 2 });
     expect(outcome.kind).toBe("pin_unavailable");
+  });
+
+  it("unpinned variant: opens the model selected by `?model_name=&model=` as the primary (#458)", async () => {
+    // A model-only link (no generation) must open that model as the primary
+    // column — latest non-superseded for `(lang, modelName, model)` — not the
+    // env default. This is the gap the compare view depends on.
+    resultRows = [resultRow({ generation: 4 })];
+    const outcome = await callLoader(undefined, {
+      lang: "KOREAN",
+      modelName: "anthropic",
+      model: "claude-3-5",
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.modelName).toBe("anthropic");
+    expect(outcome.data.model).toBe("claude-3-5");
+    expect(outcome.data.lang).toBe("KOREAN");
+    // The primary SELECT bound the variant's model and ran unpinned (latest
+    // non-superseded), with no `generation =` bind.
+    const call = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("FROM story_analysis_result"),
+    );
+    expect(call?.[1]).toEqual([
+      CUSTOMER_ID,
+      STORY_ID,
+      "KOREAN",
+      "anthropic",
+      "claude-3-5",
+    ]);
+    expect(String(call?.[0])).toContain("superseded_at IS NULL");
+    expect(String(call?.[0])).not.toContain("generation = $");
+  });
+
+  it("pin wins over an unpinned variant when both are present", async () => {
+    // A generation pin already carries its own variant fields, so it takes
+    // precedence over a stray `variant`.
+    resultRows = [resultRow({ generation: 2 })];
+    const outcome = await callLoader(
+      { generation: 2, lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      { lang: "KOREAN", modelName: "anthropic", model: "claude-3-5" },
+    );
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.modelName).toBe("openai");
+    expect(outcome.data.lang).toBe("ENGLISH");
   });
 });
 

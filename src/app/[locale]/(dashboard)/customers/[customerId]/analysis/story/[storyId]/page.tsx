@@ -73,6 +73,19 @@ export default async function StoryAnalysisPage({
           model: search.model,
         }
       : undefined;
+  // Unpinned primary variant (#458): a `?model_name=&model=` link with no
+  // `?generation` opens that model as the primary column (the compare view is
+  // "currently-open variant vs compare variant", so the open model must be the
+  // one the URL selected, not the env default). The loader prefers `pin` when a
+  // generation is present, so only forward `variant` on the unpinned path.
+  const variant =
+    generation === null
+      ? {
+          lang: search.lang,
+          modelName: search.model_name,
+          model: search.model,
+        }
+      : undefined;
 
   // Analyst-only compare variant (#458): a second model rendered side by side.
   // The loader resolves it via a read-only unpinned model-only lookup and
@@ -90,6 +103,7 @@ export default async function StoryAnalysisPage({
     customerId,
     storyId,
     pin,
+    variant,
     compare: compareInput,
   });
   const tA = await getTranslations("analysis");
@@ -152,10 +166,13 @@ export default async function StoryAnalysisPage({
 
   // Analyst-only model catalog (#458), read server-side and passed to the
   // client picker/compare controls as serializable props (the catalog module
-  // is server-only). The compare controls + provenance gate on
-  // `isViewerAnalyst`; the regenerate picker follows the Regenerate button's
-  // `canRegenerate` gate (#457).
-  const catalog = data.isViewerAnalyst ? getModelCatalog() : [];
+  // is server-only). Gated on `canRegenerate` — the story regenerate gate from
+  // #457 — because the catalog exposes model identities tied to the regenerate
+  // picker, and the issue ties the catalog prop to the Regenerate button's gate
+  // (so a bridge-session analyst, `isViewerAnalyst && !canRegenerate`, gets
+  // none). The compare view itself + per-column provenance stay `isViewerAnalyst`
+  // surfaces (gated in the loader), independent of the catalog.
+  const catalog = data.canRegenerate ? getModelCatalog() : [];
   const currentModel = { modelName: data.modelName, model: data.model };
   const compareTarget =
     compareInput && data.isViewerAnalyst

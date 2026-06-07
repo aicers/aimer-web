@@ -11,7 +11,10 @@ import { SourcesPanel } from "@/components/analysis/sources-panel";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
 import { type AppLocale, reportLanguageToAppLocale } from "@/i18n/locale";
-import { getModelCatalog } from "@/lib/analysis/model-catalog";
+import {
+  getDefaultModelPair,
+  getModelCatalog,
+} from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -276,13 +279,15 @@ export default async function ReportDetailPage({
   const compareTarget = compareInput
     ? { modelName: compareInput.model_name, model: compareInput.model }
     : null;
+  const labelForModel = (modelName: string, model: string): string =>
+    catalog.find((m) => m.modelName === modelName && m.model === model)
+      ?.label ?? `${modelName} / ${model}`;
   const compareTargetLabel = compareTarget
-    ? (catalog.find(
-        (m) =>
-          m.modelName === compareTarget.modelName &&
-          m.model === compareTarget.model,
-      )?.label ?? `${compareTarget.modelName} / ${compareTarget.model}`)
+    ? labelForModel(compareTarget.modelName, compareTarget.model)
     : "";
+  // The primary column can itself be a non-default model (an analyst can open
+  // a `?model_name=` variant), so the #379 note may reference it (#458 review).
+  const primaryLabel = labelForModel(data.modelName, data.model);
 
   const t = await getTranslations("reports");
   // Localized language name by app-locale code (literal keys — the message
@@ -453,8 +458,10 @@ export default async function ReportDetailPage({
             generation: data.generation,
             sections: data.sections,
           }}
+          primaryLabel={primaryLabel}
           compare={data.compare}
           compareTargetLabel={compareTargetLabel}
+          defaultModel={getDefaultModelPair()}
           regenerateCta={
             <ReportRegenerateButton
               customerId={data.customerId}

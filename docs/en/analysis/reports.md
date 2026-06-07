@@ -493,9 +493,11 @@ leaves, so a report under a non-default model can show **empty** story
 highlights / notable events until the underlying stories and events are
 re-analysed under that model. The compare view renders those empty
 leaf-derived sections with the usual em-dash fallback and surfaces a short
-note that leaf coverage for that model may be incomplete; the synthesis
-sections (executive summary, suspicious-event trends, period outlook)
-compare normally.
+note that leaf coverage for that model may be incomplete — for whichever
+displayed column is the non-default model, whether that is the open
+variant or the compared one (a default-model column with an empty section
+does not trigger the note). The synthesis sections (executive summary,
+suspicious-event trends, period outlook) compare normally.
 
 <!-- Screenshot placeholder: the two-column report comparison (current vs
      compared model) aligned across the five sections, the per-column
