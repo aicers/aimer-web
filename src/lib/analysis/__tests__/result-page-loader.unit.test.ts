@@ -17,6 +17,9 @@ vi.mock("server-only", () => ({}));
 const mockGetAuthCookie = vi.fn();
 const mockVerifyJwtFull = vi.fn();
 const mockAuthorize = vi.fn();
+const mockIsAnalyst = vi.fn();
+const mockGetSessionPolicy = vi.fn();
+const mockValidateSession = vi.fn();
 const mockDecryptRedactionMap = vi.fn();
 
 vi.mock("@/lib/auth/cookies", () => ({
@@ -27,6 +30,13 @@ vi.mock("@/lib/auth/jwt", () => ({
 }));
 vi.mock("@/lib/auth/authorization", () => ({
   authorize: (...args: unknown[]) => mockAuthorize(...args),
+  isAnalystForCustomer: (...args: unknown[]) => mockIsAnalyst(...args),
+}));
+vi.mock("@/lib/auth/session-policy", () => ({
+  getSessionPolicy: (...args: unknown[]) => mockGetSessionPolicy(...args),
+}));
+vi.mock("@/lib/auth/session-validator", () => ({
+  validateSession: (...args: unknown[]) => mockValidateSession(...args),
 }));
 vi.mock("@/lib/redaction", () => ({
   decryptRedactionMap: (...args: unknown[]) => mockDecryptRedactionMap(...args),
@@ -137,8 +147,15 @@ beforeEach(() => {
   authPool.query.mockClear();
   customerPool.query.mockClear();
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
-  mockVerifyJwtFull.mockReset().mockResolvedValue({ sub: "acc-1" });
+  mockVerifyJwtFull
+    .mockReset()
+    .mockResolvedValue({ sub: "acc-1", sid: "sess-1" });
   mockAuthorize.mockReset().mockResolvedValue({ authorized: true });
+  mockIsAnalyst.mockReset().mockResolvedValue(false);
+  mockGetSessionPolicy.mockReset().mockResolvedValue({ general: {} });
+  mockValidateSession
+    .mockReset()
+    .mockResolvedValue({ bridgeAiceId: null, bridgeCustomerIds: null });
   mockDecryptRedactionMap.mockReset().mockResolvedValue({
     "<<REDACTED_IP_001>>": { kind: "ip", value: "10.0.0.1" },
   });
@@ -337,6 +354,68 @@ describe("loadAnalysisResultPage", () => {
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.parentStories).toEqual([]);
+  });
+
+  it("defaults isViewerAnalyst=false / canRegenerate=false for a non-analyst", async () => {
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.isViewerAnalyst).toBe(false);
+    expect(outcome.data.canRegenerate).toBe(false);
+  });
+
+  it("exposes isViewerAnalyst and canRegenerate for an analyst (no bridge)", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.isViewerAnalyst).toBe(true);
+    expect(outcome.data.canRegenerate).toBe(true);
+  });
+
+  it("canRegenerate=false for a bridge-session analyst (write-blocked)", async () => {
+    // The event read loader allows bridge sessions, but the regenerate
+    // endpoint authorizes a write, which a bridge session can never pass.
+    // So even an analyst account gets canRegenerate=false (#463).
+    mockIsAnalyst.mockResolvedValue(true);
+    mockValidateSession.mockResolvedValue({
+      bridgeAiceId: AICE_ID,
+      bridgeCustomerIds: [CUSTOMER_ID],
+    });
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.isViewerAnalyst).toBe(true);
+    expect(outcome.data.canRegenerate).toBe(false);
+  });
+
+  it("forwards the bridge scope to authorize for a bridge session", async () => {
+    mockValidateSession.mockResolvedValue({
+      bridgeAiceId: AICE_ID,
+      bridgeCustomerIds: [CUSTOMER_ID],
+    });
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    await callLoader();
+    expect(mockAuthorize).toHaveBeenCalledWith(
+      expect.anything(),
+      "general",
+      "acc-1",
+      "analyses:read",
+      expect.objectContaining({
+        customerId: CUSTOMER_ID,
+        aiceId: AICE_ID,
+        operationKind: "read",
+        bridgeScope: { aiceId: AICE_ID, customerIds: [CUSTOMER_ID] },
+      }),
+    );
   });
 
   it("passes through analysis text when there is no map row at all", async () => {

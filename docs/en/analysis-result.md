@@ -71,6 +71,11 @@ two-column grid:
 
 - **Language** — `KOREAN` or `ENGLISH`. Matches the language the analysis
   text was generated in.
+
+The remaining fields are **model/prompt provenance** — how the artifact
+was produced — and are restricted to analysts (see [Analyst-only
+fields](#analyst-only-fields) below):
+
 - **Provider** — the LLM provider name (e.g. `openai`).
 - **Model** — the model id requested (e.g. `gpt-4o`).
 - **Model snapshot** — the provider-reported specific model version, if
@@ -82,6 +87,27 @@ two-column grid:
   timezone with an explicit timezone label. See
   [Account Preferences → Timezone](account-preferences.md#timezone) for
   the resolution order (saved → browser → UTC).
+
+### Analyst-only fields
+
+The model/prompt provenance fields and the in-app **Regenerate** button
+are shown only to analysts for the customer. A non-analyst viewer keeps
+everything that carries analytical meaning — priority tier, MITRE ATT&CK
+techniques, language, severity/likelihood scores, and the score factors —
+but the provider, model, model snapshot, prompt version, requested-by, and
+requested-at fields are hidden, and the in-app regenerate control is
+absent.
+
+The Regenerate button has one extra condition: it is shown only when you
+are an analyst **and** not in a [bridge
+session](cross-customer-overview.md). The in-app regenerate
+endpoint authorizes a *write*, which a bridge session can never pass — so
+a bridge-session analyst can still read the analysis (provenance fields
+included) but does not see the Regenerate button.
+
+<!-- Screenshot placeholder: the trimmed non-analyst event metadata grid
+     (no model/prompt provenance fields, no Regenerate button). Capture
+     from a non-analyst session once a real-data stack is available. -->
 
 ## Pinned evidence version
 
@@ -172,6 +198,31 @@ the analysis row survives, the page shows a yellow banner reading
 state: the raw event no longer exists to link to, and force re-run
 requires the original event payload, which only aice-web-next holds.
 
+## Regenerate this event (in-app)
+
+When the source event is still present, an analyst sees a **Regenerate**
+button alongside the raw-event hop (gated as described in [Analyst-only
+fields](#analyst-only-fields)). Clicking it opens a confirmation modal
+with a cost warning, then re-runs the AI analysis **inside Clumit Insight**
+on the event that was already ingested.
+
+This path holds redaction **constant**: it re-analyzes the same redacted
+event already stored for this event (recovering its original event time),
+so aimer never sees raw payload and aice-web-next is not contacted. It
+regenerates the **variant you are currently viewing** — the language and
+model in the page's URL — rather than a fixed default. When the new result
+lands it supersedes the latest generation (the previous result row is
+preserved with a `superseded_at` stamp), and the page navigates to the new
+generation.
+
+Event analysis is synchronous, so unlike the story/report Regenerate
+(which queues a job), this returns as soon as the new generation is
+written.
+
+<!-- Screenshot placeholder: the in-app event Regenerate confirmation
+     modal. Capture from an analyst session once a real-data stack is
+     available. -->
+
 ## Force re-run
 
 When the source event is still present, the page shows a "Force re-run
@@ -180,3 +231,11 @@ event detail with a query parameter that tells aice-web-next to send
 `force=true` on the next analyze click, bypassing the cached result.
 Unlike the **View source event** hop above — a plain read-only link to
 the source event — this link carries the re-run signal.
+
+**Force re-run vs in-app Regenerate.** The two re-run paths are
+complementary, not redundant. In-app **Regenerate** re-analyzes the
+already-ingested redacted event with redaction held constant. **Force
+re-run** instead re-ingests a *fresh raw event* from source and re-redacts
+it under the current policy — work that needs the raw payload, which only
+aice-web-next holds. Use Force re-run when the source event or redaction
+policy has changed; use Regenerate to re-run the model on the same input.

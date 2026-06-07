@@ -16,9 +16,11 @@
 
 import "server-only";
 
-import { authorize } from "@/lib/auth/authorization";
+import { authorize, isAnalystForCustomer } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
+import { getSessionPolicy } from "@/lib/auth/session-policy";
+import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
@@ -88,6 +90,22 @@ export interface AnalysisResultPageData {
   requestedBy: string;
   requestedAt: Date;
   /**
+   * Whether the viewer is an analyst for this customer (#457/#463). Gates
+   * the model/prompt provenance fields on the event detail page; a
+   * non-analyst viewer keeps everything that carries analytical meaning
+   * (tier, TTP, language, scores, factors, narrative).
+   */
+  isViewerAnalyst: boolean;
+  /**
+   * Whether the viewer may regenerate this event = `isViewerAnalyst` AND
+   * not a bridge session (#463). The event read loader allows bridge
+   * sessions, but the in-app regenerate endpoint authorizes
+   * `operationKind: "write"`, which a bridge session can never pass — so
+   * the button gates on this rather than `isViewerAnalyst` alone, matching
+   * the endpoint's write authorization (mirrors the story page).
+   */
+  canRegenerate: boolean;
+  /**
    * Whether the source `detection_events` row still exists. When
    * `false`, retention has swept the source event but the analysis
    * row + map row survive (RFC 0001 §"Retention" cascade rule). The
@@ -151,15 +169,64 @@ export async function loadAnalysisResultPage(
   // §"UI — analysis result page". No reverse lookup, no fallback to
   // external_key on this path.
   const authPool = getAuthPool();
-  const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "analyses:read", {
-      customerId: input.customerId,
-      aiceId: input.aiceId,
-      requiresAiceId: true,
-      operationKind: "read",
-    }),
+
+  // Bridge scope: a bridge session must be restricted to the customers
+  // listed on the session row, even though the page is read-only. The
+  // API routes apply the same scope via `withAuth`; the server-rendered
+  // page reaches the loader without `withAuth`, so the bridge fields have
+  // to be pulled from `validateSession` explicitly. Without this gate, a
+  // bridge session for customer A could deep-link into `/customers/B/...`
+  // if the underlying account also has normal access to B. This brings the
+  // event loader up to the story/report loaders' bridge handling (#463).
+  let bridgeAiceId: string | null = null;
+  let bridgeCustomerIds: string[] | null = null;
+  try {
+    const policy = await getSessionPolicy();
+    const session = await validateSession(authPool, claims.sid, policy.general);
+    bridgeAiceId = session.bridgeAiceId;
+    bridgeCustomerIds = session.bridgeCustomerIds;
+  } catch {
+    return { kind: "unauthorized" };
+  }
+
+  // Resolve authorization AND the analyst-assignment signal in one
+  // transaction so the analyst predicate reuses the already-acquired
+  // connection (#457): no extra checkout, no extra auth handshake. The
+  // flag is only meaningful when authorized, so it is computed only then.
+  const isBridgeSession = bridgeCustomerIds !== null;
+  const { auth, isViewerAnalyst } = await withTransaction(
+    authPool,
+    async (client) => {
+      const auth = await authorize(
+        client,
+        "general",
+        claims.sub,
+        "analyses:read",
+        {
+          customerId: input.customerId,
+          aiceId: input.aiceId,
+          requiresAiceId: true,
+          operationKind: "read",
+          bridgeScope: bridgeCustomerIds
+            ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
+            : null,
+        },
+      );
+      const isViewerAnalyst = auth.authorized
+        ? await isAnalystForCustomer(client, claims.sub, input.customerId)
+        : false;
+      return { auth, isViewerAnalyst };
+    },
   );
   if (!auth.authorized) return { kind: "unauthorized" };
+
+  // The event read loader allows bridge sessions, but the in-app regenerate
+  // endpoint authorizes with `operationKind: "write"`, which a bridge
+  // session can never pass (`bridge_write_blocked`). Gate the button on a
+  // dedicated signal that excludes bridge sessions even for an analyst
+  // account (#463) — otherwise a bridge-session analyst would see a button
+  // whose click 403s.
+  const canRegenerate = isViewerAnalyst && !isBridgeSession;
 
   // ---- Fetch result + map + source-event presence -----------------------
   const customerPool = getCustomerRuntimePool(input.customerId);
@@ -352,6 +419,8 @@ export async function loadAnalysisResultPage(
       analysisText: restoredText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
+      isViewerAnalyst,
+      canRegenerate,
       sourceEventPresent: sourcePresent.rows[0]?.exists === true,
       parentStories,
     },

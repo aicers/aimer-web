@@ -13,6 +13,7 @@ import {
   loadAnalysisResultPage,
 } from "@/lib/analysis/result-page-loader";
 import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
+import { EventRegenerateButton } from "./regenerate-button";
 
 type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
@@ -192,20 +193,33 @@ export default async function AnalysisResultPage({
           />
         </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
-        <Field label={tA("fields.provider")}>{data.modelName}</Field>
-        <Field label={tA("fields.model")}>{data.model}</Field>
-        {data.modelActualVersion ? (
-          <Field label={tA("fields.modelSnapshot")}>
-            {data.modelActualVersion}
-          </Field>
+        {/* Model/prompt provenance is operator-facing detail about how the
+            artifact was produced — restricted to analysts (#457/#463). A
+            non-analyst keeps every analytically-meaningful field above.
+            Snapshot / prompt version stay conditional inside the analyst
+            block: they are nullable for events (populated only once
+            aimer#480 exposes them), so they render real values rather than
+            blanks. */}
+        {data.isViewerAnalyst ? (
+          <>
+            <Field label={tA("fields.provider")}>{data.modelName}</Field>
+            <Field label={tA("fields.model")}>{data.model}</Field>
+            {data.modelActualVersion ? (
+              <Field label={tA("fields.modelSnapshot")}>
+                {data.modelActualVersion}
+              </Field>
+            ) : null}
+            {data.promptVersion ? (
+              <Field label={tA("fields.promptVersion")}>
+                {data.promptVersion}
+              </Field>
+            ) : null}
+            <Field label={tA("fields.requestedBy")}>{data.requestedBy}</Field>
+            <Field label={tA("fields.requestedAt")}>
+              <Timestamp at={data.requestedAt} />
+            </Field>
+          </>
         ) : null}
-        {data.promptVersion ? (
-          <Field label={tA("fields.promptVersion")}>{data.promptVersion}</Field>
-        ) : null}
-        <Field label={tA("fields.requestedBy")}>{data.requestedBy}</Field>
-        <Field label={tA("fields.requestedAt")}>
-          <Timestamp at={data.requestedAt} />
-        </Field>
       </section>
 
       <section className="mt-8">
@@ -231,17 +245,46 @@ export default async function AnalysisResultPage({
           false) the chain ends gracefully at the preserved analysis (the
           retention banner above) instead of a dead link (parent #386). */}
       {data.sourceEventPresent ? (
-        <section className="mt-8 flex flex-wrap gap-2">
-          <RawEventHop
-            aiceId={data.aiceId}
-            eventKey={data.eventKey}
-            label={tA("eventAnalysis.viewSourceEvent")}
-          />
-          <ForceRerunButton
-            aiceId={data.aiceId}
-            eventKey={data.eventKey}
-            label={tA("eventAnalysis.forceRerun")}
-          />
+        <section className="mt-8 space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <RawEventHop
+              aiceId={data.aiceId}
+              eventKey={data.eventKey}
+              label={tA("eventAnalysis.viewSourceEvent")}
+            />
+            {/* In-app regenerate is an analyst-only WRITE action (the
+                endpoint authorizes `analyses:configure` with
+                `operationKind: "write"`). The event read loader allows
+                bridge sessions, so gate on `canRegenerate` (analyst AND not
+                a bridge session) rather than the analyst flag alone —
+                otherwise a bridge-session analyst's click would 403 (#463).
+                Shares the `sourceEventPresent` gate with Force re-run. */}
+            {data.canRegenerate ? (
+              <EventRegenerateButton
+                locale={locale}
+                customerId={data.customerId}
+                aiceId={data.aiceId}
+                eventKey={data.eventKey}
+                variant={{
+                  lang: data.lang,
+                  modelName: data.modelName,
+                  model: data.model,
+                }}
+              />
+            ) : null}
+            <ForceRerunButton
+              aiceId={data.aiceId}
+              eventKey={data.eventKey}
+              label={tA("eventAnalysis.forceRerun")}
+            />
+          </div>
+          {/* Distinguish the two re-run paths: in-app regenerate re-analyzes
+              the already-ingested redacted event (redaction held constant);
+              Force re-run re-ingests the raw event from aice-web-next and
+              re-redacts under current policy. */}
+          <p className="text-xs text-muted-foreground">
+            {tA("eventAnalysis.rerunDistinction")}
+          </p>
         </section>
       ) : null}
     </div>
