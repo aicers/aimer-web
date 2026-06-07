@@ -97,9 +97,11 @@ function okFixture(): ReportResultPageOutcome {
       aggregateLikelihoodScore: 0.7,
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
       sections: {
-        executive_summary: "A busy day.",
-        story_highlights: "Top story.",
-        notable_events: "One notable event.",
+        // Leaf-derived sections are arrays of citation units (#449); these
+        // fixtures are uncited so the legacy text assertions still hold.
+        executive_summary: [{ text: "A busy day." }],
+        story_highlights: [{ text: "Top story." }],
+        notable_events: [{ text: "One notable event." }],
         baseline_observations: "Malware up 30%.",
         period_outlook: "Watch the SSO endpoint tomorrow.",
       },
@@ -284,6 +286,80 @@ describe("report detail page", () => {
     expect(card.textContent).toContain("generation 1");
     // ...but degrades to the unavailable note instead of display fields.
     expect(screen.getByTestId("source-unavailable")).toBeTruthy();
+  });
+
+  it("renders per-unit citation links pinned to the cited leaf variant (#449)", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: {
+        ...base.data,
+        sections: {
+          ...base.data.sections,
+          executive_summary: [
+            {
+              text: "A story-grounded claim.",
+              source: {
+                sourceType: "story",
+                storyId: "555",
+                variant: {
+                  generation: 2,
+                  lang: "ENGLISH",
+                  modelName: "openai",
+                  model: "gpt-4o",
+                },
+              },
+            },
+            { text: "An uncited synthesis." },
+          ],
+          notable_events: [
+            {
+              text: "An event-grounded claim.",
+              source: {
+                sourceType: "event",
+                aiceId: "aice-9",
+                eventKey: "777",
+                variant: {
+                  generation: 4,
+                  lang: "ENGLISH",
+                  modelName: "openai",
+                  model: "gpt-4o",
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    await renderPage("DAILY", "2026-05-26");
+
+    // The story-cited unit links to the story leaf, pinned to its variant.
+    const storyCite = screen.getByTestId("citation-story-555");
+    const storyHref = storyCite.getAttribute("href");
+    expect(storyHref).toContain("/analysis/story/555");
+    expect(storyHref).toContain("generation=2");
+    expect(storyHref).toContain("lang=ENGLISH");
+    expect(storyHref).toContain("model_name=openai");
+    expect(storyHref).toContain("model=gpt-4o");
+
+    // The event-cited unit links to the event analysis page, pinned likewise.
+    const eventHref = screen
+      .getByTestId("citation-event-aice-9-777")
+      .getAttribute("href");
+    expect(eventHref).toContain("/aice/aice-9/events/777/analysis");
+    expect(eventHref).toContain("generation=4");
+
+    // The uncited unit renders its text but no dangling citation link.
+    const summary = screen.getByTestId("section-executive_summary");
+    expect(summary.textContent).toContain("An uncited synthesis.");
+    // Exactly one citation link in the executive summary (the story one);
+    // the uncited unit adds none.
+    expect(
+      summary.querySelectorAll(
+        '[data-testid^="citation-story-"], [data-testid^="citation-event-"]',
+      ),
+    ).toHaveLength(1);
   });
 
   it("omits the Sources panel when there are no cited sources", async () => {

@@ -57,17 +57,54 @@ export type LanguageJobStatus =
 const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/;
 const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/;
 
-// Display-ready report sections, keyed by aimer's real
-// `PERIODIC_SECURITY_REPORT` output schema (schemas/aimer.graphql @ f04caba):
-// `executive_summary` / `period_outlook` are single Markdown strings, while
-// `story_highlights` / `notable_events` / `baseline_observations` are arrays
-// of Markdown strings (one entry per surfaced leaf / observation). The loader
-// joins each array into a single block for display; the persisted
-// `sections_jsonb` keeps aimer's original array structure verbatim.
+/**
+ * Decoded citation source for one render unit (aimer-web-internal form, #449).
+ *
+ * aimer emits the wire form `{ type: "story", story_id }` |
+ * `{ type: "event", event_ref }`, where `event_ref` is the opaque packed
+ * `"{aice_id}:{event_key}"` string aimer-web sent it (`report-input-builder`).
+ * The loader decodes it back to the composite leaf key and resolves the pinned
+ * `variant` from `input_story_refs` / `input_event_refs` by source key — the
+ * single source of truth for `generation` (Decisions (ii)), so a stale or
+ * absent `generation` can never ride along on the citation. Modeled as a
+ * discriminated union on `sourceType` so a story source can never carry an
+ * event key (or vice versa).
+ */
+export type CitedUnitSource =
+  | { sourceType: "story"; storyId: string; variant: CitedLeafVariant }
+  | {
+      sourceType: "event";
+      aiceId: string;
+      eventKey: string;
+      variant: CitedLeafVariant;
+    };
+
+/**
+ * One leaf-derived render unit (#449): a self-contained Markdown chunk plus,
+ * when the unit is grounded in exactly one input leaf, the decoded citation
+ * pointing at it. Uncited units (cross-cutting prose) carry no `source` and
+ * render without a dangling citation. The three leaf-derived sections
+ * (`executive_summary` / `story_highlights` / `notable_events`) converge on
+ * this `[{ text, source? }]` shape; aimer authors the segmentation, so the
+ * loader consumes the units verbatim and never re-splits prose.
+ */
+export interface CitationUnit {
+  text: string;
+  source?: CitedUnitSource;
+}
+
+// Display-ready report sections, keyed by aimer's `PERIODIC_SECURITY_REPORT`
+// output schema (prompt v5, schemas/aimer.graphql @ de54869). The three
+// leaf-derived sections (`executive_summary` / `story_highlights` /
+// `notable_events`) are arrays of citation units `{ text, source? }` — the
+// loader preserves each unit's boundary and decoded `source` so a citation can
+// anchor to it. `baseline_observations` (an array of Markdown strings) and
+// `period_outlook` (a single string) are NOT leaf-derived and carry no
+// citations; the loader joins them into one display block as before.
 export interface ReportSections {
-  executive_summary: string;
-  story_highlights: string;
-  notable_events: string;
+  executive_summary: CitationUnit[];
+  story_highlights: CitationUnit[];
+  notable_events: CitationUnit[];
   baseline_observations: string;
   period_outlook: string;
 }
@@ -243,6 +280,32 @@ interface EventRef {
   generation: number;
 }
 
+// Wire form of a citation `source` as aimer emits it inside `sections_jsonb`
+// (#449): a discriminated union on `type` carrying an opaque leaf identifier.
+// `story_id` / `event_ref` are the exact strings aimer-web sent in the input
+// bundle; `event_ref` is the packed `"{aice_id}:{event_key}"` token and is
+// never split here — the loader resolves it through the input refs instead.
+type WireUnitSource =
+  | { type: "story"; story_id: string }
+  | { type: "event"; event_ref: string };
+
+// Wire form of a render unit before token restoration / source decoding.
+interface WireCitationUnit {
+  text?: unknown;
+  source?: unknown;
+}
+
+// Raw `sections_jsonb` as stored from aimer's JSON (tolerant of legacy shapes;
+// see `restoreUnits` / `restoreJoined`). Typed loosely because pre-v5 rows
+// may still carry plain strings / string arrays for the leaf-derived keys.
+interface RawReportSections {
+  executive_summary?: unknown;
+  story_highlights?: unknown;
+  notable_events?: unknown;
+  baseline_observations?: unknown;
+  period_outlook?: unknown;
+}
+
 export async function loadReportResultPage(
   input: ReportResultPageInput,
 ): Promise<ReportResultPageOutcome> {
@@ -411,7 +474,10 @@ export async function loadReportResultPage(
     aggregate_severity_score: number;
     aggregate_likelihood_score: number;
     aggregate_ttp_tags: string[];
-    sections_jsonb: ReportSections;
+    // Raw aimer JSON (prompt v5): leaf-derived sections are arrays of wire
+    // citation units `{ text, source? }`; baseline/outlook stay strings /
+    // string-arrays. `restoreUnits` / `restoreJoined` normalize either shape.
+    sections_jsonb: RawReportSections;
     input_story_refs: StoryRef[];
     input_event_refs: EventRef[];
     superseded_at: Date | null;
@@ -576,25 +642,97 @@ export async function loadReportResultPage(
       typeof s === "string" ? s : "",
       plaintextByReportToken,
     );
-  // aimer emits `story_highlights` / `notable_events` /
-  // `baseline_observations` as arrays of Markdown strings; restore each entry
-  // and join into one display block. `executive_summary` / `period_outlook`
-  // are plain strings. Tolerate either shape so a legacy row still renders.
-  const restoreSection = (v: unknown) =>
+  // `baseline_observations` (an array of Markdown strings) and `period_outlook`
+  // (a plain string) are NOT leaf-derived and carry no citations: restore each
+  // entry and join into one display block. Tolerate either shape so a legacy
+  // row still renders.
+  const restoreJoined = (v: unknown) =>
     Array.isArray(v)
       ? v
           .map(restoreOne)
           .filter((s) => s.length > 0)
           .join("\n\n")
       : restoreOne(v);
+
+  // The cited variant a unit's `source` resolves to is the leaf's pinned
+  // entry in the row's input refs — the single source of truth for
+  // `generation` (#449). `lang`/`model` mirror the Sources panel's so a
+  // citation links to the same leaf variant the report consumed.
+  const storyRefByKey = new Map(storyRefs.map((r) => [r.story_id, r]));
+  const eventRefByKey = new Map(
+    eventRefs.map((r) => [`${r.aice_id}:${r.event_key}`, r]),
+  );
+  const decodeSource = (raw: unknown): CitedUnitSource | undefined => {
+    if (raw === null || typeof raw !== "object") return undefined;
+    const wire = raw as Partial<WireUnitSource>;
+    if (wire.type === "story" && typeof wire.story_id === "string") {
+      const ref = storyRefByKey.get(wire.story_id);
+      // Drop a citation whose leaf is not in the input bundle rather than
+      // render a dangling link (the worker already rejects fabricated sources
+      // before persisting; this is the read-path defensive degrade).
+      if (!ref) return undefined;
+      return {
+        sourceType: "story",
+        storyId: ref.story_id,
+        variant: {
+          generation: ref.generation,
+          lang: replayLang,
+          modelName: row.model_name,
+          model: row.model,
+        },
+      };
+    }
+    if (wire.type === "event" && typeof wire.event_ref === "string") {
+      // `event_ref` is opaque; resolve it through the input refs by the same
+      // packed key the builder emitted instead of splitting on `:` (robust
+      // even if an `aice_id` ever contained a colon).
+      const ref = eventRefByKey.get(wire.event_ref);
+      if (!ref) return undefined;
+      return {
+        sourceType: "event",
+        aiceId: ref.aice_id,
+        eventKey: ref.event_key,
+        variant: {
+          generation: ref.generation,
+          lang: replayLang,
+          modelName: row.model_name,
+          model: row.model,
+        },
+      };
+    }
+    return undefined;
+  };
+  // The three leaf-derived sections are arrays of `{ text, source? }` units
+  // (prompt v5). Restore each unit's text and decode its source, preserving
+  // per-unit boundaries so a citation can anchor to one. Tolerate a legacy
+  // plain-string / string-array section by wrapping each string as an
+  // uncited unit, so a pre-v5 row still renders.
+  const restoreUnits = (v: unknown): CitationUnit[] => {
+    const items = Array.isArray(v) ? v : [v];
+    const units: CitationUnit[] = [];
+    for (const item of items) {
+      if (typeof item === "string") {
+        const text = restoreOne(item);
+        if (text.length > 0) units.push({ text });
+        continue;
+      }
+      if (item === null || typeof item !== "object") continue;
+      const unit = item as WireCitationUnit;
+      const text = restoreOne(unit.text);
+      if (text.length === 0) continue;
+      const source = decodeSource(unit.source);
+      units.push(source ? { text, source } : { text });
+    }
+    return units;
+  };
   const sections: ReportSections = {
-    executive_summary: restoreSection(row.sections_jsonb?.executive_summary),
-    story_highlights: restoreSection(row.sections_jsonb?.story_highlights),
-    notable_events: restoreSection(row.sections_jsonb?.notable_events),
-    baseline_observations: restoreSection(
+    executive_summary: restoreUnits(row.sections_jsonb?.executive_summary),
+    story_highlights: restoreUnits(row.sections_jsonb?.story_highlights),
+    notable_events: restoreUnits(row.sections_jsonb?.notable_events),
+    baseline_observations: restoreJoined(
       row.sections_jsonb?.baseline_observations,
     ),
-    period_outlook: restoreSection(row.sections_jsonb?.period_outlook),
+    period_outlook: restoreJoined(row.sections_jsonb?.period_outlook),
   };
 
   return {

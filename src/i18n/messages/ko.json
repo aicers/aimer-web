@@ -657,6 +657,11 @@
       "cardScores": "심각도 {severity} • 가능성 {likelihood}",
       "unavailable": "근거 버전을 더 이상 사용할 수 없습니다."
     },
+    "citations": {
+      "ariaLabel": "이 문장의 인용 근거",
+      "storyLink": "스토리 {storyId}",
+      "eventLink": "이벤트 {aiceId} · {eventKey}"
+    },
     "citedBy": {
       "heading": "인용한 보고서",
       "description": "이 근거를 인용한 정기 보고서를 최신순으로 표시합니다. 각 링크는 이를 소비한 정확한 보고서 세대를 엽니다.",

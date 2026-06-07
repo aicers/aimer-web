@@ -229,13 +229,16 @@ type Mutation {
 	`targetLang: ENGLISH` on an English canonical report is a no-op
 	round-trip.
 
-	Exactly one LLM call is issued per invocation (no retry). Two defensive
+	Exactly one LLM call is issued per invocation (no retry). Three defensive
 	checks run on the response: an element-count check rejects any merge /
-	split / drop / add of the array sections, and a per-corresponding-string
-	redaction-token multiset check rejects any token add / drop / rewrite as
-	well as any token moved to a different string or array element. A pure
-	reorder of token-free prose is not separately detected; it is left to the
-	prompt's same-order constraint.
+	split / drop / add of the array sections (including `executive_summary`,
+	now an array of citation units); a per-unit `source` equality check
+	rejects any citation added, dropped, or rewritten by the translator; and
+	a per-corresponding-string redaction-token multiset check rejects any
+	token add / drop / rewrite as well as any token moved to a different
+	string or array element. A pure reorder of token-free, uncited prose is
+	not separately detected; it is left to the prompt's same-order
+	constraint.
 
 	# Errors
 
@@ -245,9 +248,9 @@ type Mutation {
 	- The requested LLM server `name` is not registered
 	- The LLM call fails (transport error, provider error envelope,
 	structured-output payload missing or wrong-shaped)
-	- The translated output changes an array element count or alters the
-	per-string redaction-token multiset (including a token moved between
-	strings or array elements)
+	- The translated output changes an array element count, alters a unit's
+	citation `source`, or alters the per-string redaction-token multiset
+	(including a token moved between strings or array elements)
 	"""
 	translatePeriodicSecurityReport(customerId: ID!, sections: String!, targetLang: Language!, model: String!, name: String!): PeriodicSecurityReportResult!
 	"""

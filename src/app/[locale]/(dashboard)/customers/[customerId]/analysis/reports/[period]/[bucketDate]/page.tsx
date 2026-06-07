@@ -1,5 +1,6 @@
 import { forbidden, notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { CitedReportSection } from "@/components/analysis/cited-report-section";
 import { SourcesPanel } from "@/components/analysis/sources-panel";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
@@ -378,20 +379,33 @@ export default async function ReportDetailPage({
         </Field>
       </section>
 
-      <ReportSection
+      {/* Leaf-derived sections carry per-unit (sentence-level) citations
+          (#449): each render unit links to the single leaf it was derived
+          from, generation-pinned. Uncited units render without a dangling
+          link. */}
+      <CitedReportSection
         title={tA("reportDetail.sectionExecutiveSummary")}
-        body={data.sections.executive_summary}
+        units={data.sections.executive_summary}
+        locale={locale}
+        customerId={customerId}
         testid="section-executive_summary"
+        t={tA}
       />
-      <ReportSection
+      <CitedReportSection
         title={tA("reportDetail.sectionStoryHighlights")}
-        body={data.sections.story_highlights}
+        units={data.sections.story_highlights}
+        locale={locale}
+        customerId={customerId}
         testid="section-story_highlights"
+        t={tA}
       />
-      <ReportSection
+      <CitedReportSection
         title={tA("reportDetail.sectionNotableEvents")}
-        body={data.sections.notable_events}
+        units={data.sections.notable_events}
+        locale={locale}
+        customerId={customerId}
         testid="section-notable_events"
+        t={tA}
       />
 
       {/* Report-level cited sources for the leaf-derived sections above

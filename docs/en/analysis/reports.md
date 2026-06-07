@@ -276,12 +276,47 @@ to plaintext:
   tomorrow's operator should re-check; for WEEKLY / MONTHLY, the trend
   to carry into the next week or month.
 
-Story highlights, notable events, and suspicious-event trends are each a
-list of entries; the page joins them into one block per section. Tokens
-that cannot be restored (decrypt failure, a superseded analysis,
-out-of-range index) are passed through unchanged so the page still
-renders; hallucinated decodes are blocked at write time and never reach
-this view.
+Suspicious-event trends is a list of entries the page joins into one
+block. The three **leaf-derived** sections — executive summary, story
+highlights, and notable events — are instead rendered as a sequence of
+**citation units**, each carrying its own optional source link (see
+[Sentence-level citations](#sentence-level-citations) below). Tokens that
+cannot be restored (decrypt failure, a superseded analysis, out-of-range
+index) are passed through unchanged so the page still renders;
+hallucinated decodes are blocked at write time and never reach this view.
+
+### Sentence-level citations
+
+Within the three leaf-derived sections, each narrative unit (a sentence
+or short, self-contained chunk for the executive summary, or a single
+entry for story highlights and notable events) can carry an inline
+citation linking it to the **one** analysis leaf it was derived from. The
+link renders as a small **↗ Story {story_id}** or **↗ Event {aice_id} ·
+{event_key}** chip after the unit's text. This deepens the trust chain
+from the report-level [Sources](#sources) panel ("which analyses fed this
+report") to the sentence level ("which analysis backs *this* claim"), so
+verifying one statement no longer means scanning every cited source.
+
+- A unit grounds in **exactly one** leaf. Prose that synthesises several
+  leaves is split into separate units or left uncited, so a citation
+  never points at a blend of sources.
+- **Uncited units render plain**, with no dangling link — a
+  forward-looking or cross-cutting sentence simply carries no chip.
+- Each citation link is **generation-pinned** to the exact leaf variant
+  the report consumed (generation + language + provider + model), exactly
+  like the Sources cards, and resolves to the canonical-language leaf for
+  a translated report.
+- Citations apply **only** to the three leaf-derived sections.
+  **Period outlook** (forward-looking) and **suspicious-event trends**
+  (the drill-down's deliberate stopping point) are not leaf-derived and
+  carry no sentence citations.
+- The source identifier is validated against the report's recorded input
+  leaves on both the native and translated generation paths: a fabricated
+  citation is rejected before the report is stored, and any citation whose
+  pinned leaf is no longer in the input list is dropped from the view
+  rather than rendered as a broken link.
+
+![Placeholder — a leaf-derived report section with inline per-sentence citation chips linking each claim to its source analysis (requires a real-data capture from a stack with loaded report data)](../../assets/report-sentence-citations.en.png)
 
 ## Sources
 
