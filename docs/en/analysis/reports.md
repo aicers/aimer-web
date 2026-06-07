@@ -446,6 +446,66 @@ While the regenerate is queued, the page shows a yellow status banner
 naming the new generation number. Refresh once the worker has written
 the new result.
 
+## Model selection and comparison
+
+Analysts can evaluate report quality across LLM models — generate the same
+report under a different model and compare the results. Both controls are
+**analyst-only**: a non-analyst viewer never sees the model dropdown, the
+**Compare with** selector, or the per-column provenance, consistent with
+the [analyst-only fields](#analyst-only-fields) policy. The models offered
+come from a configured catalog (`ANALYSIS_MODEL_CATALOG`), which always
+includes the deployment's default model; it is a display/allow-list for
+the picker only — the regenerate endpoint itself stays tolerant of its
+existing inputs.
+
+### Choosing a model on regenerate
+
+The Regenerate modal includes a **model** dropdown, defaulting to the
+model of the variant you are viewing. Submitting regenerates the report at
+the chosen `(model_name, model)` (the report's timezone and language are
+carried along). Each model is an independent immutable variant, so
+regenerating under a new model does not supersede the current one — both
+remain available to compare.
+
+### Side-by-side comparison
+
+The **Compare with** selector beside the language switcher lets you pick a
+second model. The page then renders the open variant and the compared
+variant in two columns, aligned across the five report sections —
+executive summary, story highlights, notable events, suspicious-event
+trends, and period outlook — with per-column provenance (model, snapshot,
+prompt version, generation). On a narrow screen the columns stack
+vertically. Selecting a model sets `?compareModelName=&compareModel=` on
+the URL (shareable); **Exit comparison** clears it.
+
+Comparison is **read-only over already-stored variants**: the compared
+column is resolved by an exact lookup that never enqueues a generation
+job, so entering compare mode cannot silently spend an LLM call. If the
+model you pick has not been generated for this period yet, the page shows
+a notice with a **Regenerate** action whose model dropdown is preselected
+to that model (and which carries the surrounding timezone and language so
+the new row lands on the variant you were comparing) — it never
+auto-generates the missing variant.
+
+One known interaction (see the cross-model aggregation discussion in
+issue #379): a periodic report aggregates only same-`(model_name, model)`
+leaves, so a report under a non-default model can show **empty** story
+highlights / notable events until the underlying stories and events are
+re-analysed under that model. The compare view renders those empty
+leaf-derived sections with the usual em-dash fallback and surfaces a short
+note that leaf coverage for that model may be incomplete — for whichever
+displayed column is the non-default model, whether that is the open
+variant or the compared one (a default-model column with an empty section
+does not trigger the note). The synthesis sections (executive summary,
+suspicious-event trends, period outlook) compare normally.
+
+<!-- Screenshot placeholder: the two-column report comparison (current vs
+     compared model) aligned across the five sections, the per-column
+     provenance, and the "variant not generated" notice with its
+     preselected Regenerate action. A real-data capture needs a stack with
+     two model variants of the same report loaded and is not yet
+     available (docs/AUTHORING.md). -->
+
 ## Cross-system deep link
 
 aice-web-next dashboard cards check whether a report exists for a period

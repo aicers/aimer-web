@@ -53,4 +53,51 @@ describe("StoryRegenerateButton", () => {
       "TR:regenerate.button",
     );
   });
+
+  it("omits the model picker when no catalog is supplied", () => {
+    const { getByTestId, queryByTestId } = render(
+      <StoryRegenerateButton customerId="c1" storyId="s1" />,
+    );
+    fireEvent.click(getByTestId("regenerate-button"));
+    expect(queryByTestId("model-select")).toBeNull();
+  });
+
+  it("renders the model picker and submits the selected model + lang", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 202,
+      json: async () => ({ generation: 2 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(document, "cookie", {
+      value: "csrf=tok",
+      writable: true,
+      configurable: true,
+    });
+
+    const { getByTestId } = render(
+      <StoryRegenerateButton
+        customerId="c1"
+        storyId="s1"
+        variant={{ lang: "ENGLISH", modelName: "openai", model: "gpt-4o" }}
+        models={[
+          { modelName: "openai", model: "gpt-4o", label: "OpenAI GPT-4o" },
+          { modelName: "anthropic", model: "claude-3-5", label: "Claude 3.5" },
+        ]}
+      />,
+    );
+    fireEvent.click(getByTestId("regenerate-button"));
+    const select = getByTestId("model-select") as HTMLSelectElement;
+    expect(select.value).toBe("0");
+    fireEvent.change(select, { target: { value: "1" } });
+    fireEvent.click(getByTestId("regenerate-confirm"));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("model_name=anthropic");
+    expect(url).toContain("model=claude-3-5");
+    expect(url).toContain("lang=ENGLISH");
+    // The story endpoint rejects `tz`; it must never be sent.
+    expect(url).not.toContain("tz=");
+    vi.unstubAllGlobals();
+  });
 });

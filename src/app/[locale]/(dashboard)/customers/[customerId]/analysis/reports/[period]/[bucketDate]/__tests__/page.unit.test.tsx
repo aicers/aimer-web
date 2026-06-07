@@ -17,6 +17,14 @@ vi.mock("@/lib/analysis/report-result-page-loader", () => ({
   loadReportResultPage: () => mockLoad(),
 }));
 
+// The model catalog (#458) is a `server-only` module; stub it so importing
+// the page in jsdom does not pull `server-only`. An empty catalog keeps the
+// analyst-only compare controls out of these (non-compare) render assertions.
+vi.mock("@/lib/analysis/model-catalog", () => ({
+  getModelCatalog: () => [],
+  getDefaultModelPair: () => ({ modelName: "openai", model: "gpt-4o" }),
+}));
+
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");

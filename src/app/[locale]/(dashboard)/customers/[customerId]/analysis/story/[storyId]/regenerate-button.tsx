@@ -2,10 +2,38 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import {
+  initialModelIndex,
+  type ModelOption,
+  ModelSelect,
+} from "@/components/analysis/model-select";
 
 interface Props {
   customerId: string;
   storyId: string;
+  /**
+   * The active story variant the page was opened with. The story regenerate
+   * endpoint accepts `?lang=&model_name=&model=`; the button previously sent
+   * none. `lang` is forwarded so the regenerated row lands on the same
+   * language; `model_name`/`model` seed the picker default unless overridden
+   * by `defaultModel` (#458).
+   */
+  variant?: {
+    lang?: string;
+    modelName?: string;
+    model?: string;
+  };
+  /**
+   * Analyst-only model catalog (#458), passed down from the server page (the
+   * catalog module is server-only). When present, the modal shows a model
+   * dropdown and the chosen `(model_name, model)` is submitted on the POST.
+   */
+  models?: ModelOption[];
+  /**
+   * Preselect this `(modelName, model)` in the dropdown instead of the current
+   * variant's model. Used by the compare "variant not generated" CTA (#458).
+   */
+  defaultModel?: { modelName: string; model: string };
 }
 
 /**
@@ -18,7 +46,13 @@ interface Props {
  *   `POST /api/customers/{customer_id}/analysis/story/{story_id}/regenerate`
  * with the CSRF cookie's value sent back as `x-csrf-token`.
  */
-export function StoryRegenerateButton({ customerId, storyId }: Props) {
+export function StoryRegenerateButton({
+  customerId,
+  storyId,
+  variant,
+  models,
+  defaultModel,
+}: Props) {
   const t = useTranslations("analysis");
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -27,6 +61,12 @@ export function StoryRegenerateButton({ customerId, storyId }: Props) {
     | { kind: "queued"; generation: number }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  const [modelIndex, setModelIndex] = useState(() =>
+    initialModelIndex(
+      models ?? [],
+      defaultModel ?? { modelName: variant?.modelName, model: variant?.model },
+    ),
+  );
 
   async function submit() {
     setBusy(true);
@@ -36,8 +76,20 @@ export function StoryRegenerateButton({ customerId, storyId }: Props) {
           .split("; ")
           .find((c) => c.startsWith("csrf="))
           ?.slice("csrf=".length) ?? "";
+      // The model comes from the picker when a catalog is present; the story
+      // endpoint accepts `?lang=&model_name=&model=` (it rejects `tz`).
+      const chosen = models?.[modelIndex];
+      const modelName = chosen?.modelName ?? variant?.modelName;
+      const model = chosen?.model ?? variant?.model;
+      const query = new URLSearchParams();
+      if (variant?.lang) query.set("lang", variant.lang);
+      if (modelName) query.set("model_name", modelName);
+      if (model) query.set("model", model);
+      const qs = query.toString();
       const res = await fetch(
-        `/api/customers/${customerId}/analysis/story/${storyId}/regenerate`,
+        `/api/customers/${customerId}/analysis/story/${storyId}/regenerate${
+          qs ? `?${qs}` : ""
+        }`,
         {
           method: "POST",
           headers: { "x-csrf-token": csrf },
@@ -95,6 +147,16 @@ export function StoryRegenerateButton({ customerId, storyId }: Props) {
                 code: (chunks) => <code>{chunks}</code>,
               })}
             </p>
+            {models && models.length > 0 ? (
+              <ModelSelect
+                id="story-regenerate-model"
+                label={t("regenerate.modelLabel")}
+                models={models}
+                selectedIndex={modelIndex}
+                onSelect={setModelIndex}
+                disabled={busy}
+              />
+            ) : null}
             <div className="flex justify-end gap-2">
               <button
                 type="button"

@@ -3,10 +3,17 @@ import { notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import { CitedByTrail } from "@/components/analysis/cited-by-trail";
+import {
+  COMPARE_MODEL_NAME_PARAM,
+  COMPARE_MODEL_PARAM,
+  CompareModelSelector,
+} from "@/components/analysis/compare-model-selector";
+import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
+import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   loadStoryResultPage,
@@ -28,6 +35,8 @@ interface PageProps {
     lang?: string;
     model_name?: string;
     model?: string;
+    compareModelName?: string;
+    compareModel?: string;
   }>;
 }
 
@@ -64,8 +73,39 @@ export default async function StoryAnalysisPage({
           model: search.model,
         }
       : undefined;
+  // Unpinned primary variant (#458): a `?model_name=&model=` link with no
+  // `?generation` opens that model as the primary column (the compare view is
+  // "currently-open variant vs compare variant", so the open model must be the
+  // one the URL selected, not the env default). The loader prefers `pin` when a
+  // generation is present, so only forward `variant` on the unpinned path.
+  const variant =
+    generation === null
+      ? {
+          lang: search.lang,
+          modelName: search.model_name,
+          model: search.model,
+        }
+      : undefined;
 
-  const outcome = await loadStoryResultPage({ customerId, storyId, pin });
+  // Analyst-only compare variant (#458): a second model rendered side by side.
+  // The loader resolves it via a read-only unpinned model-only lookup and
+  // gates it on the analyst flag, so a non-analyst's crafted params are
+  // ignored. The shared compare query params map onto the story loader's
+  // camelCase `compare` shape.
+  const compareModelName = search[COMPARE_MODEL_NAME_PARAM];
+  const compareModel = search[COMPARE_MODEL_PARAM];
+  const compareInput =
+    compareModelName && compareModel
+      ? { modelName: compareModelName, model: compareModel }
+      : undefined;
+
+  const outcome = await loadStoryResultPage({
+    customerId,
+    storyId,
+    pin,
+    variant,
+    compare: compareInput,
+  });
   const tA = await getTranslations("analysis");
 
   if (outcome.kind === "unauthorized") {
@@ -123,6 +163,29 @@ export default async function StoryAnalysisPage({
 
   const data = outcome.data;
   const collapseFactors = data.priorityTier === "LOW";
+
+  // Analyst-only model catalog (#458), read server-side and passed to the
+  // client picker/compare controls as serializable props (the catalog module
+  // is server-only). Gated on `canRegenerate` — the story regenerate gate from
+  // #457 — because the catalog exposes model identities tied to the regenerate
+  // picker, and the issue ties the catalog prop to the Regenerate button's gate
+  // (so a bridge-session analyst, `isViewerAnalyst && !canRegenerate`, gets
+  // none). The compare view itself + per-column provenance stay `isViewerAnalyst`
+  // surfaces (gated in the loader), independent of the catalog.
+  const catalog = data.canRegenerate ? getModelCatalog() : [];
+  const currentModel = { modelName: data.modelName, model: data.model };
+  const compareTarget =
+    compareInput && data.isViewerAnalyst
+      ? { modelName: compareInput.modelName, model: compareInput.model }
+      : null;
+  const compareTargetLabel = compareTarget
+    ? (catalog.find(
+        (m) =>
+          m.modelName === compareTarget.modelName &&
+          m.model === compareTarget.model,
+      )?.label ?? `${compareTarget.modelName} / ${compareTarget.model}`)
+    : "";
+
   const t = await getTranslations("nav");
   const tPeriod = await getTranslations("reportPeriod");
   const periodLabels: Record<string, string> = {
@@ -215,12 +278,69 @@ export default async function StoryAnalysisPage({
         ) : null}
       </section>
 
-      <section className="mt-8">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          {tA("common.sectionAnalysis")}
-        </h2>
-        <AnalysisBody text={data.analysisText} testid="analysis-body" />
-      </section>
+      {/* Analyst-only compare control (#458): pick a second model to render
+          side by side. Needs at least one other catalog model to offer. */}
+      {data.isViewerAnalyst && catalog.length > 1 ? (
+        <div className="mt-6 flex justify-end">
+          <CompareModelSelector
+            models={catalog}
+            currentModel={currentModel}
+            activeCompare={compareTarget ?? undefined}
+            labels={{
+              selectLabel: tA("compare.selectLabel"),
+              placeholder: tA("compare.selectPlaceholder"),
+              exit: tA("compare.exit"),
+            }}
+          />
+        </div>
+      ) : null}
+
+      {data.compare ? (
+        /* Analyst-only side-by-side comparison (#458): the open variant vs a
+           second stored model — analysis, scores, and factors per column. The
+           regenerate CTA (shown when the compare variant is not generated)
+           preselects the compare-target model and follows `canRegenerate`. */
+        <StoryCompareView
+          primary={{
+            modelName: data.modelName,
+            model: data.model,
+            modelActualVersion: data.modelActualVersion,
+            promptVersion: data.promptVersion,
+            generation: data.generation,
+            severityScore: data.severityScore,
+            likelihoodScore: data.likelihoodScore,
+            priorityTier: data.priorityTier,
+            severityFactors: data.severityFactors,
+            likelihoodFactors: data.likelihoodFactors,
+            analysisText: data.analysisText,
+          }}
+          compare={data.compare}
+          compareTargetLabel={compareTargetLabel}
+          regenerateCta={
+            data.canRegenerate ? (
+              <StoryRegenerateButton
+                customerId={data.customerId}
+                storyId={data.storyId}
+                variant={{
+                  lang: data.lang,
+                  modelName: data.modelName,
+                  model: data.model,
+                }}
+                models={catalog}
+                defaultModel={compareTarget ?? undefined}
+              />
+            ) : null
+          }
+          t={tA}
+        />
+      ) : (
+        <section className="mt-8">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            {tA("common.sectionAnalysis")}
+          </h2>
+          <AnalysisBody text={data.analysisText} testid="analysis-body" />
+        </section>
+      )}
 
       {/* Story → member suspicious events, in member-ordinal order, each
           linking down to the event detail page (T2 #396). */}
@@ -251,6 +371,12 @@ export default async function StoryAnalysisPage({
           <StoryRegenerateButton
             customerId={data.customerId}
             storyId={data.storyId}
+            variant={{
+              lang: data.lang,
+              modelName: data.modelName,
+              model: data.model,
+            }}
+            models={catalog}
           />
         </section>
       ) : null}

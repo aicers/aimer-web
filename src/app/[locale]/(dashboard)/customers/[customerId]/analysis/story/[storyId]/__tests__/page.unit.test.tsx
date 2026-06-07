@@ -18,6 +18,13 @@ vi.mock("@/lib/analysis/story-result-page-loader", () => ({
   loadStoryResultPage: () => mockLoad(),
 }));
 
+// The model catalog (#458) is a `server-only` module; stub it so importing
+// the page in jsdom does not pull `server-only`. An empty catalog keeps the
+// analyst-only compare controls out of these (non-compare) render assertions.
+vi.mock("@/lib/analysis/model-catalog", () => ({
+  getModelCatalog: () => [],
+}));
+
 // The page also loads the reverse "Cited by" trail (T2 #396); stub it to
 // an empty trail so these disclosure / pin tests stay isolated.
 vi.mock("@/lib/analysis/cited-by-loader", () => ({

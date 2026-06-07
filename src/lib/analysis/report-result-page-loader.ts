@@ -163,6 +163,35 @@ export interface CitedSources {
   events: CitedEventSource[];
 }
 
+/**
+ * One compare column's rendered data for the side-by-side view (#458). Same
+ * five display sections as the primary column plus the analyst-only
+ * provenance fields. Built by a read-only EXACT lookup that NEVER enqueues an
+ * on-demand job (Scope 3's "only render stored variants" rule).
+ */
+export interface ReportCompareColumn {
+  modelName: string;
+  model: string;
+  modelActualVersion: string;
+  promptVersion: string;
+  generation: number;
+  lang: string;
+  priorityTier: PriorityTier;
+  aggregateSeverityScore: number;
+  aggregateLikelihoodScore: number;
+  sections: ReportSections;
+}
+
+/**
+ * Outcome of resolving the analyst-only compare column (#458). `not_generated`
+ * means no stored row exists for that `(model_name, model)` at the primary's
+ * shown language — the page shows the regenerate CTA rather than generating
+ * work.
+ */
+export type ReportCompareOutcome =
+  | { kind: "ok"; data: ReportCompareColumn }
+  | { kind: "not_generated"; modelName: string; model: string };
+
 export type ReportResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "forbidden" }
@@ -237,6 +266,15 @@ export interface ReportResultPageData {
     shownLocale: AppLocale;
     jobStatus: LanguageJobStatus | null;
   } | null;
+  /**
+   * Analyst-only side-by-side compare column (#458), present only when a
+   * compare variant was requested (`?compareModelName=&compareModel=`) AND the
+   * viewer is an analyst. Resolved by a read-only EXACT lookup at the primary's
+   * shown language + the compare model — it never enqueues a job, so a
+   * not-yet-generated compare variant returns `not_generated` (the page shows
+   * the regenerate CTA) instead of silently generating work.
+   */
+  compare?: ReportCompareOutcome;
 }
 
 export interface ReportResultPageInput {
@@ -275,6 +313,17 @@ export interface ReportResultPageInput {
    * superseded. A positive integer; the page validates it before calling.
    */
   generation?: number;
+  /**
+   * Analyst-only compare variant (#458). The second column's model pair; the
+   * loader resolves it at the SAME shown language as the primary via a
+   * read-only EXACT lookup (no language fallback, no on-demand enqueue). Only
+   * honored on the unpinned path and only for an analyst viewer — a
+   * non-analyst's crafted `?compareModel` is ignored.
+   */
+  compare?: {
+    model_name: string;
+    model: string;
+  };
 }
 
 interface StoryRef {
@@ -486,40 +535,14 @@ export async function loadReportResultPage(
     }
   }
 
-  const resultRow = await customerPool.query<{
-    model_actual_version: string;
-    prompt_version: string;
-    generation: number;
-    lang: string;
-    restoration_lang: string | null;
-    model_name: string;
-    model: string;
-    priority_tier: PriorityTier;
-    aggregate_severity_score: number;
-    aggregate_likelihood_score: number;
-    aggregate_ttp_tags: string[];
-    // Raw aimer JSON (prompt v5): leaf-derived sections are arrays of wire
-    // citation units `{ text, source? }`; baseline/outlook stay strings /
-    // string-arrays. `restoreUnits` / `restoreJoined` normalize either shape.
-    sections_jsonb: RawReportSections;
-    input_story_refs: StoryRef[];
-    input_event_refs: EventRef[];
-    superseded_at: Date | null;
-    requested_by: string | null;
-    requested_at: Date;
-  }>(
+  const resultRow = await customerPool.query<ReportResultRow>(
     // Pinned path: target the exact generation and read `superseded_at`
     // so a superseded pin degrades to the notice; unpinned path keeps the
     // latest-non-superseded behavior. `superseded_at` is selected
     // uniformly to keep one row shape (it is NULL on the unpinned path by
-    // construction).
+    // construction). The column list is shared with the compare lookup.
     pinnedGeneration === null
-      ? `SELECT model_actual_version, prompt_version, generation,
-                lang, restoration_lang, model_name, model,
-                priority_tier, aggregate_severity_score,
-                aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
-                input_story_refs, input_event_refs, superseded_at,
-                requested_by::text AS requested_by, requested_at
+      ? `SELECT ${REPORT_RESULT_COLUMNS}
            FROM periodic_report_result
           WHERE customer_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
@@ -527,12 +550,7 @@ export async function loadReportResultPage(
             AND superseded_at IS NULL
           ORDER BY generation DESC
           LIMIT 1`
-      : `SELECT model_actual_version, prompt_version, generation,
-                lang, restoration_lang, model_name, model,
-                priority_tier, aggregate_severity_score,
-                aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
-                input_story_refs, input_event_refs, superseded_at,
-                requested_by::text AS requested_by, requested_at
+      : `SELECT ${REPORT_RESULT_COLUMNS}
            FROM periodic_report_result
           WHERE customer_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
@@ -661,6 +679,120 @@ export async function loadReportResultPage(
     }),
   };
 
+  const sections = restoreReportSectionsFromRow(
+    row,
+    replayLang,
+    storyRefs,
+    eventRefs,
+    plaintextByReportToken,
+  );
+
+  // Analyst-only compare column (#458): an EXACT, side-effect-free lookup of
+  // the compare model at the primary's shown language. It deliberately does
+  // NOT reuse the primary resolution above (which enqueues an on-demand job on
+  // language fallback) — Scope 3 requires "render stored variants only / never
+  // auto-generate". Only honored on the unpinned path and only for analysts.
+  let compare: ReportCompareOutcome | undefined;
+  if (input.compare && isViewerAnalyst && pinnedGeneration === null) {
+    compare = await resolveReportCompareColumn(customerPool, input.customerId, {
+      period: input.period,
+      bucketDate: input.bucketDate,
+      tz,
+      lang: row.lang,
+      modelName: input.compare.model_name,
+      model: input.compare.model,
+    });
+  }
+
+  return {
+    kind: "ok",
+    data: {
+      customerId: input.customerId,
+      period: input.period,
+      bucketDate: input.bucketDate,
+      tz,
+      // Report the row's actual stored variant, not the requested defaults,
+      // so the displayed metadata is truthful for non-default reports.
+      lang: row.lang,
+      modelName: row.model_name,
+      model: row.model,
+      modelActualVersion: row.model_actual_version,
+      promptVersion: row.prompt_version,
+      generation: row.generation,
+      priorityTier: row.priority_tier,
+      aggregateSeverityScore: row.aggregate_severity_score,
+      aggregateLikelihoodScore: row.aggregate_likelihood_score,
+      ttpTags: (row.aggregate_ttp_tags ?? []).map((id) => ({
+        id,
+        name: lookupTtpName(id),
+      })),
+      sections,
+      topStoryCount: storyRefs.length,
+      topEventCount: eventRefs.length,
+      citedSources,
+      requestedBy: row.requested_by,
+      requestedAt: row.requested_at,
+      isViewerAnalyst,
+      requestedLocale,
+      // Map the stored enums to app-locale codes for the switcher, dropping
+      // any unrecognized value defensively (the column is enum-constrained).
+      availableLocales: availableLangs
+        .filter((l): l is ReportLanguage => l === "ENGLISH" || l === "KOREAN")
+        .map(reportLanguageToAppLocale),
+      languageFallback,
+      compare,
+    },
+  };
+}
+
+/**
+ * One stored `periodic_report_result` row in the loader's working shape. The
+ * primary and compare lookups select the same column set so they can share
+ * `restoreReportSectionsFromRow` and `buildReportTokenPlaintext`.
+ */
+interface ReportResultRow {
+  model_actual_version: string;
+  prompt_version: string;
+  generation: number;
+  lang: string;
+  restoration_lang: string | null;
+  model_name: string;
+  model: string;
+  priority_tier: PriorityTier;
+  aggregate_severity_score: number;
+  aggregate_likelihood_score: number;
+  aggregate_ttp_tags: string[];
+  sections_jsonb: RawReportSections;
+  input_story_refs: StoryRef[];
+  input_event_refs: EventRef[];
+  superseded_at: Date | null;
+  requested_by: string | null;
+  requested_at: Date;
+}
+
+// Column list shared by the primary (latest non-superseded / pinned) query and
+// the compare lookup, kept in one place so the row shape stays consistent.
+const REPORT_RESULT_COLUMNS = `model_actual_version, prompt_version, generation,
+        lang, restoration_lang, model_name, model,
+        priority_tier, aggregate_severity_score,
+        aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
+        input_story_refs, input_event_refs, superseded_at,
+        requested_by::text AS requested_by, requested_at`;
+
+/**
+ * Restore a report result row's five display sections from the report→source
+ * token map (#449). Pure (no DB): the three leaf-derived sections become
+ * arrays of citation units with decoded sources, while
+ * `baseline_observations` / `period_outlook` join into display blocks. Shared
+ * by the primary render and the read-only compare column (#458).
+ */
+function restoreReportSectionsFromRow(
+  row: Pick<ReportResultRow, "sections_jsonb" | "model_name" | "model">,
+  replayLang: string,
+  storyRefs: StoryRef[],
+  eventRefs: EventRef[],
+  plaintextByReportToken: Map<string, string>,
+): ReportSections {
   const restoreOne = (s: unknown) =>
     restoreReportAnalysisTokens(
       typeof s === "string" ? s : "",
@@ -749,7 +881,7 @@ export async function loadReportResultPage(
     }
     return units;
   };
-  const sections: ReportSections = {
+  return {
     executive_summary: restoreUnits(row.sections_jsonb?.executive_summary),
     story_highlights: restoreUnits(row.sections_jsonb?.story_highlights),
     notable_events: restoreUnits(row.sections_jsonb?.notable_events),
@@ -758,43 +890,80 @@ export async function loadReportResultPage(
     ),
     period_outlook: restoreJoined(row.sections_jsonb?.period_outlook),
   };
+}
 
+/**
+ * Read-only EXACT lookup of a compare model variant at a fixed language (#458).
+ * Resolves the latest non-superseded generation for
+ * `(tz, lang, model_name, model)` and restores its sections — with NO language
+ * fallback and NO on-demand enqueue (the regression the compare path guards
+ * against; the primary loader enqueues on fallback, this must not). Returns
+ * `not_generated` when no stored row exists so the page can show the
+ * regenerate CTA rather than generating work.
+ */
+async function resolveReportCompareColumn(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  customerId: string,
+  params: {
+    period: string;
+    bucketDate: string;
+    tz: string;
+    lang: string;
+    modelName: string;
+    model: string;
+  },
+): Promise<ReportCompareOutcome> {
+  const { period, bucketDate, tz, lang, modelName, model } = params;
+  const resultRow = await customerPool.query(
+    `SELECT ${REPORT_RESULT_COLUMNS}
+       FROM periodic_report_result
+      WHERE customer_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND superseded_at IS NULL
+      ORDER BY generation DESC
+      LIMIT 1`,
+    [customerId, period, bucketDate, tz, lang, modelName, model],
+  );
+  if (resultRow.rows.length === 0) {
+    return { kind: "not_generated", modelName, model };
+  }
+  const row = resultRow.rows[0] as ReportResultRow;
+  const storyRefs = Array.isArray(row.input_story_refs)
+    ? row.input_story_refs
+    : [];
+  const eventRefs = Array.isArray(row.input_event_refs)
+    ? row.input_event_refs
+    : [];
+  const replayLang = row.restoration_lang ?? row.lang;
+  const { plaintextByReportToken } = await buildReportTokenPlaintext(
+    customerPool,
+    customerId,
+    storyRefs,
+    eventRefs,
+    { lang: replayLang, modelName: row.model_name, model: row.model },
+  );
+  const sections = restoreReportSectionsFromRow(
+    row,
+    replayLang,
+    storyRefs,
+    eventRefs,
+    plaintextByReportToken,
+  );
   return {
     kind: "ok",
     data: {
-      customerId: input.customerId,
-      period: input.period,
-      bucketDate: input.bucketDate,
-      tz,
-      // Report the row's actual stored variant, not the requested defaults,
-      // so the displayed metadata is truthful for non-default reports.
-      lang: row.lang,
       modelName: row.model_name,
       model: row.model,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
       generation: row.generation,
+      lang: row.lang,
       priorityTier: row.priority_tier,
       aggregateSeverityScore: row.aggregate_severity_score,
       aggregateLikelihoodScore: row.aggregate_likelihood_score,
-      ttpTags: (row.aggregate_ttp_tags ?? []).map((id) => ({
-        id,
-        name: lookupTtpName(id),
-      })),
       sections,
-      topStoryCount: storyRefs.length,
-      topEventCount: eventRefs.length,
-      citedSources,
-      requestedBy: row.requested_by,
-      requestedAt: row.requested_at,
-      isViewerAnalyst,
-      requestedLocale,
-      // Map the stored enums to app-locale codes for the switcher, dropping
-      // any unrecognized value defensively (the column is enum-constrained).
-      availableLocales: availableLangs
-        .filter((l): l is ReportLanguage => l === "ENGLISH" || l === "KOREAN")
-        .map(reportLanguageToAppLocale),
-      languageFallback,
     },
   };
 }

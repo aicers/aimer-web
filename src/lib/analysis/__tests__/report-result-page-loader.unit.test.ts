@@ -67,10 +67,21 @@ const authPool = {
   }),
 };
 
+// The compare model used by the #458 compare tests. Routing the result SELECT
+// by its `model` bind param ($7) lets one mock serve both the primary and the
+// compare lookup distinctly; existing tests never use this value.
+const COMPARE_MODEL = "claude-compare";
+let compareResultRows: Array<Record<string, unknown>> = [];
+
 const customerPool = {
-  query: vi.fn(async (sql: string, _params?: unknown[]) => {
+  query: vi.fn(async (sql: string, params?: unknown[]) => {
     if (sql.includes("SELECT DISTINCT lang")) return { rows: availRows };
-    if (sql.includes("model_actual_version")) return { rows: resultRows };
+    if (sql.includes("model_actual_version")) {
+      // Primary/compare result params: [customerId, period, bucketDate, tz,
+      // lang, modelName, model]; the compare lookup binds the compare model.
+      if (params?.[6] === COMPARE_MODEL) return { rows: compareResultRows };
+      return { rows: resultRows };
+    }
     // Order matters: the main result SELECT also names story/event tables
     // in passing, but it is matched above via `model_actual_version`. These
     // are the per-leaf display-field SELECTs in `buildReportTokenPlaintext`.
@@ -125,6 +136,7 @@ function resultRow(lang: string): Record<string, unknown> {
 async function callLoader(input: {
   locale: string;
   variant?: { tz?: string; lang?: string };
+  compare?: { model_name: string; model: string };
 }) {
   const mod = await import("../report-result-page-loader");
   return mod.loadReportResultPage({
@@ -133,6 +145,7 @@ async function callLoader(input: {
     bucketDate: "2026-05-26",
     locale: input.locale,
     variant: input.variant,
+    compare: input.compare,
   });
 }
 
@@ -143,6 +156,7 @@ beforeEach(() => {
   stateRows = [{ status: "ready" }];
   availRows = [];
   resultRows = [];
+  compareResultRows = [];
   storyLeafRows = [];
   eventLeafRows = [];
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
@@ -641,5 +655,83 @@ describe("loadReportResultPage — generation pin (T2 cited-by)", () => {
     ];
     const outcome = await callPinned({ locale: "en", generation: 2 });
     expect(outcome.kind).toBe("pin_unavailable");
+  });
+});
+
+describe("loadReportResultPage — analyst compare column (#458)", () => {
+  it("resolves the compare variant at the shown language for an analyst", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    compareResultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        model_name: "anthropic",
+        model: COMPARE_MODEL,
+        generation: 7,
+      },
+    ];
+
+    const outcome = await callLoader({
+      locale: "en",
+      compare: { model_name: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare?.kind).toBe("ok");
+    if (outcome.data.compare?.kind !== "ok") return;
+    expect(outcome.data.compare.data.model).toBe(COMPARE_MODEL);
+    expect(outcome.data.compare.data.generation).toBe(7);
+    // The compare lookup must be a read-only EXACT SELECT — never an enqueue.
+    expect(mockEnqueue).not.toHaveBeenCalled();
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) =>
+        String(c[0]).includes("model_actual_version") &&
+        (c[1] as unknown[])?.[6] === COMPARE_MODEL,
+    );
+    expect(String(compareCall?.[0])).toContain("superseded_at IS NULL");
+  });
+
+  it("returns not_generated for an unstored compare variant and does NOT enqueue", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    compareResultRows = []; // compare model has no stored row
+
+    const outcome = await callLoader({
+      locale: "en",
+      compare: { model_name: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare).toEqual({
+      kind: "not_generated",
+      modelName: "anthropic",
+      model: COMPARE_MODEL,
+    });
+    // Regression guard: the read-only compare path must never enqueue a job,
+    // unlike the primary loader's language-fallback path.
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("ignores the compare variant for a non-analyst viewer", async () => {
+    mockIsAnalyst.mockResolvedValue(false);
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    compareResultRows = [
+      { ...resultRow("ENGLISH"), model: COMPARE_MODEL, generation: 7 },
+    ];
+
+    const outcome = await callLoader({
+      locale: "en",
+      compare: { model_name: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare).toBeUndefined();
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) => (c[1] as unknown[])?.[6] === COMPARE_MODEL,
+    );
+    expect(compareCall).toBeUndefined();
   });
 });

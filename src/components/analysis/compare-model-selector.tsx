@@ -1,0 +1,104 @@
+"use client";
+
+// Analyst-only "Compare with" control (#458). Picks a second model variant to
+// render side by side with the currently-open one by setting
+// `?compareModelName=&compareModel=` on the current URL (the loaders read
+// these into a read-only compare lookup). An "Exit comparison" action clears
+// them. The catalog reaches this client component as serializable props from
+// the server page — `model-catalog.ts` is server-only and never imported here.
+
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import type { ModelOption } from "./model-select";
+
+export const COMPARE_MODEL_NAME_PARAM = "compareModelName";
+export const COMPARE_MODEL_PARAM = "compareModel";
+
+export function CompareModelSelector({
+  models,
+  currentModel,
+  activeCompare,
+  labels,
+}: {
+  models: ModelOption[];
+  /** The currently-open variant's model — excluded from the options. */
+  currentModel: { modelName: string; model: string };
+  /** The active compare model, when compare mode is on. */
+  activeCompare?: { modelName: string; model: string };
+  labels: { selectLabel: string; placeholder: string; exit: string };
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Offer every catalog model except the one already open in the primary
+  // column (comparing a model with itself is meaningless).
+  const options = models.filter(
+    (m) =>
+      !(
+        m.modelName === currentModel.modelName && m.model === currentModel.model
+      ),
+  );
+  if (options.length === 0) return null;
+
+  function navigate(compare: { modelName: string; model: string } | null) {
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    if (compare) {
+      params.set(COMPARE_MODEL_NAME_PARAM, compare.modelName);
+      params.set(COMPARE_MODEL_PARAM, compare.model);
+    } else {
+      params.delete(COMPARE_MODEL_NAME_PARAM);
+      params.delete(COMPARE_MODEL_PARAM);
+    }
+    const qs = params.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  }
+
+  // The <select> value is the chosen option's index in `options` (a model
+  // pair is two fields, so an index avoids encoding both into one value);
+  // "" means the placeholder (no compare selected).
+  const activeIndex = activeCompare
+    ? options.findIndex(
+        (m) =>
+          m.modelName === activeCompare.modelName &&
+          m.model === activeCompare.model,
+      )
+    : -1;
+
+  return (
+    <div className="flex items-center gap-2" data-testid="compare-selector">
+      <label
+        htmlFor="compare-model"
+        className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+      >
+        {labels.selectLabel}
+      </label>
+      <select
+        id="compare-model"
+        data-testid="compare-model-select"
+        value={activeIndex >= 0 ? activeIndex : ""}
+        onChange={(e) => {
+          const v = e.target.value;
+          navigate(v === "" ? null : options[Number(v)]);
+        }}
+        className="rounded border border-border bg-card px-2 py-1.5 text-sm text-foreground"
+      >
+        <option value="">{labels.placeholder}</option>
+        {options.map((m, i) => (
+          <option key={`${m.modelName}/${m.model}`} value={i}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+      {activeCompare ? (
+        <button
+          type="button"
+          data-testid="compare-exit"
+          onClick={() => navigate(null)}
+          className="rounded border border-border bg-card px-2 py-1.5 text-sm text-foreground hover:bg-muted"
+        >
+          {labels.exit}
+        </button>
+      ) : null}
+    </div>
+  );
+}
