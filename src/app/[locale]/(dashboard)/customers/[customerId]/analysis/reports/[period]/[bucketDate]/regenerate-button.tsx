@@ -2,6 +2,11 @@
 
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import {
+  initialModelIndex,
+  type ModelOption,
+  ModelSelect,
+} from "@/components/analysis/model-select";
 
 interface Props {
   customerId: string;
@@ -10,7 +15,9 @@ interface Props {
   /**
    * The active report variant the page was opened with. Forwarded on the
    * regenerate POST as `?tz=&lang=&model_name=&model=` so a non-default
-   * report is regenerated as that same variant instead of the default.
+   * report is regenerated as that same variant instead of the default. The
+   * `model_name`/`model` here seed the picker's default selection unless
+   * `defaultModel` overrides it.
    */
   variant?: {
     tz?: string;
@@ -18,6 +25,18 @@ interface Props {
     model_name?: string;
     model?: string;
   };
+  /**
+   * Analyst-only model catalog (#458), passed down from the server page (the
+   * catalog module is server-only). When present, the modal shows a model
+   * dropdown and the chosen `(model_name, model)` is submitted on the POST.
+   */
+  models?: ModelOption[];
+  /**
+   * Preselect this `(modelName, model)` in the dropdown instead of the current
+   * variant's model. Used by the compare "variant not generated" CTA so the
+   * regenerate targets the compare model (#458).
+   */
+  defaultModel?: { modelName: string; model: string };
 }
 
 /**
@@ -35,6 +54,8 @@ export function ReportRegenerateButton({
   period,
   bucketDate,
   variant,
+  models,
+  defaultModel,
 }: Props) {
   const t = useTranslations("analysis");
   const [open, setOpen] = useState(false);
@@ -44,6 +65,17 @@ export function ReportRegenerateButton({
     | { kind: "queued"; generation: number }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  // The picker's selected model, defaulting to the compare target (CTA) or
+  // the current variant's model. Only meaningful when `models` is provided.
+  const [modelIndex, setModelIndex] = useState(() =>
+    initialModelIndex(
+      models ?? [],
+      defaultModel ?? {
+        modelName: variant?.model_name,
+        model: variant?.model,
+      },
+    ),
+  );
 
   async function submit() {
     setBusy(true);
@@ -53,11 +85,16 @@ export function ReportRegenerateButton({
           .split("; ")
           .find((c) => c.startsWith("csrf="))
           ?.slice("csrf=".length) ?? "";
+      // The model comes from the picker when a catalog is present; otherwise
+      // fall back to the active variant's model (legacy / non-analyst path).
+      const chosen = models?.[modelIndex];
+      const modelName = chosen?.modelName ?? variant?.model_name;
+      const model = chosen?.model ?? variant?.model;
       const query = new URLSearchParams();
       if (variant?.tz) query.set("tz", variant.tz);
       if (variant?.lang) query.set("lang", variant.lang);
-      if (variant?.model_name) query.set("model_name", variant.model_name);
-      if (variant?.model) query.set("model", variant.model);
+      if (modelName) query.set("model_name", modelName);
+      if (model) query.set("model", model);
       const qs = query.toString();
       const res = await fetch(
         `/api/customers/${customerId}/analysis/report/${period}/${bucketDate}/regenerate${
@@ -120,6 +157,16 @@ export function ReportRegenerateButton({
                 code: (chunks) => <code>{chunks}</code>,
               })}
             </p>
+            {models && models.length > 0 ? (
+              <ModelSelect
+                id="report-regenerate-model"
+                label={t("regenerate.modelLabel")}
+                models={models}
+                selectedIndex={modelIndex}
+                onSelect={setModelIndex}
+                disabled={busy}
+              />
+            ) : null}
             <div className="flex justify-end gap-2">
               <button
                 type="button"

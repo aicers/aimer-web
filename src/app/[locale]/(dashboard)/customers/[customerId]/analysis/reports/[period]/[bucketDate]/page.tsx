@@ -1,10 +1,17 @@
 import { forbidden, notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { CitedReportSection } from "@/components/analysis/cited-report-section";
+import {
+  COMPARE_MODEL_NAME_PARAM,
+  COMPARE_MODEL_PARAM,
+  CompareModelSelector,
+} from "@/components/analysis/compare-model-selector";
+import { ReportCompareView } from "@/components/analysis/report-compare-view";
 import { SourcesPanel } from "@/components/analysis/sources-panel";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
 import { type AppLocale, reportLanguageToAppLocale } from "@/i18n/locale";
+import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -126,6 +133,16 @@ export default async function ReportDetailPage({
     generation = n;
   }
 
+  // Analyst-only compare variant (#458): a second model to render side by
+  // side. Honored only on the unpinned path; the loader further gates it on
+  // the analyst flag so a non-analyst's crafted params are ignored.
+  const compareModelName = firstParam(sp[COMPARE_MODEL_NAME_PARAM]);
+  const compareModel = firstParam(sp[COMPARE_MODEL_PARAM]);
+  const compareInput =
+    compareModelName && compareModel
+      ? { model_name: compareModelName, model: compareModel }
+      : undefined;
+
   const outcome = await loadReportResultPage({
     customerId,
     period,
@@ -133,6 +150,7 @@ export default async function ReportDetailPage({
     locale,
     variant,
     generation,
+    compare: compareInput,
   });
 
   // The page's current query string, preserved across the tabs and the
@@ -248,6 +266,24 @@ export default async function ReportDetailPage({
   }
 
   const data = outcome.data;
+
+  // Analyst-only model catalog (#458). Read server-side and passed to the
+  // client picker/compare controls as serializable props — the catalog module
+  // is server-only. Gated on `isViewerAnalyst`, the same flag that gates the
+  // Regenerate button on this page.
+  const catalog = data.isViewerAnalyst ? getModelCatalog() : [];
+  const currentModel = { modelName: data.modelName, model: data.model };
+  const compareTarget = compareInput
+    ? { modelName: compareInput.model_name, model: compareInput.model }
+    : null;
+  const compareTargetLabel = compareTarget
+    ? (catalog.find(
+        (m) =>
+          m.modelName === compareTarget.modelName &&
+          m.model === compareTarget.model,
+      )?.label ?? `${compareTarget.modelName} / ${compareTarget.model}`)
+    : "";
+
   const t = await getTranslations("reports");
   // Localized language name by app-locale code (literal keys — the message
   // catalog is statically typed, so dynamic key paths are not allowed).
@@ -336,7 +372,23 @@ export default async function ReportDetailPage({
       </header>
 
       <div className="mb-2">{tabs}</div>
-      <div className="mb-6 flex items-center justify-end">{switcher}</div>
+      <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
+        {/* Analyst-only compare control (#458): pick a second model to render
+            side by side. Needs at least one other catalog model to offer. */}
+        {data.isViewerAnalyst && catalog.length > 1 ? (
+          <CompareModelSelector
+            models={catalog}
+            currentModel={currentModel}
+            activeCompare={compareTarget ?? undefined}
+            labels={{
+              selectLabel: tA("compare.selectLabel"),
+              placeholder: tA("compare.selectPlaceholder"),
+              exit: tA("compare.exit"),
+            }}
+          />
+        ) : null}
+        {switcher}
+      </div>
       {languageNotice}
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -388,57 +440,88 @@ export default async function ReportDetailPage({
         ) : null}
       </section>
 
-      {/* Leaf-derived sections carry per-unit (sentence-level) citations
-          (#449): each render unit links to the single leaf it was derived
-          from, generation-pinned. Uncited units render without a dangling
-          link. */}
-      <CitedReportSection
-        title={tA("reportDetail.sectionExecutiveSummary")}
-        units={data.sections.executive_summary}
-        locale={locale}
-        customerId={customerId}
-        testid="section-executive_summary"
-        t={tA}
-      />
-      <CitedReportSection
-        title={tA("reportDetail.sectionStoryHighlights")}
-        units={data.sections.story_highlights}
-        locale={locale}
-        customerId={customerId}
-        testid="section-story_highlights"
-        t={tA}
-      />
-      <CitedReportSection
-        title={tA("reportDetail.sectionNotableEvents")}
-        units={data.sections.notable_events}
-        locale={locale}
-        customerId={customerId}
-        testid="section-notable_events"
-        t={tA}
-      />
+      {data.compare ? (
+        /* Analyst-only side-by-side comparison (#458): the open variant vs a
+           second stored model, section by section. Replaces the single-column
+           narrative; metadata, regenerate, and navigation stay above/below. */
+        <ReportCompareView
+          primary={{
+            modelName: data.modelName,
+            model: data.model,
+            modelActualVersion: data.modelActualVersion,
+            promptVersion: data.promptVersion,
+            generation: data.generation,
+            sections: data.sections,
+          }}
+          compare={data.compare}
+          compareTargetLabel={compareTargetLabel}
+          regenerateCta={
+            <ReportRegenerateButton
+              customerId={data.customerId}
+              period={data.period}
+              bucketDate={data.bucketDate}
+              variant={{ tz: data.tz, lang: data.lang }}
+              models={catalog}
+              defaultModel={compareTarget ?? undefined}
+            />
+          }
+          t={tA}
+        />
+      ) : (
+        <>
+          {/* Leaf-derived sections carry per-unit (sentence-level) citations
+              (#449): each render unit links to the single leaf it was derived
+              from, generation-pinned. Uncited units render without a dangling
+              link. */}
+          <CitedReportSection
+            title={tA("reportDetail.sectionExecutiveSummary")}
+            units={data.sections.executive_summary}
+            locale={locale}
+            customerId={customerId}
+            testid="section-executive_summary"
+            t={tA}
+          />
+          <CitedReportSection
+            title={tA("reportDetail.sectionStoryHighlights")}
+            units={data.sections.story_highlights}
+            locale={locale}
+            customerId={customerId}
+            testid="section-story_highlights"
+            t={tA}
+          />
+          <CitedReportSection
+            title={tA("reportDetail.sectionNotableEvents")}
+            units={data.sections.notable_events}
+            locale={locale}
+            customerId={customerId}
+            testid="section-notable_events"
+            t={tA}
+          />
 
-      {/* Report-level cited sources for the leaf-derived sections above
-          (executive summary / story highlights / notable events). Placed
-          before the suspicious-event trends section, which is the
-          drill-down's deliberate stopping point and gets no Sources panel
-          (#395). */}
-      <SourcesPanel
-        locale={locale}
-        customerId={customerId}
-        sources={data.citedSources}
-        t={tA}
-      />
+          {/* Report-level cited sources for the leaf-derived sections above
+              (executive summary / story highlights / notable events). Placed
+              before the suspicious-event trends section, which is the
+              drill-down's deliberate stopping point and gets no Sources panel
+              (#395). */}
+          <SourcesPanel
+            locale={locale}
+            customerId={customerId}
+            sources={data.citedSources}
+            t={tA}
+          />
 
-      <ReportSection
-        title={tA("reportDetail.sectionSuspiciousEventTrends")}
-        body={data.sections.baseline_observations}
-        testid="section-baseline_observations"
-      />
-      <ReportSection
-        title={tA("reportDetail.sectionPeriodOutlook")}
-        body={data.sections.period_outlook}
-        testid="section-period_outlook"
-      />
+          <ReportSection
+            title={tA("reportDetail.sectionSuspiciousEventTrends")}
+            body={data.sections.baseline_observations}
+            testid="section-baseline_observations"
+          />
+          <ReportSection
+            title={tA("reportDetail.sectionPeriodOutlook")}
+            body={data.sections.period_outlook}
+            testid="section-period_outlook"
+          />
+        </>
+      )}
 
       {/* Force-regenerate is an analyst-only action (the endpoint authorizes
           `reports:create`). Gate the button so the UI matches that server
@@ -456,6 +539,7 @@ export default async function ReportDetailPage({
               model_name: data.modelName,
               model: data.model,
             }}
+            models={catalog}
           />
         </section>
       ) : null}

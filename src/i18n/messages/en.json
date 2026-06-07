@@ -619,7 +619,8 @@
       "reportTitle": "Regenerate this report?",
       "reportBody": "This issues a fresh LLM call across the period's analyzed stories, events, and suspicious-event trends, and supersedes the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp.",
       "storyTitle": "Regenerate story analysis?",
-      "storyBody": "This issues a fresh LLM call against the canonical story members and overwrites the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp."
+      "storyBody": "This issues a fresh LLM call against the canonical story members and overwrites the latest generation when the new result lands. The previous result row is preserved with a <code>superseded_at</code> stamp.",
+      "modelLabel": "Model"
     },
     "lists": {
       "eventsSubtitle": "Analyzed detections for this customer, highest priority first.",
@@ -695,6 +696,18 @@
     "boundaries": {
       "reportsForbidden": "You do not have permission to view reports for this customer (403). Ask a customer administrator to grant the <code>reports:read</code> permission.",
       "reportForbidden": "You do not have permission to view this report (403). Ask a customer administrator to grant the <code>reports:read</code> permission."
+    },
+    "compare": {
+      "selectLabel": "Compare with",
+      "selectPlaceholder": "Select a model to compare…",
+      "exit": "Exit comparison",
+      "heading": "Model comparison",
+      "columnCurrent": "Current",
+      "columnCompare": "Compared",
+      "notGeneratedTitle": "Variant not generated",
+      "notGeneratedReport": "No report has been generated with {model} for this period yet. Generate it to compare side by side.",
+      "notGeneratedStory": "No analysis has been generated with {model} for this story yet. Generate it to compare side by side.",
+      "leafCoverageNote": "Leaf coverage for {model} may be incomplete: story highlights and notable events aggregate only same-model leaves, which may not be analyzed under {model} yet. The synthesis sections still compare normally."
     }
   }
 }

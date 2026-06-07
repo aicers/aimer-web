@@ -28,6 +28,37 @@ const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
 const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
+/**
+ * One compare column's rendered data for the side-by-side story view (#458):
+ * the token-restored analysis text, scores, severity/likelihood factors, and
+ * the analyst-only provenance. Built by a read-only EXACT lookup at the
+ * primary's language + the compare model — it never enqueues work.
+ */
+export interface StoryCompareColumn {
+  modelName: string;
+  model: string;
+  modelActualVersion: string;
+  promptVersion: string;
+  generation: number;
+  lang: "KOREAN" | "ENGLISH";
+  severityScore: number;
+  likelihoodScore: number;
+  priorityTier: PriorityTier;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+  ttpTags: Array<{ id: string; name: string | null }>;
+  analysisText: string;
+}
+
+/**
+ * Outcome of resolving the analyst-only compare column (#458). `not_generated`
+ * means no stored row exists for that `(model_name, model)` at the primary's
+ * language — the page shows the regenerate CTA rather than generating work.
+ */
+export type StoryCompareOutcome =
+  | { kind: "ok"; data: StoryCompareColumn }
+  | { kind: "not_generated"; modelName: string; model: string };
+
 export type StoryResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "not_found" }
@@ -95,6 +126,15 @@ export interface StoryResultPageData {
    * variant the cards describe.
    */
   memberEventVariant: { lang: string; modelName: string; model: string };
+  /**
+   * Analyst-only side-by-side compare column (#458), present only when a
+   * compare variant was requested (`?compareModelName=&compareModel=`) AND the
+   * viewer is an analyst. Resolved by a read-only EXACT lookup at the primary's
+   * language + the compare model — it never enqueues a job, so a
+   * not-yet-generated compare variant returns `not_generated` (the page shows
+   * the regenerate CTA).
+   */
+  compare?: StoryCompareOutcome;
 }
 
 /**
@@ -131,6 +171,17 @@ export interface StoryResultPageInput {
     lang?: string;
     modelName?: string;
     model?: string;
+  };
+  /**
+   * Analyst-only compare variant (#458). The second column's model pair; the
+   * loader resolves it via a read-only EXACT unpinned model-only lookup at the
+   * primary's language (latest non-superseded row for that
+   * `(lang, model_name, model)`) — NOT a generation-keyed pin. Only honored
+   * for an analyst viewer; a non-analyst's crafted `?compareModel` is ignored.
+   */
+  compare?: {
+    modelName: string;
+    model: string;
   };
 }
 
@@ -234,44 +285,9 @@ export async function loadStoryResultPage(
   // latest-non-superseded behavior. `superseded_at` is irrelevant on the
   // unpinned path (the predicate already excludes superseded rows) and is
   // selected uniformly to keep one row shape.
-  const resultRow = await customerPool.query<{
-    severity_score: number;
-    likelihood_score: number;
-    priority_tier: PriorityTier;
-    severity_factors: string[];
-    likelihood_factors: string[];
-    ttp_tags: string[];
-    analysis_text: string;
-    input_event_refs: Array<{
-      index: number;
-      aiceId: string;
-      eventKey: string;
-    }>;
-    input_fact_refs: Array<{ index: number; factId: string }>;
-    model_actual_version: string;
-    prompt_version: string;
-    generation: number;
-    superseded_at: Date | null;
-    requested_by: string | null;
-    requested_at: Date;
-  }>(
+  const resultRow = await customerPool.query<StoryResultRow>(
     pinnedGeneration === null
-      ? `SELECT
-           severity_score,
-           likelihood_score,
-           priority_tier,
-           severity_factors,
-           likelihood_factors,
-           ttp_tags,
-           analysis_text,
-           input_event_refs,
-           input_fact_refs,
-           model_actual_version,
-           prompt_version,
-           generation,
-           superseded_at,
-           requested_by::text AS requested_by,
-           requested_at
+      ? `SELECT ${STORY_RESULT_COLUMNS}
          FROM story_analysis_result
          WHERE customer_id = $1
            AND story_id = $2::bigint
@@ -279,22 +295,7 @@ export async function loadStoryResultPage(
            AND superseded_at IS NULL
          ORDER BY generation DESC
          LIMIT 1`
-      : `SELECT
-           severity_score,
-           likelihood_score,
-           priority_tier,
-           severity_factors,
-           likelihood_factors,
-           ttp_tags,
-           analysis_text,
-           input_event_refs,
-           input_fact_refs,
-           model_actual_version,
-           prompt_version,
-           generation,
-           superseded_at,
-           requested_by::text AS requested_by,
-           requested_at
+      : `SELECT ${STORY_RESULT_COLUMNS}
          FROM story_analysis_result
          WHERE customer_id = $1
            AND story_id = $2::bigint
@@ -330,140 +331,31 @@ export async function loadStoryResultPage(
     return { kind: "pin_unavailable", generation: pinnedGeneration };
   }
 
-  // Restore story-scope tokens to plaintext. RFC 0002 §"Token
-  // namespacing for multi-event LLM inputs": each `E{i}` references an
-  // entry in `input_event_refs` carrying `(aice_id, event_key)`, which
-  // anchors that event's `event_redaction_map` row. We decrypt every
-  // referenced map once and pass the keyed lookup to the restorer.
-  // Page callers who reach this branch have already passed the
-  // customer-scope authorize() above, so they are entitled to see
-  // plaintext per the same rule that drives RFC 0001's
-  // `restoreRedactedTokens` on the event result page.
-  const refs = Array.isArray(row.input_event_refs) ? row.input_event_refs : [];
-  const mapsByIndex = new Map<number, RedactionMap>();
-  if (refs.length > 0) {
-    const mapRows = await customerPool.query<{
-      aice_id: string;
-      event_key: string;
-      ciphertext: Buffer;
-      wrapped_dek: string;
-    }>(
-      `SELECT aice_id::text AS aice_id,
-              event_key::text AS event_key,
-              ciphertext, wrapped_dek
-         FROM event_redaction_map
-        WHERE (aice_id, event_key) IN (${refs
-          .map((_, i) => `($${i * 2 + 1}::text, $${i * 2 + 2}::numeric)`)
-          .join(", ")})`,
-      refs.flatMap((r) => [r.aiceId, r.eventKey]),
-    );
-    const byKey = new Map<
-      string,
-      { ciphertext: Buffer; wrapped_dek: string }
-    >();
-    for (const r of mapRows.rows) {
-      byKey.set(`${r.aice_id}:${r.event_key}`, {
-        ciphertext: r.ciphertext,
-        wrapped_dek: r.wrapped_dek,
-      });
-    }
-    for (const ref of refs) {
-      const found = byKey.get(`${ref.aiceId}:${ref.eventKey}`);
-      if (!found) continue;
-      try {
-        const map = await decryptRedactionMap(
-          input.customerId,
-          found.ciphertext,
-          found.wrapped_dek,
-        );
-        mapsByIndex.set(ref.index, map);
-      } catch {
-        // Map decryption failure (KEK rotation race / vault outage) —
-        // skip this index; tokens for it fall through as-is rather
-        // than failing the whole page render.
-      }
-    }
-  }
-  const eventRestoredText = restoreStoryAnalysisTokens(
-    row.analysis_text,
-    mapsByIndex,
-  );
-
-  // Restore fact-scope tokens to plaintext (RFC 0003 C1 #440). Parallel
-  // two-hop to the `E{i}` path above: each `F{k}` references an entry in
-  // `input_fact_refs` carrying the producing `fact_id`, which anchors that
-  // fact's `enrichment_redaction_map` row. The same customer-scope
-  // authorize() that entitles the viewer to event plaintext entitles them
-  // to the fact's customer-asset plaintext (the fact was derived from this
-  // customer's own story). Decrypt each referenced map once, keyed by `k`.
-  const factRefs = Array.isArray(row.input_fact_refs)
-    ? row.input_fact_refs
-    : [];
-  const factMapsByIndex = new Map<number, RedactionMap>();
-  if (factRefs.length > 0) {
-    const factMapRows = await customerPool.query<{
-      fact_id: string;
-      ciphertext: Buffer;
-      wrapped_dek: string;
-    }>(
-      `SELECT fact_id::text AS fact_id, ciphertext, wrapped_dek
-         FROM enrichment_redaction_map
-        WHERE fact_id IN (${factRefs
-          .map((_, i) => `$${i + 1}::bigint`)
-          .join(", ")})`,
-      factRefs.map((r) => r.factId),
-    );
-    const byFactId = new Map<
-      string,
-      { ciphertext: Buffer; wrapped_dek: string }
-    >();
-    for (const r of factMapRows.rows) {
-      byFactId.set(r.fact_id, {
-        ciphertext: r.ciphertext,
-        wrapped_dek: r.wrapped_dek,
-      });
-    }
-    for (const ref of factRefs) {
-      const found = byFactId.get(ref.factId);
-      if (!found) continue;
-      try {
-        const map = await decryptRedactionMap(
-          input.customerId,
-          found.ciphertext,
-          found.wrapped_dek,
-        );
-        factMapsByIndex.set(ref.index, map);
-      } catch {
-        // Decrypt failure (KEK rotation race / vault outage) — skip this
-        // index; its `F{k}` tokens fall through unchanged so the page
-        // still renders.
-      }
-    }
-  }
-  const restoredText = restoreStoryFactTokens(
-    eventRestoredText,
-    factMapsByIndex,
-  );
-
-  // Score factors run through the SAME two-hop restore as the narrative
-  // body (#440). A factor can legitimately carry an `E{i}` member token or
-  // an `F{k}` fact token (the pre-storage leak scan rejects only UNMAPPED
-  // tokens and decoded plaintext), so without this the authorized viewer
-  // would see a raw `<<REDACTED_*_F1_001>>` in a factor while the narrative
-  // shows the resolved customer-asset value. Resolve `E{i}` first, then
-  // `F{k}`, identical to the narrative pipeline above.
-  const restoreFactorTokens = (factor: string): string =>
-    restoreStoryFactTokens(
-      restoreStoryAnalysisTokens(factor, mapsByIndex),
-      factMapsByIndex,
-    );
-  const severityFactors = row.severity_factors.map(restoreFactorTokens);
-  const likelihoodFactors = row.likelihood_factors.map(restoreFactorTokens);
+  const { analysisText, severityFactors, likelihoodFactors } =
+    await restoreStoryVariant(customerPool, input.customerId, row);
 
   // Member suspicious events for the story → member drill-down (T2 #396).
   // Fetched at the canonical event variant so the cards match the
   // Suspicious Events list; ordered by the member ordinal (`index`).
+  const refs = Array.isArray(row.input_event_refs) ? row.input_event_refs : [];
   const memberEvents = await fetchMemberEventDisplays(customerPool, refs);
+
+  // Analyst-only compare column (#458): a read-only EXACT, unpinned model-only
+  // lookup of the compare model at the primary's language. Unlike the story
+  // page's existing `pin` (which requires a generation), this resolves the
+  // latest non-superseded row for `(lang, model_name, model)` directly. Story
+  // analysis is leaf-complete (it analyzes its own members), so there is no
+  // on-demand generation to guard against here — but the lookup is still kept
+  // side-effect-free for symmetry with the report path.
+  let compare: StoryCompareOutcome | undefined;
+  if (input.compare && isViewerAnalyst) {
+    compare = await resolveStoryCompareColumn(customerPool, input.customerId, {
+      storyId: input.storyId,
+      lang,
+      modelName: input.compare.modelName,
+      model: input.compare.model,
+    });
+  }
 
   return {
     kind: "ok",
@@ -482,7 +374,7 @@ export async function loadStoryResultPage(
       severityFactors,
       likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
-      analysisText: restoredText,
+      analysisText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
       isViewerAnalyst,
@@ -493,6 +385,237 @@ export async function loadStoryResultPage(
         modelName: DEFAULT_MODEL_NAME,
         model: DEFAULT_MODEL,
       },
+      compare,
+    },
+  };
+}
+
+/**
+ * One stored `story_analysis_result` row in the loader's working shape. The
+ * primary and compare lookups select the same column set so they share
+ * `restoreStoryVariant`.
+ */
+interface StoryResultRow {
+  severity_score: number;
+  likelihood_score: number;
+  priority_tier: PriorityTier;
+  severity_factors: string[];
+  likelihood_factors: string[];
+  ttp_tags: string[];
+  analysis_text: string;
+  input_event_refs: Array<{ index: number; aiceId: string; eventKey: string }>;
+  input_fact_refs: Array<{ index: number; factId: string }>;
+  model_actual_version: string;
+  prompt_version: string;
+  generation: number;
+  superseded_at: Date | null;
+  requested_by: string | null;
+  requested_at: Date;
+}
+
+// Column list shared by the primary (pinned / latest non-superseded) query and
+// the compare lookup, kept in one place so the row shape stays consistent.
+const STORY_RESULT_COLUMNS = `severity_score,
+         likelihood_score,
+         priority_tier,
+         severity_factors,
+         likelihood_factors,
+         ttp_tags,
+         analysis_text,
+         input_event_refs,
+         input_fact_refs,
+         model_actual_version,
+         prompt_version,
+         generation,
+         superseded_at,
+         requested_by::text AS requested_by,
+         requested_at`;
+
+/**
+ * Restore a story result row's narrative text and score factors to plaintext.
+ * Two-hop: `E{i}` member tokens via each event's `event_redaction_map`, then
+ * `F{k}` fact tokens via each fact's `enrichment_redaction_map` (RFC 0002 /
+ * RFC 0003 C1 #440). Factors run through the SAME two-hop restore as the
+ * narrative. Shared by the primary render and the read-only compare column
+ * (#458). Callers have already passed the customer-scope authorize(), which is
+ * what entitles the viewer to plaintext.
+ */
+async function restoreStoryVariant(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  customerId: string,
+  row: Pick<
+    StoryResultRow,
+    | "analysis_text"
+    | "input_event_refs"
+    | "input_fact_refs"
+    | "severity_factors"
+    | "likelihood_factors"
+  >,
+): Promise<{
+  analysisText: string;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+}> {
+  const refs = Array.isArray(row.input_event_refs) ? row.input_event_refs : [];
+  const mapsByIndex = new Map<number, RedactionMap>();
+  if (refs.length > 0) {
+    const mapRows = await customerPool.query(
+      `SELECT aice_id::text AS aice_id,
+              event_key::text AS event_key,
+              ciphertext, wrapped_dek
+         FROM event_redaction_map
+        WHERE (aice_id, event_key) IN (${refs
+          .map((_, i) => `($${i * 2 + 1}::text, $${i * 2 + 2}::numeric)`)
+          .join(", ")})`,
+      refs.flatMap((r) => [r.aiceId, r.eventKey]),
+    );
+    const byKey = new Map<
+      string,
+      { ciphertext: Buffer; wrapped_dek: string }
+    >();
+    for (const r of mapRows.rows as Array<{
+      aice_id: string;
+      event_key: string;
+      ciphertext: Buffer;
+      wrapped_dek: string;
+    }>) {
+      byKey.set(`${r.aice_id}:${r.event_key}`, {
+        ciphertext: r.ciphertext,
+        wrapped_dek: r.wrapped_dek,
+      });
+    }
+    for (const ref of refs) {
+      const found = byKey.get(`${ref.aiceId}:${ref.eventKey}`);
+      if (!found) continue;
+      try {
+        const map = await decryptRedactionMap(
+          customerId,
+          found.ciphertext,
+          found.wrapped_dek,
+        );
+        mapsByIndex.set(ref.index, map);
+      } catch {
+        // Map decryption failure (KEK rotation race / vault outage) —
+        // skip this index; tokens for it fall through as-is rather
+        // than failing the whole page render.
+      }
+    }
+  }
+  const eventRestoredText = restoreStoryAnalysisTokens(
+    row.analysis_text,
+    mapsByIndex,
+  );
+
+  const factRefs = Array.isArray(row.input_fact_refs)
+    ? row.input_fact_refs
+    : [];
+  const factMapsByIndex = new Map<number, RedactionMap>();
+  if (factRefs.length > 0) {
+    const factMapRows = await customerPool.query(
+      `SELECT fact_id::text AS fact_id, ciphertext, wrapped_dek
+         FROM enrichment_redaction_map
+        WHERE fact_id IN (${factRefs
+          .map((_, i) => `$${i + 1}::bigint`)
+          .join(", ")})`,
+      factRefs.map((r) => r.factId),
+    );
+    const byFactId = new Map<
+      string,
+      { ciphertext: Buffer; wrapped_dek: string }
+    >();
+    for (const r of factMapRows.rows as Array<{
+      fact_id: string;
+      ciphertext: Buffer;
+      wrapped_dek: string;
+    }>) {
+      byFactId.set(r.fact_id, {
+        ciphertext: r.ciphertext,
+        wrapped_dek: r.wrapped_dek,
+      });
+    }
+    for (const ref of factRefs) {
+      const found = byFactId.get(ref.factId);
+      if (!found) continue;
+      try {
+        const map = await decryptRedactionMap(
+          customerId,
+          found.ciphertext,
+          found.wrapped_dek,
+        );
+        factMapsByIndex.set(ref.index, map);
+      } catch {
+        // Decrypt failure (KEK rotation race / vault outage) — skip this
+        // index; its `F{k}` tokens fall through unchanged so the page
+        // still renders.
+      }
+    }
+  }
+  const analysisText = restoreStoryFactTokens(
+    eventRestoredText,
+    factMapsByIndex,
+  );
+
+  const restoreFactorTokens = (factor: string): string =>
+    restoreStoryFactTokens(
+      restoreStoryAnalysisTokens(factor, mapsByIndex),
+      factMapsByIndex,
+    );
+  return {
+    analysisText,
+    severityFactors: row.severity_factors.map(restoreFactorTokens),
+    likelihoodFactors: row.likelihood_factors.map(restoreFactorTokens),
+  };
+}
+
+/**
+ * Read-only EXACT, unpinned model-only lookup of a compare model variant at a
+ * fixed language (#458). The story loader previously had no unpinned
+ * model-only input path (its `pin` requires a generation), so this resolves
+ * the latest non-superseded row for `(lang, model_name, model)` directly,
+ * restores its narrative/factors, and returns `not_generated` when no stored
+ * row exists. Side-effect-free — it never enqueues a job.
+ */
+async function resolveStoryCompareColumn(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  customerId: string,
+  params: { storyId: string; lang: string; modelName: string; model: string },
+): Promise<StoryCompareOutcome> {
+  const { storyId, lang, modelName, model } = params;
+  const resultRow = await customerPool.query(
+    `SELECT ${STORY_RESULT_COLUMNS}
+       FROM story_analysis_result
+      WHERE customer_id = $1
+        AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND superseded_at IS NULL
+      ORDER BY generation DESC
+      LIMIT 1`,
+    [customerId, storyId, lang, modelName, model],
+  );
+  if (resultRow.rows.length === 0) {
+    return { kind: "not_generated", modelName, model };
+  }
+  const row = resultRow.rows[0] as StoryResultRow;
+  const { analysisText, severityFactors, likelihoodFactors } =
+    await restoreStoryVariant(customerPool, customerId, row);
+  return {
+    kind: "ok",
+    data: {
+      modelName,
+      model,
+      modelActualVersion: row.model_actual_version,
+      promptVersion: row.prompt_version,
+      generation: row.generation,
+      lang: lang as "KOREAN" | "ENGLISH",
+      severityScore: row.severity_score,
+      likelihoodScore: row.likelihood_score,
+      priorityTier: row.priority_tier,
+      severityFactors,
+      likelihoodFactors,
+      ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      analysisText,
     },
   };
 }

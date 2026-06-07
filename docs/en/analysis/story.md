@@ -314,6 +314,56 @@ While the regenerate is queued, the page shows a yellow status banner
 naming the new generation number. Refresh the page once the worker has
 written the new result.
 
+## Model selection and comparison
+
+Analysts can evaluate analysis quality across LLM models — generate the
+same story analysis under a different model and compare the results. Both
+controls are **analyst-only**, gated like the other [analyst-only
+fields](#analyst-only-fields): the model dropdown follows the same
+condition as the Regenerate button (analyst **and** not in a bridge
+session), while the read-only **Compare with** selector and per-column
+provenance are shown to any analyst for the customer. The models offered
+come from a configured catalog (`ANALYSIS_MODEL_CATALOG`), which always
+includes the deployment's default model; it is a display/allow-list for
+the picker only — the regenerate endpoint stays tolerant of its existing
+inputs.
+
+### Choosing a model on regenerate
+
+The Regenerate modal includes a **model** dropdown, defaulting to the
+model of the variant you are viewing. Submitting regenerates the story at
+the chosen `(model_name, model)` (the current language is carried along).
+Each model is an independent immutable variant, so regenerating under a
+new model does not supersede the current one — both remain available to
+compare.
+
+### Side-by-side comparison
+
+The **Compare with** selector beside the analysis lets you pick a second
+model. The page then renders the open variant and the compared variant in
+two columns — analysis text, severity and likelihood scores with their
+factor chips, and per-column provenance (provider, model, snapshot, prompt
+version, generation) — aligned section by section. On a narrow screen the
+columns stack vertically. Selecting a model sets
+`?compareModelName=&compareModel=` on the URL (shareable); **Exit
+comparison** clears it. Unlike a periodic report, a story analyses its own
+members, so a non-default-model story has no empty-section caveat.
+
+Comparison is **read-only over already-stored variants**: the compared
+column is resolved by an exact, unpinned model-only lookup that never
+enqueues a generation job, so entering compare mode cannot silently spend
+an LLM call. If the model you pick has not been generated for this story
+yet, the page shows a notice with a **Regenerate** action whose model
+dropdown is preselected to that model — it never auto-generates the
+missing variant, because a fresh LLM call has a real cost and stays an
+explicit choice.
+
+<!-- Screenshot placeholder: the two-column story comparison (current vs
+     compared model) and the "variant not generated" notice with its
+     preselected Regenerate action. A real-data capture needs a stack with
+     two model variants of the same story loaded and is not yet available
+     (docs/AUTHORING.md). -->
+
 ## Cross-system deep link
 
 aice-web-next checks whether an analysis exists for a story to decide

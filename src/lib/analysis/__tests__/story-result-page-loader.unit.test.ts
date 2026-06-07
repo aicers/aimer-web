@@ -62,9 +62,21 @@ const authPool = {
   }),
 };
 
+// The compare model used by the #458 compare tests. Routing the result
+// SELECT by its `model` bind param lets one mock serve both the primary
+// (default model) and the compare lookup distinctly; existing tests never use
+// this value, so they keep returning `resultRows`.
+const COMPARE_MODEL = "claude-compare";
+let compareResultRows: Array<Record<string, unknown>> = [];
+
 const customerPool = {
-  query: vi.fn(async (sql: string, _params?: unknown[]) => {
-    if (sql.includes("FROM story_analysis_result")) return { rows: resultRows };
+  query: vi.fn(async (sql: string, params?: unknown[]) => {
+    if (sql.includes("FROM story_analysis_result")) {
+      // Primary result params: [customerId, storyId, lang, modelName, model];
+      // compare lookup binds the compare model at the same position.
+      if (params?.[4] === COMPARE_MODEL) return { rows: compareResultRows };
+      return { rows: resultRows };
+    }
     if (sql.includes("FROM event_analysis_result")) {
       return { rows: eventDisplayRows };
     }
@@ -127,6 +139,7 @@ beforeEach(() => {
   customerPool.query.mockClear();
   stateRows = [{ status: "ready" }];
   resultRows = [];
+  compareResultRows = [];
   eventDisplayRows = [];
   factMapRows = [];
   mockDecryptRedactionMap.mockReset();
@@ -319,5 +332,76 @@ describe("loadStoryResultPage — score-factor token demap (#440)", () => {
     expect(outcome.data.likelihoodFactors).toEqual([
       "198.51.100.4 flagged by feed",
     ]);
+  });
+});
+
+describe("loadStoryResultPage — analyst compare column (#458)", () => {
+  it("resolves an unpinned model-only compare variant for an analyst", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    resultRows = [resultRow({ generation: 3 })];
+    compareResultRows = [
+      resultRow({ generation: 5, analysis_text: "Compared narrative." }),
+    ];
+    const mod = await import("../story-result-page-loader");
+    const outcome = await mod.loadStoryResultPage({
+      customerId: CUSTOMER_ID,
+      storyId: STORY_ID,
+      compare: { modelName: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare?.kind).toBe("ok");
+    if (outcome.data.compare?.kind !== "ok") return;
+    expect(outcome.data.compare.data.generation).toBe(5);
+    expect(outcome.data.compare.data.model).toBe(COMPARE_MODEL);
+    expect(outcome.data.compare.data.analysisText).toBe("Compared narrative.");
+    // The compare lookup is an unpinned, latest-non-superseded SELECT — no
+    // `generation =` bind, ordered by generation DESC.
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) =>
+        String(c[0]).includes("FROM story_analysis_result") &&
+        (c[1] as unknown[])?.[4] === COMPARE_MODEL,
+    );
+    expect(String(compareCall?.[0])).toContain("superseded_at IS NULL");
+    expect(String(compareCall?.[0])).not.toContain("generation = $");
+  });
+
+  it("returns not_generated when the compare variant has no stored row", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    resultRows = [resultRow({ generation: 3 })];
+    compareResultRows = [];
+    const mod = await import("../story-result-page-loader");
+    const outcome = await mod.loadStoryResultPage({
+      customerId: CUSTOMER_ID,
+      storyId: STORY_ID,
+      compare: { modelName: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare).toEqual({
+      kind: "not_generated",
+      modelName: "anthropic",
+      model: COMPARE_MODEL,
+    });
+  });
+
+  it("ignores the compare variant for a non-analyst viewer", async () => {
+    mockIsAnalyst.mockResolvedValue(false);
+    resultRows = [resultRow({ generation: 3 })];
+    compareResultRows = [resultRow({ generation: 5 })];
+    const mod = await import("../story-result-page-loader");
+    const outcome = await mod.loadStoryResultPage({
+      customerId: CUSTOMER_ID,
+      storyId: STORY_ID,
+      compare: { modelName: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare).toBeUndefined();
+    // The compare model was never queried.
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) => (c[1] as unknown[])?.[4] === COMPARE_MODEL,
+    );
+    expect(compareCall).toBeUndefined();
   });
 });
