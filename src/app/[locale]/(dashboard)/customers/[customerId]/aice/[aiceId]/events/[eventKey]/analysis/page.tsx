@@ -279,9 +279,14 @@ export default async function AnalysisResultPage({
             />
           </div>
           {/* Distinguish the two re-run paths: in-app regenerate re-analyzes
-              the already-ingested redacted event (redaction held constant);
-              Force re-run re-ingests the raw event from aice-web-next and
-              re-redacts under current policy. */}
+              the already-ingested redacted event entirely within aimer-web
+              (redaction held constant); Force re-run hands off to
+              aice-web-next to re-submit the event from source with
+              `force=true`. aimer-web's `ingestAndRedact` reuses the stored
+              redacted event while the `detection_events` row is present, so
+              `force=true` bypasses the analysis-result cache, not the
+              redaction cache — redaction is refreshed only if aice-web-next
+              replaces the stored event on re-ingest (aice-web-next#629). */}
           <p className="text-xs text-muted-foreground">
             {tA("eventAnalysis.rerunDistinction")}
           </p>
@@ -489,6 +494,14 @@ function ForceRerunButton({
   // event-detail route and, on the next Send/Analyze click, sends
   // `force=true` once to `/api/analysis/analyze`. Without this
   // signal the click would just open the cached analysis again.
+  //
+  // `force=true` bypasses only the *analysis-result* cache, not
+  // aimer-web's *redaction* cache: `ingestAndRedact` reuses the stored
+  // `detection_events.redacted_event` while that row is present (see
+  // `run-analyze-flow.ts`). So Force re-run refreshes redaction under
+  // the current policy only when aice-web-next replaces that stored
+  // event as part of re-ingesting from source; aimer-web does not
+  // re-redact on its own here.
   //
   // The aice-web-next origin is configured at deploy time; missing
   // config renders the button as disabled so the page stays useful.

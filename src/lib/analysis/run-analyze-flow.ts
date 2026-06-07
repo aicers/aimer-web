@@ -227,6 +227,18 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
       params.eventKey,
     );
 
+    // Redaction cache: once a `detection_events` row exists for this
+    // (aice_id, event_key), reuse its stored `redacted_event` and skip
+    // `redact()` entirely — the incoming `eventData` is NOT re-redacted.
+    // This is the redaction-cache layer; `force` (in `runAnalyzeEvent`)
+    // only bypasses the separate *analysis-result* cache, not this one.
+    // Consequence for Force re-run (aice-web-next sends `force=true`,
+    // aice-web-next#629): a forced call re-runs the model on the SAME
+    // stored redacted event, so redaction is refreshed under the current
+    // policy ONLY if aice-web-next first removes/replaces this row (e.g.
+    // by re-ingesting from source). aimer-web alone does not guarantee a
+    // redaction refresh on Force re-run; the in-app regenerate path
+    // likewise holds redaction constant by design.
     const existingEvent = await client.query<{ redacted_event: unknown }>(
       `SELECT redacted_event FROM detection_events
        WHERE aice_id = $1 AND event_key = $2::numeric`,

@@ -609,7 +609,7 @@
       "storyLabel": "스토리 {storyId}",
       "viewSourceEvent": "aice-web-next에서 원본 이벤트 보기",
       "forceRerun": "aice-web-next에서 강제 재실행",
-      "rerunDistinction": "재생성은 이미 수집된 이 이벤트에 대해 레다크션을 그대로 유지한 채 AI 분석을 다시 실행합니다. aice-web-next에서 강제 재실행은 원본 이벤트를 소스에서 다시 수집하고 현재 정책으로 레다크션을 다시 적용합니다."
+      "rerunDistinction": "재생성은 이미 수집된 이 이벤트에 대해 레다크션을 그대로 유지한 채 aimer-web 내에서 AI 분석을 다시 실행합니다. 강제 재실행은 aice-web-next로 넘겨 원본 소스에서 이벤트를 다시 제출하여 캐시된 결과를 우회하며, 레다크션은 aice-web-next가 해당 소스 이벤트를 다시 수집할 때만 갱신됩니다."
     },
     "regenerate": {
       "button": "재생성",

@@ -609,7 +609,7 @@
       "storyLabel": "Story {storyId}",
       "viewSourceEvent": "View source event in aice-web-next",
       "forceRerun": "Force re-run in aice-web-next",
-      "rerunDistinction": "Regenerate re-runs the AI analysis on this already-ingested event, holding redaction constant. Force re-run in aice-web-next instead re-ingests the raw event from source and re-redacts it under the current policy."
+      "rerunDistinction": "Regenerate re-runs the AI analysis on this already-ingested event within aimer-web, holding redaction constant. Force re-run hands off to aice-web-next, which re-submits the event from its original source to bypass the cached result; the redaction is refreshed only when aice-web-next re-ingests that source event."
     },
     "regenerate": {
       "button": "Regenerate",

@@ -234,8 +234,19 @@ the source event — this link carries the re-run signal.
 
 **Force re-run vs in-app Regenerate.** The two re-run paths are
 complementary, not redundant. In-app **Regenerate** re-analyzes the
-already-ingested redacted event with redaction held constant. **Force
-re-run** instead re-ingests a *fresh raw event* from source and re-redacts
-it under the current policy — work that needs the raw payload, which only
-aice-web-next holds. Use Force re-run when the source event or redaction
-policy has changed; use Regenerate to re-run the model on the same input.
+already-ingested redacted event entirely within aimer-web, with redaction
+held constant. **Force re-run** hands the event back to aice-web-next,
+which re-submits it from its original source with `force=true` to bypass
+the cached analysis result — work that needs the raw payload, which only
+aice-web-next holds.
+
+Note the redaction boundary: `force=true` bypasses the *analysis-result*
+cache, not aimer-web's *redaction* cache. While an event's
+`detection_events` row is present, `ingestAndRedact()` (in
+`run-analyze-flow.ts`) reuses the stored redacted form rather than
+re-redacting. So Force re-run refreshes the redaction under the current
+policy only when aice-web-next replaces that stored event as part of
+re-ingesting from source — a cross-repo contract owned by aice-web-next
+(aicers/aice-web-next#629), not a guarantee aimer-web makes on its own.
+Use Force re-run when you need a fresh pull from the source system; use
+Regenerate to re-run the model on the same redacted input.
