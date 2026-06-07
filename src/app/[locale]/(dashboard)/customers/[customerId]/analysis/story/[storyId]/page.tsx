@@ -199,7 +199,13 @@ export default async function StoryAnalysisPage({
   // Permission-gated inside the loader; an empty trail renders nothing.
   const citedBy = await loadCitedByReports({
     customerId,
-    leaf: { kind: "story", storyId: data.storyId, generation: data.generation },
+    leaf: {
+      kind: "story",
+      storyId: data.storyId,
+      generation: data.generation,
+      modelName: data.modelName,
+      model: data.model,
+    },
   });
   const memberVariantQuery = new URLSearchParams({
     lang: data.memberEventVariant.lang,

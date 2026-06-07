@@ -187,11 +187,17 @@ The worker pipeline runs without operator action:
    same exponential-backoff predicate as story analysis.
 3. The input builder deterministically selects the **top stories**
    (eligible only when the story's state is `ready` and a non-superseded
-   result exists for the variant, and the canonical story window
-   overlaps the bucket) and **top events** (variant-matched event
-   analyses whose deduped suspicious-event time falls in the bucket,
-   excluding events already covered by the chosen stories). It also
-   computes the window's **suspicious-event aggregates**: deduplicated
+   result exists, and the canonical story window overlaps the bucket) and
+   **top events** (event analyses whose deduped suspicious-event time falls
+   in the bucket, excluding events already covered by the chosen stories).
+   For a **default** report, each story/event leaf is chosen by a fixed
+   model-preference order — the report's own model first, then a configured
+   fallback order — so a leaf still appears even if it has not been analyzed
+   under the report's current model (see [Cross-model coverage and
+   scoring](#cross-model-coverage-and-scoring)). An **alternate-model**
+   report (one an analyst generated under a non-default model) stays strict
+   and selects only that model's leaves. The language is always strict. It
+   also computes the window's **suspicious-event aggregates**: deduplicated
    event counts and a category distribution.
 4. Every included analysis narrative is re-namespaced into a single
    report-scope token namespace (`<<REDACTED_*_R{j}_*>>`) so the same
@@ -238,6 +244,37 @@ when the window's activity deviates from the prior comparable period. The
 trend itself is narrated in the report's **Suspicious-event trends**
 section; only the resulting priority tier and aggregate scores surface in
 the header.
+
+## Cross-model coverage and scoring
+
+A report is keyed to a single model. When the deployment's default model
+changes, existing story and event analyses stay on the previous model until
+they are re-analyzed. So that a default report does not suddenly render with
+empty **Story highlights** and **Notable events** during that window, the
+builder **never drops** a leaf it could otherwise show: if a story or event
+has no analysis under the report's current model, it is filled from the
+first available model in the configured fallback order. These filled-in
+leaves are narrated normally in the body.
+
+To keep the headline numbers meaningful for the model the report is labeled
+with, the **priority tier and aggregate severity / likelihood scores are
+computed only from the leaves that match the report's own model** (together
+with the suspicious-event trend). Filled-in, other-model leaves are shown in
+the narrative but do not move the aggregate scores or the tier. Right after
+a model change this can make the scores read low relative to the full set of
+leaves on display; the gap closes as the underlying analyses are re-analyzed
+under the new model.
+
+When such a gap exists, the aggregate-scores row carries a short coverage
+note — for example, *"Aggregate scores reflect 3 of 5 cited leaves analyzed
+under this report's model."* The note reports **counts only**; it does not
+describe how the scores are combined.
+
+This applies to the default report. An **alternate-model** report (generated
+by an analyst under a non-default model) selects only that model's leaves,
+so its leaf-derived sections are honestly empty until those leaves exist —
+this is the intended strict behavior, and the model-comparison view labels
+such a column accordingly.
 
 ## MITRE ATT&CK techniques
 
@@ -487,16 +524,18 @@ to that model (and which carries the surrounding timezone and language so
 the new row lands on the variant you were comparing) — it never
 auto-generates the missing variant.
 
-One known interaction (see the cross-model aggregation discussion in
-issue #379): a periodic report aggregates only same-`(model_name, model)`
-leaves, so a report under a non-default model can show **empty** story
-highlights / notable events until the underlying stories and events are
-re-analysed under that model. The compare view renders those empty
+One known interaction: an **alternate-model** report selects only that
+model's leaves (it does not use the default report's never-drop fallback —
+see [Cross-model coverage and scoring](#cross-model-coverage-and-scoring)),
+so a column under a non-default model can show **empty** story highlights /
+notable events until the underlying stories and events are re-analysed under
+that model. That empty state is the intended strict behavior for an
+alternate-model column — the **default** report no longer goes empty, since
+its fallback fills those sections. The compare view renders the empty
 leaf-derived sections with the usual em-dash fallback and surfaces a short
-note that leaf coverage for that model may be incomplete — for whichever
-displayed column is the non-default model, whether that is the open
-variant or the compared one (a default-model column with an empty section
-does not trigger the note). The synthesis sections (executive summary,
+note for whichever displayed column is the non-default model, whether that
+is the open variant or the compared one (a default-model column never
+triggers the note). The synthesis sections (executive summary,
 suspicious-event trends, period outlook) compare normally.
 
 <!-- Screenshot placeholder: the two-column report comparison (current vs

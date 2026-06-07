@@ -119,6 +119,7 @@ function okFixture(): ReportResultPageOutcome {
       },
       topStoryCount: 1,
       topEventCount: 1,
+      leafCoverage: { reportModel: 2, total: 2 },
       citedSources: {
         stories: [
           {
@@ -218,6 +219,29 @@ describe("report detail page", () => {
     expect(
       screen.getByTestId("section-baseline_observations").textContent,
     ).toBe("Malware up 30%.");
+  });
+
+  it("surfaces the hybrid-scoring coverage note only when the report-model subset is a strict minority (#465)", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+
+    // Full coverage (the default fixture, reportModel === total): no note — the
+    // headline scores reflect every cited leaf, so there is nothing to flag.
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.queryByTestId("leaf-coverage")).toBeNull();
+    cleanup();
+
+    // Partial coverage (a never-drop fallback filled in other-model leaves):
+    // the note surfaces honest counts only — "3 of 5" — and never the
+    // score-combination method (#386).
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, leafCoverage: { reportModel: 3, total: 5 } },
+    });
+    await renderPage("DAILY", "2026-05-26");
+    const note = screen.getByTestId("leaf-coverage").textContent ?? "";
+    expect(note).toContain("3");
+    expect(note).toContain("5");
   });
 
   it("shows provenance fields and the Regenerate button for an analyst viewer", async () => {

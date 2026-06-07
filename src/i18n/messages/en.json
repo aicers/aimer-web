@@ -573,6 +573,7 @@
       "pendingBanner": "The report is being generated (state: {status}). Refresh once the result is ready.",
       "pinUnavailableBanner": "This report version is no longer available. The cited generation has been superseded or removed.",
       "aggregateHint": "Aggregated by Clumit Insight from {storyCount, plural, one {# story} other {# stories}} and {eventCount, plural, one {# event} other {# events}} plus suspicious-event trends.",
+      "leafCoverageNote": "Aggregate scores reflect {reportModel} of {total} cited leaves analyzed under this report's model; the narrative covers all cited leaves.",
       "sectionExecutiveSummary": "Executive summary",
       "sectionStoryHighlights": "Story highlights",
       "sectionNotableEvents": "Notable events",
@@ -707,7 +708,7 @@
       "notGeneratedTitle": "Variant not generated",
       "notGeneratedReport": "No report has been generated with {model} for this period yet. Generate it to compare side by side.",
       "notGeneratedStory": "No analysis has been generated with {model} for this story yet. Generate it to compare side by side.",
-      "leafCoverageNote": "Leaf coverage for {model} may be incomplete: story highlights and notable events aggregate only same-model leaves, which may not be analyzed under {model} yet. The synthesis sections still compare normally."
+      "leafCoverageNote": "{model} is an alternate-model variant, so its story highlights and notable events show only leaves analyzed under {model}; until those leaves exist the sections stay empty by design. The default report fills these in from other models. The synthesis sections still compare normally."
     }
   }
 }

@@ -112,14 +112,17 @@ export function ReportCompareView({
     return Array.isArray(v) ? unitsText(v) : v;
   };
 
-  // #379: a non-default-model report aggregates only same-model leaves, so
-  // `story_highlights` / `notable_events` can be empty until the underlying
-  // leaves are re-analyzed under that model. The caveat is specific to
-  // NON-default columns, and EITHER displayed column can be the non-default
-  // one (the primary is the currently-open variant, which may itself be a
-  // non-default model). So drive the note off any displayed non-default column
-  // with an empty leaf-derived section — not the compare column alone, and not
-  // a default column that merely happens to have an empty section.
+  // #379/#465: an alternate-model (non-default) report stays STRICT — it
+  // aggregates only its own-model leaves, so `story_highlights` /
+  // `notable_events` are empty until those leaves are analyzed under that model.
+  // Post-#465 this empty state is the *intended* strict-empty behavior for an
+  // alternate-model column, not a transient gap: the DEFAULT report no longer
+  // goes empty (its never-drop fallback fills these sections from other models),
+  // so only a displayed NON-default column can be empty here. EITHER displayed
+  // column can be the non-default one (the primary is the currently-open
+  // variant, which may itself be a non-default model). So drive the note off any
+  // displayed non-default column with an empty leaf-derived section — never a
+  // default column (which the fallback keeps populated).
   const isDefaultModel = (col: { modelName: string; model: string }): boolean =>
     col.modelName === defaultModel.modelName &&
     col.model === defaultModel.model;

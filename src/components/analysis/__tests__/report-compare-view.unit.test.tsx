@@ -2,8 +2,13 @@
 //
 // #458 — analyst-only report compare view. Verifies two columns render section
 // by section when both variants exist, the missing-variant CTA replaces the
-// second column (and never auto-generates), and the #379 leaf-coverage note
-// surfaces when the compare column's leaf-derived sections are empty.
+// second column (and never auto-generates), and the leaf-coverage note surfaces
+// when a displayed NON-default column's leaf-derived sections are empty.
+//
+// Post-#465: an empty alternate-model (non-default) column is the *intended*
+// strict-empty state (that path keeps strict exact-match selection), while the
+// DEFAULT column is never empty (its never-drop fallback fills it). So the note
+// fires only for a displayed non-default column, never the default one.
 
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
@@ -137,7 +142,7 @@ describe("ReportCompareView", () => {
     };
   }
 
-  it("surfaces the #379 leaf-coverage note when a non-default compare column has empty leaf sections", () => {
+  it("surfaces the leaf-coverage note when a non-default (alternate-model) compare column has empty leaf sections — its intended strict-empty state (#465)", () => {
     const { getByTestId } = render(
       <ReportCompareView
         primary={primary}
