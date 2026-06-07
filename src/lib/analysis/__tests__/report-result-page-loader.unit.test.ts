@@ -13,6 +13,7 @@ vi.mock("server-only", () => ({}));
 const mockGetAuthCookie = vi.fn();
 const mockVerifyJwtFull = vi.fn();
 const mockAuthorize = vi.fn();
+const mockIsAnalyst = vi.fn();
 const mockGetSessionPolicy = vi.fn();
 const mockValidateSession = vi.fn();
 const mockEnqueue = vi.fn();
@@ -25,6 +26,7 @@ vi.mock("@/lib/auth/jwt", () => ({
 }));
 vi.mock("@/lib/auth/authorization", () => ({
   authorize: (...args: unknown[]) => mockAuthorize(...args),
+  isAnalystForCustomer: (...args: unknown[]) => mockIsAnalyst(...args),
 }));
 vi.mock("@/lib/auth/session-policy", () => ({
   getSessionPolicy: (...args: unknown[]) => mockGetSessionPolicy(...args),
@@ -148,6 +150,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ sub: "acc-1", sid: "sess-1" });
   mockAuthorize.mockReset().mockResolvedValue({ authorized: true });
+  mockIsAnalyst.mockReset().mockResolvedValue(false);
   mockGetSessionPolicy.mockReset().mockResolvedValue({ general: {} });
   mockValidateSession
     .mockReset()

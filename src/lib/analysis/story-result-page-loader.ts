@@ -11,7 +11,7 @@
 
 import "server-only";
 
-import { authorize } from "@/lib/auth/authorization";
+import { authorize, isAnalystForCustomer } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getSessionPolicy } from "@/lib/auth/session-policy";
@@ -63,6 +63,21 @@ export interface StoryResultPageData {
   analysisText: string;
   requestedBy: string | null;
   requestedAt: Date;
+  /**
+   * Whether the viewer is an analyst for this customer (#457). Gates the
+   * model/prompt provenance fields on the detail page; a non-analyst viewer
+   * keeps everything that carries analytical meaning (tier, TTP, language,
+   * scores, factors, narrative).
+   */
+  isViewerAnalyst: boolean;
+  /**
+   * Whether the viewer may regenerate this story = `isViewerAnalyst` AND not
+   * a bridge session (#457). The story read loader allows bridge sessions,
+   * but the regenerate endpoint authorizes `operationKind: "write"`, which a
+   * bridge session can never pass — so the button gates on this rather than
+   * `isViewerAnalyst` alone, matching the endpoint's write authorization.
+   */
+  canRegenerate: boolean;
   /**
    * The story's member suspicious events, in `input_event_refs[].index`
    * order (the member ordinal — see `story-token.ts`, which persists
@@ -152,19 +167,45 @@ export async function loadStoryResultPage(
     return { kind: "unauthorized" };
   }
 
-  const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "analyses:read", {
-      customerId: input.customerId,
-      operationKind: "read",
-      bridgeScope: bridgeCustomerIds
-        ? {
-            aiceId: bridgeAiceId ?? "",
-            customerIds: bridgeCustomerIds,
-          }
-        : null,
-    }),
+  // Resolve authorization AND the analyst-assignment signal in one
+  // transaction so the analyst predicate reuses the already-acquired
+  // connection (#457): no extra checkout, no extra auth handshake. The
+  // flag is only meaningful when authorized, so it is computed only then.
+  const isBridgeSession = bridgeCustomerIds !== null;
+  const { auth, isViewerAnalyst } = await withTransaction(
+    authPool,
+    async (client) => {
+      const auth = await authorize(
+        client,
+        "general",
+        claims.sub,
+        "analyses:read",
+        {
+          customerId: input.customerId,
+          operationKind: "read",
+          bridgeScope: bridgeCustomerIds
+            ? {
+                aiceId: bridgeAiceId ?? "",
+                customerIds: bridgeCustomerIds,
+              }
+            : null,
+        },
+      );
+      const isViewerAnalyst = auth.authorized
+        ? await isAnalystForCustomer(client, claims.sub, input.customerId)
+        : false;
+      return { auth, isViewerAnalyst };
+    },
   );
   if (!auth.authorized) return { kind: "unauthorized" };
+
+  // The story read loader allows bridge sessions, but the story regenerate
+  // endpoint authorizes with `operationKind: "write"`, which a bridge
+  // session can never pass (`bridge_write_blocked`). So gate the button on
+  // a dedicated signal that excludes bridge sessions even for an analyst
+  // account (#457) — otherwise a bridge-session analyst would see a button
+  // whose click 403s.
+  const canRegenerate = isViewerAnalyst && !isBridgeSession;
 
   // State row presence: if it doesn't exist, the story_id is unknown
   // for this customer. Surface as 404 indistinguishably from "exists
@@ -444,6 +485,8 @@ export async function loadStoryResultPage(
       analysisText: restoredText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
+      isViewerAnalyst,
+      canRegenerate,
       memberEvents,
       memberEventVariant: {
         lang: DEFAULT_LANG,

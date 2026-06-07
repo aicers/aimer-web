@@ -379,21 +379,43 @@ mirroring the analysis pages' pinned-evidence behaviour.
 
 ## Metadata fields
 
-Below the header the page shows the report metadata: language, provider
-/ model, the provider-reported model snapshot, the prompt version, the
-account that triggered the latest generation (or `system` for a regular
-worker tick), and the request timestamp — shown in your timezone with an
-explicit timezone label (see
+Below the header the page shows the report metadata. The **language** is
+visible to every viewer alongside the priority tier, MITRE ATT&CK tags,
+and aggregate scores. The remaining fields are **model/prompt provenance**
+— how the artifact was produced — and are restricted to analysts (see
+[Analyst-only fields](#analyst-only-fields) below): the provider / model,
+the provider-reported model snapshot, the prompt version, the account that
+triggered the latest generation (or `system` for a regular worker tick),
+and the request timestamp — shown in your timezone with an explicit
+timezone label (see
 [Account Preferences → Timezone](../account-preferences.md#timezone)).
 The header line also names the period, the bucket (or "now" for LIVE),
 the customer timezone, and the generation. The **customer timezone** in
 the header is the report's bucketing timezone (report identity), which is
 independent of your personal display timezone.
 
+### Analyst-only fields
+
+The model/prompt provenance fields and the **Regenerate** button are shown
+only to analysts for the customer. A non-analyst viewer keeps everything
+that carries analytical meaning — priority tier, MITRE ATT&CK tags,
+language, aggregate scores, the suspicious-event-trends hint, and the
+generated body sections — but the model provider/model, model snapshot,
+prompt version, requested-by, and requested-at fields are hidden, and the
+Regenerate control is absent. This matches the regenerate endpoint, which
+already authorizes the analyst-only `reports:create` permission, so a
+non-analyst never had a working button.
+
+<!-- Screenshot placeholder: the trimmed non-analyst report header (no
+     model/prompt provenance fields, no Regenerate button). Capture from a
+     stack with real data per docs/AUTHORING.md. -->
+
 ## Force regenerate
 
-Operators with `reports:create` can force an out-of-cadence rerun via
-the **Regenerate** button at the bottom of the page.
+Operators with `reports:create` (analysts for the customer) can force an
+out-of-cadence rerun via the **Regenerate** button at the bottom of the
+page. The button is shown only to analysts; non-analyst viewers do not see
+it (see [Analyst-only fields](#analyst-only-fields)).
 
 ![Regenerate confirmation modal, warning that a fresh LLM call is issued across the period's stories, events, and suspicious-event trends and that the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/report-regenerate-modal.en.png)
 

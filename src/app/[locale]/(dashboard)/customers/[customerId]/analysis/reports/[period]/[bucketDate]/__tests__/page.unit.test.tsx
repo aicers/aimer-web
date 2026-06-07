@@ -44,8 +44,12 @@ vi.mock("next-intl/server", async () => {
   };
 });
 
+// Render an identifiable element (not `null`) so present/absent assertions
+// on the analyst gate (#457) are meaningful rather than vacuous.
 vi.mock("../regenerate-button", () => ({
-  ReportRegenerateButton: () => null,
+  ReportRegenerateButton: () => (
+    <button type="button" data-testid="regenerate-button" />
+  ),
 }));
 
 // The period tabs navigate via `next/link`; render it as a plain anchor
@@ -145,6 +149,7 @@ function okFixture(): ReportResultPageOutcome {
       },
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),
+      isViewerAnalyst: true,
       requestedLocale: "en",
       availableLocales: ["en"],
       languageFallback: null,
@@ -205,6 +210,53 @@ describe("report detail page", () => {
     expect(
       screen.getByTestId("section-baseline_observations").textContent,
     ).toBe("Malware up 30%.");
+  });
+
+  it("shows provenance fields and the Regenerate button for an analyst viewer", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, isViewerAnalyst: true },
+    });
+    await renderPage("DAILY", "2026-05-26");
+
+    // Analytically-meaningful fields stay visible to everyone.
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    expect(screen.getByText("ENGLISH")).toBeTruthy();
+    expect(screen.getByTestId("aggregate-scores")).toBeTruthy();
+
+    // Provenance fields (model / snapshot / prompt / requested-by / -at).
+    expect(screen.getByText("Model")).toBeTruthy();
+    expect(screen.getByText("Model snapshot")).toBeTruthy();
+    expect(screen.getByText("Prompt version")).toBeTruthy();
+    expect(screen.getByText("Requested by")).toBeTruthy();
+    expect(screen.getByText("Requested at")).toBeTruthy();
+
+    expect(screen.getByTestId("regenerate-button")).toBeTruthy();
+  });
+
+  it("hides provenance fields and the Regenerate button for a non-analyst viewer", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, isViewerAnalyst: false },
+    });
+    await renderPage("DAILY", "2026-05-26");
+
+    // Analytically-meaningful fields remain visible to a non-analyst.
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    expect(screen.getByText("ENGLISH")).toBeTruthy();
+    expect(screen.getByTestId("aggregate-scores")).toBeTruthy();
+
+    // Provenance fields and the Regenerate button are gone.
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Model snapshot")).toBeNull();
+    expect(screen.queryByText("Prompt version")).toBeNull();
+    expect(screen.queryByText("Requested by")).toBeNull();
+    expect(screen.queryByText("Requested at")).toBeNull();
+    expect(screen.queryByTestId("regenerate-button")).toBeNull();
   });
 
   it("renders a Sources panel with cited story/event cards and N stories · M events", async () => {

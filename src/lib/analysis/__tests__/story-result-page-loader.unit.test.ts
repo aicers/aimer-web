@@ -12,6 +12,7 @@ vi.mock("server-only", () => ({}));
 const mockGetAuthCookie = vi.fn();
 const mockVerifyJwtFull = vi.fn();
 const mockAuthorize = vi.fn();
+const mockIsAnalyst = vi.fn();
 const mockGetSessionPolicy = vi.fn();
 const mockValidateSession = vi.fn();
 
@@ -23,6 +24,7 @@ vi.mock("@/lib/auth/jwt", () => ({
 }));
 vi.mock("@/lib/auth/authorization", () => ({
   authorize: (...args: unknown[]) => mockAuthorize(...args),
+  isAnalystForCustomer: (...args: unknown[]) => mockIsAnalyst(...args),
 }));
 vi.mock("@/lib/auth/session-policy", () => ({
   getSessionPolicy: (...args: unknown[]) => mockGetSessionPolicy(...args),
@@ -133,6 +135,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ sub: "acc-1", sid: "sess-1" });
   mockAuthorize.mockReset().mockResolvedValue({ authorized: true });
+  mockIsAnalyst.mockReset().mockResolvedValue(false);
   mockGetSessionPolicy.mockReset().mockResolvedValue({ general: {} });
   mockValidateSession
     .mockReset()
@@ -187,6 +190,33 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     resultRows = [resultRow({ generation: 2, superseded_at: new Date() })];
     const outcome = await callLoader({ generation: 2 });
     expect(outcome.kind).toBe("pin_unavailable");
+  });
+});
+
+describe("loadStoryResultPage — analyst gating (#457)", () => {
+  it("exposes isViewerAnalyst from the analyst predicate", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    mockIsAnalyst.mockResolvedValue(true);
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.isViewerAnalyst).toBe(true);
+    expect(outcome.data.canRegenerate).toBe(true);
+  });
+
+  it("canRegenerate=false for a bridge-session analyst (write-blocked)", async () => {
+    // A bridge session passes the read authorize() but the regenerate
+    // endpoint authorizes `operationKind: "write"`, which a bridge session
+    // can never pass. So even an analyst account gets canRegenerate=false.
+    resultRows = [resultRow({ generation: 3 })];
+    mockIsAnalyst.mockResolvedValue(true);
+    mockValidateSession.mockResolvedValue({
+      bridgeAiceId: "aice-1",
+      bridgeCustomerIds: [CUSTOMER_ID],
+    });
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.isViewerAnalyst).toBe(true);
+    expect(outcome.data.canRegenerate).toBe(false);
   });
 });
 

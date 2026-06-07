@@ -19,7 +19,7 @@ import {
   type ReportLanguage,
   reportLanguageToAppLocale,
 } from "@/i18n/locale";
-import { authorize } from "@/lib/auth/authorization";
+import { authorize, isAnalystForCustomer } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getSessionPolicy } from "@/lib/auth/session-policy";
@@ -208,6 +208,13 @@ export interface ReportResultPageData {
   requestedBy: string | null;
   requestedAt: Date;
   /**
+   * Whether the viewer is an analyst for this customer (#457). Gates the
+   * model/prompt provenance fields and the Regenerate button on the detail
+   * page; a non-analyst viewer keeps everything that carries analytical
+   * meaning (tier, TTP, language, scores, sections).
+   */
+  isViewerAnalyst: boolean;
+  /**
    * The language the viewer asked for (their locale, or a pinned `?lang`),
    * as an app-locale code. Equals `reportLanguageToAppLocale(data.lang)` when
    * the requested variant exists; differs when a fallback occurred.
@@ -331,17 +338,34 @@ export async function loadReportResultPage(
     return { kind: "unauthorized" };
   }
 
-  const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "reports:read", {
-      customerId: input.customerId,
-      operationKind: "read",
-      // Bridge sessions cannot read these surfaces (round-15 S3): an
-      // in-scope bridge → 403, mirroring the regenerate/summary endpoints.
-      allowInBridge: false,
-      bridgeScope: bridgeCustomerIds
-        ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
-        : null,
-    }),
+  // Resolve authorization AND the analyst-assignment signal in one
+  // transaction so the analyst predicate reuses the already-acquired
+  // connection (#457): no extra checkout, no extra auth handshake. The
+  // flag is only meaningful when authorized, so it is computed only then.
+  const { auth, isViewerAnalyst } = await withTransaction(
+    authPool,
+    async (client) => {
+      const auth = await authorize(
+        client,
+        "general",
+        claims.sub,
+        "reports:read",
+        {
+          customerId: input.customerId,
+          operationKind: "read",
+          // Bridge sessions cannot read these surfaces (round-15 S3): an
+          // in-scope bridge → 403, mirroring the regenerate/summary endpoints.
+          allowInBridge: false,
+          bridgeScope: bridgeCustomerIds
+            ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
+            : null,
+        },
+      );
+      const isViewerAnalyst = auth.authorized
+        ? await isAnalystForCustomer(client, claims.sub, input.customerId)
+        : false;
+      return { auth, isViewerAnalyst };
+    },
   );
   if (!auth.authorized) {
     // Distinguish outcomes so the page can map them to the right status
@@ -763,6 +787,7 @@ export async function loadReportResultPage(
       citedSources,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
+      isViewerAnalyst,
       requestedLocale,
       // Map the stored enums to app-locale codes for the switcher, dropping
       // any unrecognized value defensively (the column is enum-constrained).

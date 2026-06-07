@@ -45,8 +45,12 @@ vi.mock("next-intl/server", async () => {
   };
 });
 
+// Render an identifiable element (not `null`) so present/absent assertions
+// on the analyst gate (#457) are meaningful rather than vacuous.
 vi.mock("../regenerate-button", () => ({
-  StoryRegenerateButton: () => null,
+  StoryRegenerateButton: () => (
+    <button type="button" data-testid="regenerate-button" />
+  ),
 }));
 
 import StoryAnalysisPage from "../page";
@@ -75,7 +79,11 @@ describe("StoryAnalysisPage — generation pin", () => {
 const CUSTOMER_ID = "c0000000-0000-0000-0000-000000000001";
 const STORY_ID = "12345";
 
-function fixture(tier: PriorityTier): StoryResultPageOutcome {
+function fixture(
+  tier: PriorityTier,
+  viewer: { isViewerAnalyst?: boolean; canRegenerate?: boolean } = {},
+): StoryResultPageOutcome {
+  const isViewerAnalyst = viewer.isViewerAnalyst ?? true;
   return {
     kind: "ok",
     data: {
@@ -96,6 +104,8 @@ function fixture(tier: PriorityTier): StoryResultPageOutcome {
       analysisText: "Narrative body.",
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),
+      isViewerAnalyst,
+      canRegenerate: viewer.canRegenerate ?? isViewerAnalyst,
       memberEvents: [],
       memberEventVariant: {
         lang: "ENGLISH",
@@ -190,5 +200,67 @@ describe("StoryAnalysisPage — LOW-tier disclosure", () => {
     // Factor chip lists render directly (not behind a disclosure).
     expect(screen.getByTestId("severity-factors")).toBeTruthy();
     expect(screen.getByTestId("likelihood-factors")).toBeTruthy();
+  });
+});
+
+describe("StoryAnalysisPage — analyst gating (#457)", () => {
+  it("shows provenance fields and the Regenerate button for an analyst", async () => {
+    mockLoad.mockResolvedValueOnce(
+      fixture("HIGH", { isViewerAnalyst: true, canRegenerate: true }),
+    );
+    await renderPage();
+
+    // Analytically-meaningful fields stay visible to everyone.
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    expect(screen.getByText("Language")).toBeTruthy();
+    expect(screen.getByText("Severity score (if real, how bad)")).toBeTruthy();
+
+    // Six provenance fields (provider + model split into two here).
+    expect(screen.getByText("Provider")).toBeTruthy();
+    expect(screen.getByText("Model")).toBeTruthy();
+    expect(screen.getByText("Model snapshot")).toBeTruthy();
+    expect(screen.getByText("Prompt version")).toBeTruthy();
+    expect(screen.getByText("Requested by")).toBeTruthy();
+    expect(screen.getByText("Requested at")).toBeTruthy();
+
+    expect(screen.getByTestId("regenerate-button")).toBeTruthy();
+  });
+
+  it("hides provenance fields and the Regenerate button for a non-analyst", async () => {
+    mockLoad.mockResolvedValueOnce(
+      fixture("HIGH", { isViewerAnalyst: false, canRegenerate: false }),
+    );
+    await renderPage();
+
+    // Analytically-meaningful fields remain visible to a non-analyst.
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    expect(screen.getByText("Language")).toBeTruthy();
+    expect(screen.getByText("Severity score (if real, how bad)")).toBeTruthy();
+
+    // Provenance fields and the Regenerate button are gone.
+    expect(screen.queryByText("Provider")).toBeNull();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Model snapshot")).toBeNull();
+    expect(screen.queryByText("Prompt version")).toBeNull();
+    expect(screen.queryByText("Requested by")).toBeNull();
+    expect(screen.queryByText("Requested at")).toBeNull();
+    expect(screen.queryByTestId("regenerate-button")).toBeNull();
+  });
+
+  it("shows provenance but hides the Regenerate button for a bridge-session analyst", async () => {
+    // A bridge-session analyst reads the story (provenance is analyst-gated,
+    // so visible) but cannot regenerate: the endpoint authorizes a WRITE,
+    // which a bridge session can never pass. `canRegenerate` is false even
+    // though `isViewerAnalyst` is true — the button must be absent.
+    mockLoad.mockResolvedValueOnce(
+      fixture("HIGH", { isViewerAnalyst: true, canRegenerate: false }),
+    );
+    await renderPage();
+
+    expect(screen.getByText("Provider")).toBeTruthy();
+    expect(screen.getByText("Model snapshot")).toBeTruthy();
+    expect(screen.getByText("Requested at")).toBeTruthy();
+
+    expect(screen.queryByTestId("regenerate-button")).toBeNull();
   });
 });

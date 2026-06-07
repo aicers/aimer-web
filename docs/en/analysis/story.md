@@ -144,7 +144,12 @@ techniques.
 Below the score fields the page shows the analysis metadata in a
 two-column grid:
 
-- **Language** — `KOREAN` or `ENGLISH`.
+- **Language** — `KOREAN` or `ENGLISH`. Visible to every viewer.
+
+The remaining fields are **model/prompt provenance** — how the artifact
+was produced — and are restricted to analysts (see
+[Analyst-only fields](#analyst-only-fields) below):
+
 - **Provider** — the LLM provider name (e.g. `openai`).
 - **Model** — the model id requested (e.g. `gpt-4o`).
 - **Model snapshot** — the provider-reported specific model version.
@@ -156,6 +161,26 @@ two-column grid:
   timezone with an explicit timezone label. See
   [Account Preferences → Timezone](../account-preferences.md#timezone)
   for the resolution order (saved → browser → UTC).
+
+### Analyst-only fields
+
+The model/prompt provenance fields and the **Regenerate** button are shown
+only to analysts for the customer. A non-analyst viewer keeps everything
+that carries analytical meaning — priority tier, MITRE ATT&CK tags,
+language, scores, factors, and the narrative — but the provider, model,
+model snapshot, prompt version, requested-by, and requested-at fields are
+hidden, and the Regenerate control is absent.
+
+The Regenerate button has one extra condition on this page: it is shown
+only when you are an analyst **and** not in a [bridge
+session](../cross-customer-overview.md). The regenerate endpoint authorizes a *write*,
+which a bridge session can never perform, even when the underlying account
+is an analyst — so a bridge-session analyst can still read the story
+(provenance fields included) but does not see the Regenerate button.
+
+<!-- Screenshot placeholder: the trimmed non-analyst story header (no
+     model/prompt provenance fields, no Regenerate button). Capture from a
+     stack with real data per docs/AUTHORING.md. -->
 
 ## Pinned evidence version
 
@@ -253,8 +278,10 @@ open.
 
 ## Force regenerate
 
-Operators with `analyses:configure` can rerun the analysis manually via
-the **Regenerate** button at the bottom of the page.
+Operators with `analyses:configure` (analysts for the customer) can rerun
+the analysis manually via the **Regenerate** button at the bottom of the
+page. The button is shown only to analysts who are not in a bridge session
+(see [Analyst-only fields](#analyst-only-fields)).
 
 ![Regenerate confirmation modal, warning that a fresh LLM call is issued and the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/story-regenerate-modal.en.png)
 
