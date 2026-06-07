@@ -187,9 +187,10 @@ describe.skipIf(!hasPostgres)(
         await pool.query(
           `INSERT INTO event_analysis_result
            (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
             analysis_text, redaction_policy_version, requested_by)
-         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 0.5, 0.5, 'LOW', '', $3, $4)`,
+         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 'mv', 'pv', 0.5, 0.5, 'LOW', '', $3, $4)`,
           [aice, key, policy, INGESTED_BY],
         );
       }

@@ -106,8 +106,8 @@ function pushResultRow(extras: Record<string, unknown> = {}) {
         likelihood_factors: ["lateral movement potential"],
         ttp_tags: ["T1078", "T9999"],
         analysis_text: "attacker <<REDACTED_IP_001>> reached us",
-        model_actual_version: null,
-        prompt_version: null,
+        model_actual_version: "gpt-4o-2026-05-01",
+        prompt_version: "v3",
         generation: 1,
         requested_by: "acc-1",
         requested_at: new Date("2026-05-20T00:00:00Z"),
@@ -375,6 +375,18 @@ describe("loadAnalysisResultPage", () => {
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.isViewerAnalyst).toBe(true);
     expect(outcome.data.canRegenerate).toBe(true);
+  });
+
+  it("propagates non-null model snapshot / prompt version provenance", async () => {
+    // aimer#480 (#474): the result row now carries populated provenance.
+    // The loader forwards both verbatim; analyst gating happens at render.
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.modelActualVersion).toBe("gpt-4o-2026-05-01");
+    expect(outcome.data.promptVersion).toBe("v3");
   });
 
   it("canRegenerate=false for a bridge-session analyst (write-blocked)", async () => {

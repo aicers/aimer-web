@@ -171,6 +171,10 @@ describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () 
     expect(screen.getByText("Provider")).toBeTruthy();
     expect(screen.getByText("Model snapshot")).toBeTruthy();
     expect(screen.getByText("Requested by")).toBeTruthy();
+    // aimer#480 (#474): the real snapshot / prompt-version values render,
+    // not just their labels.
+    expect(screen.getByText("2026-05-01")).toBeTruthy();
+    expect(screen.getByText("v3")).toBeTruthy();
     expect(screen.getByTestId("event-regenerate-button")).toBeTruthy();
   });
 
@@ -182,10 +186,12 @@ describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () 
     // Analytically-meaningful fields stay visible.
     expect(screen.getByText("Language")).toBeTruthy();
     expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
-    // Provenance is gone.
+    // Provenance is gone — labels and the underlying values.
     expect(screen.queryByText("Provider")).toBeNull();
     expect(screen.queryByText("Model snapshot")).toBeNull();
     expect(screen.queryByText("Requested by")).toBeNull();
+    expect(screen.queryByText("2026-05-01")).toBeNull();
+    expect(screen.queryByText("v3")).toBeNull();
     expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
   });
 

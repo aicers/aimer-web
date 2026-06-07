@@ -23,6 +23,8 @@ export interface AnalysisResult {
   likelihoodFactors: Array<string>;
   ttpTags: Array<string>;
   analysis: string;
+  promptVersion: string;
+  modelActualVersion: string;
 }
 
 export interface AnalyzeEventResponse {
@@ -49,6 +51,8 @@ export const ANALYZE_EVENT_SOURCE = `mutation AnalyzeEvent(
     likelihoodFactors
     ttpTags
     analysis
+    promptVersion
+    modelActualVersion
   }
 }
 `;

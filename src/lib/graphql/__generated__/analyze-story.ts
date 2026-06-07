@@ -23,6 +23,10 @@ export interface StoryMetadataInput {
   roleDistribution: Array<StoryRoleCountInput>;
 }
 
+export interface EnrichmentFactInput {
+  text: string;
+}
+
 export interface StoryRoleCountInput {
   role: string;
   count: number;
@@ -33,7 +37,7 @@ export interface AnalyzeStoryVariables {
   storyId: string;
   members: Array<StoryMemberInput>;
   storyMetadata: StoryMetadataInput;
-  enrichmentFacts: Array<string>;
+  enrichmentFacts: Array<EnrichmentFactInput>;
   name: string;
   model: string;
   lang?: "KOREAN" | "ENGLISH" | null;
@@ -59,7 +63,7 @@ export const ANALYZE_STORY_SOURCE = `mutation AnalyzeStory(
   $storyId: ID!
   $members: [StoryMemberInput!]!
   $storyMetadata: StoryMetadataInput!
-  $enrichmentFacts: [String!]!
+  $enrichmentFacts: [EnrichmentFactInput!]!
   $name: String!
   $model: String!
   $lang: Language

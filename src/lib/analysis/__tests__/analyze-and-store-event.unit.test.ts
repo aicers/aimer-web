@@ -89,6 +89,8 @@ beforeEach(() => {
       likelihoodFactors: ["lateral movement"],
       ttpTags: [],
       analysis: "plain narrative with no entities",
+      promptVersion: "v7",
+      modelActualVersion: "gpt-4o-2026-05-01",
     },
   });
 });
@@ -119,11 +121,16 @@ describe("analyzeAndStoreEventResult", () => {
       c.sql.includes("INSERT INTO event_analysis_result"),
     );
     expect(insert).toBeDefined();
-    // generation (param 6) is the new N+1; redaction_policy_version (14)
-    // is the supplied stored value; requested_by (15) is the account.
-    expect(insert?.params?.[5]).toBe(4);
-    expect(insert?.params?.[13]).toBe("policy-v7");
-    expect(insert?.params?.[14]).toBe("acc-1");
+    // Column order: aice_id, event_key, lang, model_name, model,
+    // model_actual_version (param 6), prompt_version (7), generation (8),
+    // ... redaction_policy_version (16), requested_by (17). Zero-indexed:
+    // provenance at [5]/[6], generation at [7], policy at [15],
+    // requested_by at [16].
+    expect(insert?.params?.[5]).toBe("gpt-4o-2026-05-01");
+    expect(insert?.params?.[6]).toBe("v7");
+    expect(insert?.params?.[7]).toBe(4);
+    expect(insert?.params?.[15]).toBe("policy-v7");
+    expect(insert?.params?.[16]).toBe("acc-1");
     // The whole supersede+insert runs inside one transaction.
     expect(writeCalls[0].sql).toBe("BEGIN");
     expect(writeCalls.at(-1)?.sql).toBe("COMMIT");

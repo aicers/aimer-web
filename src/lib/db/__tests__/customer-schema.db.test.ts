@@ -41,7 +41,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0008_event_analysis_result_generation (RFC 0002 Phase 2, #297),
     // 0009_citation_reverse_lookup_gin (T2, #396),
     // 0010_ioc_enrichment (RFC 0003 P1a, #361),
-    // 0011_enrichment_facts (RFC 0003 C1, #440)
+    // 0011_enrichment_facts (RFC 0003 C1, #440),
+    // 0012_event_provenance_not_null (aimer#480, #474)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -55,6 +56,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0009",
       "0010",
       "0011",
+      "0012",
     ]);
   });
 
@@ -426,13 +428,15 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // First analysis writes generation 1, superseded_at NULL.
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model, generation,
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o', 1,
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 1,
                0.5, 0.4,
                '["s1"]'::jsonb, '["l1"]'::jsonb, '["T1078"]'::jsonb,
                'LOW',
@@ -449,13 +453,15 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     );
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model, generation,
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o', 2,
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 2,
                0.9, 0.85,
                '["s2"]'::jsonb, '["l2"]'::jsonb, '["T1110"]'::jsonb,
                'CRITICAL',
@@ -504,13 +510,15 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // A different model produces an independent generation-1 row.
     await pool.query(
       `INSERT INTO event_analysis_result
-         (aice_id, event_key, lang, model_name, model, generation,
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
-       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5', 1,
+       VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
+               'mv', 'pv', 1,
                0.1, 0.1,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
                'LOW',
@@ -559,10 +567,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by)
        VALUES ('aice-defaults', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv',
                0.5, 0.5, 'LOW',
                'x', 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
@@ -586,10 +596,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       pool.query(
         `INSERT INTO event_analysis_result
            (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
             analysis_text, redaction_policy_version,
             requested_by)
          VALUES ('aice-r-check', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'mv', 'pv',
                  0.5, 0.5, 'EXTREME',
                  'x', 'engine:1.0.0|ranges:empty',
                  gen_random_uuid())`,
@@ -1207,10 +1219,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await rolePool.query(
         `INSERT INTO event_analysis_result
            (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
             analysis_text, redaction_policy_version,
             requested_by)
          VALUES ('aice-ar', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'mv', 'pv',
                  0.5, 0.5, 'LOW',
                  'narr', 'engine:1.0.0|ranges:empty',
                  gen_random_uuid())`,
