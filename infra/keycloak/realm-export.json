@@ -262,7 +262,7 @@
       "attributes": {
         "pkce.code.challenge.method": "S256"
       },
-      "defaultClientScopes": ["roles"]
+      "defaultClientScopes": ["roles", "email", "profile"]
     },
     {
       "clientId": "aimer-web-admin",
