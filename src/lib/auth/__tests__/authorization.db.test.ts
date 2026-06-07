@@ -11,6 +11,7 @@ import { runMigrations } from "../../db/migrate";
 import {
   assertAuthorized,
   authorize,
+  isAnalystForCustomer,
   listAccessibleCustomers,
   listAccessibleCustomersDetailed,
   listAccessibleEnvironments,
@@ -925,6 +926,68 @@ describe.skipIf(!hasPostgres)("authorize() (DB integration)", () => {
           [userAccountId, [activeCustomerId]],
         ),
       ).rejects.toThrow();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // isAnalystForCustomer (#457)
+  // -------------------------------------------------------------------------
+
+  describe("isAnalystForCustomer", () => {
+    it("returns true for a valid active analyst assignment", async () => {
+      // analystAccountId is analyst_eligible and assigned to activeCustomerId.
+      const result = await withClient((c) =>
+        isAnalystForCustomer(c, analystAccountId, activeCustomerId),
+      );
+      expect(result).toBe(true);
+    });
+
+    it("returns false when the account is not analyst_eligible", async () => {
+      // noAccessAccountId has analyst_eligible=false; even with an assignment
+      // the predicate must reject (matches the `is_analyst` projection).
+      await pool.query(
+        `INSERT INTO analyst_customer_assignments (account_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [noAccessAccountId, activeCustomerId, adminAccountId],
+      );
+
+      const result = await withClient((c) =>
+        isAnalystForCustomer(c, noAccessAccountId, activeCustomerId),
+      );
+      expect(result).toBe(false);
+
+      await pool.query(
+        `DELETE FROM analyst_customer_assignments WHERE account_id = $1 AND customer_id = $2`,
+        [noAccessAccountId, activeCustomerId],
+      );
+    });
+
+    it("returns false for an inactive (suspended) customer", async () => {
+      // analystAccountId is eligible; assign it to the suspended customer.
+      // The active-customer gate must still reject.
+      await pool.query(
+        `INSERT INTO analyst_customer_assignments (account_id, customer_id, assigned_by)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [analystAccountId, suspendedCustomerId, adminAccountId],
+      );
+
+      const result = await withClient((c) =>
+        isAnalystForCustomer(c, analystAccountId, suspendedCustomerId),
+      );
+      expect(result).toBe(false);
+
+      await pool.query(
+        `DELETE FROM analyst_customer_assignments WHERE account_id = $1 AND customer_id = $2`,
+        [analystAccountId, suspendedCustomerId],
+      );
+    });
+
+    it("returns false when there is no analyst assignment", async () => {
+      // analystAccountId is eligible but has no assignment for customerBId.
+      const result = await withClient((c) =>
+        isAnalystForCustomer(c, analystAccountId, customerBId),
+      );
+      expect(result).toBe(false);
     });
   });
 

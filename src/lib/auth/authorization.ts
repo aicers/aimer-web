@@ -194,6 +194,40 @@ async function authorizeGeneral(
 }
 
 // ---------------------------------------------------------------------------
+// isAnalystForCustomer — single-pair analyst-assignment predicate
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether `accountId` is an analyst for `customerId`. This is the same
+ * predicate `listAccessibleCustomersDetailed` projects as `is_analyst`:
+ * an active customer (`c.status = 'active'`) with a matching row in
+ * `analyst_customer_assignments` for `(accountId, customerId)` AND the
+ * account's `analyst_eligible = true`. It is the analyst-assignment
+ * signal — NOT a role-permission key — used to gate analyst-only model
+ * provenance/tooling on the detail pages (#457). Scoped to one
+ * `(accountId, customerId)` pair rather than reusing the list query, and
+ * meant to run on an already-acquired `PoolClient` (e.g. inside the
+ * loaders' existing `authorize` transaction).
+ */
+export async function isAnalystForCustomer(
+  client: PoolClient,
+  accountId: string,
+  customerId: string,
+): Promise<boolean> {
+  const rows = await client.query<{ is_analyst: boolean }>(
+    `SELECT (aca.account_id IS NOT NULL AND a.analyst_eligible = true)
+              AS is_analyst
+       FROM customers c
+       CROSS JOIN accounts a
+       LEFT JOIN analyst_customer_assignments aca
+         ON aca.customer_id = c.id AND aca.account_id = a.id
+      WHERE c.id = $1 AND a.id = $2 AND c.status = 'active'`,
+    [customerId, accountId],
+  );
+  return rows.rows[0]?.is_analyst ?? false;
+}
+
+// ---------------------------------------------------------------------------
 // listAccessibleCustomers — union of membership + analyst, with bridge scope
 // ---------------------------------------------------------------------------
 

@@ -364,19 +364,28 @@ export default async function ReportDetailPage({
           </div>
         </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
-        <Field label={tA("fields.model")}>
-          {data.modelName} / {data.model}
-        </Field>
-        <Field label={tA("fields.modelSnapshot")}>
-          {data.modelActualVersion}
-        </Field>
-        <Field label={tA("fields.promptVersion")}>{data.promptVersion}</Field>
-        <Field label={tA("fields.requestedBy")}>
-          {data.requestedBy ?? tA("common.system")}
-        </Field>
-        <Field label={tA("fields.requestedAt")}>
-          <Timestamp at={data.requestedAt} />
-        </Field>
+        {/* Model/prompt provenance is operator-facing detail about how the
+            artifact was produced — restricted to analysts (#457). A
+            non-analyst keeps every analytically-meaningful field above. */}
+        {data.isViewerAnalyst ? (
+          <>
+            <Field label={tA("fields.model")}>
+              {data.modelName} / {data.model}
+            </Field>
+            <Field label={tA("fields.modelSnapshot")}>
+              {data.modelActualVersion}
+            </Field>
+            <Field label={tA("fields.promptVersion")}>
+              {data.promptVersion}
+            </Field>
+            <Field label={tA("fields.requestedBy")}>
+              {data.requestedBy ?? tA("common.system")}
+            </Field>
+            <Field label={tA("fields.requestedAt")}>
+              <Timestamp at={data.requestedAt} />
+            </Field>
+          </>
+        ) : null}
       </section>
 
       {/* Leaf-derived sections carry per-unit (sentence-level) citations
@@ -431,19 +440,25 @@ export default async function ReportDetailPage({
         testid="section-period_outlook"
       />
 
-      <section className="mt-8">
-        <ReportRegenerateButton
-          customerId={data.customerId}
-          period={data.period}
-          bucketDate={data.bucketDate}
-          variant={{
-            tz: data.tz,
-            lang: data.lang,
-            model_name: data.modelName,
-            model: data.model,
-          }}
-        />
-      </section>
+      {/* Force-regenerate is an analyst-only action (the endpoint authorizes
+          `reports:create`). Gate the button so the UI matches that server
+          authorization — bridge reads never reach this page, so the
+          analyst flag alone suffices here (#457). */}
+      {data.isViewerAnalyst ? (
+        <section className="mt-8">
+          <ReportRegenerateButton
+            customerId={data.customerId}
+            period={data.period}
+            bucketDate={data.bucketDate}
+            variant={{
+              tz: data.tz,
+              lang: data.lang,
+              model_name: data.modelName,
+              model: data.model,
+            }}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }

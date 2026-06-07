@@ -192,18 +192,27 @@ export default async function StoryAnalysisPage({
           />
         </Field>
         <Field label={tA("fields.language")}>{data.lang}</Field>
-        <Field label={tA("fields.provider")}>{data.modelName}</Field>
-        <Field label={tA("fields.model")}>{data.model}</Field>
-        <Field label={tA("fields.modelSnapshot")}>
-          {data.modelActualVersion}
-        </Field>
-        <Field label={tA("fields.promptVersion")}>{data.promptVersion}</Field>
-        <Field label={tA("fields.requestedBy")}>
-          {data.requestedBy ?? tA("common.system")}
-        </Field>
-        <Field label={tA("fields.requestedAt")}>
-          <Timestamp at={data.requestedAt} />
-        </Field>
+        {/* Model/prompt provenance is operator-facing detail about how the
+            artifact was produced — restricted to analysts (#457). A
+            non-analyst keeps every analytically-meaningful field above. */}
+        {data.isViewerAnalyst ? (
+          <>
+            <Field label={tA("fields.provider")}>{data.modelName}</Field>
+            <Field label={tA("fields.model")}>{data.model}</Field>
+            <Field label={tA("fields.modelSnapshot")}>
+              {data.modelActualVersion}
+            </Field>
+            <Field label={tA("fields.promptVersion")}>
+              {data.promptVersion}
+            </Field>
+            <Field label={tA("fields.requestedBy")}>
+              {data.requestedBy ?? tA("common.system")}
+            </Field>
+            <Field label={tA("fields.requestedAt")}>
+              <Timestamp at={data.requestedAt} />
+            </Field>
+          </>
+        ) : null}
       </section>
 
       <section className="mt-8">
@@ -232,12 +241,19 @@ export default async function StoryAnalysisPage({
         periodLabels={periodLabels}
       />
 
-      <section className="mt-8">
-        <StoryRegenerateButton
-          customerId={data.customerId}
-          storyId={data.storyId}
-        />
-      </section>
+      {/* Force-regenerate is an analyst-only WRITE action (the endpoint
+          authorizes `analyses:configure` with `operationKind: "write"`). The
+          story read loader allows bridge sessions, so gate on `canRegenerate`
+          (analyst AND not a bridge session) rather than the analyst flag
+          alone — otherwise a bridge-session analyst's click would 403 (#457). */}
+      {data.canRegenerate ? (
+        <section className="mt-8">
+          <StoryRegenerateButton
+            customerId={data.customerId}
+            storyId={data.storyId}
+          />
+        </section>
+      ) : null}
     </div>
   );
 }
