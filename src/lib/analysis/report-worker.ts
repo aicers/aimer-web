@@ -322,7 +322,7 @@ function findInvalidCitationSources(
  */
 function citationSourceKey(source: unknown): string {
   if (source === undefined || source === null) return "";
-  if (typeof source !== "object") return " malformed";
+  if (typeof source !== "object") return "__malformed_source__";
   const s = source as {
     type?: unknown;
     story_id?: unknown;
@@ -334,7 +334,7 @@ function citationSourceKey(source: unknown): string {
   if (s.type === "event" && typeof s.event_ref === "string") {
     return `event:${s.event_ref}`;
   }
-  return " malformed";
+  return "__malformed_source__";
 }
 
 /**
