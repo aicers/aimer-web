@@ -44,5 +44,26 @@ export async function loginViaKeycloak(
 
   // Wait for the browser to land back on the app (the OIDC callback then
   // redirects to `/` on success or `/deny` on failure — both are app-origin).
-  await page.waitForURL(`${APP_ORIGIN}/**`, { timeout: 30_000 });
+  try {
+    await page.waitForURL(`${APP_ORIGIN}/**`, { timeout: 30_000 });
+  } catch (cause) {
+    // Surface why we never left Keycloak (bad credentials, a required-action
+    // interstitial, etc.) instead of an opaque waitForURL timeout.
+    const kcMessage = await page
+      .locator("#input-error, .alert-error, .kc-feedback-text, #kc-error-message")
+      .first()
+      .textContent({ timeout: 1000 })
+      .catch(() => null);
+    const heading = await page
+      .locator("h1, #kc-page-title")
+      .first()
+      .textContent({ timeout: 1000 })
+      .catch(() => null);
+    throw new Error(
+      `Did not return to ${APP_ORIGIN} after Keycloak login. ` +
+        `Current URL: ${page.url()} | page heading: ${heading?.trim() ?? "(none)"} | ` +
+        `Keycloak message: ${kcMessage?.trim() ?? "(none)"}`,
+      { cause },
+    );
+  }
 }

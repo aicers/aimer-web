@@ -69,22 +69,39 @@ create_user() {
     "${KEYCLOAK_URL}/admin/realms/${REALM}/users" \
     -d "$(jq -n \
       --arg email "${email}" \
-      --arg pass "${USER_PASSWORD}" \
       '{
         username: $email,
         email: $email,
         enabled: true,
         emailVerified: true,
-        requiredActions: [],
-        credentials: [
-          { type: "password", value: $pass, temporary: false }
-        ]
+        requiredActions: []
       }')"
+}
+
+set_password() {
+  local email="$1"
+  local id
+  id="$(curl -sf -H "${auth_header}" \
+    "${KEYCLOAK_URL}/admin/realms/${REALM}/users?email=$(jq -rn --arg e "${email}" '$e|@uri')&exact=true" \
+    | jq -r '.[0].id // empty')"
+  if [[ -z "${id}" ]]; then
+    echo "[seed] ERROR: user ${email} not found after create" >&2
+    exit 1
+  fi
+  echo "[seed] setting non-temporary password for ${email} (${id})"
+  # Use reset-password (not inline credentials on create): the latter can be
+  # stored as temporary, which forces an "Update password" interstitial that
+  # blocks the automated login.
+  curl -sf -X PUT -H "${auth_header}" -H "Content-Type: application/json" \
+    "${KEYCLOAK_URL}/admin/realms/${REALM}/users/${id}/reset-password" \
+    -d "$(jq -n --arg pass "${USER_PASSWORD}" \
+      '{ type: "password", value: $pass, temporary: false }')"
 }
 
 for email in "${USERS[@]}"; do
   delete_if_exists "${email}"
   create_user "${email}"
+  set_password "${email}"
 done
 
 echo "[seed] done — seeded ${#USERS[@]} user(s) in realm '${REALM}'"

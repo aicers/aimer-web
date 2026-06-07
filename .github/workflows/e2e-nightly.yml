@@ -188,5 +188,10 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           name: playwright-report-tier2
-          path: e2e/playwright-report/
+          # Playwright resolves these relative to the repo root (cwd), not the
+          # config dir, so the report and traces/screenshots land here.
+          path: |
+            playwright-report/
+            test-results/
           retention-days: 7
+          if-no-files-found: warn
