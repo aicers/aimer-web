@@ -1515,7 +1515,9 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     const TRANSLATED = {
       sections: JSON.stringify({
         ...AIMER_SECTIONS,
-        executive_summary: "조용한 기간.",
+        // Same citation-unit shape as the canonical (one uncited unit) so the
+        // translate-path structure-parity guard accepts it (#449 round 1).
+        executive_summary: [{ text: "조용한 기간." }],
       }),
       promptVersion: "translate-pv-1",
       modelActualVersion: "gpt-4o-translate",
@@ -1658,6 +1660,154 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(result).toHaveLength(0);
   });
 
+  it("fails the translate path when a leaf-derived section loses its array shape (#449)", async () => {
+    // A bad/misconfigured translator that returns a legacy non-array section
+    // would silently strip every sentence-level citation from that section
+    // while still passing the leaf-validity guard (which skips non-array
+    // sections). The wire field is opaque `String!`, so aimer-web must compare
+    // the translated structure against the canonical and reject the drift
+    // (#449 review round 1).
+    aimerCalls = 0;
+    const bucket = "2026-07-21";
+    const eventKey = "5201";
+    let translateCalls = 0;
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        // Canonical `executive_summary` is a citation-unit array; this legacy
+        // scalar drops the per-unit structure a citation anchors to.
+        executive_summary: "조용한 기간.",
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("failed");
+    expect(job[0].last_error).toBe("citation_structure_mismatch");
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(result).toHaveLength(0);
+  });
+
+  it("fails the translate path when translation drops a unit's citation source (#449)", async () => {
+    // The translator preserved the unit array shape and count but dropped the
+    // `source` from a unit the canonical had cited — turning a grounded
+    // sentence into an unattributed one. The leaf-validity guard cannot catch
+    // this (a missing `source` reads as a deliberately-uncited unit), so the
+    // structure-parity check against the canonical is the only line of defense
+    // (#449 review round 1).
+    aimerCalls = 0;
+    const bucket = "2026-07-28";
+    const eventKey = "5202";
+    let translateCalls = 0;
+    await seedState(authPool, "DAILY", bucket, "ready");
+    await seedBaselineEvent(customerPool, eventKey, `${bucket}T01:00:00Z`);
+    await seedEventLeafLang(customerPool, eventKey, "ENGLISH", "v1");
+    await seedCanonicalResult(customerPool, "DAILY", bucket, eventKey);
+    // Make the canonical CITE the in-bundle event in its executive summary so
+    // there is a real citation for the translation to drop.
+    await customerPool.query(
+      `UPDATE periodic_report_result
+          SET sections_jsonb = $4::jsonb
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'`,
+      [
+        CUSTOMER_ID,
+        bucket,
+        TZ,
+        JSON.stringify({
+          ...AIMER_SECTIONS,
+          executive_summary: [
+            {
+              text: "A grounded claim.",
+              source: { type: "event", event_ref: `aice-1:${eventKey}` },
+            },
+          ],
+        }),
+      ],
+    );
+    await seedQueuedJobLang(authPool, "DAILY", bucket, "KOREAN");
+
+    const TRANSLATED = {
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        // Same unit count, but the citation `source` was dropped.
+        executive_summary: [{ text: "근거 있는 주장." }],
+      }),
+      promptVersion: "translate-pv-1",
+      modelActualVersion: "gpt-4o-translate",
+    };
+
+    await processReportJob(makeJob({ bucket_date: bucket, lang: "KOREAN" }), {
+      authPool,
+      resolveCustomerPool: () => customerPool,
+      loadRanges: async () => EMPTY_RANGES,
+      callGenerateReport: async () => {
+        aimerCalls += 1;
+        return AIMER_RESPONSE;
+      },
+      callTranslateReport: async () => {
+        translateCalls += 1;
+        return TRANSLATED;
+      },
+    });
+
+    expect(aimerCalls).toBe(0);
+    expect(translateCalls).toBe(1);
+    const { rows: job } = await authPool.query<{
+      status: string;
+      last_error: string | null;
+    }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(job[0].status).toBe("failed");
+    expect(job[0].last_error).toBe("citation_structure_mismatch");
+    const { rows: result } = await customerPool.query(
+      `SELECT 1 FROM periodic_report_result
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
+      [CUSTOMER_ID, bucket, TZ],
+    );
+    expect(result).toHaveLength(0);
+  });
+
   it("aborts the translate write when the watchdog requeues mid-call (audit not lost)", async () => {
     // A slow translate attempt overruns the watchdog timeout:
     // `recoverStuckReportJobs` returns the row to `queued` and clears
@@ -1676,7 +1826,9 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     const TRANSLATED = {
       sections: JSON.stringify({
         ...AIMER_SECTIONS,
-        executive_summary: "조용한 기간.",
+        // Same citation-unit shape as the canonical (one uncited unit) so the
+        // translate-path structure-parity guard accepts it (#449 round 1).
+        executive_summary: [{ text: "조용한 기간." }],
       }),
       promptVersion: "translate-pv-1",
       modelActualVersion: "gpt-4o-translate",
@@ -1762,7 +1914,9 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     const TRANSLATED = {
       sections: JSON.stringify({
         ...AIMER_SECTIONS,
-        executive_summary: "조용한 기간.",
+        // Same citation-unit shape as the canonical (one uncited unit) so the
+        // translate-path structure-parity guard accepts it (#449 round 1).
+        executive_summary: [{ text: "조용한 기간." }],
       }),
       promptVersion: "translate-pv-1",
       modelActualVersion: "gpt-4o-translate",
@@ -1879,7 +2033,9 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     const TRANSLATED = {
       sections: JSON.stringify({
         ...AIMER_SECTIONS,
-        executive_summary: "조용한 기간.",
+        // Same citation-unit shape as the canonical (one uncited unit) so the
+        // translate-path structure-parity guard accepts it (#449 round 1).
+        executive_summary: [{ text: "조용한 기간." }],
       }),
       promptVersion: "translate-pv-1",
       modelActualVersion: "gpt-4o-translate",

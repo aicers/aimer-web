@@ -61,6 +61,38 @@ function splitTextNode(value: string): HastNode[] {
   return out;
 }
 
+// rehype plugin: append a `citation-chip` element to the END of the unit's
+// inline flow so the citation link renders inline right after the sentence
+// text rather than dropping onto its own line below the block paragraph
+// (#449 review round 1). The chip is appended INSIDE the last paragraph when
+// the unit ends in one (the common single-sentence case), so it sits
+// immediately after the final word; otherwise (a unit ending in a list,
+// code block, …) it is appended as a trailing block after the last element.
+// The `citation-chip` node is mapped to the actual `<Link>` by a per-render
+// component override in `AnalysisMarkdown` (it carries no properties — the
+// closure supplies the link), mirroring the `unverified-marker` pattern.
+function rehypeAppendCitationChip() {
+  const chip: HastElement = {
+    type: "element",
+    tagName: "citation-chip",
+    properties: {},
+    children: [],
+  };
+  return (tree: HastNode): void => {
+    const children = (tree as HastElement).children;
+    if (!children || children.length === 0) {
+      (tree as HastElement).children = [chip];
+      return;
+    }
+    const last = children[children.length - 1];
+    if (last.type === "element" && (last as HastElement).tagName === "p") {
+      (last as HastElement).children.push(chip);
+    } else {
+      children.push(chip);
+    }
+  };
+}
+
 // rehype plugin: walk the tree and replace `<<UNVERIFIED_*>>` substrings
 // inside text nodes with `unverified-marker` element nodes that the
 // component map below renders as badges.
@@ -177,12 +209,28 @@ const COMPONENTS = {
 // `<<UNVERIFIED_*>>` badge treatment, WITHOUT the bordered card chrome.
 // Shared by `AnalysisBody` and the per-unit sentence citations (#449), which
 // stack several markdown chunks inside one card.
-export function AnalysisMarkdown({ text }: { text: string }) {
+//
+// When `citation` is supplied (a per-unit citation link), it is woven into
+// the END of the unit's inline flow — appended inside the final paragraph so
+// it renders inline directly after the sentence text rather than on its own
+// line below the block (#449 review round 1). The node is supplied by a
+// per-render component override closing over `citation`, so the rehype plugin
+// only has to mark the insertion point.
+export function AnalysisMarkdown({
+  text,
+  citation,
+}: {
+  text: string;
+  citation?: React.ReactNode;
+}) {
+  const rehypePlugins = citation
+    ? [rehypeUnverifiedMarkers, rehypeAppendCitationChip]
+    : [rehypeUnverifiedMarkers];
+  const components = citation
+    ? ({ ...COMPONENTS, "citation-chip": () => <>{citation}</> } as Components)
+    : COMPONENTS;
   return (
-    <ReactMarkdown
-      rehypePlugins={[rehypeUnverifiedMarkers]}
-      components={COMPONENTS}
-    >
+    <ReactMarkdown rehypePlugins={rehypePlugins} components={components}>
       {text}
     </ReactMarkdown>
   );

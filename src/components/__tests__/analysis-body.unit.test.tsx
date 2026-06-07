@@ -11,7 +11,7 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AnalysisBody } from "../analysis-body";
+import { AnalysisBody, AnalysisMarkdown } from "../analysis-body";
 
 afterEach(() => cleanup());
 
@@ -54,6 +54,35 @@ describe("AnalysisBody", () => {
   it("renders the empty fallback for a blank section", () => {
     render(<AnalysisBody text="   " testid="section" emptyFallback="—" />);
     expect(screen.getByTestId("section").textContent).toBe("—");
+  });
+
+  it("weaves a per-unit citation chip inline into the final paragraph (#449)", () => {
+    render(
+      <div data-testid="unit">
+        <AnalysisMarkdown
+          text="A grounded claim."
+          citation={<span data-testid="chip">cite</span>}
+        />
+      </div>,
+    );
+    const chip = screen.getByTestId("chip");
+    // The chip must sit INSIDE the sentence's paragraph (inline after the
+    // text), not as a block sibling below it (#449 review round 1).
+    const p = screen.getByTestId("unit").querySelector("p");
+    expect(p?.contains(chip)).toBe(true);
+    expect(p?.textContent).toBe("A grounded claim.cite");
+  });
+
+  it("renders no citation chip when none is supplied", () => {
+    render(
+      <div data-testid="unit">
+        <AnalysisMarkdown text="Uncited prose." />
+      </div>,
+    );
+    expect(screen.queryByTestId("chip")).toBeNull();
+    expect(screen.getByTestId("unit").querySelector("p")?.textContent).toBe(
+      "Uncited prose.",
+    );
   });
 
   it("does not inject raw HTML as live DOM", () => {

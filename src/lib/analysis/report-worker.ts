@@ -313,6 +313,87 @@ function findInvalidCitationSources(
 }
 
 /**
+ * Normalize a wire-form unit `source` to a stable comparison key, or the
+ * empty string for an uncited unit (`source` absent/null). A `story` source
+ * keys on its `story_id`, an `event` source on its opaque `event_ref`; an
+ * ill-formed `source` collapses to a sentinel that only matches another
+ * ill-formed `source` (so a malformed translated unit never silently matches
+ * a well-formed canonical one).
+ */
+function citationSourceKey(source: unknown): string {
+  if (source === undefined || source === null) return "";
+  if (typeof source !== "object") return " malformed";
+  const s = source as {
+    type?: unknown;
+    story_id?: unknown;
+    event_ref?: unknown;
+  };
+  if (s.type === "story" && typeof s.story_id === "string") {
+    return `story:${s.story_id}`;
+  }
+  if (s.type === "event" && typeof s.event_ref === "string") {
+    return `event:${s.event_ref}`;
+  }
+  return " malformed";
+}
+
+/**
+ * Translation-safety re-validation (#449, review round 1). The translate path
+ * re-emits the leaf-derived sections; aimer guarantees it preserves each
+ * unit's `source` and the unit count/order, but a bad or misconfigured
+ * translate response could silently strip citations — drop a `source`, return
+ * a legacy non-array section, or reorder units — while still passing the
+ * leaf-validity guard (which skips non-array sections and treats a missing
+ * `source` as a deliberately-uncited unit). The wire field is an opaque
+ * `String!`, so aimer-web is the only line of defense: compare the translated
+ * leaf-derived sections against the canonical row and reject any drift in
+ * citation-unit shape, count, order, or per-unit `source`. Returns one
+ * descriptor per mismatch; an empty result means the translation preserved
+ * the canonical's citation structure exactly.
+ */
+function findCitationStructureMismatches(
+  canonicalSections: ReportSectionsJson,
+  translatedSections: ReportSectionsJson,
+): string[] {
+  const mismatches: string[] = [];
+  for (const key of LEAF_DERIVED_SECTION_KEYS) {
+    const canon = canonicalSections[key];
+    // The canonical is produced by the native path (always a v5 citation-unit
+    // array). If it is not an array there is no citation structure to preserve
+    // — nothing to enforce for this section.
+    if (!Array.isArray(canon)) continue;
+    const translated = translatedSections[key];
+    if (!Array.isArray(translated)) {
+      mismatches.push(
+        `${key}: translated section is not a citation-unit array`,
+      );
+      continue;
+    }
+    if (translated.length !== canon.length) {
+      mismatches.push(
+        `${key}: unit count ${translated.length} != canonical ${canon.length}`,
+      );
+      continue;
+    }
+    for (let i = 0; i < canon.length; i += 1) {
+      const canonSource = (canon[i] as { source?: unknown } | null)?.source;
+      const transSource = (translated[i] as { source?: unknown } | null)
+        ?.source;
+      const canonKey = citationSourceKey(canonSource);
+      const transKey = citationSourceKey(transSource);
+      if (canonKey !== transKey) {
+        mismatches.push(
+          `${key}[${i}]: source ${transKey || "none"} != canonical ${
+            canonKey || "none"
+          }`,
+        );
+      }
+    }
+  }
+  return mismatches;
+}
+
+/**
  * Build the allowed citation-source key sets from the input refs: the set of
  * `story_id`s and the set of opaque `event_ref`s (`"{aice_id}:{event_key}"`,
  * the exact packed token sent to aimer) the report was built from.
@@ -1105,6 +1186,39 @@ async function runTranslation(args: {
     return;
   }
 
+  // Citation-structure guard on the translated output (#449, review round 1):
+  // re-validate that the translation preserved the canonical's citation-unit
+  // structure — same leaf-derived array shape, unit count/order, and per-unit
+  // `source`. aimer guarantees this, but the wire field is opaque `String!`,
+  // so a bad/misconfigured translate response that drops a citation, returns a
+  // legacy non-array section, or reorders units would otherwise silently strip
+  // sentence-level provenance while the job still succeeds. Compare against the
+  // canonical row (the source of truth) and refuse to persist on any drift.
+  const structureMismatches = findCitationStructureMismatches(
+    canonical.sections,
+    parsedSections,
+  );
+  if (structureMismatches.length > 0) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: reportTargetId(job),
+      details: {
+        generation: job.generation,
+        stage: "translate_citation_structure",
+        mismatches: structureMismatches.slice(0, 20),
+      },
+    });
+    await failJob(
+      opts.authPool,
+      job,
+      "citation_structure_mismatch",
+      claimMarker,
+      { attempts: job.attempts + 1 },
+    );
+    return;
+  }
+
   // Final archived re-check before the customer-DB write (parity with the
   // native path).
   if (await parentStateArchived(opts.authPool, job)) {
@@ -1243,6 +1357,13 @@ async function runTranslation(args: {
 interface EnglishCanonical {
   /** JSON string of the stored sections, for the translate mutation input. */
   sectionsString: string;
+  /**
+   * Parsed canonical sections, used to re-validate that the translated output
+   * preserves the canonical's citation-unit structure (#449 — translation
+   * re-emits each unit's `source`; aimer-web checks the leaf-derived sections
+   * still carry the same per-unit `source` set, shape, and order).
+   */
+  sections: ReportSectionsJson;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
   modelName: string;
@@ -1305,6 +1426,7 @@ async function loadEnglishCanonical(
   const r = rows[0];
   return {
     sectionsString: JSON.stringify(r.sections_jsonb ?? {}),
+    sections: r.sections_jsonb ?? {},
     storyRefs: Array.isArray(r.input_story_refs) ? r.input_story_refs : [],
     eventRefs: Array.isArray(r.input_event_refs) ? r.input_event_refs : [],
     modelName: r.model_name,

@@ -76,15 +76,22 @@ function CitedUnit({
 }) {
   return (
     <div data-testid="citation-unit" className="mb-2 last:mb-0">
-      <AnalysisMarkdown text={unit.text} />
-      {unit.source ? (
-        <CitationLink
-          source={unit.source}
-          locale={locale}
-          customerId={customerId}
-          t={t}
-        />
-      ) : null}
+      <AnalysisMarkdown
+        text={unit.text}
+        // The citation chip is woven into the END of the unit's Markdown flow
+        // (inline after the final sentence) rather than rendered as a block
+        // sibling below the paragraph (#449 review round 1).
+        citation={
+          unit.source ? (
+            <CitationLink
+              source={unit.source}
+              locale={locale}
+              customerId={customerId}
+              t={t}
+            />
+          ) : undefined
+        }
+      />
     </div>
   );
 }
