@@ -50,7 +50,9 @@ export async function loginViaKeycloak(
     // Surface why we never left Keycloak (bad credentials, a required-action
     // interstitial, etc.) instead of an opaque waitForURL timeout.
     const kcMessage = await page
-      .locator("#input-error, .alert-error, .kc-feedback-text, #kc-error-message")
+      .locator(
+        "#input-error, .alert-error, .kc-feedback-text, #kc-error-message",
+      )
       .first()
       .textContent({ timeout: 1000 })
       .catch(() => null);
