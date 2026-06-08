@@ -16,6 +16,15 @@
 // cost; the 7-day default window (see `event-leaf-backfill.ts`) bounds
 // scope. All three are documented defaults.
 //
+// PER-RUN (not per-replica) THROTTLE: the worker installs in every server
+// process, so the BATCH_SIZE-per-interval bound only holds if a single
+// process drains a given run at a time. `claimRun` takes a single-owner
+// lease and the worker heartbeats it per item (`renewLease`); while the
+// lease is held no other replica can claim that run, so the burst stays
+// `BATCH_SIZE` per interval regardless of replica count rather than
+// `replicas × BATCH_SIZE`. A crashed owner's lease lapses and another
+// worker resumes the run. Per-item claims remain the correctness backstop.
+//
 // IDEMPOTENCY: before re-analyzing each item the worker re-checks whether a
 // non-superseded target-variant leaf now exists (created since
 // materialization, e.g. by a concurrent run or a manual regenerate) and
@@ -24,6 +33,7 @@
 
 import "server-only";
 
+import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { hasTargetVariantLeaf } from "../analysis/event-leaf-backfill";
 import {
@@ -37,6 +47,7 @@ import {
   type PendingItem,
   reclaimStaleItems,
   recordItemResult,
+  renewLease,
 } from "../analysis/event-leaf-backfill-store";
 import {
   type RegenerateEventOutcome,
@@ -62,6 +73,17 @@ const DEFAULT_POLL_INTERVAL_MS = 10_000;
 // Must comfortably exceed a single re-analysis model call so an in-flight
 // item is never reclaimed out from under a live worker.
 const ITEM_LEASE_MS = 15 * 60_000;
+
+// How long a run lease is valid before another worker may take an
+// (apparently crashed) owner's run over. The owner renews it after every
+// item, so it only needs to exceed a single item's worst-case processing
+// time — kept >= the item lease so a worker legitimately mid-item never
+// loses its run lease while its in-flight item is still un-reclaimable.
+const RUN_LEASE_MS = ITEM_LEASE_MS + DEFAULT_POLL_INTERVAL_MS;
+
+// Stable identity for THIS process's worker, so a run's lease can be tied to
+// one replica and renewed by it across ticks. Generated once per process.
+const PROCESS_OWNER = randomUUID();
 
 function resolvePositiveInt(raw: string | undefined, fallback: number): number {
   if (raw == null || raw === "") return fallback;
@@ -101,6 +123,8 @@ export interface EventBackfillDeps {
   }) => Promise<RegenerateEventOutcome>;
   /** Items processed per tick (self-paced throttle). */
   batchSize: number;
+  /** This worker's stable lease owner id (one per process). */
+  owner: string;
   /** Injectable clock. */
   now: () => Date;
 }
@@ -127,6 +151,7 @@ function defaultDeps(): EventBackfillDeps {
         force: true,
       }),
     batchSize: resolveBatchSize(),
+    owner: PROCESS_OWNER,
     now: getCurrentTimestamp,
   };
 }
@@ -177,7 +202,10 @@ export async function runEventBackfillTickOnce(
   let processed = 0;
   try {
     const nowIso = deps.now().toISOString();
-    const run = await claimRun(authClient, nowIso);
+    const leaseExpiresIso = new Date(
+      deps.now().getTime() + RUN_LEASE_MS,
+    ).toISOString();
+    const run = await claimRun(authClient, nowIso, deps.owner, leaseExpiresIso);
     if (!run)
       return {
         claimed: false,
@@ -241,6 +269,29 @@ export async function runEventBackfillTickOnce(
 
     const customerPool = deps.getCustomerPool(run.customerId);
     for (const item of items) {
+      // Heartbeat the run lease before each item so a slow batch never lets
+      // the lease expire under us and a second replica start a parallel
+      // batch (which would break the per-run burst bound). If we have lost
+      // the lease — we fell behind by more than RUN_LEASE_MS, so another
+      // worker now owns the run — stop processing this batch; the new owner
+      // continues. Items already recorded this tick stay recorded.
+      const held = await renewLease(
+        authClient,
+        run.id,
+        deps.owner,
+        deps.now().toISOString(),
+        new Date(deps.now().getTime() + RUN_LEASE_MS).toISOString(),
+      );
+      if (!held) {
+        return {
+          claimed: true,
+          runId: run.id,
+          processed,
+          cancelled: false,
+          completed: false,
+        };
+      }
+
       // Observe cancel between events so a cancel takes effect promptly.
       if (await isCancelRequested(authClient, run.id)) {
         await finalizeRun(

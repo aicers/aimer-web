@@ -88,6 +88,13 @@ per-run cap bound total cost further. The pacing batch size and interval
 are configurable for an operator who needs to tune throughput
 (`EVENT_BACKFILL_BATCH_SIZE`, `EVENT_BACKFILL_POLL_INTERVAL_MS`).
 
+This bound holds **per run, not per server replica**. A run is processed by
+a single worker at a time: the worker takes a lease on the run and renews it
+as it works, so other replicas leave that run alone and the burst stays at
+one batch per interval no matter how many replicas are deployed. If the
+owning worker stops, the lease lapses and another replica takes the run over
+and resumes it, so a run is never stranded.
+
 ## What the counts mean
 
 The preview and the run report use the same categories, so nothing is

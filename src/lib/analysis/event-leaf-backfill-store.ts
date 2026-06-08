@@ -311,41 +311,82 @@ export async function requestCancel(
 }
 
 /**
- * Atomically claim the oldest active (pending or running) run for the
- * worker, flipping it to `running` and stamping `started_at` on first
- * pickup. Picking up a `running` run resumes one interrupted by a restart.
+ * Atomically claim the oldest active (pending or running) run for ONE
+ * worker, flipping it to `running`, stamping `started_at` on first pickup,
+ * and taking a single-owner lease (`lease_owner` + `lease_expires_at`).
  *
- * `FOR UPDATE SKIP LOCKED` only serializes concurrent *claims* (two ticks
- * never pick the same row in the same instant); it does NOT give the caller
- * exclusive ownership of the run afterwards, because the row lock is
- * released when this statement's transaction commits. A run therefore stays
- * claimable while it is `running`, so a second replica can also pick it up.
- * That is intentional (it is how an interrupted run resumes), and it is made
- * safe at the ITEM level: the worker claims each item with
- * `claimItem` (a guarded `pending` -> `processing` transition) before the
- * model call, so two workers sharing a run never re-analyze the same event
- * or double-count its aggregates.
+ * The lease is what makes the self-paced throttle a true PER-RUN bound
+ * rather than a per-replica one (#470 Scope §3). `FOR UPDATE SKIP LOCKED`
+ * only serializes concurrent *claims* in the same instant; the row lock is
+ * released at commit, so without a lease a `running` run would stay
+ * claimable by every replica and each would process its own `BATCH_SIZE`
+ * items per tick (the item-claim guard stops duplicate calls but not the
+ * `replicas × BATCH_SIZE` aggregate burst). The lease excludes a run that
+ * another worker still holds (`lease_owner` set and `lease_expires_at` in
+ * the future), so exactly one process drains a run at a time and the burst
+ * stays bounded to `BATCH_SIZE` per interval regardless of replica count.
+ *
+ * A run is claimable when its lease is unset, expired, or already ours —
+ * so a crashed owner's run is taken over (and resumed) once its lease
+ * lapses, and a re-tick by the same owner simply re-acquires it. The owner
+ * renews the lease per item via `renewLease` so a long batch never lets the
+ * lease expire under a live worker. Item-level claims (`claimItem`) remain
+ * the correctness backstop against any brief overlap during takeover.
  */
 export async function claimRun(
   client: PoolClient,
   nowIso: string,
+  owner: string,
+  leaseExpiresIso: string,
 ): Promise<BackfillRun | null> {
   const { rows } = await client.query<RunRow>(
     `UPDATE event_leaf_backfill_runs r
         SET status = 'running',
             started_at = COALESCE(r.started_at, $1::timestamptz),
-            last_progress_at = $1::timestamptz
+            last_progress_at = $1::timestamptz,
+            lease_owner = $2,
+            lease_expires_at = $3::timestamptz
       WHERE r.id = (
         SELECT id FROM event_leaf_backfill_runs
          WHERE status IN ('pending', 'running')
+           AND (lease_owner IS NULL
+                OR lease_owner = $2
+                OR lease_expires_at IS NULL
+                OR lease_expires_at <= $1::timestamptz)
          ORDER BY created_at
          LIMIT 1
          FOR UPDATE SKIP LOCKED
       )
       RETURNING ${RUN_COLUMNS}`,
-    [nowIso],
+    [nowIso, owner, leaseExpiresIso],
   );
   return rows[0] ? mapRun(rows[0]) : null;
+}
+
+/**
+ * Renew (heartbeat) the lease on a run this worker owns, extending
+ * `lease_expires_at` and bumping `last_progress_at`. Returns `true` while
+ * this worker still holds the lease, `false` if it lost ownership (the lease
+ * lapsed and another worker took over, or the run is no longer active) — in
+ * which case the worker must stop processing to keep the per-run burst bound
+ * intact. Guarded on `lease_owner` so it can never steal another owner's run.
+ */
+export async function renewLease(
+  client: PoolClient | Pool,
+  runId: string,
+  owner: string,
+  nowIso: string,
+  leaseExpiresIso: string,
+): Promise<boolean> {
+  const res = await client.query(
+    `UPDATE event_leaf_backfill_runs
+        SET lease_expires_at = $4::timestamptz,
+            last_progress_at = $3::timestamptz
+      WHERE id = $1 AND lease_owner = $2
+        AND status IN ('pending', 'running')`,
+    [runId, owner, nowIso, leaseExpiresIso],
+  );
+  return (res.rowCount ?? 0) > 0;
 }
 
 /** Whether a run's cancel flag is set (cheap per-item poll). */

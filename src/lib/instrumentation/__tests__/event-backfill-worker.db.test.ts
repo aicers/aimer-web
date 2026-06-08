@@ -103,6 +103,7 @@ describe.skipIf(!hasPostgres)("event backfill worker (DB)", () => {
           generation: 2,
         })),
       batchSize: over.batchSize ?? 100,
+      owner: over.owner ?? "test-worker-a",
       now: over.now ?? (() => new Date("2026-06-08T00:00:00.000Z")),
     };
   }
@@ -551,6 +552,91 @@ describe.skipIf(!hasPostgres)("event backfill worker (DB)", () => {
     const run = await getRun(pool, cust, runId);
     expect(run?.reanalyzedCount).toBe(1);
     expect(run?.status).toBe("completed");
+  });
+
+  it("leases a run to one owner; a second worker cannot claim it concurrently", async () => {
+    // The self-paced throttle must bound the burst PER RUN, not per replica.
+    // A run held under a fresh lease by worker A must be unclaimable by
+    // worker B in the same instant, so only A's batch issues model calls.
+    const cust = await freshCustomer("ebf-lease");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "100",
+          already_current: false,
+          source_present: true,
+        },
+        {
+          aice_id: "a",
+          event_key: "101",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    // Worker A claims, processes one item, leaves the run running + leased.
+    const a = await runEventBackfillTickOnce(
+      deps({ customerPool: cp, owner: "worker-a", batchSize: 1 }),
+    );
+    expect(a.runId).toBe(runId);
+    expect(a.completed).toBe(false);
+    // Worker B ticks at the same instant: A's lease is held and unexpired,
+    // so B claims nothing and issues no model call.
+    let bCalls = 0;
+    const b = await runEventBackfillTickOnce(
+      deps({
+        customerPool: cp,
+        owner: "worker-b",
+        regenerate: async () => {
+          bCalls += 1;
+          return { kind: "reanalyzed", generation: 2 };
+        },
+      }),
+    );
+    expect(b.claimed).toBe(false);
+    expect(bCalls).toBe(0);
+  });
+
+  it("lets another worker take over a run whose lease has lapsed", async () => {
+    // A crashed owner must not strand a run: once its lease lapses, another
+    // worker takes the run over and drains the remaining items.
+    const cust = await freshCustomer("ebf-takeover");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "110",
+          already_current: false,
+          source_present: true,
+        },
+        {
+          aice_id: "a",
+          event_key: "111",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    // Worker A claims, processes one item, then "crashes" (stops ticking).
+    await runEventBackfillTickOnce(
+      deps({ customerPool: cp, owner: "worker-a", batchSize: 1 }),
+    );
+    // Worker B ticks well past A's lease expiry and takes the run over.
+    const b = await runEventBackfillTickOnce(
+      deps({
+        customerPool: cp,
+        owner: "worker-b",
+        now: () => new Date("2026-06-08T01:00:00.000Z"),
+      }),
+    );
+    expect(b.runId).toBe(runId);
+    expect(b.completed).toBe(true);
+    const run = await getRun(pool, cust, runId);
+    expect(run?.status).toBe("completed");
+    expect(run?.reanalyzedCount).toBe(2);
   });
 
   it("records a terminal item once: a duplicate record is a no-op", async () => {
