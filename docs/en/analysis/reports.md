@@ -193,8 +193,10 @@ The worker pipeline runs without operator action:
    Event citation follows a **tier policy** under a hard ceiling: every
    `CRITICAL` and `HIGH` event is cited individually up to the ceiling; if
    they exceed it, only the top ranked ones up to the ceiling are cited (the
-   remainder is accounted for in the period aggregates, not silently
-   dropped); if they fall short, the remaining slots are filled with `MEDIUM`
+   remainder is not silently dropped — it stays recoverable from the
+   analyzed-event record and will surface through the period's long-tail
+   accounting once that wiring lands); if they fall short, the remaining slots
+   are filled with `MEDIUM`
    events by the same ranking. `LOW` events are never cited individually, so
    a quiet period yields an empty **Notable events** rather than a list
    padded with low-interest events. For a **default** report, each story/event leaf is chosen by a fixed
