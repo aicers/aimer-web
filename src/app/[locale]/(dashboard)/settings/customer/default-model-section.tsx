@@ -1,12 +1,12 @@
 "use client";
 
-import { useLocale, useTranslations } from "next-intl";
+import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { Link } from "@/i18n/navigation";
 import { apiFetch } from "@/lib/api/client";
-import { manualUrl } from "@/lib/manual-url";
 
 interface ModelPair {
   modelName: string;
@@ -43,7 +43,6 @@ const parsePairKey = (key: string): ModelPair => {
 
 export function DefaultModelSection({ customerId, canWrite }: Props) {
   const t = useTranslations("customerSettings");
-  const locale = useLocale();
 
   const [view, setView] = useState<DefaultModelView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,25 +216,17 @@ export function DefaultModelSection({ customerId, canWrite }: Props) {
           </p>
           <div className="mt-3 flex gap-2">
             {/*
-              Launch entry point (#473 Scope 7). The scoped, cost-bounded
-              re-analysis execution itself is owned by #466/#470/#469 and is
-              out of scope here, so this hook deep-links to the documented
-              re-analysis procedure for this customer rather than enqueueing
-              anything — the model-change action never auto-runs re-analysis.
-              When the in-app re-analysis flow ships, repoint this action at
-              it.
+              Launch entry point (#473 Scope 7). Deep-links to the stable
+              in-app, customer-scoped re-analysis route, which the scoped,
+              cost-bounded re-analysis owned by #466/#470/#469 will own and
+              fill with the real controls. This action only NAVIGATES — it
+              never enqueues anything, so the model-change action still never
+              auto-runs re-analysis.
             */}
             <Button asChild>
-              <a
-                href={`${manualUrl(
-                  "analysis/default-model",
-                  locale === "ko" ? "ko" : "en",
-                )}#what-a-change-affects`}
-                target="_blank"
-                rel="noreferrer"
-              >
+              <Link href="/settings/customer/reanalyze">
                 {t("defaultModelReanalyzeOfferLaunch")}
-              </a>
+              </Link>
             </Button>
             <Button
               variant="ghost"

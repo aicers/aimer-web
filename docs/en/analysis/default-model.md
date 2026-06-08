@@ -88,6 +88,12 @@ value. As a second safeguard, if a stored value later falls out of the
 catalog, resolution skips it and falls back to the next tier instead of
 failing.
 
+In that case the **global default** section does not advertise the stale
+value as if it were live: it shows the stored value as ignored alongside
+the deployment fallback that is actually in effect, and prompts the
+administrator to pick a valid model or clear the global default. The
+settings page therefore always matches what the resolver actually uses.
+
 ## What a change affects
 
 Changing a customer's default model affects **future** analyses (and
@@ -96,11 +102,19 @@ are not changed.**
 
 After a successful change, the page offers to re-analyze the customer's
 existing data under the new model. The offer is the **entry point** to
-that follow-on action: a **Re-analyze existing data** button opens the
-re-analysis guidance, and a **Dismiss** button closes the offer without
-doing anything. It is an **offer only** — nothing is re-analyzed
-automatically, because re-analyzing all existing data is a bounded,
-cost-controlled operation that an operator launches deliberately.
+that follow-on action: a **Re-analyze existing data** button opens a
+customer-scoped re-analysis page, and a **Dismiss** button closes the
+offer without doing anything. It is an **offer only** — nothing is
+re-analyzed automatically, because re-analyzing all existing data is a
+bounded, cost-controlled operation that an operator launches
+deliberately.
+
+The re-analysis page is the stable, in-app entry point for that scoped
+run (re-running the customer's story and event analyses, then refreshing
+its reports). The cost preview and launch controls for that run are
+delivered separately; until then the page explains the action, shows the
+new default model, and restates that existing results stay untouched
+until a re-analysis is deliberately started.
 
 ## Default variant and coverage
 

@@ -196,6 +196,54 @@ export async function readGlobalDefaultModel(
   return coercePair(res.rows[0].value);
 }
 
+export interface GlobalDefaultModelView {
+  /**
+   * The stored global default, or `null` when unset. May be a stale value
+   * that is no longer in the catalog (e.g. the catalog changed after the
+   * value was saved, or a direct DB write) — check `active`.
+   */
+  stored: ModelPair | null;
+  /**
+   * Whether `stored` is currently catalog-allowed, i.e. whether the
+   * resolver / workers would actually use it. `false` for an unset or
+   * stale value.
+   */
+  active: boolean;
+  /**
+   * The effective global-tier default: `stored` when `active`, else the
+   * env fallback. This mirrors what `resolveDefaultModel` would pick once
+   * the per-customer tier is absent.
+   */
+  effective: ModelPair;
+  /** Where `effective` came from. */
+  source: "global" | "env";
+}
+
+/**
+ * Read the global default the way the resolver sees it (#473 review
+ * round 2): the raw stored value, whether it is currently catalog-active,
+ * and the effective fallback. `readGlobalDefaultModel` only validates
+ * shape, so the admin settings page must use THIS to avoid advertising a
+ * stale out-of-catalog value as the live global default while every
+ * resolver/worker is actually falling through to env.
+ */
+export async function readGlobalDefaultModelView(
+  client: PoolClient,
+): Promise<GlobalDefaultModelView> {
+  const stored = await readGlobalDefaultModel(client);
+  const active =
+    stored !== null && isModelAllowed(stored.modelName, stored.model);
+  if (active && stored) {
+    return { stored, active: true, effective: stored, source: "global" };
+  }
+  return {
+    stored,
+    active: false,
+    effective: getEnvDefaultModel(),
+    source: "env",
+  };
+}
+
 /**
  * Set the admin-set global default. Admin context only
  * (`system-settings:write`). Validates catalog membership at save.
@@ -320,6 +368,12 @@ export async function readCustomerDefaultModel(
     customerId,
     "read",
   );
+  // 404 for a nonexistent customer rather than returning an env/global
+  // effective default for a customer that does not exist (#473 review
+  // round 2). The admin context authorizes any customer, so without this
+  // a bogus-but-valid-looking UUID would read as a real customer; mirrors
+  // the setter's `assertCustomerExists`.
+  await assertCustomerExists(client, customerId);
 
   const res = await client.query<{ model_name: string; model: string }>(
     `SELECT model_name, model
@@ -428,6 +482,10 @@ export async function clearCustomerDefaultModel(
     customerId,
     "write",
   );
+  // 404 for a nonexistent customer (#473 review round 2): an admin-context
+  // DELETE on a bogus-but-valid-looking UUID must not silently return
+  // `{ cleared: false }` as if it were a real customer with no override.
+  await assertCustomerExists(client, customerId);
   const before = await client.query<{ model_name: string; model: string }>(
     `SELECT model_name, model
        FROM customer_default_model

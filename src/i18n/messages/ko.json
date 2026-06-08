@@ -470,6 +470,7 @@
     "label": "모델",
     "currentGlobal": "현재 전역 기본값: {model}.",
     "currentEnv": "전역 기본값이 설정되지 않아 배포 기본값을 사용 중입니다: {model}.",
+    "currentStale": "저장된 전역 기본값({stored})이 더 이상 허용된 모델 목록에 없어 무시되고 있으며, 분석은 배포 기본값({effective})을 사용하고 있습니다. 아래에서 유효한 모델을 선택하거나 전역 기본값을 지우세요.",
     "save": "저장",
     "clear": "전역 기본값 지우기",
     "saveGenericError": "전역 기본 분석 모델을 저장하지 못했습니다.",
@@ -551,6 +552,16 @@
     "defaultModelReanalyzeOfferBody": "새 기본값은 향후 분석에만 적용되며 기존 결과는 변경되지 않습니다. 이 고객의 기존 데이터를 새 모델로 다시 분석하는 것은 별도의 비용 제한 작업이며 자동으로 실행되지 않습니다.",
     "defaultModelReanalyzeOfferLaunch": "기존 데이터 다시 분석",
     "defaultModelReanalyzeOfferDismiss": "닫기"
+  },
+  "customerReanalyze": {
+    "title": "기존 데이터 다시 분석",
+    "backToSettings": "← 고객 설정으로 돌아가기",
+    "description": "이 고객의 기존 분석을 새 기본 모델로 다시 실행합니다. 이는 별도의 비용 제한 작업이며, 기본값을 변경한다고 해서 자동으로 시작되지 않습니다.",
+    "targetModel": "새 기본 모델: {model}.",
+    "notYetAvailableTitle": "아직 사용할 수 없음",
+    "notYetAvailableBody": "범위가 지정된 다시 분석 실행(스토리 및 이벤트 리프 후 리포트 새로고침)은 별도로 제공됩니다. 해당 작업이 출시되면 비용 미리보기와 실행 컨트롤이 여기에 표시됩니다.",
+    "guaranteeNote": "여기에서 다시 분석을 실행하기 전까지 모델 변경은 향후 분석에만 적용되며 기존 결과는 그대로 유지됩니다.",
+    "docsLink": "모델 변경이 기존 데이터에 미치는 영향 알아보기"
   },
   "accountSettings": {
     "title": "계정 설정",

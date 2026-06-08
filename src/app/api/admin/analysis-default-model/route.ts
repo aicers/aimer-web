@@ -14,7 +14,7 @@ import type { NextRequest } from "next/server";
 import {
   clearGlobalDefaultModel,
   getEnvDefaultModel,
-  readGlobalDefaultModel,
+  readGlobalDefaultModelView,
   setGlobalDefaultModel,
 } from "@/lib/analysis/default-model";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
@@ -33,17 +33,24 @@ function errorResponse(err: unknown): Response {
 export const GET = withAuth(
   async (_req: NextRequest, auth) => {
     try {
-      const global = await withTransaction(getAuthPool(), async (client) => {
+      const view = await withTransaction(getAuthPool(), async (client) => {
         await assertAuthorized(
           client,
           "admin",
           auth.accountId,
           "system-settings:read",
         );
-        return readGlobalDefaultModel(client);
+        return readGlobalDefaultModelView(client);
       });
+      // Surface the stored value AND whether it is actually live, so the
+      // settings page mirrors resolver semantics rather than advertising a
+      // stale out-of-catalog value as the effective global default (#473
+      // review round 2).
       return Response.json({
-        global,
+        global: view.stored,
+        globalActive: view.active,
+        effective: view.effective,
+        source: view.source,
         envDefault: getEnvDefaultModel(),
         catalog: getModelCatalog(),
       });

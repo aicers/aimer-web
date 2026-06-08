@@ -470,6 +470,7 @@
     "label": "Model",
     "currentGlobal": "Current global default: {model}.",
     "currentEnv": "No global default set; using the deployment fallback: {model}.",
+    "currentStale": "The stored global default ({stored}) is no longer in the allowed model catalog and is being ignored — analyses are using the deployment fallback ({effective}). Choose a valid model below, or clear the global default.",
     "save": "Save",
     "clear": "Clear global default",
     "saveGenericError": "Failed to save the global default analysis model.",
@@ -551,6 +552,16 @@
     "defaultModelReanalyzeOfferBody": "The new default applies to future analyses only — existing results are unchanged. Re-analyzing this customer's existing data under the new model is a separate, cost-bounded action and is never run automatically.",
     "defaultModelReanalyzeOfferLaunch": "Re-analyze existing data",
     "defaultModelReanalyzeOfferDismiss": "Dismiss"
+  },
+  "customerReanalyze": {
+    "title": "Re-analyze existing data",
+    "backToSettings": "← Back to customer settings",
+    "description": "Re-run this customer's existing analyses under the new default model. This is a separate, cost-bounded action — it is never started automatically by changing the default.",
+    "targetModel": "New default model: {model}.",
+    "notYetAvailableTitle": "Not yet available",
+    "notYetAvailableBody": "The scoped re-analysis run (story and event leaves, then a report refresh) is being delivered separately. Its cost preview and launch controls will appear here once that work ships.",
+    "guaranteeNote": "Until you run a re-analysis here, the model change affects future analyses only — existing results are left untouched.",
+    "docsLink": "Read how a model change affects existing data"
   },
   "accountSettings": {
     "title": "Account Settings",

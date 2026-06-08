@@ -18,6 +18,13 @@ interface CatalogEntry extends ModelPair {
 
 interface GlobalDefaultView {
   global: ModelPair | null;
+  // Whether `global` is currently catalog-active (i.e. the resolver/workers
+  // would actually use it). A stored-but-inactive value is stale.
+  globalActive: boolean;
+  // The default the resolver would actually pick at the global tier:
+  // `global` when active, else the env fallback.
+  effective: ModelPair;
+  source: "global" | "env";
   envDefault: ModelPair;
   catalog: CatalogEntry[];
 }
@@ -52,7 +59,10 @@ export function AnalysisDefaultModelSection() {
         "/api/admin/analysis-default-model",
       );
       setView(data);
-      setSelected(pairKey(data.global ?? data.envDefault));
+      // Seed the picker from the EFFECTIVE default (always catalog-valid),
+      // not the raw stored value — a stale out-of-catalog `global` has no
+      // matching <option> and would leave the select unselectable.
+      setSelected(pairKey(data.effective));
       setError(null);
     } catch {
       setError(t("loadError"));
@@ -120,15 +130,27 @@ export function AnalysisDefaultModelSection() {
 
       {!loading && view && (
         <form className="space-y-4" onSubmit={handleSave}>
-          <p className="text-sm text-foreground">
-            {view.global
-              ? t("currentGlobal", {
-                  model: `${view.global.modelName} / ${view.global.model}`,
-                })
-              : t("currentEnv", {
-                  model: `${view.envDefault.modelName} / ${view.envDefault.model}`,
-                })}
-          </p>
+          {view.global && !view.globalActive ? (
+            // Stale: a global default is stored but is no longer in the
+            // catalog, so the resolver ignores it and falls through to env.
+            // Surface that explicitly instead of advertising it as live.
+            <p className="text-sm text-destructive">
+              {t("currentStale", {
+                stored: `${view.global.modelName} / ${view.global.model}`,
+                effective: `${view.effective.modelName} / ${view.effective.model}`,
+              })}
+            </p>
+          ) : (
+            <p className="text-sm text-foreground">
+              {view.global
+                ? t("currentGlobal", {
+                    model: `${view.global.modelName} / ${view.global.model}`,
+                  })
+                : t("currentEnv", {
+                    model: `${view.envDefault.modelName} / ${view.envDefault.model}`,
+                  })}
+            </p>
+          )}
 
           <div className="space-y-1">
             <label

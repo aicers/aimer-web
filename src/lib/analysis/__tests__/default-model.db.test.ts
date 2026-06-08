@@ -17,6 +17,7 @@ import {
   clearGlobalDefaultModel,
   GLOBAL_DEFAULT_MODEL_KEY,
   readCustomerDefaultModel,
+  readGlobalDefaultModelView,
   resolveDefaultModel,
   setCustomerDefaultModel,
   setGlobalDefaultModel,
@@ -346,6 +347,73 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
         override: CUSTOMER_PAIR,
         effective: CUSTOMER_PAIR,
         source: "customer",
+      });
+    });
+
+    it("404s on a nonexistent customer (admin context)", async () => {
+      await resetState();
+      const bogus = "00000000-0000-0000-0000-0000000000ff";
+      await expect(
+        withClient((c) =>
+          readCustomerDefaultModel(c, "admin", adminAccountId, bogus),
+        ),
+      ).rejects.toMatchObject({ statusCode: 404 });
+    });
+
+    it("clear 404s on a nonexistent customer (admin context)", async () => {
+      await resetState();
+      const bogus = "00000000-0000-0000-0000-0000000000ff";
+      await expect(
+        withClient((c) =>
+          clearCustomerDefaultModel(c, "admin", adminAccountId, bogus),
+        ),
+      ).rejects.toMatchObject({ statusCode: 404 });
+    });
+  });
+
+  // -- readGlobalDefaultModelView (stored vs. effective, staleness) --------
+
+  describe("readGlobalDefaultModelView", () => {
+    it("reports active=false / source=env when unset", async () => {
+      await resetState();
+      const view = await withClient((c) => readGlobalDefaultModelView(c));
+      expect(view).toMatchObject({
+        stored: null,
+        active: false,
+        effective: ENV_DEFAULT,
+        source: "env",
+      });
+    });
+
+    it("reports a valid global as active with source=global", async () => {
+      await resetState();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      const view = await withClient((c) => readGlobalDefaultModelView(c));
+      expect(view).toMatchObject({
+        stored: GLOBAL_PAIR,
+        active: true,
+        effective: GLOBAL_PAIR,
+        source: "global",
+      });
+    });
+
+    it("surfaces a stale out-of-catalog global as inactive with the env effective", async () => {
+      await resetState();
+      // Bypass the setter's catalog guard to simulate a value that fell out
+      // of the catalog after it was saved (or a direct DB write).
+      await pool.query(
+        `INSERT INTO system_settings (key, value, updated_at)
+         VALUES ($1, $2::jsonb, NOW())`,
+        [GLOBAL_DEFAULT_MODEL_KEY, JSON.stringify(INVALID_PAIR)],
+      );
+      const view = await withClient((c) => readGlobalDefaultModelView(c));
+      expect(view).toMatchObject({
+        stored: INVALID_PAIR,
+        active: false,
+        effective: ENV_DEFAULT,
+        source: "env",
       });
     });
   });
