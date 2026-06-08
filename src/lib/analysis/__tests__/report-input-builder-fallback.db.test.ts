@@ -368,4 +368,44 @@ describe.skipIf(!hasPostgres)("#465 never-drop + hybrid scoring (db)", () => {
       },
     ]);
   });
+
+  // #494 cross-model guardrail. Seeded last so the same-key event cannot bleed
+  // into the exact-set assertions above (tests run in definition order on the
+  // shared DB).
+  it("keeps a report-model LOW leaf as the chosen leaf and excludes it (not displaced by a fallback higher-tier leaf)", async () => {
+    // Event 9003 has a report-model (gpt-4o) LOW leaf AND a fallback-model
+    // (gpt-5.5) CRITICAL leaf. The LOW floor must gate ONLY after the per-event
+    // leaf is chosen by model preference: the gpt-4o leaf (rank 1) is chosen,
+    // then dropped for being LOW — it is NOT replaced by the gpt-5.5 CRITICAL
+    // leaf. Pushing the floor into the `ranked` CTE would instead drop the LOW
+    // before the pick and let the fallback CRITICAL win, breaking #465's
+    // report-model-always-rank-1 contract.
+    await seedBaselineEvent(customerPool, "9003", IN_WINDOW);
+    await seedEventResult(customerPool, "9003", "gpt-4o", "LOW", 0.2, 0.2);
+    await seedEventResult(
+      customerPool,
+      "9003",
+      "gpt-5.5",
+      "CRITICAL",
+      0.99,
+      0.95,
+    );
+
+    const res = await buildPeriodicReportInput({
+      authPool,
+      customerPool,
+      customerId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: BUCKET,
+      variant: DEFAULT_VARIANT,
+      nowIso: NOW,
+    });
+
+    // 9003 is not cited at all: its chosen leaf is the gpt-4o LOW, which the
+    // floor excludes. It does NOT surface via the gpt-5.5 CRITICAL leaf.
+    const nineThousandThree = res.eventRefs.filter(
+      (r) => r.event_key === "9003",
+    );
+    expect(nineThousandThree).toEqual([]);
+  });
 });

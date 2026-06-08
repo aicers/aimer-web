@@ -190,7 +190,14 @@ The worker pipeline runs without operator action:
    result exists, and the canonical story window overlaps the bucket) and
    **top events** (event analyses whose deduped suspicious-event time falls
    in the bucket, excluding events already covered by the chosen stories).
-   For a **default** report, each story/event leaf is chosen by a fixed
+   Event citation follows a **tier policy** under a hard ceiling: every
+   `CRITICAL` and `HIGH` event is cited individually up to the ceiling; if
+   they exceed it, only the top ranked ones up to the ceiling are cited (the
+   remainder is accounted for in the period aggregates, not silently
+   dropped); if they fall short, the remaining slots are filled with `MEDIUM`
+   events by the same ranking. `LOW` events are never cited individually, so
+   a quiet period yields an empty **Notable events** rather than a list
+   padded with low-interest events. For a **default** report, each story/event leaf is chosen by a fixed
    model-preference order — the report's own model first, then a configured
    fallback order — so a leaf still appears even if it has not been analyzed
    under the report's current model (see [Cross-model coverage and
@@ -304,7 +311,10 @@ to plaintext:
 - **Story highlights** — the top-K analysed stories, one highlight each,
   with the strongest factors quoted where precise.
 - **Notable events** — single events not already covered by the story
-  highlights, one highlight each.
+  highlights, one highlight each. `CRITICAL` and `HIGH` events are
+  guaranteed a citation up to the ceiling; spare slots are filled with
+  `MEDIUM`; `LOW` events are never listed here, so a quiet period leaves
+  this section empty rather than padded.
 - **Suspicious-event trends** — short factual readings of the window's
   suspicious-event counts and ranks and any shift visible against the top
   techniques and sensors.

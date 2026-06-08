@@ -506,3 +506,153 @@ describe.skipIf(!hasPostgres)(
     });
   },
 );
+
+// #494 — event-leaf citation cut: tier-guaranteed (CRITICAL/HIGH) + MEDIUM
+// fill under a hard ceiling `M`, with LOW never cited individually. A fresh
+// customer DB so the seeded tier mix is the only event set; each scenario
+// uses its own DAILY bucket so per-day window isolation keeps the seeds from
+// bleeding across the shared-DB cases.
+describe.skipIf(!hasPostgres)("#494 event-leaf citation cut", () => {
+  const CUT_CUSTOMER_ID = "00000000-0000-0000-0000-0000000000d2";
+  const CUT_AUTH_LOCK_ID = 2403;
+  const CUT_CUSTOMER_LOCK_ID = 2404;
+  let authDbName: string;
+  let authPool: Pool;
+  let customerDbName: string;
+  let customerPool: Pool;
+
+  // Seed a standalone event leaf (baseline_event + EN event_analysis_result)
+  // at the given tier/score, at 11:00 KST on `day` so it lands inside that
+  // day's DAILY bucket window. Unique numeric `eventKey` keeps the
+  // dedupe-by-(aice_id, event_key) from collapsing leaves across scenarios.
+  async function seedEvt(
+    eventKey: string,
+    tier: string,
+    severity: number,
+    likelihood: number,
+    day: string,
+  ): Promise<void> {
+    const at = `${day}T02:00:00Z`;
+    await customerPool.query(
+      `INSERT INTO baseline_event
+         (baseline_version, event_key, event_time, kind, category, raw_score,
+          raw_event, score_window_context, window_signals,
+          scoring_weights_snapshot, source_aice_id, received_at)
+       VALUES ('vA', $1::numeric, $2::timestamptz, 'k', 'recon', 0.5,
+               '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+               '{}'::jsonb, 'aice-1', $2::timestamptz)`,
+      [eventKey, at],
+    );
+    await customerPool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, redaction_policy_version, requested_by)
+       VALUES ('aice-1', $1::numeric, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 1,
+               $2, $3,
+               '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
+               $4, $5, 'policy-A', gen_random_uuid())`,
+      [eventKey, severity, likelihood, tier, `event ${eventKey}`],
+    );
+  }
+
+  async function citedKeys(bucketDate: string, m: number): Promise<string[]> {
+    const res = await buildPeriodicReportInput({
+      authPool,
+      customerPool,
+      customerId: CUT_CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate,
+      variant: EN,
+      nowIso: `${bucketDate}T20:00:00Z`,
+      topEventsK: m,
+    });
+    return res.eventRefs.map((r) => r.event_key);
+  }
+
+  beforeAll(async () => {
+    const auth = await createTestDatabase("report_cut_auth");
+    authDbName = auth.dbName;
+    authPool = auth.pool;
+    await runMigrations(authPool, AUTH_MIGRATIONS_DIR, CUT_AUTH_LOCK_ID);
+
+    const cust = await createTestDatabase("report_cut_cust");
+    customerDbName = cust.dbName;
+    customerPool = cust.pool;
+    await runMigrations(
+      customerPool,
+      CUSTOMER_MIGRATIONS_DIR,
+      CUT_CUSTOMER_LOCK_ID,
+    );
+
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'cut-1', 'Cut Customer', 'active', $2)`,
+      [CUT_CUSTOMER_ID, TZ],
+    );
+
+    // Under-ceiling day (M=3): CRITICAL + HIGH (=2 < 3) guaranteed, one MEDIUM
+    // fills the third slot (the higher-scored one), the lower MEDIUM and the
+    // LOW are excluded.
+    await seedEvt("300", "CRITICAL", 0.9, 0.9, "2026-06-01");
+    await seedEvt("301", "HIGH", 0.8, 0.8, "2026-06-01");
+    await seedEvt("302", "MEDIUM", 0.6, 0.6, "2026-06-01"); // sum 1.2 — fills
+    await seedEvt("303", "MEDIUM", 0.3, 0.3, "2026-06-01"); // sum 0.6 — squeezed
+    await seedEvt("304", "LOW", 0.1, 0.1, "2026-06-01"); // never cited
+
+    // Exactly-ceiling day (M=2): CRITICAL + HIGH == M, so the MEDIUM is
+    // squeezed out (no free slots) and LOW is excluded.
+    await seedEvt("310", "CRITICAL", 0.9, 0.9, "2026-06-02");
+    await seedEvt("311", "HIGH", 0.8, 0.8, "2026-06-02");
+    await seedEvt("312", "MEDIUM", 0.6, 0.6, "2026-06-02");
+    await seedEvt("313", "LOW", 0.1, 0.1, "2026-06-02");
+
+    // Overflow day (M=2): three CRITICAL/HIGH leaves exceed M; exactly the
+    // top-2 by ranking are cited, the third CRITICAL/HIGH leaf and the MEDIUM
+    // are dropped (recoverable as full-set − cited for #495).
+    await seedEvt("320", "CRITICAL", 0.95, 0.95, "2026-06-03"); // sum 1.90
+    await seedEvt("321", "CRITICAL", 0.85, 0.85, "2026-06-03"); // sum 1.70
+    await seedEvt("322", "HIGH", 0.8, 0.8, "2026-06-03"); // sum 1.60 — overflow
+    await seedEvt("323", "MEDIUM", 0.6, 0.6, "2026-06-03"); // not cited
+
+    // Quiet all-LOW day: every leaf is LOW, so nothing is cited (no padding).
+    await seedEvt("330", "LOW", 0.2, 0.2, "2026-06-04");
+    await seedEvt("331", "LOW", 0.1, 0.1, "2026-06-04");
+    await seedEvt("332", "LOW", 0.05, 0.05, "2026-06-04");
+  });
+
+  afterAll(async () => {
+    await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(customerDbName, customerPool);
+    await closeAdminPool();
+  });
+
+  it("fills with MEDIUM under the ceiling and excludes LOW (CRITICAL/HIGH < M)", async () => {
+    // M=3: CRITICAL(300) + HIGH(301) guaranteed, one MEDIUM(302) fills the
+    // third slot by ranking; the lower MEDIUM(303) and LOW(304) are excluded.
+    expect(await citedKeys("2026-06-01", 3)).toEqual(["300", "301", "302"]);
+  });
+
+  it("cites exactly the guaranteed tiers when CRITICAL/HIGH == M", async () => {
+    // M=2: the two guaranteed leaves fill the ceiling, so the MEDIUM has no
+    // slot and the LOW is never cited.
+    expect(await citedKeys("2026-06-02", 2)).toEqual(["310", "311"]);
+  });
+
+  it("cites exactly the top-M when CRITICAL/HIGH overflow the ceiling", async () => {
+    // M=2 with three CRITICAL/HIGH: only the top-2 by ranking are cited; the
+    // third CRITICAL/HIGH leaf (322) and the MEDIUM (323) are dropped.
+    const keys = await citedKeys("2026-06-03", 2);
+    expect(keys).toEqual(["320", "321"]);
+    expect(keys).not.toContain("322");
+    expect(keys).not.toContain("323");
+  });
+
+  it("yields no cited events on a quiet all-LOW window (no LOW padding)", async () => {
+    // Even with free slots, LOW is never cited individually.
+    expect(await citedKeys("2026-06-04", 10)).toEqual([]);
+  });
+});
