@@ -58,7 +58,9 @@ customers they are not assigned to as an analyst — from the **Admin →
 Settings** page, under **Default analysis model (per customer)**. Pick a
 customer, then choose a model and **Save**, or **Reset to global default**
 to clear the override. This admin surface and the analyst-facing Customer
-Settings control drive the same underlying setting.
+Settings control drive the same underlying setting, and — like the analyst
+surface — both offer to re-analyze the customer's existing data after a
+successful change (see [What a change affects](#what-a-change-affects)).
 
 ### Clearing the override (reset to global)
 
@@ -100,12 +102,15 @@ Changing a customer's default model affects **future** analyses (and
 force-regenerate calls that do not name a model) only. **Existing results
 are not changed.**
 
-After a successful change, the page offers to re-analyze the customer's
-existing data under the new model. The offer is the **entry point** to
-that follow-on action: a **Re-analyze existing data** button opens a
-customer-scoped re-analysis page, and a **Dismiss** button closes the
-offer without doing anything. It is an **offer only** — nothing is
-re-analyzed automatically, because re-analyzing all existing data is a
+After a successful change — whether made from Customer Settings or from
+the Admin per-customer surface — the section offers to re-analyze the
+customer's existing data under the new model. The offer is the **entry
+point** to that follow-on action: a **Re-analyze existing data** button
+opens a customer-scoped re-analysis page (the analyst surface opens the
+Customer Settings re-analysis page; the admin surface opens the equivalent
+admin re-analysis page for the selected customer), and a **Dismiss** button
+closes the offer without doing anything. It is an **offer only** — nothing
+is re-analyzed automatically, because re-analyzing all existing data is a
 bounded, cost-controlled operation that an operator launches
 deliberately.
 
