@@ -116,10 +116,12 @@ deliberately.
 
 The re-analysis page is the stable, in-app entry point for that scoped
 run (re-running the customer's story and event analyses, then refreshing
-its reports). The cost preview and launch controls for that run are
-delivered separately; until then the page explains the action, shows the
-new default model, and restates that existing results stay untouched
-until a re-analysis is deliberately started.
+its reports). The **event-leaf** part of that run — a required cost
+preview, an explicit confirmation, and background progress/cancel — is
+available now; see
+[Re-analyzing event leaves after a model change](event-leaf-reanalysis.md).
+Existing results stay untouched until a re-analysis is deliberately
+started.
 
 ## Default variant and coverage
 
