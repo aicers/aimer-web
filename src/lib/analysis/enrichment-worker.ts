@@ -77,7 +77,10 @@ const COVERAGE_RANK: Record<CoverageStatus, number> = {
 };
 
 /** Most-severe-wins across per-indicator coverage statuses. */
-function worseCoverage(a: CoverageStatus, b: CoverageStatus): CoverageStatus {
+export function worseCoverage(
+  a: CoverageStatus,
+  b: CoverageStatus,
+): CoverageStatus {
   return COVERAGE_RANK[a] >= COVERAGE_RANK[b] ? a : b;
 }
 
@@ -193,7 +196,7 @@ export type LoadRedactionMap = (
   eventKey: string,
 ) => Promise<RedactionMap | null>;
 
-const defaultLoadRedactionMap: LoadRedactionMap = async (
+export const defaultLoadRedactionMap: LoadRedactionMap = async (
   customerPool,
   customerId,
   aiceId,
@@ -222,7 +225,7 @@ const defaultLoadRedactionMap: LoadRedactionMap = async (
  * + policy_event columns) actually contains a token, so the common
  * (raw-only) path never touches the secret store.
  */
-async function buildRecover(
+export async function buildRecover(
   customerPool: Pool,
   customerId: string,
   aiceId: string,
