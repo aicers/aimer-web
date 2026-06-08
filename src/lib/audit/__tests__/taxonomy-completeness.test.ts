@@ -164,6 +164,8 @@ const PRODUCED: Record<string, string> = {
   "system.default_model_cleared": "src/lib/analysis/default-model.ts",
   // Story-leaf re-analysis backfill (#466)
   "story_reanalysis.backfill_enqueued": "src/lib/analysis/story-backfill.ts",
+  // Report-variant refresh (#469)
+  "report_refresh.enqueued": "src/lib/analysis/report-refresh-route.ts",
 } satisfies Partial<Record<AuditAction, string>>;
 
 // ---------------------------------------------------------------------------

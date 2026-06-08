@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { EventLeafBackfillPanel } from "@/components/analysis/event-leaf-backfill-panel";
 import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
+import { ReportVariantRefreshPanel } from "@/components/analysis/report-variant-refresh-panel";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/i18n/navigation";
 import { adminFetch } from "@/lib/api/admin-client";
@@ -93,6 +94,12 @@ export default function AdminCustomerReanalyzePage() {
       <EventLeafBackfillPanel
         customerId={customerId ?? null}
         apiBase={`/api/admin/customers/${customerId}/event-backfill`}
+        fetcher={adminFetch}
+      />
+
+      <ReportVariantRefreshPanel
+        customerId={customerId ?? null}
+        apiBase={`/api/admin/customers/${customerId}/report-refresh`}
         fetcher={adminFetch}
       />
 

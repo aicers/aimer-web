@@ -122,9 +122,10 @@ story analyses under the new model (see
 **event-leaf re-analysis backfill**, with its own required cost preview,
 explicit confirmation, and background progress/cancel (see
 [Re-analyzing event leaves after a model change](event-leaf-reanalysis.md)).
-Report refresh is delivered separately and sequenced after both leaf runs
-drain. Existing results stay untouched until a re-analysis is deliberately
-started.
+Once both leaf runs drain, the **report-variant refresh** regenerates the
+customer's periodic reports so they re-aggregate the re-analyzed leaves (see
+[Refreshing periodic reports after a model change](report-variant-refresh.md)).
+Existing results stay untouched until a re-analysis is deliberately started.
 
 ## Default variant and coverage
 
