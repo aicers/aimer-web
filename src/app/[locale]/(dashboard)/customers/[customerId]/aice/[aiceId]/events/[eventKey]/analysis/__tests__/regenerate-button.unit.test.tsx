@@ -174,6 +174,52 @@ describe("EventRegenerateButton", () => {
     );
   });
 
+  it("resyncs the preselected model when defaultModel changes without a remount (#464)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 200,
+      json: async () => ({ generation: 6 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // The compare "not generated" CTA seeds the picker with model A. A compare
+    // selector switch to model B is a search-param soft-nav that keeps this
+    // client component mounted (no remount), so re-render with the new
+    // defaultModel rather than mounting a fresh tree.
+    const { getByTestId, rerender } = render(
+      <EventRegenerateButton
+        locale="ko"
+        customerId="c1"
+        aiceId="aice-1"
+        eventKey="1001"
+        variant={VARIANT}
+        models={CATALOG}
+        defaultModel={{ modelName: "openai", model: "gpt-4o" }}
+      />,
+    );
+    rerender(
+      <EventRegenerateButton
+        locale="ko"
+        customerId="c1"
+        aiceId="aice-1"
+        eventKey="1001"
+        variant={VARIANT}
+        models={CATALOG}
+        defaultModel={{ modelName: "anthropic", model: "claude-3-5" }}
+      />,
+    );
+
+    fireEvent.click(getByTestId("event-regenerate-button"));
+    // Submit without touching the dropdown: it must POST model B (the new
+    // target), not the stale A.
+    fireEvent.click(getByTestId("event-regenerate-confirm"));
+
+    await waitFor(() => expect(push).toHaveBeenCalled());
+    const [url] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "/api/customers/c1/aice/aice-1/events/1001/regenerate?lang=ENGLISH&model_name=anthropic&model=claude-3-5",
+    );
+  });
+
   it("shows an error banner and does not navigate on a non-200 response", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       status: 403,

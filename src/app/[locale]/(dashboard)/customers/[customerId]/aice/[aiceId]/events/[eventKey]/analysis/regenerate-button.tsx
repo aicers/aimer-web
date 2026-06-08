@@ -75,12 +75,31 @@ export function EventRegenerateButton({
     | { kind: "navigating"; generation: number }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  // The pair the dropdown should preselect: the compare-target model for the
+  // compare "not generated" CTA, otherwise the current variant's model.
+  const preferred = defaultModel ?? {
+    modelName: variant.modelName,
+    model: variant.model,
+  };
+  const preferredKey = `${preferred.modelName}/${preferred.model}`;
   const [modelIndex, setModelIndex] = useState(() =>
-    initialModelIndex(
-      models ?? [],
-      defaultModel ?? { modelName: variant.modelName, model: variant.model },
-    ),
+    initialModelIndex(models ?? [], preferred),
   );
+  // App Router soft navigations that only change search params (e.g. switching
+  // the compare model via the compare selector, or opening a different variant)
+  // keep this client component mounted, so the lazy `useState` initializer
+  // above does NOT re-run when `defaultModel`/`variant` change. Without
+  // resyncing, the picker would keep a stale `modelIndex` and a submit without
+  // touching the dropdown would POST the previously-targeted model instead of
+  // the newly-selected one (#464). Reset the index when the preferred pair
+  // changes — the React "adjusting state when a prop changes" pattern, no
+  // effect needed. The catalog (`models`) is config-driven and stable across
+  // navigations, so tracking the preferred pair alone is sufficient.
+  const [prevPreferredKey, setPrevPreferredKey] = useState(preferredKey);
+  if (prevPreferredKey !== preferredKey) {
+    setPrevPreferredKey(preferredKey);
+    setModelIndex(initialModelIndex(models ?? [], preferred));
+  }
 
   async function submit() {
     setBusy(true);
