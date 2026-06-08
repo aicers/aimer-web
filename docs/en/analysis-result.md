@@ -78,9 +78,8 @@ fields](#analyst-only-fields) below):
 
 - **Provider** — the LLM provider name (e.g. `openai`).
 - **Model** — the model id requested (e.g. `gpt-4o`).
-- **Model snapshot** — the provider-reported specific model version, if
-  the upstream response carried one.
-- **Prompt version** — the aimer prompt template version, if reported.
+- **Model snapshot** — the provider-reported specific model version.
+- **Prompt version** — the aimer prompt template version.
 - **Requested by** — the account id that triggered the analysis, as
   stored on the analysis row.
 - **Requested at** — when the analysis was requested, shown in your

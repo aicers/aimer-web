@@ -98,6 +98,8 @@ describe("aimer GraphQL contract", () => {
       "analysis",
       "likelihoodFactors",
       "likelihoodScore",
+      "modelActualVersion",
+      "promptVersion",
       "severityFactors",
       "severityScore",
       "ttpTags",
@@ -119,6 +121,13 @@ describe("aimer GraphQL contract", () => {
     expect(String(fields.severityFactors.type)).toBe("[String!]!");
     expect(String(fields.likelihoodFactors.type)).toBe("[String!]!");
     expect(String(fields.ttpTags.type)).toBe("[String!]!");
+
+    // aimer#480 provenance fields: non-null strings, mirroring
+    // StoryAnalysisResult.
+    expect(isNonNullType(fields.promptVersion.type)).toBe(true);
+    expect(String(fields.promptVersion.type)).toBe("String!");
+    expect(isNonNullType(fields.modelActualVersion.type)).toBe(true);
+    expect(String(fields.modelActualVersion.type)).toBe("String!");
   });
 
   it("Language enum exposes only KOREAN and ENGLISH", () => {

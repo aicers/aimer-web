@@ -191,12 +191,13 @@ describeDb("retention sweeper integration", () => {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by, requested_at)
-       VALUES ('aice-old', 1, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+       VALUES ('aice-old', 1, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1),
-              ('aice-new', 2, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+              ('aice-new', 2, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $2)`,
       [daysAgo(2000), daysAgo(30)],
     );
@@ -300,10 +301,11 @@ describeDb("retention sweeper integration", () => {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by, requested_at)
-       VALUES ('aice-b', 2, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+       VALUES ('aice-b', 2, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1)`,
       [daysAgo(30)],
     );
@@ -335,10 +337,11 @@ describeDb("retention sweeper integration", () => {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by, requested_at)
-       VALUES ('aice-x', 1, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+       VALUES ('aice-x', 1, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1)`,
       [daysAgo(5000)],
     );
@@ -652,10 +655,11 @@ describeDb("retention sweeper integration", () => {
     await customerPool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by, requested_at)
-       VALUES ('aice-r', 1, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+       VALUES ('aice-r', 1, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1)`,
       [daysAgo(400)],
     );
@@ -1162,12 +1166,13 @@ describeDb("retention sweeper integration", () => {
       await customerPool.query(
         `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
           analysis_text, redaction_policy_version,
           requested_by, requested_at)
-       VALUES ('aice-001', 1, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+       VALUES ('aice-001', 1, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1),
-              ('aice-003', 1, 'EN', 'openai', 'gpt-4o', 0, 0, 'LOW', '', 'p',
+              ('aice-003', 1, 'EN', 'openai', 'gpt-4o', 'mv', 'pv', 0, 0, 'LOW', '', 'p',
                '00000000-0000-0000-0000-000000000000'::uuid, $1)`,
         [daysAgo(5)],
       );

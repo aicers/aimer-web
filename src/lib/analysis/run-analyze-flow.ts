@@ -565,6 +565,8 @@ export async function analyzeAndStoreEventResult(
     likelihoodFactors: string[];
     ttpTags: string[];
     analysis: string;
+    promptVersion: string;
+    modelActualVersion: string;
   };
   try {
     // `event: String!` — aimer's auth-mtls resolver consumes a string
@@ -734,22 +736,26 @@ export async function analyzeAndStoreEventResult(
       );
       await writeClient.query(
         `INSERT INTO event_analysis_result
-           (aice_id, event_key, lang, model_name, model, generation,
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version, generation,
             severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
             priority_tier,
             analysis_text, redaction_policy_version, requested_by)
-         VALUES ($1, $2::numeric, $3, $4, $5, $6,
-                 $7, $8,
-                 $9::jsonb, $10::jsonb, $11::jsonb,
-                 $12,
-                 $13, $14, $15::uuid)`,
+         VALUES ($1, $2::numeric, $3, $4, $5,
+                 $6, $7, $8,
+                 $9, $10,
+                 $11::jsonb, $12::jsonb, $13::jsonb,
+                 $14,
+                 $15, $16, $17::uuid)`,
         [
           params.aiceId,
           params.eventKey,
           params.langForStorage,
           params.modelName,
           params.model,
+          aimerResponse.modelActualVersion,
+          aimerResponse.promptVersion,
           nextGeneration,
           aimerResponse.severityScore,
           aimerResponse.likelihoodScore,
