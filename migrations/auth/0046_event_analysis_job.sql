@@ -41,7 +41,15 @@
 -- never retried.
 
 CREATE TABLE event_analysis_job (
-    customer_id           UUID           NOT NULL,
+    -- Unlike `story_analysis_job` (`0028`) — which cascades through its
+    -- `story_analysis_state` parent — and the periodic report jobs (`0029`),
+    -- this table has no per-event state parent to cascade through, so it
+    -- references `customers(id)` DIRECTLY. Without the cascade a deleted
+    -- customer would leave orphaned job rows that the worker keeps picking
+    -- and failing on (it would try to open the dropped customer DB), so the
+    -- FK is load-bearing, not just hygiene.
+    customer_id           UUID           NOT NULL
+        REFERENCES customers(id) ON DELETE CASCADE,
     aice_id               TEXT           NOT NULL,
     event_key             NUMERIC(39, 0) NOT NULL,
     lang                  TEXT           NOT NULL,

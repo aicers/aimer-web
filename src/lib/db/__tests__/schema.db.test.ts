@@ -822,6 +822,31 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       );
       expect(idx[0]?.indexdef).toContain("tier_b");
       expect(idx[0]?.indexdef).toContain("budget_skipped");
+
+      // Unlike `story_analysis_job` (which cascades through its state
+      // parent), this table has no per-event state table to cascade
+      // through, so `customer_id` references `customers(id)` DIRECTLY with
+      // ON DELETE CASCADE. Without it, a deleted customer leaves orphaned
+      // job rows the worker keeps picking and failing on.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('event-job-cascade', 'CC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      await pool.query(
+        `INSERT INTO event_analysis_job
+           (customer_id, aice_id, event_key, lang, model_name, model,
+            status, budget_day, baseline_version, event_time, received_at)
+         VALUES ($1, 'aice-1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'queued', DATE '1970-01-01', 'bv-1', NOW(), NOW())`,
+        [cid],
+      );
+      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+      const { rows: left } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM event_analysis_job
+          WHERE customer_id = $1`,
+        [cid],
+      );
+      expect(left[0].c).toBe(0);
     });
 
     it("customer_baseline_analysis_cap mirrors customer_default_model with a non-negative cap (#493)", async () => {
