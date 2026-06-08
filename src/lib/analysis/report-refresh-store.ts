@@ -32,6 +32,8 @@ export interface RefreshRun extends RefreshCounts {
   lang: string;
   modelName: string;
   model: string;
+  /** Timezone-variant scope, or `null` when the run targeted all timezones. */
+  tz: string | null;
   windowDays: number;
   windowStart: string;
   windowEnd: string;
@@ -63,6 +65,7 @@ interface RunRow {
   lang: string;
   model_name: string;
   model: string;
+  tz: string | null;
   window_days: number;
   window_start: Date | string;
   window_end: Date | string;
@@ -97,6 +100,7 @@ function mapRun(r: RunRow): RefreshRun {
     lang: r.lang,
     modelName: r.model_name,
     model: r.model,
+    tz: r.tz,
     windowDays: r.window_days,
     windowStart: iso(r.window_start),
     windowEnd: iso(r.window_end),
@@ -117,7 +121,7 @@ function mapRun(r: RunRow): RefreshRun {
   };
 }
 
-const RUN_COLUMNS = `id, customer_id, lang, model_name, model,
+const RUN_COLUMNS = `id, customer_id, lang, model_name, model, tz,
     window_days, window_start, window_end, periods, max_variants, status,
     total_variants, refreshed_count, capped_count, gated_count,
     already_queued_count, source_unavailable_count, limited_count,
@@ -147,20 +151,21 @@ export async function recordRun(
   const { scope, target, counts, now } = params;
   const insertRun = await client.query<RunRow>(
     `INSERT INTO report_variant_refresh_runs
-       (customer_id, lang, model_name, model,
+       (customer_id, lang, model_name, model, tz,
         window_days, window_start, window_end, periods, max_variants,
         status, total_variants, refreshed_count, capped_count, gated_count,
         already_queued_count, source_unavailable_count, limited_count,
         created_by, finished_at)
-     VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz,
-             $8::text[], $9, 'completed', $10, $11, $12, $13, $14, $15, $16,
-             $17, $18::timestamptz)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz,
+             $9::text[], $10, 'completed', $11, $12, $13, $14, $15, $16, $17,
+             $18, $19::timestamptz)
      RETURNING ${RUN_COLUMNS}`,
     [
       scope.customerId,
       target.lang,
       target.modelName,
       target.model,
+      scope.tz,
       scope.windowDays,
       params.windowStart.toISOString(),
       params.windowEnd.toISOString(),

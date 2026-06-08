@@ -32,6 +32,11 @@ CREATE TABLE report_variant_refresh_runs (
     lang                     TEXT         NOT NULL,
     model_name               TEXT         NOT NULL,
     model                    TEXT         NOT NULL,
+    -- Optional timezone-variant scope (Scope §2). A report variant is keyed
+    -- by `(tz, lang, model_name, model)`, so a run may target a single
+    -- timezone. NULL = all timezone variants within the recent window (the
+    -- conservative default the operator gets when no timezone is chosen).
+    tz                       TEXT,
     -- Enqueue-recency window (Scope §4): which report buckets are in scope.
     -- `window_days` is the operator-chosen recent-window (default 7);
     -- `window_start` / `window_end` are the resolved instants frozen at

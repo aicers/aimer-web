@@ -128,7 +128,42 @@ describe("report-refresh route handlers", () => {
     });
     expect(body.windowDays).toBe(7);
     expect(body.periods).toEqual(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
+    // No timezone scope by default → all timezone variants in the window.
+    expect(body.tz).toBeNull();
     expect(executeReportRefresh).not.toHaveBeenCalled();
+  });
+
+  it("forwards a timezone scope to evaluation and echoes it in the preview", async () => {
+    const res = await handlePreview(
+      req(`/api/admin/customers/${CUSTOMER}/report-refresh/preview`, {
+        search: "tz=Asia/Seoul",
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.tz).toBe("Asia/Seoul");
+    // The scope handed to candidate evaluation carries the tz filter.
+    const scope = evaluateCandidates.mock.calls.at(-1)?.[2] as {
+      tz: string | null;
+    };
+    expect(scope.tz).toBe("Asia/Seoul");
+  });
+
+  it("passes a timezone scope from the confirmed POST body to the run", async () => {
+    const res = await handleCreateRun(
+      req(`/api/admin/customers/${CUSTOMER}/report-refresh`, {
+        body: { windowDays: 7, tz: "Asia/Seoul", confirm: true },
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(201);
+    const scope = executeReportRefresh.mock.calls.at(-1)?.[2] as {
+      tz: string | null;
+    };
+    expect(scope.tz).toBe("Asia/Seoul");
   });
 
   it("create REQUIRES explicit confirmation", async () => {

@@ -43,6 +43,8 @@ interface TargetVariant {
 interface PreviewResponse {
   target: TargetVariant;
   windowDays: number;
+  /** Timezone-variant scope, or `null` for all timezones in the window. */
+  tz: string | null;
   counts: RefreshCounts;
 }
 
@@ -54,6 +56,7 @@ interface RefreshRun extends RefreshCounts {
   lang: string;
   modelName: string;
   model: string;
+  tz: string | null;
   windowDays: number;
 }
 
@@ -106,6 +109,14 @@ export function ReportVariantRefreshPanel({
     [t],
   );
 
+  // A blank timezone scope means "all timezone variants in the window" — show
+  // that explicitly rather than an empty value (review feedback: the
+  // all-timezone default must be visible, not silent).
+  const tzLabel = useCallback(
+    (tz: string | null) => (tz?.trim() ? tz : t("tzAll")),
+    [t],
+  );
+
   // Static (literal-key) period labels — next-intl requires literal message
   // keys, so a dynamically-built `period${p}` key does not type-check.
   const periodLabel = useCallback(
@@ -136,6 +147,9 @@ export function ReportVariantRefreshPanel({
   );
   const [maxVariantsInput, setMaxVariantsInput] = useState("");
   const [langInput, setLangInput] = useState<Lang>(localeToLang(locale));
+  // Optional timezone-variant scope (Scope §2). Blank → all timezones in the
+  // recent window (the conservative default); a value targets one tz variant.
+  const [tzInput, setTzInput] = useState("");
   // Periods in scope (Scope §2). All selected by default; the operator can
   // narrow to specific periods.
   const [periods, setPeriods] = useState<Set<Period>>(new Set(PERIODS));
@@ -169,8 +183,10 @@ export function ReportVariantRefreshPanel({
       periods: PERIODS.filter((p) => periods.has(p)).join(","),
     });
     if (maxVariants != null) params.set("max_variants", String(maxVariants));
+    const tz = tzInput.trim();
+    if (tz) params.set("tz", tz);
     return params;
-  }, [windowDaysInput, maxVariantsInput, langInput, periods]);
+  }, [windowDaysInput, maxVariantsInput, langInput, periods, tzInput]);
 
   const loadPreview = useCallback(async () => {
     if (!customerId) return;
@@ -225,6 +241,8 @@ export function ReportVariantRefreshPanel({
         confirm: true,
       };
       if (maxVariants != null) body.maxVariants = maxVariants;
+      const tz = tzInput.trim();
+      if (tz) body.tz = tz;
       const data = await fetcher<{ run: RefreshRun }>(apiBase, {
         method: "POST",
         body: JSON.stringify(body),
@@ -245,6 +263,7 @@ export function ReportVariantRefreshPanel({
     maxVariantsInput,
     langInput,
     periods,
+    tzInput,
   ]);
 
   // Categorized outcome counts for a run — stays visible after completion so
@@ -279,6 +298,7 @@ export function ReportVariantRefreshPanel({
               days: run.windowDays,
               lang: langLabel(run.lang),
               model: `${run.modelName} / ${run.model}`,
+              tz: tzLabel(run.tz),
             })}
           </p>
           {renderRunCounts(run)}
@@ -335,6 +355,20 @@ export function ReportVariantRefreshPanel({
             onChange={(e) => setMaxVariantsInput(e.target.value)}
           />
         </label>
+        <label
+          htmlFor="report-refresh-tz"
+          className="flex flex-col gap-1 text-sm text-foreground"
+        >
+          <span>{t("tzLabel")}</span>
+          <Input
+            id="report-refresh-tz"
+            type="text"
+            className="w-44"
+            placeholder={t("tzPlaceholder")}
+            value={tzInput}
+            onChange={(e) => setTzInput(e.target.value)}
+          />
+        </label>
       </div>
 
       <fieldset className="space-y-1">
@@ -372,6 +406,7 @@ export function ReportVariantRefreshPanel({
             {t("targetSummary", {
               lang: langLabel(preview.target.lang),
               model: `${preview.target.modelName} / ${preview.target.model}`,
+              tz: tzLabel(preview.tz),
             })}
           </p>
           <ul className="text-sm text-muted-foreground">

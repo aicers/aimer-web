@@ -67,6 +67,12 @@ Managers and Users cannot launch a refresh.
    - **Per-run cap** — an optional upper bound on how many report variants
      this run refreshes. Leave it blank for no cap. Variants beyond the cap
      are reported as **limited**.
+   - **Timezone** — periodic reports are keyed by timezone, so old timezone
+     buckets can coexist after a timezone change. Leave this **blank** to
+     refresh **every** timezone variant in the window (the default), or enter
+     a single IANA timezone (e.g. `Asia/Seoul`) to target just that
+     timezone's variant. The preview and last-run summary state which
+     timezone the run targets.
    - **Periods** — restrict to specific report periods (live / daily /
      weekly / monthly). All periods are in scope by default.
 
@@ -85,6 +91,9 @@ The run is bounded so it can never silently refresh all of history:
 - **Customer** — the customer whose model changed. A run is single-customer.
 - **Target variant** — the customer's new default `(model)` for the chosen
   language.
+- **Timezone** — all timezone variants in the window by default; optionally
+  restrict to a single IANA timezone. A report variant is keyed by
+  `(tz, lang, model_name, model)`, so this is the per-variant timezone axis.
 - **Recent window** — by default the last **7 days** of report **buckets**.
   This bounds *which buckets* are enqueued; it is distinct from the
   per-report drain-gate window, which is derived from each report's period
