@@ -8,7 +8,7 @@ vi.mock("@/lib/auth/guards", () => ({
   verifyCsrf: () => null,
 }));
 
-const assertAuthorized = vi.fn(async () => {});
+const assertAuthorized = vi.fn(async (..._args: unknown[]) => {});
 vi.mock("@/lib/auth/authorization", () => ({
   assertAuthorized: (...args: unknown[]) => assertAuthorized(...args),
 }));
@@ -47,11 +47,11 @@ vi.mock("../event-leaf-backfill", async () => {
   return { ...actual, previewBackfill: () => previewBackfill() };
 });
 
-const createRun = vi.fn(async () => ({
+const createRun = vi.fn(async (..._a: unknown[]) => ({
   run: { id: "run-1", status: "pending" },
   created: true,
 }));
-const requestCancel = vi.fn(async () => null);
+const requestCancel = vi.fn(async (..._a: unknown[]) => null);
 vi.mock("../event-leaf-backfill-store", () => ({
   createRun: (...a: unknown[]) => createRun(...a),
   requestCancel: (...a: unknown[]) => requestCancel(...a),

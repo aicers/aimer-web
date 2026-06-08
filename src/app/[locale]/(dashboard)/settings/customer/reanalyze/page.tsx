@@ -3,6 +3,7 @@
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { EventLeafBackfillPanel } from "@/components/analysis/event-leaf-backfill-panel";
 import { Button } from "@/components/ui/button";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -100,13 +101,13 @@ export default function CustomerReanalyzePage() {
         </p>
       )}
 
+      <EventLeafBackfillPanel
+        customerId={singleCustomerId}
+        apiBase={`/api/customers/${singleCustomerId}/analysis/event-backfill`}
+        fetcher={apiFetch}
+      />
+
       <section className="space-y-2 rounded-md border border-border bg-card p-4">
-        <h2 className="text-base font-semibold text-foreground">
-          {t("notYetAvailableTitle")}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t("notYetAvailableBody")}
-        </p>
         <p className="text-sm text-foreground">{t("guaranteeNote")}</p>
         <div className="pt-2">
           <Button asChild variant="ghost">
