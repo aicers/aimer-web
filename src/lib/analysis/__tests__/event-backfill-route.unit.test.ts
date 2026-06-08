@@ -169,6 +169,44 @@ describe("event-backfill route handlers", () => {
     expect(params.target.lang).toBe("KOREAN");
   });
 
+  it("create ignores a caller-supplied model and uses the resolved default", async () => {
+    const res = await handleCreateRun(
+      req(`/api/admin/customers/${CUSTOMER}/event-backfill`, {
+        body: {
+          windowDays: 7,
+          modelName: "rogue",
+          model: "rogue-1",
+          confirm: true,
+        },
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(201);
+    expect(createRun).toHaveBeenCalledOnce();
+    const params = createRun.mock.calls[0][2] as {
+      target: { modelName: string; model: string };
+    };
+    // The cost-incurring run must target the customer's resolved default
+    // (openai / gpt-5.5), never the operator-supplied pair.
+    expect(params.target.modelName).toBe("openai");
+    expect(params.target.model).toBe("gpt-5.5");
+  });
+
+  it("preview ignores a caller-supplied model and uses the resolved default", async () => {
+    const res = await handlePreview(
+      req(`/api/admin/customers/${CUSTOMER}/event-backfill/preview`, {
+        search: "model_name=rogue&model=rogue-1",
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.target.modelName).toBe("openai");
+    expect(body.target.model).toBe("gpt-5.5");
+  });
+
   it("cancel returns 409 when the run is not cancellable", async () => {
     const res = await handleCancelRun(
       req(`/api/admin/customers/${CUSTOMER}/event-backfill/runs/${RUN}/cancel`),

@@ -110,22 +110,36 @@ function parsePositiveInt(
 }
 
 /**
- * Resolve the target variant for a backfill request. Lang defaults to the
- * deployment default; the `(model_name, model)` pair defaults to the
- * customer's effective default model (#473 resolver) — i.e. the new
- * default after a model change, the natural backfill target.
+ * Resolve the target variant for a backfill request.
+ *
+ * `lang` is operator-addressable — it is a real report-variant axis (the
+ * report selector is strict on it) and the #473 model change is
+ * language-agnostic, so the operator chooses it; it defaults to the
+ * deployment default.
+ *
+ * The `(model_name, model)` pair is the customer's effective default model
+ * (#473 resolver) — i.e. the new default after a model change, the only valid
+ * backfill target. `allowExplicitModel` gates whether a caller-supplied model
+ * pair is honoured: the cost-incurring create path and its confirmation
+ * preview ALWAYS resolve the customer default (a run must re-analyze toward
+ * the new default, never an arbitrary operator-chosen model, and this keeps
+ * the #473 catalog/default-model validation in the loop — matching the story
+ * sibling's `resolveDefaultModel`-only contract). Only the read-only drain
+ * signal honours an explicit target, so #469 can ask "is THIS scope drained?"
+ * for an arbitrary variant without launching a run.
  */
 async function resolveTarget(
   customerId: string,
   langRaw: string | null,
   modelNameRaw: string | null,
   modelRaw: string | null,
+  allowExplicitModel: boolean,
 ): Promise<TargetVariant> {
   const lang = langRaw ?? DEFAULT_LANG;
   if (!ALLOWED_LANGS.has(lang)) {
     throw new HttpError("lang must be one of KOREAN, ENGLISH", 400);
   }
-  if (modelNameRaw && modelRaw) {
+  if (allowExplicitModel && modelNameRaw && modelRaw) {
     return { lang, modelName: modelNameRaw, model: modelRaw };
   }
   const def = await resolveDefaultModel(customerId);
@@ -160,11 +174,15 @@ export async function handlePreview(
     const sp = req.nextUrl.searchParams;
     const windowDays = resolveWindowDays(sp.get("window_days"));
     const maxItems = parsePositiveInt(sp.get("max_items"), null);
+    // Preview mirrors what create will run: target model is always the
+    // resolved customer default, never an operator-supplied pair, so the
+    // confirmation counts match the launched run.
     const target = await resolveTarget(
       customerId,
       sp.get("lang"),
-      sp.get("model_name"),
-      sp.get("model"),
+      null,
+      null,
+      false,
     );
     const window = resolveScopeWindow(windowDays, getCurrentTimestamp());
     const customerPool = getCustomerRuntimePool(customerId);
@@ -227,11 +245,16 @@ export async function handleCreateRun(
     }
     const windowDays = resolveWindowDays(body.windowDays);
     const maxItems = parsePositiveInt(body.maxItems, null);
+    // A run is always launched toward the customer's resolved default model
+    // (the #473 model-change target) — a caller-supplied `model`/`modelName`
+    // is ignored so a cost-incurring run can never target an arbitrary,
+    // unvalidated model. Only `lang` is operator-addressable.
     const target = await resolveTarget(
       customerId,
       typeof body.lang === "string" ? body.lang : null,
-      typeof body.modelName === "string" ? body.modelName : null,
-      typeof body.model === "string" ? body.model : null,
+      null,
+      null,
+      false,
     );
     const window = resolveScopeWindow(windowDays, getCurrentTimestamp());
     const customerPool = getCustomerRuntimePool(customerId);
@@ -360,11 +383,16 @@ export async function handleDrain(
     await authorize(authContext, auth.accountId, customerId, "read");
     const sp = req.nextUrl.searchParams;
     const windowDays = resolveWindowDays(sp.get("window_days"));
+    // Read-only drain signal: #469 may gate an arbitrary target variant
+    // (e.g. checking a model that is no longer the current default), so an
+    // explicit `(model_name, model)` pair is honoured here — unlike the
+    // run-launching create/preview paths.
     const target = await resolveTarget(
       customerId,
       sp.get("lang"),
       sp.get("model_name"),
       sp.get("model"),
+      true,
     );
     const customerPool = getCustomerRuntimePool(customerId);
     const status = await computeEventLeafDrain(customerPool, {
