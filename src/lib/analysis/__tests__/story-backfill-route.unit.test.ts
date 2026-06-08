@@ -31,6 +31,7 @@ const mockDrain = vi.fn();
 const mockAudit = vi.fn();
 vi.mock("@/lib/analysis/story-backfill", () => ({
   DEFAULT_WINDOW_DAYS: 7,
+  WORKER_LANG: "ENGLISH",
   createBackfillDeps: () => ({}),
   previewStoryBackfill: (...a: unknown[]) => mockPreview(...a),
   runStoryBackfill: (...a: unknown[]) => mockRun(...a),
@@ -186,7 +187,7 @@ describe("handleBackfillStatus", () => {
         model: "gpt-5.5",
         windowDays: 7,
       },
-      counts: {},
+      counts: { source_unavailable: 2 },
       totalLeaves: 4,
       outstanding: 1,
       drained: false,
@@ -200,5 +201,18 @@ describe("handleBackfillStatus", () => {
     const body = await res.json();
     expect(body.drained).toBe(false);
     expect(body.outstanding).toBe(1);
+    // The shared `LeafDrainStatus` shape (#470 Scope §6) is emitted at the
+    // top level so #469 can gate on the story- and event-leaf signals
+    // uniformly. `universe` = totalLeaves + source_unavailable.
+    expect(body.kind).toBe("story");
+    expect(body.universe).toBe(6);
+    expect(body.sourceUnavailable).toBe(2);
+    expect(body.scope.lang).toBe("ENGLISH");
+    expect(body.scope.windowDays).toBe(7);
+    expect(typeof body.scope.windowStart).toBe("string");
+    expect(typeof body.scope.windowEnd).toBe("string");
+    // Legacy fields retained for the #466 status panel.
+    expect(body.totalLeaves).toBe(4);
+    expect(body.counts.source_unavailable).toBe(2);
   });
 });
