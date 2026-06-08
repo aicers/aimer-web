@@ -56,6 +56,15 @@ CREATE TABLE event_analysis_job (
                OR selection_tier IN ('tier_a', 'tier_b')),
     budget_day            DATE           NOT NULL,
     baseline_version      TEXT           NOT NULL,
+    -- Neutral chronological ordering keys for tier-B admission (#493). The
+    -- cap reservation happens as queued jobs are processed, so the pickup
+    -- order decides which events fit under a low daily cap. Carrying the
+    -- source `baseline_event.event_time` / `received_at` here lets the pickup
+    -- ORDER BY them ('no sender-field re-ranking'), so admission follows the
+    -- requested neutral chronological order rather than an arbitrary
+    -- `(aice_id, event_key)` key order.
+    event_time            TIMESTAMPTZ    NOT NULL,
+    received_at           TIMESTAMPTZ    NOT NULL,
     generation            INT            NOT NULL DEFAULT 1,
     dry_run               BOOLEAN        NOT NULL DEFAULT FALSE,
     created_at            TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
@@ -69,8 +78,11 @@ CREATE TABLE event_analysis_job (
     PRIMARY KEY (customer_id, aice_id, event_key, lang, model_name, model)
 );
 
+-- Backs the queued-job pickup, which ORDER BYs the neutral chronological
+-- keys so tier-B admission follows `event_time` / `received_at` order under
+-- a low daily cap rather than an arbitrary `(aice_id, event_key)` order.
 CREATE INDEX event_analysis_job_queued_idx
-    ON event_analysis_job (customer_id, aice_id, event_key)
+    ON event_analysis_job (event_time, received_at, aice_id, event_key)
     WHERE status = 'queued';
 
 -- Backs the per-`(customer_id, budget_day)` tier-B reservation COUNT(*).

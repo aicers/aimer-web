@@ -154,6 +154,8 @@ export async function applyBaselineIngestHook(
           baselineVersion: e.baselineVersion,
           sourceAiceId: e.sourceAiceId,
           eventKey: e.eventKey,
+          eventTime: e.eventTime,
+          receivedAt: e.receivedAt,
         }),
       );
       await seedBaselineEventJobs(

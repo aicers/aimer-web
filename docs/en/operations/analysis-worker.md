@@ -103,6 +103,19 @@ The tier-B cap is a **seed-time reservation**: the per-`(customer,
 budget_day)` count includes in-flight `queued`/`processing` rows (not
 just `done`), so a backlog cannot over-enqueue past the cap. The budget
 resets on the **customer-tz calendar day** (`customers.timezone`).
+Queued jobs are picked in neutral chronological order (the source
+`event_time`, then `received_at`), so under a low cap the **earliest**
+events of the day claim the budget — there is no sender-field re-ranking.
+
+When an auto-analyzed leaf is stored, the worker re-dirties the periodic
+report buckets the event falls into (the same dirty signal the baseline
+ingest hook raises). The leaf is produced asynchronously over several
+ticks — usually after the bucket's report already generated — so this
+re-dirty is what makes the loose event surface in the report event path
+on the next report tick rather than staying invisible until unrelated
+activity re-dirties the bucket. The event dispatch runs before the report
+dispatch within a tick so a leaf analyzed this tick can regenerate its
+report in the same tick.
 
 The cap resolves through three tiers (per-customer override → admin
 global → env):

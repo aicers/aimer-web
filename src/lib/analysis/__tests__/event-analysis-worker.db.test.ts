@@ -44,6 +44,7 @@ import {
   type ProcessEventJobOptions,
   processEventJob,
   seedBaselineEventJobs,
+  tickEventJobsOnce,
 } from "../event-analysis-worker";
 import {
   loadEventEnrichmentVerdict,
@@ -99,6 +100,10 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
 
   beforeEach(async () => {
     await authPool.query("DELETE FROM event_analysis_job");
+    // periodic_report_job FK-references periodic_report_state (ON DELETE
+    // CASCADE); delete the job side first so the order is explicit.
+    await authPool.query("DELETE FROM periodic_report_job");
+    await authPool.query("DELETE FROM periodic_report_state");
     await customerPool.query("DELETE FROM event_enrichment_state");
     await customerPool.query("DELETE FROM event_analysis_result");
     await customerPool.query("DELETE FROM story_member");
@@ -169,12 +174,21 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     );
   }
 
-  async function seedAt(eventKeys: string[], nowIso: string): Promise<void> {
-    const candidates: BaselineSeedCandidate[] = eventKeys.map((eventKey) => ({
-      baselineVersion: "bv1",
-      sourceAiceId: AICE_ID,
-      eventKey,
-    }));
+  async function seedAt(
+    eventKeys: string[],
+    nowIso: string,
+    timesByKey?: Record<string, string>,
+  ): Promise<void> {
+    const candidates: BaselineSeedCandidate[] = eventKeys.map((eventKey) => {
+      const t = new Date(timesByKey?.[eventKey] ?? nowIso);
+      return {
+        baselineVersion: "bv1",
+        sourceAiceId: AICE_ID,
+        eventKey,
+        eventTime: t,
+        receivedAt: t,
+      };
+    });
     const client: PoolClient = await authPool.connect();
     try {
       await seedBaselineEventJobs(
@@ -218,6 +232,7 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
       `SELECT customer_id::text AS customer_id, aice_id,
               event_key::text AS event_key, lang, model_name, model,
               baseline_version, selection_tier, budget_day::text AS budget_day,
+              event_time, received_at,
               generation, attempts, created_at
          FROM event_analysis_job
         WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
@@ -486,6 +501,115 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     // Both admitted: separate days, separate cap-of-1 budgets.
     expect(a?.status).toBe("done");
     expect(b?.status).toBe("done");
+  });
+
+  // ---- neutral chronological tier-B admission order --------------------
+
+  it("tier-B admission follows neutral event_time order under a low cap", async () => {
+    // Three loose complete-coverage misses with distinct event_times, in a
+    // key order that is the REVERSE of chronological order. cap = 2: the two
+    // EARLIEST by event_time must be admitted and the latest budget_skipped,
+    // proving admission follows the neutral `event_time` order rather than the
+    // arbitrary `(aice_id, event_key)` key order.
+    for (const k of ["100", "101", "102"]) {
+      await writeVerdict(k, { knownIocHit: false, coverage: "complete" });
+    }
+    await seedAt(["100", "101", "102"], NOW, {
+      "100": "2026-06-04T12:00:02.000Z", // latest by event_time
+      "101": "2026-06-04T12:00:01.000Z",
+      "102": "2026-06-04T12:00:00.000Z", // earliest by event_time
+    });
+    // tickEventJobsOnce picks queued rows in the pickup ORDER BY (event_time)
+    // and processes them in that order, so the cap reservation sees the
+    // earliest events first.
+    await tickEventJobsOnce(
+      authPool,
+      10,
+      baseOpts({ resolveCap: async () => 2 }),
+    );
+
+    expect((await loadJob("102"))?.status).toBe("done"); // earliest → admitted
+    expect((await loadJob("101"))?.status).toBe("done"); // 2nd → admitted
+    expect((await loadJob("100"))?.status).toBe("budget_skipped"); // over cap
+  });
+
+  // ---- enrichment attempts do not leak into the analysis retry budget ---
+
+  it("a held event admitted to tier B gets a FRESH analysis retry budget", async () => {
+    // Non-conclusive verdict: held + re-checked, then bound-exhausted to a
+    // tier-B fallback (admitted). A transient analysis error AFTER admission
+    // must re-queue with a fresh budget, not bill the enrichment re-checks
+    // against MAX_ATTEMPTS (which could mark the event terminally `failed`
+    // after a single analysis error).
+    const drive = vi.fn(async () => {
+      await writeVerdict("110", { knownIocHit: false, coverage: "unknown" });
+      return {
+        status: "complete" as const,
+        knownIocHit: false,
+        coverageStatus: "unknown" as CoverageStatus,
+        evidenceCount: 0,
+      };
+    });
+    const opts = baseOpts({
+      driveEnrichment: drive as never,
+      maxEnrichmentAttempts: 2,
+      resolveCap: async () => 5,
+      analyzeLeaf:
+        analyzeError as unknown as ProcessEventJobOptions["analyzeLeaf"],
+    });
+    await seed(["110"]);
+
+    // First processing: held, re-queued (enrichment attempts → 1).
+    await process("110", opts);
+    expect((await loadJob("110"))?.status).toBe("queued");
+    expect((await loadJob("110"))?.attempts).toBe(1);
+
+    // Second processing: bound exhausted → tier-B fallback admitted, then the
+    // analyze step errors. The job re-queues with a FRESH analysis budget:
+    // attempts = 1 (a first 0 → 1 analysis attempt), NOT 2 (which would mean
+    // the enrichment re-check leaked into the analysis retry budget).
+    await process("110", opts);
+    const job = await loadJob("110");
+    expect(job?.selection_tier).toBe("tier_b");
+    expect(job?.status).toBe("queued"); // retryable, NOT terminal failed
+    expect(job?.attempts).toBe(1); // fresh budget (would be 2 without the fix)
+  });
+
+  // ---- report event-path re-dirty on async leaf completion -------------
+
+  it("re-dirties the periodic report bucket when a loose-event leaf is analyzed", async () => {
+    // A ready DAILY report (already generated → a done job) for the event's
+    // customer-tz bucket. When the async auto-analysis leaf lands, the worker
+    // must flip the report back to dirty so the report event path regenerates
+    // with the new leaf — otherwise the loose event stays invisible until
+    // unrelated activity re-dirties the bucket.
+    const bucket = "2026-06-04"; // NOW (12:00Z) is 21:00 KST on 06-04
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (customer_id, period, bucket_date, tz, status, last_event_at)
+       VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', 'ready', $3::timestamptz)`,
+      [CUSTOMER_ID, bucket, NOW],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (customer_id, period, bucket_date, tz, lang, model_name, model,
+          status)
+       VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', $3, $4, $5, 'done')`,
+      [CUSTOMER_ID, bucket, LANG, MODEL_NAME, MODEL],
+    );
+
+    await writeVerdict("120", { knownIocHit: true, coverage: "complete" });
+    await seed(["120"]); // event_time defaults to NOW → 06-04 KST bucket
+    await process("120", baseOpts());
+    expect((await loadJob("120"))?.status).toBe("done");
+
+    const { rows } = await authPool.query<{ status: string }>(
+      `SELECT status FROM periodic_report_state
+        WHERE customer_id = $1 AND period = 'DAILY'
+          AND bucket_date = $2::date AND tz = 'Asia/Seoul'`,
+      [CUSTOMER_ID, bucket],
+    );
+    expect(rows[0]?.status).toBe("dirty");
   });
 
   it("the tier-A kill switch holds a known-IOC event (never demoted to tier B)", async () => {

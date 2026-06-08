@@ -497,16 +497,20 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // and writes `story_analysis_result`. Per-job advisory locks keep
   // multiple replicas from double-running the same (customer, story).
   await tickStoryJobsOnce(pool, BATCH_SIZE);
+  // Individual baseline-event auto-analysis dispatch (#493) — picks queued
+  // `event_analysis_job` rows, classifies held rows (driving bounded IOC
+  // enrichment + the tier-B budget reservation), and analyzes admitted
+  // leaves via `analyzeBaselineEventLeaf`. Same advisory-lock discipline.
+  // Runs BEFORE the report dispatch so a loose-event leaf analyzed this tick
+  // re-dirties its periodic report buckets (see `redirtyReportsForLeaf`) in
+  // time for the report dispatch below to regenerate them with the new leaf
+  // in the same tick, rather than leaving the report a tick stale.
+  await tickEventJobsOnce(pool, BATCH_SIZE);
   // Periodic report LLM dispatch (#297) — picks `queued` LIVE/DAILY
   // jobs, runs `generatePeriodicSecurityReport`, and writes
   // `periodic_report_result`. Same advisory-lock + commit-ordering
   // discipline as the story dispatch.
   await tickReportJobsOnce(pool, BATCH_SIZE);
-  // Individual baseline-event auto-analysis dispatch (#493) — picks queued
-  // `event_analysis_job` rows, classifies held rows (driving bounded IOC
-  // enrichment + the tier-B budget reservation), and analyzes admitted
-  // leaves via `analyzeBaselineEventLeaf`. Same advisory-lock discipline.
-  await tickEventJobsOnce(pool, BATCH_SIZE);
   // Watchdog: flip any `processing` jobs stuck past the timeout back
   // to `queued`. The pickup-time result-row probe avoids double LLM
   // cost when the previous attempt crashed after step 1.

@@ -51,6 +51,7 @@ import {
   runEventEnrichment,
 } from "./event-enrichment-worker";
 import type { SupportedLang } from "./run-analyze-flow";
+import { recordBaselineActivity } from "./state";
 import {
   MAX_ATTEMPTS,
   PROCESSING_TIMEOUT_MINUTES,
@@ -130,6 +131,8 @@ interface EventJobPickup {
   baseline_version: string;
   selection_tier: SelectionTier | null;
   budget_day: string;
+  event_time: Date;
+  received_at: Date;
   generation: number;
   attempts: number;
   created_at: Date;
@@ -144,6 +147,15 @@ export interface BaselineSeedCandidate {
   baselineVersion: string;
   sourceAiceId: string;
   eventKey: string;
+  /**
+   * Source `baseline_event.event_time` / `received_at`. Stored on the job so
+   * the queued-job pickup can ORDER BY them — tier-B admission then follows
+   * the requested neutral chronological order (no sender-field re-ranking)
+   * instead of an arbitrary key order, which would otherwise decide which
+   * events fit under a low daily cap.
+   */
+  eventTime: Date;
+  receivedAt: Date;
 }
 
 export interface SeedBaselineEventJobsDeps {
@@ -206,10 +218,16 @@ export async function seedBaselineEventJobs(
     );
     if (leaf.rows.length > 0) {
       await authClient.query(
+        // Do NOT rewrite `baseline_version` of a CLAIMED (in-flight) row: the
+        // worker analyzes the version captured at its own pickup, so updating
+        // the source version of a `processing` attempt would leave the job
+        // recording a newer version than the payload the stored result came
+        // from — undercutting the reproducibility the column exists for.
         `UPDATE event_analysis_job
             SET baseline_version = $7, updated_at = $8::timestamptz
           WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
-            AND lang = $4 AND model_name = $5 AND model = $6`,
+            AND lang = $4 AND model_name = $5 AND model = $6
+            AND status <> 'processing'`,
         [
           input.customerId,
           cand.sourceAiceId,
@@ -233,14 +251,22 @@ export async function seedBaselineEventJobs(
       `INSERT INTO event_analysis_job
          (customer_id, aice_id, event_key, lang, model_name, model,
           status, selection_tier, budget_day, baseline_version,
+          event_time, received_at,
           generation, dry_run, created_at, updated_at)
        VALUES ($1, $2, $3::numeric, $4, $5, $6,
                'queued', NULL,
                (($9::timestamptz AT TIME ZONE $7)::date), $8,
+               $10::timestamptz, $11::timestamptz,
                1, FALSE, $9::timestamptz, $9::timestamptz)
        ON CONFLICT (customer_id, aice_id, event_key, lang, model_name, model)
        DO UPDATE SET baseline_version = EXCLUDED.baseline_version,
-                     updated_at = EXCLUDED.updated_at`,
+                     updated_at = EXCLUDED.updated_at
+       -- Never rewrite the source version of a CLAIMED (in-flight) attempt;
+       -- the worker analyzes the version it captured at pickup, so a
+       -- concurrent rebaseline must not drift the recorded version away from
+       -- the payload the stored result was produced from. event_time /
+       -- received_at stay at their seeded chronological values.
+       WHERE event_analysis_job.status <> 'processing'`,
       [
         input.customerId,
         cand.sourceAiceId,
@@ -251,6 +277,8 @@ export async function seedBaselineEventJobs(
         input.tz,
         cand.baselineVersion,
         nowIso,
+        cand.eventTime.toISOString(),
+        cand.receivedAt.toISOString(),
       ],
     );
   }
@@ -272,6 +300,7 @@ async function pickQueuedEventJobs(
             baseline_version,
             selection_tier,
             budget_day::text  AS budget_day,
+            event_time, received_at,
             generation, attempts, created_at
        FROM event_analysis_job
       WHERE status = 'queued'
@@ -282,7 +311,10 @@ async function pickQueuedEventJobs(
              + ($2::bigint * (2 ^ LEAST(attempts - 1, $3::int))) * interval '1 millisecond'
              <= NOW()
         )
-      ORDER BY customer_id, aice_id, event_key
+      -- Neutral chronological order so tier-B admission under a low daily cap
+      -- follows the source event_time / received_at (no sender-field
+      -- re-ranking), with the key as a deterministic tiebreaker.
+      ORDER BY event_time, received_at, aice_id, event_key
       LIMIT $1
       FOR UPDATE SKIP LOCKED`,
     [limit, RETRY_BACKOFF_BASE_MS, BACKOFF_MAX_EXPONENT],
@@ -575,6 +607,36 @@ async function finalizeJob(authPool: Pool, job: EventJobPickup): Promise<void> {
   );
 }
 
+/**
+ * Re-dirty the periodic report buckets overlapping a freshly-analyzed loose
+ * event so the report event path picks up the async leaf. Reuses the exact
+ * `recordBaselineActivity` primitive the baseline ingest hook already drives
+ * (existing-row dirty + monotonic forward-patch) — no report-side logic
+ * change; the report input builder already reads `auto_baseline` leaves
+ * origin-agnostically. Best-effort and idempotent: repeated calls before the
+ * next report tick collapse to a single regeneration (a dirty row stays
+ * dirty), so this cannot churn reports.
+ */
+async function redirtyReportsForLeaf(
+  authPool: Pool,
+  job: EventJobPickup,
+): Promise<void> {
+  const client = await authPool.connect();
+  try {
+    const { rows } = await client.query<{ timezone: string }>(
+      "SELECT timezone FROM customers WHERE id = $1",
+      [job.customer_id],
+    );
+    const tz = rows[0]?.timezone;
+    if (!tz) return;
+    await recordBaselineActivity(client, job.customer_id, tz, [
+      { eventTime: job.event_time, receivedAt: job.received_at },
+    ]);
+  } finally {
+    client.release();
+  }
+}
+
 /** Re-queue with exponential backoff, or write terminal `failed` once the
  * analysis attempt budget is exhausted. */
 async function requeueOrFailAnalysis(
@@ -665,6 +727,13 @@ export async function processEventJob(
     const decision = await classifyHeldJob(job, opts, customerPool);
     if (decision === null) return;
     if (!decision.admitted) return; // budget_skipped (terminal)
+    // Classification reset the DB attempt counter (`markSelectionTier` /
+    // `reserveTierB` both write `attempts = 0`) so the analysis phase starts
+    // with a fresh retry budget. Mirror that on the in-memory pickup, else
+    // `requeueOrFailAnalysis` would bill the enrichment re-check attempts
+    // against `MAX_ATTEMPTS` and a single transient LLM/storage error after a
+    // held event was admitted could be marked terminally `failed` early.
+    job.attempts = 0;
   }
 
   // Analyze the leaf (loads the exact stored redacted baseline_event). The
@@ -697,6 +766,18 @@ export async function processEventJob(
 
   if (outcome.kind === "analyzed") {
     await finalizeJob(opts.authPool, job);
+    // Re-dirty the periodic report buckets this event falls into so a leaf
+    // that lands AFTER a report was already generated forces a regeneration
+    // that includes it. The baseline ingest hook dirties these buckets at
+    // ingest time, but the auto-analysis leaf is produced asynchronously
+    // (held → bounded enrichment → analyze) over several ticks — typically
+    // after that first report already ran and went `done`. Without this the
+    // newly admitted loose event would stay invisible in the report event
+    // path until some unrelated activity re-dirtied the bucket. Best-effort:
+    // a failure here must never fail the (already-stored) analysis.
+    await redirtyReportsForLeaf(opts.authPool, job).catch((err) => {
+      console.error("[event-analysis-worker] report re-dirty failed:", err);
+    });
     return;
   }
   if (outcome.kind === "source_unavailable") {
