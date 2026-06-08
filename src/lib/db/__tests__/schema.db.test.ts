@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(43);
+    expect(rows).toHaveLength(45);
   });
 
   // -- Built-in roles --
@@ -60,13 +60,16 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     //   write key → Manager, System Administrator (+1)
     // plus the analyst designation keys seeded by 0003_roles.sql (#266):
     //   analysts:read + analysts:write → System Administrator only (+2)
+    // plus the per-customer default-model keys seeded by
+    // 0042_customer_default_model_permissions.sql (#473):
+    //   read + write keys → Analyst, System Administrator only (+2 each)
     expect(rows).toEqual([
-      { name: "Analyst", auth_context: "general", perm_count: 15 },
+      { name: "Analyst", auth_context: "general", perm_count: 17 },
       { name: "Manager", auth_context: "general", perm_count: 17 },
       {
         name: "System Administrator",
         auth_context: "admin",
-        perm_count: 21,
+        perm_count: 23,
       },
       { name: "User", auth_context: "general", perm_count: 10 },
     ]);
@@ -148,6 +151,41 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     ]);
     expect(grouped["customer-owned-domains:write"]).toEqual([
       "Manager",
+      "System Administrator",
+    ]);
+  });
+
+  it("seeds per-customer default-model permissions on the right roles", async () => {
+    const { rows } = await pool.query<{
+      name: string;
+      permission: string;
+    }>(
+      `SELECT r.name, rp.permission
+       FROM roles r
+       JOIN role_permissions rp ON rp.role_id = r.id
+       WHERE rp.permission IN (
+         'customer-default-model:read',
+         'customer-default-model:write'
+       )
+       ORDER BY rp.permission, r.name`,
+    );
+
+    const grouped: Record<string, string[]> = {};
+    for (const row of rows) {
+      if (!grouped[row.permission]) grouped[row.permission] = [];
+      grouped[row.permission].push(row.name);
+    }
+    for (const key of Object.keys(grouped)) grouped[key].sort();
+
+    // Per the #473 matrix: per-customer default model is analyst-facing
+    // — read and write seeded only to Analyst and System Administrator,
+    // never Manager or User.
+    expect(grouped["customer-default-model:read"]).toEqual([
+      "Analyst",
+      "System Administrator",
+    ]);
+    expect(grouped["customer-default-model:write"]).toEqual([
+      "Analyst",
       "System Administrator",
     ]);
   });
@@ -941,6 +979,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         "story_analysis_job",
         "periodic_report_state",
         "periodic_report_job",
+        // Per-customer default analysis model (#473).
+        "customer_default_model",
       ];
       for (const table of crudTables) {
         const { rows } = await rolePool.query(`SELECT COUNT(*) FROM ${table}`);

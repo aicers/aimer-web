@@ -136,11 +136,20 @@ function resolveCatalog(): ModelCatalogEntry[] {
 let cached: ModelCatalogEntry[] | null = null;
 
 /**
- * The configured default `(modelName, model)` pair. The #379 leaf-coverage
- * caveat is specific to NON-default reports (aggregation only folds in
- * same-model leaves, and only the default model has full leaf coverage), so
- * the compare view needs the default pair to decide which displayed column the
- * note applies to. Server-only, like the rest of this module.
+ * The ENV-level default `(modelName, model)` pair — the third/last tier
+ * of the #473 resolution order and the pair `ANALYSIS_MODEL_CATALOG`
+ * always contains.
+ *
+ * RE-SCOPED for #473: this is NO LONGER the source of truth for "the
+ * default model a given customer uses". That is now per-customer and
+ * resolved asynchronously by `resolveDefaultModel(customerId)`
+ * (`default-model.ts`), which layers a per-customer override and an
+ * admin-set global default on top of this env pair. Use this getter
+ * ONLY for env/catalog allow-list duties (e.g. the pair guaranteed to be
+ * in the catalog); use `resolveDefaultModel` wherever a customer's
+ * effective default — including the #379/#465 "default report → full
+ * leaf coverage" decision — is needed, so the coverage logic and the
+ * resolver never disagree. Server-only, like the rest of this module.
  */
 export function getDefaultModelPair(): { modelName: string; model: string } {
   return { modelName: DEFAULT_MODEL_NAME, model: DEFAULT_MODEL };

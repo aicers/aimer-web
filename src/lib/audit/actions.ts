@@ -67,6 +67,11 @@ export type AuditAction =
   | "customer_redaction_ranges.retroactive_failed"
   | "customer_redaction_ranges.retroactive_cancelled"
   | "customer_retention_policy.updated"
+  // Per-customer default analysis model (#473)
+  | "customer_default_model.updated"
+  | "customer_default_model.cleared"
+  | "system.default_model_updated"
+  | "system.default_model_cleared"
   // AICE environment
   | "environment.created"
   | "environment.updated"
