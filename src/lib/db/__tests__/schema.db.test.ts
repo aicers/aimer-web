@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(45);
+    expect(rows).toHaveLength(46);
   });
 
   // -- Built-in roles --
