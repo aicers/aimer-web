@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(48);
+    expect(rows).toHaveLength(50);
   });
 
   // -- Built-in roles --
@@ -763,6 +763,136 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         expect(rows[0]?.is_nullable).toBe("NO");
         expect(rows[0]?.column_default).toBe("false");
       }
+    });
+
+    it("event_analysis_job has the budget-accounting DDL contract (#493)", async () => {
+      // The auto-baseline path's job lifecycle table (auth/0046). Lock in
+      // the columns the per-customer daily cap depends on for correctness.
+      const { rows: checks } = await pool.query<{
+        pg_get_constraintdef: string;
+      }>(
+        `SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+          WHERE t.relname = 'event_analysis_job'
+            AND c.contype = 'c'`,
+      );
+      const checkText = checks.map((r) => r.pg_get_constraintdef).join(" | ");
+      // status enum includes the terminal tier-B overflow marker.
+      for (const status of [
+        "queued",
+        "processing",
+        "done",
+        "failed",
+        "budget_skipped",
+      ]) {
+        expect(checkText).toContain(status);
+      }
+      // selection_tier enum.
+      for (const tier of ["tier_a", "tier_b"]) {
+        expect(checkText).toContain(tier);
+      }
+
+      const { rows: cols } = await pool.query<{
+        column_name: string;
+        is_nullable: string;
+        data_type: string;
+      }>(
+        `SELECT column_name, is_nullable, data_type
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'event_analysis_job'
+            AND column_name IN ('selection_tier', 'budget_day', 'status')
+          ORDER BY column_name`,
+      );
+      const byName = new Map(cols.map((c) => [c.column_name, c]));
+      // selection_tier is NULLABLE — NULL = held (awaiting classification),
+      // which a held row must be so it never inflates the tier-B count.
+      expect(byName.get("selection_tier")?.is_nullable).toBe("YES");
+      // budget_day is a NOT NULL date — the customer-tz day the row reserves.
+      expect(byName.get("budget_day")?.is_nullable).toBe("NO");
+      expect(byName.get("budget_day")?.data_type).toBe("date");
+      expect(byName.get("status")?.is_nullable).toBe("NO");
+
+      // The reservation COUNT(*) is backed by a partial index on exactly the
+      // tier-B, non-budget_skipped predicate the seed-time reservation reads.
+      const { rows: idx } = await pool.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes
+          WHERE tablename = 'event_analysis_job'
+            AND indexname = 'event_analysis_job_budget_idx'`,
+      );
+      expect(idx[0]?.indexdef).toContain("tier_b");
+      expect(idx[0]?.indexdef).toContain("budget_skipped");
+
+      // Unlike `story_analysis_job` (which cascades through its state
+      // parent), this table has no per-event state table to cascade
+      // through, so `customer_id` references `customers(id)` DIRECTLY with
+      // ON DELETE CASCADE. Without it, a deleted customer leaves orphaned
+      // job rows the worker keeps picking and failing on.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('event-job-cascade', 'CC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      await pool.query(
+        `INSERT INTO event_analysis_job
+           (customer_id, aice_id, event_key, lang, model_name, model,
+            status, budget_day, baseline_version, event_time, received_at)
+         VALUES ($1, 'aice-1', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'queued', DATE '1970-01-01', 'bv-1', NOW(), NOW())`,
+        [cid],
+      );
+      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+      const { rows: left } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM event_analysis_job
+          WHERE customer_id = $1`,
+        [cid],
+      );
+      expect(left[0].c).toBe(0);
+    });
+
+    it("customer_baseline_analysis_cap mirrors customer_default_model with a non-negative cap (#493)", async () => {
+      const { rows } = await pool.query<{
+        column_name: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'customer_baseline_analysis_cap'
+          ORDER BY column_name`,
+      );
+      expect(rows.map((r) => r.column_name)).toEqual([
+        "customer_id",
+        "daily_cap",
+        "updated_at",
+        "updated_by",
+      ]);
+
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('baseline-cap-ddl', 'CC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      // daily_cap CHECK rejects a negative cap.
+      await expect(
+        pool.query(
+          `INSERT INTO customer_baseline_analysis_cap
+             (customer_id, daily_cap, updated_by) VALUES ($1, -1, $1)`,
+          [cid],
+        ),
+      ).rejects.toThrow();
+      // A cap of 0 (tier B disabled) is a valid, distinct value.
+      await pool.query(
+        `INSERT INTO customer_baseline_analysis_cap
+           (customer_id, daily_cap, updated_by) VALUES ($1, 0, $1)`,
+        [cid],
+      );
+      // The row CASCADEs with its customer.
+      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+      const { rows: left } = await pool.query<{ c: number }>(
+        `SELECT COUNT(*)::int AS c FROM customer_baseline_analysis_cap
+          WHERE customer_id = $1`,
+        [cid],
+      );
+      expect(left[0].c).toBe(0);
     });
 
     it("analysis tables CASCADE from customers and the job tables CASCADE from their state tables", async () => {

@@ -108,6 +108,7 @@ function resultRowData(extras: Record<string, unknown> = {}) {
     generation: 1,
     requested_by: "acc-1",
     requested_at: new Date("2026-05-20T00:00:00Z"),
+    origin: "manual",
     ...extras,
   };
 }
@@ -129,6 +130,13 @@ function pushMapRow() {
 function pushSourcePresent(exists: boolean) {
   pushStub({
     match: (s) => s.includes("FROM detection_events"),
+    rows: [{ exists }],
+  });
+}
+
+function pushBaselineSourcePresent(exists: boolean) {
+  pushStub({
+    match: (s) => s.includes("FROM baseline_event"),
     rows: [{ exists }],
   });
 }
@@ -227,6 +235,41 @@ describe("loadAnalysisResultPage", () => {
     // Tokens are still restored because the map row outlives the source
     // event per the RFC 0001 §"Retention" cascade rule.
     expect(outcome.data.analysisText).toBe("attacker 10.0.0.1 reached us");
+    expect(outcome.data.sourceEventPresent).toBe(false);
+  });
+
+  it("auto-baseline: probes baseline_event for source presence and exposes a null requester", async () => {
+    // An auto-baseline leaf has no `detection_events` row by design; its
+    // source lives in `baseline_event` (keyed by `source_aice_id`). The
+    // loader must probe that table — probing `detection_events` would
+    // falsely report a retention sweep — and surface the NULL requester so
+    // the page renders the "system" label rather than an empty field (#493).
+    pushResultRow({ origin: "auto_baseline", requested_by: null });
+    pushMapRow();
+    pushBaselineSourcePresent(true);
+
+    const outcome = await callLoader();
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.origin).toBe("auto_baseline");
+    expect(outcome.data.requestedBy).toBeNull();
+    expect(outcome.data.sourceEventPresent).toBe(true);
+    // The presence probe targeted baseline_event, not detection_events.
+    const probe = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("AS exists"),
+    );
+    expect(String(probe?.[0])).toContain("FROM baseline_event");
+    expect(String(probe?.[0])).toContain("source_aice_id = $1");
+  });
+
+  it("auto-baseline: a swept baseline_event reports sourceEventPresent=false", async () => {
+    pushResultRow({ origin: "auto_baseline", requested_by: null });
+    pushMapRow();
+    pushBaselineSourcePresent(false);
+
+    const outcome = await callLoader();
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
     expect(outcome.data.sourceEventPresent).toBe(false);
   });
 

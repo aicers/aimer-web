@@ -14,6 +14,10 @@ import "server-only";
 
 import type { Pool } from "pg";
 import {
+  type BaselineSeedCandidate,
+  seedBaselineEventJobs,
+} from "./event-analysis-worker";
+import {
   type CursorQuality,
   dirtyPeriodicStatesOverlapping,
   dirtyStoryStatesInRange,
@@ -106,12 +110,31 @@ export interface BaselineIngestHookInput {
    * `received_at` from `baseline_event` keeps the hot path aligned with
    * the reconcile forward-patch path (`MAX(baseline_event.received_at)`),
    * so the comparison is always like-for-like.
+   *
+   * Each event additionally carries its identity
+   * `(baselineVersion, sourceAiceId, eventKey)` so the #493 auto-analysis
+   * seeder can seed `event_analysis_job` rows for loose events without
+   * re-querying the customer DB.
    */
-  acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }>;
+  acceptedEvents: Array<{
+    eventTime: Date;
+    receivedAt: Date;
+    baselineVersion: string;
+    sourceAiceId: string;
+    eventKey: string;
+  }>;
 }
 
+/**
+ * Best-effort auth-DB hook fired after a baseline batch's customer-DB commit
+ * returns. Dirties the periodic report state (`recordBaselineActivity`) AND
+ * seeds individual baseline-event auto-analysis jobs for loose events (#493).
+ * Needs `customerPool` for the seeder's loose-membership / dedup reads. Any
+ * failure is logged and swallowed (decision 2) — never blocks ingest.
+ */
 export async function applyBaselineIngestHook(
   authPool: Pool,
+  customerPool: Pool,
   input: BaselineIngestHookInput,
 ): Promise<void> {
   if (input.acceptedEvents.length === 0) return;
@@ -125,6 +148,19 @@ export async function applyBaselineIngestHook(
         input.customerId,
         tz,
         input.acceptedEvents,
+      );
+      const candidates: BaselineSeedCandidate[] = input.acceptedEvents.map(
+        (e) => ({
+          baselineVersion: e.baselineVersion,
+          sourceAiceId: e.sourceAiceId,
+          eventKey: e.eventKey,
+          eventTime: e.eventTime,
+          receivedAt: e.receivedAt,
+        }),
+      );
+      await seedBaselineEventJobs(
+        { authClient: client, customerPool },
+        { customerId: input.customerId, tz, candidates },
       );
     } finally {
       client.release();

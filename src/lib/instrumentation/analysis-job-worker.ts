@@ -40,6 +40,10 @@ import "server-only";
 import type { Pool, PoolClient } from "pg";
 import { tickStoryEnrichmentOnce } from "../analysis/enrichment-worker";
 import {
+  recoverStuckEventJobs,
+  tickEventJobsOnce,
+} from "../analysis/event-analysis-worker";
+import {
   recoverStuckReportJobs,
   requeueLiveReportJobs,
   seedRealReportJobs,
@@ -444,6 +448,14 @@ async function runRecovery(authPool: Pool): Promise<void> {
       WHERE status = 'processing'`,
     [nowIso],
   );
+  await authPool.query(
+    `UPDATE event_analysis_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            updated_at = $1::timestamptz
+      WHERE status = 'processing'`,
+    [nowIso],
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +497,15 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // and writes `story_analysis_result`. Per-job advisory locks keep
   // multiple replicas from double-running the same (customer, story).
   await tickStoryJobsOnce(pool, BATCH_SIZE);
+  // Individual baseline-event auto-analysis dispatch (#493) — picks queued
+  // `event_analysis_job` rows, classifies held rows (driving bounded IOC
+  // enrichment + the tier-B budget reservation), and analyzes admitted
+  // leaves via `analyzeBaselineEventLeaf`. Same advisory-lock discipline.
+  // Runs BEFORE the report dispatch so a loose-event leaf analyzed this tick
+  // re-dirties its periodic report buckets (see `redirtyReportsForLeaf`) in
+  // time for the report dispatch below to regenerate them with the new leaf
+  // in the same tick, rather than leaving the report a tick stale.
+  await tickEventJobsOnce(pool, BATCH_SIZE);
   // Periodic report LLM dispatch (#297) — picks `queued` LIVE/DAILY
   // jobs, runs `generatePeriodicSecurityReport`, and writes
   // `periodic_report_result`. Same advisory-lock + commit-ordering
@@ -495,6 +516,7 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // cost when the previous attempt crashed after step 1.
   await recoverStuckStoryJobs(pool);
   await recoverStuckReportJobs(pool);
+  await recoverStuckEventJobs(pool);
 }
 
 const WORKER_SLOT = Symbol.for("aimer.analysis.jobWorker");

@@ -78,3 +78,81 @@ WEEKLY 및 MONTHLY는 Phase 0.5에서 워터마크를 소비하지 않습니다.
 반환합니다 — 해당 JTI는 이미 소비되어 재시도하면 `409
 context_jti_replay`가 됩니다. 동일 고객의 다음 envelope이 직접
 워터마크를 진행시킵니다.
+
+## 베이스라인 이벤트 자동 분석 (Tier-B 일일 상한)
+
+워커는 **느슨한(loose) 베이스라인 이벤트** — 어떤 스토리에도 속하지 않는
+이벤트(스토리 멤버는 스토리 단위로 분석됨) — 도 자동 분석합니다. 인제스트된
+느슨한 이벤트는 보류(held) 상태의 `event_analysis_job` 행으로 시드되고,
+이후 틱에서 이벤트별 TI/IOC 판정(`event_enrichment_state`)에 따라
+분류됩니다:
+
+- **Tier A** — 알려진 IOC 적중. 항상 분석되며 **상한 없음**.
+- **Tier B** — `coverage_status = 'complete'` 하에서의 미적중. 고객의
+  일일 예산 내에서만 분석되고, 초과분은 종료 상태 `budget_skipped`로
+  기록됩니다(조회 가능, 재시도 없음).
+- **보류(Held)** — 판정이 없거나 비확정적인 경우
+  (`partial`/`unknown`/`stale`)에는 아직 분류하지 않습니다. 워커는 제한된
+  `runEventEnrichment` 재확인 루프를 구동하며, 판정이 알려진 IOC 적중으로
+  바뀌면 Tier A로 라우팅하고, 한도 소진 시에는 (메트릭과 함께) Tier B로
+  폴백합니다 — 결코 조용히 `budget_skipped`로 처리하지 않습니다.
+
+Tier-B 상한은 **시드 시점 예약(seed-time reservation)** 입니다:
+`(customer, budget_day)`별 카운트는 `done`뿐 아니라 진행 중인
+`queued`/`processing` 행도 포함하므로, 백로그가 상한을 넘겨 과다
+인큐될 수 없습니다. 예산은 **고객 타임존 달력일**(`customers.timezone`)
+기준으로 초기화됩니다. 큐에 쌓인 작업은 중립적 시간 순서(소스
+`event_time`, 그다음 `received_at`)로 픽업되므로, 낮은 상한에서는 그날
+**가장 이른** 이벤트가 예산을 차지합니다 — 송신자 필드 기반 재정렬은
+없습니다.
+
+적격성(eligibility)은 시드 시점뿐 아니라 워커가 작업을 클레임(claim)할
+때 다시 확인합니다. 워커는 비동기이므로, 시드와 픽업 사이의 간극에서
+스토리 배치가 해당 이벤트를 멤버로 편입하거나 수동/기본 변형
+`event_analysis_result`가 나타날 수 있습니다. 두 경우 모두 이제 무효가
+된(stale) 자동 작업은 예산이나 LLM 비용을 쓰기 **전에**, 그리고 라이브
+리프를 supersede 하기 전에 종료 상태 `done`으로 취소됩니다(사유는
+`last_error`에 기록). 따라서 스토리 멤버는 결코 자동 분석되지 않고,
+수동 경로의 가시적 결과도 덮어쓰이지 않습니다.
+
+(상대적으로 긴) LLM 호출이 진행되는 동안의 창(window)을 닫기 위해,
+동일한 적격성 검사는 **저장 트랜잭션 내부**에서—이벤트 변형별 어드바이저
+락(advisory lock)을 잡은 채, 결과를 쓰기 직전에—한 번 더 실행됩니다.
+자동 분석이 진행 중인 사이에 스토리 멤버나 라이브 리프가 나타나면 저장은
+롤백되고(아무것도 supersede 되지 않으며 `auto_baseline` 행도 쓰이지 않음)
+작업은 동일한 방식으로 취소됩니다. 라이브 리프의 경우 이 락이 안전성을
+보장합니다. 동일 변형에 대한 동시 수동 분석도 같은 락을 잡으므로 그 결과가
+이 마지막 검사에 항상 보이기 때문입니다.
+
+자동 분석된 리프(leaf)가 저장되면 워커는 해당 이벤트가 속한 주기
+리포트 버킷을 다시 더티(dirty) 처리합니다(베이스라인 인제스트 훅이
+올리는 것과 동일한 더티 신호). 리프는 여러 틱에 걸쳐 비동기적으로
+생성되며 — 보통 해당 버킷의 리포트가 이미 생성된 뒤입니다 — 따라서 이
+재더티(re-dirty) 처리가 느슨한 이벤트를 다음 리포트 틱에서 리포트 이벤트
+경로에 노출시키며, 그렇지 않으면 무관한 활동이 버킷을 다시 더티
+처리할 때까지 보이지 않습니다. 한 틱 안에서 이벤트 디스패치가 리포트
+디스패치보다 먼저 실행되므로, 이번 틱에 분석된 리프가 같은 틱에 리포트를
+재생성할 수 있습니다.
+
+상한은 세 단계(고객별 오버라이드 → 관리자 전역 → 환경 변수)로
+해석됩니다:
+
+| 단계 | 소스 |
+| --- | --- |
+| 고객별 오버라이드 | `customer_baseline_analysis_cap.daily_cap` 행 (없으면 오버라이드 없음) |
+| 관리자 전역 | `system_settings.baseline_auto_analysis_daily_cap` |
+| 환경 변수 폴백 | `BASELINE_AUTO_ANALYSIS_DAILY_CAP` |
+
+| 변수 | 기본값 | 사용 시점 |
+| --- | --- | --- |
+| `BASELINE_AUTO_ANALYSIS_DAILY_CAP` | `0` | 환경 변수 단계 Tier-B 상한(세 번째 단계). `0`이면 Tier B 비활성화; Tier A는 상한 없이 유지. |
+| `BASELINE_AUTO_ANALYSIS_TIER_A_ENABLED` | `true` | 인시던트 대응용 Tier-A 킬 스위치. `false`인 동안 알려진 IOC 이벤트는 보류됩니다(Tier B로 강등되지 않음). |
+| `BASELINE_AUTO_ANALYSIS_MAX_ENRICHMENT_ATTEMPTS` | `5` | 보류 이벤트 enrichment 재확인 시도 한도. |
+| `BASELINE_AUTO_ANALYSIS_MAX_ENRICHMENT_AGE_MINUTES` | `60` | 보류 이벤트 enrichment 재확인 경과 시간 한도. |
+
+결과 행에는 `event_analysis_result.origin = 'auto_baseline'`(수동 경로는
+`'manual'` 유지)과 `requested_by = NULL`(휴먼 요청자 없음; 워커는 감사
+액터로 귀속됨)이 기록됩니다. 워커는 비율 모니터링을 위해 구조화된
+`analysis.baseline_auto.*` 로그 라인(`tier_a_analyzed`,
+`tier_b_admitted`, `budget_skipped`, `coverage_holdfallback`,
+`tier_a_disabled_held`, `stale_cancelled`)을 방출합니다.

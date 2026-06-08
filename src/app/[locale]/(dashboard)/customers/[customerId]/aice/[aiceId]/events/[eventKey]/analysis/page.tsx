@@ -259,7 +259,12 @@ export default async function AnalysisResultPage({
                 {data.promptVersion}
               </Field>
             ) : null}
-            <Field label={tA("fields.requestedBy")}>{data.requestedBy}</Field>
+            {/* `requestedBy` is NULL for an auto-baseline result (no human
+                requester); show the localized "system" label instead of an
+                empty field, mirroring the story/report pages (#493). */}
+            <Field label={tA("fields.requestedBy")}>
+              {data.requestedBy ?? tA("common.system")}
+            </Field>
             <Field label={tA("fields.requestedAt")}>
               <Timestamp at={data.requestedAt} />
             </Field>
