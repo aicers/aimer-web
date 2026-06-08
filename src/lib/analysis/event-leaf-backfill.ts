@@ -148,6 +148,33 @@ export async function loadUniverse(
   }));
 }
 
+/**
+ * Whether a non-superseded leaf for the target variant already exists for
+ * this event — the ONLY "already-current" test (Scope §4). Used by the
+ * worker as an idempotency re-check between create-time materialization and
+ * processing, so a re-run never duplicates work. Deliberately does NOT
+ * compare generations across models: `generation` is a per-variant counter,
+ * so an old-model generation and the target-model generation are not
+ * comparable.
+ */
+export async function hasTargetVariantLeaf(
+  customerPool: Pool,
+  aiceId: string,
+  eventKey: string,
+  target: TargetVariant,
+): Promise<boolean> {
+  const { rows } = await customerPool.query<{ present: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric
+          AND lang = $3 AND model_name = $4 AND model = $5
+          AND superseded_at IS NULL
+     ) AS present`,
+    [aiceId, eventKey, target.lang, target.modelName, target.model],
+  );
+  return rows[0]?.present ?? false;
+}
+
 /** The categorized preview counts over the §2 universe (Scope §7 / §8). */
 export interface PreviewCounts {
   /** Universe size — every existing in-window leaf, all categories summed. */

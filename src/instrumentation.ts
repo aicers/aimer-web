@@ -37,6 +37,10 @@ export async function register() {
       "@/lib/instrumentation/analysis-reconcile-worker"
     );
     installAnalysisReconcileWorker();
+    const { installEventBackfillWorker } = await import(
+      "@/lib/instrumentation/event-backfill-worker"
+    );
+    installEventBackfillWorker();
     const { installAuthPoolCleanup } = await import(
       "@/lib/instrumentation/auth-pool-cleanup"
     );
