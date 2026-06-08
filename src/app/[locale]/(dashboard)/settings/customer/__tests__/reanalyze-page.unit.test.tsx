@@ -65,6 +65,16 @@ vi.mock("@/components/analysis/reanalyze-backfill-panel", () => ({
   },
 }));
 
+// The #469 report-variant refresh panel has its own unit test; stub it here
+// (like the #466 panel) so the page test stays focused on wiring.
+const mockReportPanel = vi.fn();
+vi.mock("@/components/analysis/report-variant-refresh-panel", () => ({
+  ReportVariantRefreshPanel: (props: { apiBase: string }) => {
+    mockReportPanel(props);
+    return <div>report-refresh-panel</div>;
+  },
+}));
+
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
 import CustomerReanalyzePage from "../reanalyze/page";
@@ -87,6 +97,7 @@ function arrange(opts: {
 beforeEach(() => {
   mockApiFetch.mockReset();
   mockPanel.mockReset();
+  mockReportPanel.mockReset();
   mockedUseCustomerContext.mockReset();
   mockedUsePermissions.mockReset();
 });
@@ -127,6 +138,12 @@ describe("CustomerReanalyzePage", () => {
     expect(mockPanel).toHaveBeenCalledWith(
       expect.objectContaining({
         apiBase: "/api/customers/c1/analysis/reanalyze",
+      }),
+    );
+    expect(screen.getByText("report-refresh-panel")).toBeDefined();
+    expect(mockReportPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiBase: "/api/customers/c1/analysis/report-refresh",
       }),
     );
     // The current default model is shown once the lookup resolves.

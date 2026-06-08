@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { EventLeafBackfillPanel } from "@/components/analysis/event-leaf-backfill-panel";
 import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
+import { ReportVariantRefreshPanel } from "@/components/analysis/report-variant-refresh-panel";
 import { Button } from "@/components/ui/button";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -111,6 +112,12 @@ export default function CustomerReanalyzePage() {
       <EventLeafBackfillPanel
         customerId={singleCustomerId}
         apiBase={`/api/customers/${singleCustomerId}/analysis/event-backfill`}
+        fetcher={apiFetch}
+      />
+
+      <ReportVariantRefreshPanel
+        customerId={singleCustomerId}
+        apiBase={`/api/customers/${singleCustomerId}/analysis/report-refresh`}
         fetcher={apiFetch}
       />
 
