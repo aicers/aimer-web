@@ -1,0 +1,241 @@
+// @vitest-environment jsdom
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Render translation keys with interpolated vars so assertions can target
+// the variable values the panel computes.
+const t = (key: string, vars?: Record<string, unknown>) =>
+  vars ? `${key}:${JSON.stringify(vars)}` : key;
+vi.mock("next-intl", () => ({ useTranslations: () => t }));
+
+import { ReanalyzeBackfillPanel } from "../reanalyze-backfill-panel";
+
+const PREVIEW = {
+  scope: { modelName: "openai", model: "gpt-5.5", windowDays: 7, cap: null },
+  counts: {
+    seeded: 4,
+    requeued: 1,
+    coalesced: 2,
+    skipped_dirty: 1,
+    source_unavailable: 0,
+    cap_excluded: 0,
+  },
+};
+
+const EMPTY_PREVIEW = {
+  scope: { modelName: "openai", model: "gpt-5.5", windowDays: 7, cap: null },
+  counts: {
+    seeded: 0,
+    requeued: 0,
+    coalesced: 3,
+    skipped_dirty: 0,
+    source_unavailable: 0,
+    cap_excluded: 0,
+  },
+};
+
+afterEach(() => cleanup());
+
+describe("ReanalyzeBackfillPanel", () => {
+  let fetcher: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetcher = vi.fn();
+  });
+
+  it("loads the default-scope preview on mount and shows the leaf count", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW);
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(fetcher).toHaveBeenCalledWith(
+        "/api/x/reanalyze/preview?windowDays=7",
+      ),
+    );
+    // toEnqueue = seeded + requeued = 5.
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+  });
+
+  it("gates the run behind explicit confirmation, then POSTs confirm:true", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    const start = screen.getByText("startButton").closest("button");
+    if (!start) throw new Error("start button not found");
+    // Disabled until the operator confirms.
+    expect(start.hasAttribute("disabled")).toBe(true);
+
+    // The confirm checkbox is the one whose className marks it (mt-1).
+    const confirmBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => (c as HTMLInputElement).className.includes("mt-1"));
+    if (!confirmBox) throw new Error("confirm checkbox not found");
+    fireEvent.click(confirmBox);
+    expect(start.hasAttribute("disabled")).toBe(false);
+
+    // run POST → then a status refresh.
+    fetcher
+      .mockResolvedValueOnce({ counts: { ...PREVIEW.counts } })
+      .mockResolvedValueOnce({
+        totalLeaves: 5,
+        outstanding: 5,
+        drained: false,
+        counts: {},
+      });
+    fireEvent.click(start);
+
+    await waitFor(() =>
+      expect(screen.getByText("enqueuedTitle")).toBeDefined(),
+    );
+    const postCall = fetcher.mock.calls.find((c) => c[1]?.method === "POST");
+    expect(postCall).toBeDefined();
+    expect(JSON.parse(postCall?.[1].body)).toMatchObject({
+      confirm: true,
+      windowDays: 7,
+    });
+  });
+
+  it("invalidates a prior confirmation when the scope is edited", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    // Confirm the previewed 7-day scope.
+    const confirmBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => (c as HTMLInputElement).className.includes("mt-1"));
+    if (!confirmBox) throw new Error("confirm checkbox not found");
+    fireEvent.click(confirmBox);
+    expect(
+      screen
+        .getByText("startButton")
+        .closest("button")
+        ?.hasAttribute("disabled"),
+    ).toBe(false);
+
+    // Widen the scope to "all history" — this must invalidate the preview and
+    // confirmation, so Start is no longer offered for the unpreviewed scope.
+    const allHistoryBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => !(c as HTMLInputElement).className.includes("mt-1"));
+    if (!allHistoryBox) throw new Error("all-history checkbox not found");
+    fireEvent.click(allHistoryBox);
+
+    await waitFor(() => expect(screen.queryByText("startButton")).toBeNull());
+    // No POST happened — only the mount preview was fetched.
+    expect(fetcher.mock.calls.every((c) => c[1]?.method !== "POST")).toBe(true);
+  });
+
+  it("locks the scope controls while a run is in flight", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    const confirmBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => (c as HTMLInputElement).className.includes("mt-1"));
+    if (!confirmBox) throw new Error("confirm checkbox not found");
+    fireEvent.click(confirmBox);
+
+    // Hold the POST in flight so `running` stays true.
+    fetcher.mockReturnValueOnce(new Promise(() => {}));
+    const start = screen.getByText("startButton").closest("button");
+    if (!start) throw new Error("start button not found");
+    fireEvent.click(start);
+
+    // While running, the scope controls must be locked so the operator cannot
+    // widen the scope behind the confirmed/previewed run.
+    const windowInput = document.getElementById(
+      "reanalyze-window-days",
+    ) as HTMLInputElement;
+    const capInput = document.getElementById(
+      "reanalyze-cap",
+    ) as HTMLInputElement;
+    await waitFor(() => expect(windowInput.disabled).toBe(true));
+    expect(capInput.disabled).toBe(true);
+  });
+
+  it("surfaces categorized drain counts and flags failed leaves, scoped to the preview", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    fetcher.mockResolvedValueOnce({
+      totalLeaves: 10,
+      outstanding: 4,
+      drained: false,
+      counts: {
+        drained: 6,
+        absent: 1,
+        queued: 1,
+        processing: 0,
+        failed_outstanding: 2,
+        skipped_dirty: 0,
+        source_unavailable: 1,
+      },
+    });
+    const refresh = screen.getByText("refreshStatus").closest("button");
+    if (!refresh) throw new Error("refresh button not found");
+    fireEvent.click(refresh);
+
+    // The categorized counts must be surfaced, not collapsed to "N outstanding".
+    await waitFor(() => expect(screen.getByText("drainFailed")).toBeDefined());
+    expect(screen.getByText('drainFailedNote:{"count":2}')).toBeDefined();
+    expect(screen.getByText("drainSourceUnavailable")).toBeDefined();
+
+    // The progress query addresses the previewed scope (windowDays=7), not a
+    // live form edit.
+    const statusCall = fetcher.mock.calls.find(
+      (c) => typeof c[0] === "string" && c[0].includes("/status"),
+    );
+    expect(statusCall?.[0]).toContain("windowDays=7");
+  });
+
+  it("disables the run when there is nothing to enqueue", async () => {
+    fetcher.mockResolvedValueOnce(EMPTY_PREVIEW);
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("nothingToEnqueue")).toBeDefined(),
+    );
+    const start = screen.getByText("startButton").closest("button");
+    expect(start?.hasAttribute("disabled")).toBe(true);
+  });
+});

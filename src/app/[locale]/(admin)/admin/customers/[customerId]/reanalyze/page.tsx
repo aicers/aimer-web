@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/i18n/navigation";
 import { adminFetch } from "@/lib/api/admin-client";
@@ -28,11 +29,11 @@ interface DefaultModelView {
  * customer, so a System Administrator — who may have no general customer
  * scope and therefore cannot reach the dashboard route — still gets a
  * stable launch surface after changing any customer's override. Like its
- * dashboard twin this page is the ENTRY POINT only: it never enqueues
- * re-analysis. The actual cost preview, scoping, drain-gating and
- * throttling land with #466 (story leaves) / #470 (event leaves) → drain →
- * #469 (report refresh), which will replace the "not yet available" panel
- * with the real controls.
+ * dashboard twin it now hosts the #466 story-leaf backfill controls (cost
+ * preview, scoping, confirm-gated enqueue, drain progress) via
+ * `ReanalyzeBackfillPanel`. Event-leaf re-analysis (#470) and report
+ * refresh (#469) are sequenced after the story-leaf run drains and land on
+ * this same surface as they ship.
  */
 export default function AdminCustomerReanalyzePage() {
   const t = useTranslations("adminCustomerReanalyze");
@@ -81,29 +82,27 @@ export default function AdminCustomerReanalyzePage() {
         </p>
       )}
 
-      <section className="space-y-2 rounded-md border border-border bg-card p-4">
-        <h2 className="text-base font-semibold text-foreground">
-          {t("notYetAvailableTitle")}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t("notYetAvailableBody")}
-        </p>
-        <p className="text-sm text-foreground">{t("guaranteeNote")}</p>
-        <div className="pt-2">
-          <Button asChild variant="ghost">
-            <a
-              href={`${manualUrl(
-                "analysis/default-model",
-                locale === "ko" ? "ko" : "en",
-              )}#what-a-change-affects`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t("docsLink")}
-            </a>
-          </Button>
-        </div>
-      </section>
+      <p className="text-sm text-muted-foreground">{t("guaranteeNote")}</p>
+
+      <ReanalyzeBackfillPanel
+        apiBase={`/api/admin/customers/${customerId}/reanalyze`}
+        fetcher={adminFetch}
+      />
+
+      <div>
+        <Button asChild variant="ghost">
+          <a
+            href={`${manualUrl(
+              "analysis/reanalyze-backfill",
+              locale === "ko" ? "ko" : "en",
+            )}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("docsLink")}
+          </a>
+        </Button>
+      </div>
     </div>
   );
 }

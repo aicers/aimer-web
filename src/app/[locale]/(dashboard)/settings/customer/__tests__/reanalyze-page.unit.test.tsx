@@ -34,6 +34,16 @@ vi.mock("@/hooks/use-permissions", () => ({
   usePermissions: vi.fn(),
 }));
 
+// The backfill panel (#466) has its own unit test; stub it here so the page
+// test stays focused on scope/permission gating and the panel wiring.
+const mockPanel = vi.fn();
+vi.mock("@/components/analysis/reanalyze-backfill-panel", () => ({
+  ReanalyzeBackfillPanel: (props: { apiBase: string }) => {
+    mockPanel(props);
+    return <div>backfill-panel</div>;
+  },
+}));
+
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
 import CustomerReanalyzePage from "../reanalyze/page";
@@ -55,6 +65,7 @@ function arrange(opts: {
 
 beforeEach(() => {
   mockApiFetch.mockReset();
+  mockPanel.mockReset();
   mockedUseCustomerContext.mockReset();
   mockedUsePermissions.mockReset();
 });
@@ -75,7 +86,7 @@ describe("CustomerReanalyzePage", () => {
     expect(screen.getByText("forbidden")).toBeDefined();
   });
 
-  it("renders the entry-point copy and the new default model for a scoped customer", async () => {
+  it("renders the backfill panel wired to the scoped customer's general API", async () => {
     arrange({ singleCustomerId: "c1", canViewCustomerSettings: true });
     mockApiFetch.mockResolvedValue({
       effective: { modelName: "openai", model: "gpt-5.5" },
@@ -84,8 +95,13 @@ describe("CustomerReanalyzePage", () => {
     render(<CustomerReanalyzePage />);
 
     expect(screen.getByText("title")).toBeDefined();
-    expect(screen.getByText("notYetAvailableTitle")).toBeDefined();
     expect(screen.getByText("guaranteeNote")).toBeDefined();
+    expect(screen.getByText("backfill-panel")).toBeDefined();
+    expect(mockPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiBase: "/api/customers/c1/analysis/reanalyze",
+      }),
+    );
     // The current default model is shown once the lookup resolves.
     await waitFor(() =>
       expect(

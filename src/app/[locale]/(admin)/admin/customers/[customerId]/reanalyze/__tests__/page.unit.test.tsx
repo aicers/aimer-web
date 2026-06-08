@@ -31,16 +31,27 @@ vi.mock("next/navigation", () => ({
   useParams: () => ({ customerId: "c1" }),
 }));
 
+// The backfill panel (#466) has its own unit test; stub it here so the page
+// test stays focused on the entry-point copy and panel wiring.
+const mockPanel = vi.fn();
+vi.mock("@/components/analysis/reanalyze-backfill-panel", () => ({
+  ReanalyzeBackfillPanel: (props: { apiBase: string }) => {
+    mockPanel(props);
+    return <div>backfill-panel</div>;
+  },
+}));
+
 import AdminCustomerReanalyzePage from "../page";
 
 beforeEach(() => {
   mockAdminFetch.mockReset();
+  mockPanel.mockReset();
 });
 
 afterEach(() => cleanup());
 
 describe("AdminCustomerReanalyzePage", () => {
-  it("renders the entry-point copy and the selected customer's default model", async () => {
+  it("renders the backfill panel wired to the selected customer's admin API", async () => {
     mockAdminFetch.mockResolvedValue({
       effective: { modelName: "openai", model: "gpt-5.5" },
       source: "customer",
@@ -48,8 +59,13 @@ describe("AdminCustomerReanalyzePage", () => {
     render(<AdminCustomerReanalyzePage />);
 
     expect(screen.getByText("title")).toBeDefined();
-    expect(screen.getByText("notYetAvailableTitle")).toBeDefined();
     expect(screen.getByText("guaranteeNote")).toBeDefined();
+    expect(screen.getByText("backfill-panel")).toBeDefined();
+    expect(mockPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiBase: "/api/admin/customers/c1/reanalyze",
+      }),
+    );
     // The current default model is shown once the lookup resolves, scoped
     // to the customer in the route param.
     await waitFor(() =>
@@ -67,7 +83,7 @@ describe("AdminCustomerReanalyzePage", () => {
     render(<AdminCustomerReanalyzePage />);
 
     // Entry-point copy is non-fatal on a failed lookup.
-    expect(screen.getByText("notYetAvailableTitle")).toBeDefined();
+    expect(screen.getByText("guaranteeNote")).toBeDefined();
     await waitFor(() => expect(mockAdminFetch).toHaveBeenCalled());
     expect(screen.queryByText(/^targetModel:/)).toBeNull();
   });

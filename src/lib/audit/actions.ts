@@ -72,6 +72,8 @@ export type AuditAction =
   | "customer_default_model.cleared"
   | "system.default_model_updated"
   | "system.default_model_cleared"
+  // Story-leaf re-analysis backfill (#466)
+  | "story_reanalysis.backfill_enqueued"
   // AICE environment
   | "environment.created"
   | "environment.updated"
