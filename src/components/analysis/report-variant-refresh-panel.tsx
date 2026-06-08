@@ -87,6 +87,34 @@ function parsePositiveField(
   return n;
 }
 
+/**
+ * The fully-resolved, validated scope a single preview addresses. The confirmed
+ * POST is built from the snapshot captured at preview time — never from the
+ * live form state — so the counts/scope shown in the confirmation always match
+ * what is enqueued (#469 Scope §7), even if the operator edits a control while
+ * a preview request is in flight.
+ */
+interface RefreshScope {
+  windowDays: number;
+  lang: Lang;
+  periods: Period[];
+  maxVariants: number | null;
+  tz: string | null;
+}
+
+function scopeToParams(scope: RefreshScope): URLSearchParams {
+  const params = new URLSearchParams({
+    window_days: String(scope.windowDays),
+    lang: scope.lang,
+    periods: scope.periods.join(","),
+  });
+  if (scope.maxVariants != null) {
+    params.set("max_variants", String(scope.maxVariants));
+  }
+  if (scope.tz) params.set("tz", scope.tz);
+  return params;
+}
+
 export interface ReportVariantRefreshPanelProps {
   /** Whether the customer id is known yet (gates fetching). */
   customerId: string | null;
@@ -136,6 +164,11 @@ export function ReportVariantRefreshPanel({
   );
 
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  // The scope that produced the current `preview`, captured atomically with it
+  // so the confirmed POST replays exactly what was shown (#469 Scope §7).
+  const [previewedScope, setPreviewedScope] = useState<RefreshScope | null>(
+    null,
+  );
   const [previewError, setPreviewError] = useState(false);
   const [run, setRun] = useState<RefreshRun | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -164,7 +197,7 @@ export function ReportVariantRefreshPanel({
     });
   }, []);
 
-  const buildScopeParams = useCallback((): URLSearchParams | null => {
+  const buildScope = useCallback((): RefreshScope | null => {
     const windowDays = parsePositiveField(windowDaysInput, DEFAULT_WINDOW_DAYS);
     const maxVariants = parsePositiveField(maxVariantsInput, null);
     if (
@@ -177,31 +210,33 @@ export function ReportVariantRefreshPanel({
       return null;
     }
     setScopeError(false);
-    const params = new URLSearchParams({
-      window_days: String(windowDays),
-      lang: langInput,
-      periods: PERIODS.filter((p) => periods.has(p)).join(","),
-    });
-    if (maxVariants != null) params.set("max_variants", String(maxVariants));
     const tz = tzInput.trim();
-    if (tz) params.set("tz", tz);
-    return params;
+    return {
+      windowDays,
+      lang: langInput,
+      periods: PERIODS.filter((p) => periods.has(p)),
+      maxVariants,
+      tz: tz === "" ? null : tz,
+    };
   }, [windowDaysInput, maxVariantsInput, langInput, periods, tzInput]);
 
   const loadPreview = useCallback(async () => {
     if (!customerId) return;
-    const params = buildScopeParams();
-    if (!params) return;
+    const scope = buildScope();
+    if (!scope) return;
     try {
       const data = await fetcher<PreviewResponse>(
-        `${apiBase}/preview?${params.toString()}`,
+        `${apiBase}/preview?${scopeToParams(scope).toString()}`,
       );
+      // Capture the response and the scope it addressed together, so the
+      // confirmed POST replays this exact scope (not the live form state).
       setPreview(data);
+      setPreviewedScope(scope);
       setPreviewError(false);
     } catch {
       setPreviewError(true);
     }
-  }, [apiBase, customerId, fetcher, buildScopeParams]);
+  }, [apiBase, customerId, fetcher, buildScope]);
 
   const loadLastRun = useCallback(async () => {
     if (!customerId) return;
@@ -218,31 +253,33 @@ export function ReportVariantRefreshPanel({
     void loadLastRun();
   }, [loadPreview, loadLastRun]);
 
+  // Editing any scope control invalidates an open confirmation: the operator
+  // must re-confirm against the fresh preview, so the confirmation can never
+  // outlive the scope it was shown for (#469 Scope §7). `buildScope` already
+  // re-derives on every scope-input change, so its identity is the single
+  // signal for "the scope changed".
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on scope edit only.
+  useEffect(() => {
+    setConfirming(false);
+  }, [buildScope]);
+
   const start = useCallback(async () => {
-    if (!customerId) return;
-    const windowDays = parsePositiveField(windowDaysInput, DEFAULT_WINDOW_DAYS);
-    const maxVariants = parsePositiveField(maxVariantsInput, null);
-    if (
-      windowDays === "invalid" ||
-      windowDays == null ||
-      maxVariants === "invalid" ||
-      periods.size === 0
-    ) {
-      setScopeError(true);
-      return;
-    }
+    // Replay the snapshot the operator confirmed — never the live form state —
+    // so the enqueued scope is exactly the previewed one.
+    if (!customerId || !previewedScope) return;
     setSubmitting(true);
     setActionError(null);
     try {
       const body: Record<string, unknown> = {
-        windowDays,
-        lang: langInput,
-        periods: PERIODS.filter((p) => periods.has(p)),
+        windowDays: previewedScope.windowDays,
+        lang: previewedScope.lang,
+        periods: previewedScope.periods,
         confirm: true,
       };
-      if (maxVariants != null) body.maxVariants = maxVariants;
-      const tz = tzInput.trim();
-      if (tz) body.tz = tz;
+      if (previewedScope.maxVariants != null) {
+        body.maxVariants = previewedScope.maxVariants;
+      }
+      if (previewedScope.tz) body.tz = previewedScope.tz;
       const data = await fetcher<{ run: RefreshRun }>(apiBase, {
         method: "POST",
         body: JSON.stringify(body),
@@ -254,17 +291,7 @@ export function ReportVariantRefreshPanel({
     } finally {
       setSubmitting(false);
     }
-  }, [
-    apiBase,
-    customerId,
-    fetcher,
-    t,
-    windowDaysInput,
-    maxVariantsInput,
-    langInput,
-    periods,
-    tzInput,
-  ]);
+  }, [apiBase, customerId, fetcher, t, previewedScope]);
 
   // Categorized outcome counts for a run — stays visible after completion so
   // the refreshed / capped / gated / already-queued / source-unavailable /
