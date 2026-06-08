@@ -8,7 +8,10 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResultPageOutcome } from "@/lib/analysis/result-page-loader";
+import type {
+  EventCompareOutcome,
+  ResultPageOutcome,
+} from "@/lib/analysis/result-page-loader";
 
 const mockLoad = vi.fn<() => Promise<ResultPageOutcome>>();
 
@@ -23,6 +26,29 @@ vi.mock("@/lib/analysis/result-page-loader", () => ({
 // path; stub it (and avoid pulling its `server-only` import into jsdom).
 vi.mock("@/lib/analysis/cited-by-loader", () => ({
   loadCitedByReports: async () => [],
+}));
+
+// The model catalog (#464) is a `server-only` module; stub it so importing
+// the page in jsdom does not pull `server-only`. Two entries so the analyst
+// compare selector (gated on `catalog.length > 1`) can render.
+vi.mock("@/lib/analysis/model-catalog", () => ({
+  getModelCatalog: () => [
+    { modelName: "openai", model: "gpt-4o", label: "OpenAI GPT-4o" },
+    { modelName: "anthropic", model: "claude-3-5", label: "Claude 3.5" },
+  ],
+}));
+
+// Stub the compare client/view components with identifiable elements so the
+// analyst-gate (#464) present/absent assertions are meaningful. The real
+// selector is a client component pulling next/navigation hooks; re-export the
+// shared param constants the page imports from the same module.
+vi.mock("@/components/analysis/compare-model-selector", () => ({
+  COMPARE_MODEL_NAME_PARAM: "compareModelName",
+  COMPARE_MODEL_PARAM: "compareModel",
+  CompareModelSelector: () => <div data-testid="compare-selector" />,
+}));
+vi.mock("@/components/analysis/event-compare-view", () => ({
+  EventCompareView: () => <div data-testid="compare-view" />,
 }));
 
 // Render an identifiable element (not `null`) so present/absent assertions
@@ -130,6 +156,7 @@ function okOutcome(
     isViewerAnalyst?: boolean;
     canRegenerate?: boolean;
     sourceEventPresent?: boolean;
+    compare?: EventCompareOutcome;
   } = {},
 ): ResultPageOutcome {
   return {
@@ -157,6 +184,7 @@ function okOutcome(
       canRegenerate: viewer.canRegenerate ?? false,
       sourceEventPresent: viewer.sourceEventPresent ?? true,
       parentStories: [],
+      compare: viewer.compare,
     },
   };
 }
@@ -221,5 +249,56 @@ describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () 
     expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
     expect(screen.queryByTestId("force-rerun-link")).toBeNull();
     expect(screen.getByTestId("retention-banner")).toBeTruthy();
+  });
+});
+
+describe("AnalysisResultPage — model comparison (#464)", () => {
+  it("threads the compare query params through to the loader", async () => {
+    mockLoad.mockResolvedValueOnce(okOutcome({ isViewerAnalyst: true }));
+    await renderPage({
+      ...VARIANT,
+      compareModelName: "anthropic",
+      compareModel: "claude-3-5",
+    });
+    expect(lastArgs).toMatchObject({
+      compare: { modelName: "anthropic", model: "claude-3-5" },
+    });
+  });
+
+  it("shows the compare selector to an analyst even when canRegenerate is false", async () => {
+    // A bridge-session analyst (isViewerAnalyst && !canRegenerate) can still
+    // open a read-only 2-model comparison — the catalog is gated on
+    // isViewerAnalyst, not the write gate (diverges from the story page).
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({ isViewerAnalyst: true, canRegenerate: false }),
+    );
+    await renderPage(VARIANT);
+    expect(screen.getByTestId("compare-selector")).toBeTruthy();
+  });
+
+  it("hides the compare selector from a non-analyst", async () => {
+    mockLoad.mockResolvedValueOnce(okOutcome({ isViewerAnalyst: false }));
+    await renderPage(VARIANT);
+    expect(screen.queryByTestId("compare-selector")).toBeNull();
+  });
+
+  it("renders the compare view when the loader returns a compare outcome", async () => {
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({
+        isViewerAnalyst: true,
+        compare: { kind: "not_generated", modelName: "anthropic", model: "x" },
+      }),
+    );
+    await renderPage(VARIANT);
+    expect(screen.getByTestId("compare-view")).toBeTruthy();
+    // The single-column analysis section is replaced by the compare view.
+    expect(screen.queryByTestId("analysis-body")).toBeNull();
+  });
+
+  it("renders the single-column analysis (no compare view) when no compare is requested", async () => {
+    mockLoad.mockResolvedValueOnce(okOutcome({ isViewerAnalyst: true }));
+    await renderPage(VARIANT);
+    expect(screen.queryByTestId("compare-view")).toBeNull();
+    expect(screen.getByTestId("analysis-body")).toBeTruthy();
   });
 });

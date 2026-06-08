@@ -713,6 +713,7 @@
       "notGeneratedTitle": "Variant not generated",
       "notGeneratedReport": "No report has been generated with {model} for this period yet. Generate it to compare side by side.",
       "notGeneratedStory": "No analysis has been generated with {model} for this story yet. Generate it to compare side by side.",
+      "notGeneratedEvent": "No analysis has been generated with {model} for this event yet. Generate it to compare side by side.",
       "leafCoverageNote": "{model} is an alternate-model variant, so its story highlights and notable events show only leaves analyzed under {model}; until those leaves exist the sections stay empty by design. The default report fills these in from other models. The synthesis sections still compare normally."
     }
   }

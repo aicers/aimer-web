@@ -3,10 +3,17 @@ import { notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import { CitedByTrail } from "@/components/analysis/cited-by-trail";
+import {
+  COMPARE_MODEL_NAME_PARAM,
+  COMPARE_MODEL_PARAM,
+  CompareModelSelector,
+} from "@/components/analysis/compare-model-selector";
+import { EventCompareView } from "@/components/analysis/event-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
+import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   type AnalysisResultPageData,
@@ -29,6 +36,8 @@ interface PageProps {
     lang?: string;
     model_name?: string;
     model?: string;
+    compareModelName?: string;
+    compareModel?: string;
   }>;
 }
 
@@ -62,6 +71,17 @@ export default async function AnalysisResultPage({
     generation = n;
   }
 
+  // Analyst-only compare variant (#464): a second model rendered side by side.
+  // The loader resolves it via a read-only unpinned model-only lookup and gates
+  // it on the analyst flag, so a non-analyst's crafted params are ignored. The
+  // shared compare query-param constants map onto the loader's `compare` shape.
+  const compareModelName = search[COMPARE_MODEL_NAME_PARAM];
+  const compareModel = search[COMPARE_MODEL_PARAM];
+  const compareInput =
+    compareModelName && compareModel
+      ? { modelName: compareModelName, model: compareModel }
+      : undefined;
+
   const outcome = await loadAnalysisResultPage({
     customerId,
     aiceId,
@@ -70,6 +90,7 @@ export default async function AnalysisResultPage({
     modelName,
     model,
     generation,
+    compare: compareInput,
   });
 
   if (outcome.kind === "unauthorized") {
@@ -109,6 +130,29 @@ export default async function AnalysisResultPage({
   }
 
   const data = outcome.data;
+
+  // Analyst-only model catalog (#464), read server-side and passed to the
+  // client picker/compare controls as serializable props (the catalog module
+  // is server-only). Gated on `isViewerAnalyst` — NOT `canRegenerate` — so the
+  // read-only comparison is open to EVERY analyst, including a bridge-session
+  // analyst (`isViewerAnalyst && !canRegenerate`). This diverges deliberately
+  // from the story page (which gates the catalog on `canRegenerate`): only the
+  // WRITE actions (the regenerate picker + the missing-variant CTA) are gated
+  // on `canRegenerate + sourceEventPresent`, not the compare selector itself.
+  const catalog = data.isViewerAnalyst ? getModelCatalog() : [];
+  const currentModel = { modelName: data.modelName, model: data.model };
+  const compareTarget =
+    compareInput && data.isViewerAnalyst
+      ? { modelName: compareInput.modelName, model: compareInput.model }
+      : null;
+  const compareTargetLabel = compareTarget
+    ? (catalog.find(
+        (m) =>
+          m.modelName === compareTarget.modelName &&
+          m.model === compareTarget.model,
+      )?.label ?? `${compareTarget.modelName} / ${compareTarget.model}`)
+    : "";
+
   const t = await getTranslations("nav");
   const tPeriod = await getTranslations("reportPeriod");
   const periodLabels: Record<string, string> = {
@@ -223,12 +267,78 @@ export default async function AnalysisResultPage({
         ) : null}
       </section>
 
-      <section className="mt-8">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          {tA("common.sectionAnalysis")}
-        </h2>
-        <AnalysisBody text={data.analysisText} testid="analysis-body" />
-      </section>
+      {/* Analyst-only compare control (#464): pick a second model to render
+          side by side. Available to every analyst (including a bridge-session
+          analyst) — the catalog is gated on `isViewerAnalyst`, not the write
+          gate. Needs at least one other catalog model to offer. */}
+      {data.isViewerAnalyst && catalog.length > 1 ? (
+        <div className="mt-6 flex justify-end">
+          <CompareModelSelector
+            models={catalog}
+            currentModel={currentModel}
+            activeCompare={compareTarget ?? undefined}
+            labels={{
+              selectLabel: tA("compare.selectLabel"),
+              placeholder: tA("compare.selectPlaceholder"),
+              exit: tA("compare.exit"),
+            }}
+          />
+        </div>
+      ) : null}
+
+      {data.compare ? (
+        /* Analyst-only side-by-side comparison (#464): the open variant vs a
+           second stored model — analysis, scores, factors, TTP tags, tier, and
+           per-column provenance. The regenerate CTA (shown when the compare
+           variant is not generated) preselects the compare-target model and is
+           gated on the WRITE conditions `canRegenerate + sourceEventPresent` —
+           when the source event was swept by retention, regeneration is
+           impossible, so the CTA is withheld and the not-generated/retention
+           state shows without a dead control (#463). */
+        <EventCompareView
+          primary={{
+            modelName: data.modelName,
+            model: data.model,
+            modelActualVersion: data.modelActualVersion,
+            promptVersion: data.promptVersion,
+            generation: data.generation,
+            severityScore: data.severityScore,
+            likelihoodScore: data.likelihoodScore,
+            priorityTier: data.priorityTier,
+            severityFactors: data.severityFactors,
+            likelihoodFactors: data.likelihoodFactors,
+            ttpTags: data.ttpTags,
+            analysisText: data.analysisText,
+          }}
+          compare={data.compare}
+          compareTargetLabel={compareTargetLabel}
+          regenerateCta={
+            data.canRegenerate && data.sourceEventPresent ? (
+              <EventRegenerateButton
+                locale={locale}
+                customerId={data.customerId}
+                aiceId={data.aiceId}
+                eventKey={data.eventKey}
+                variant={{
+                  lang: data.lang,
+                  modelName: data.modelName,
+                  model: data.model,
+                }}
+                models={catalog}
+                defaultModel={compareTarget ?? undefined}
+              />
+            ) : null
+          }
+          t={tA}
+        />
+      ) : (
+        <section className="mt-8">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            {tA("common.sectionAnalysis")}
+          </h2>
+          <AnalysisBody text={data.analysisText} testid="analysis-body" />
+        </section>
+      )}
 
       {/* Reverse "Cited by" trail back up to the citing report(s). */}
       <CitedByTrail
@@ -271,6 +381,7 @@ export default async function AnalysisResultPage({
                   modelName: data.modelName,
                   model: data.model,
                 }}
+                models={catalog}
               />
             ) : null}
             <ForceRerunButton
