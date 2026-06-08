@@ -36,12 +36,24 @@ Managers and Users cannot launch a re-analysis.
    change, the section offers **Re-analyze existing data**.
 2. Open the re-analysis page from that offer. The **Re-analyze event
    leaves** panel shows a **cost preview** for the recent window.
-3. Review the preview counts, then choose **Re-analyze N event leaves**
-   and **confirm**. The run starts in the background; the page shows live
-   progress and a **Cancel** control.
+3. *(Optional)* Adjust the scope before confirming:
+   - **Recent window (days)** — how far back the run reaches, on the
+     report's event-time basis. Defaults to **7 days**. A shorter window
+     re-analyzes fewer events.
+   - **Per-run cap** — an optional upper bound on how many events this run
+     re-analyzes. Leave it blank for no cap. Events beyond the cap are
+     reported as `cap_excluded`.
+
+   The preview counts update to match whatever scope you enter, so you can
+   see the effect before committing.
+4. Review the preview counts, then choose **Re-analyze N event leaves**
+   and **confirm**. The run starts in the background on exactly that scope;
+   the page shows live progress and a **Cancel** control.
 
 The confirmation is **required** — nothing runs until you confirm. The
 preview shows **counts and scope only**; it never shows a monetary figure.
+The **target model** is fixed to the customer's new default — the model you
+just changed to — so a run always re-analyzes *toward* that new model.
 
 ## Scope and defaults
 

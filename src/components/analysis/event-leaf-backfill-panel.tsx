@@ -12,6 +12,7 @@
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface PreviewCounts {
   totalUniverse: number;
@@ -47,8 +48,24 @@ interface BackfillRun {
 }
 
 const ACTIVE: RunStatus[] = ["pending", "running"];
-const WINDOW_DAYS = 7;
+const DEFAULT_WINDOW_DAYS = 7;
 const POLL_MS = 3000;
+
+/**
+ * Parse an operator-entered positive-integer field. Empty string → the
+ * supplied fallback (used so a blank cap means "no cap"); anything that is
+ * not a positive integer → `null` so the caller can flag it.
+ */
+function parsePositiveField(
+  raw: string,
+  empty: number | null,
+): number | null | "invalid" {
+  const trimmed = raw.trim();
+  if (trimmed === "") return empty;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n <= 0) return "invalid";
+  return n;
+}
 
 export interface EventLeafBackfillPanelProps {
   /** Whether the customer id is known yet (gates fetching). */
@@ -72,20 +89,44 @@ export function EventLeafBackfillPanel({
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Operator scoping controls (Scope §2/§3): the recent window and the
+  // optional per-run cap. Kept as draft strings; the committed values flow
+  // into both the preview query and the create body so the launched run
+  // matches the previewed scope. The target variant is NOT operator-chosen
+  // here — it is the customer's new default model from the #473 flow this
+  // panel launches from.
+  const [windowDaysInput, setWindowDaysInput] = useState(
+    String(DEFAULT_WINDOW_DAYS),
+  );
+  const [maxItemsInput, setMaxItemsInput] = useState("");
+  const [scopeError, setScopeError] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadPreview = useCallback(async () => {
     if (!customerId) return;
+    const windowDays = parsePositiveField(windowDaysInput, DEFAULT_WINDOW_DAYS);
+    const maxItems = parsePositiveField(maxItemsInput, null);
+    if (
+      windowDays === "invalid" ||
+      windowDays == null ||
+      maxItems === "invalid"
+    ) {
+      setScopeError(true);
+      return;
+    }
+    setScopeError(false);
+    const params = new URLSearchParams({ window_days: String(windowDays) });
+    if (maxItems != null) params.set("max_items", String(maxItems));
     try {
       const data = await fetcher<PreviewResponse>(
-        `${apiBase}/preview?window_days=${WINDOW_DAYS}`,
+        `${apiBase}/preview?${params.toString()}`,
       );
       setPreview(data);
       setPreviewError(false);
     } catch {
       setPreviewError(true);
     }
-  }, [apiBase, customerId, fetcher]);
+  }, [apiBase, customerId, fetcher, windowDaysInput, maxItemsInput]);
 
   const loadActiveRun = useCallback(async () => {
     if (!customerId) return;
@@ -133,12 +174,25 @@ export function EventLeafBackfillPanel({
 
   const start = useCallback(async () => {
     if (!customerId) return;
+    const windowDays = parsePositiveField(windowDaysInput, DEFAULT_WINDOW_DAYS);
+    const maxItems = parsePositiveField(maxItemsInput, null);
+    if (
+      windowDays === "invalid" ||
+      windowDays == null ||
+      maxItems === "invalid"
+    ) {
+      setScopeError(true);
+      return;
+    }
     setSubmitting(true);
     setActionError(null);
     try {
+      // Launch the run on EXACTLY the scope the preview was computed over.
+      const body: Record<string, unknown> = { windowDays, confirm: true };
+      if (maxItems != null) body.maxItems = maxItems;
       const data = await fetcher<{ run: BackfillRun }>(apiBase, {
         method: "POST",
-        body: JSON.stringify({ windowDays: WINDOW_DAYS, confirm: true }),
+        body: JSON.stringify(body),
       });
       setRun(data.run);
       setConfirming(false);
@@ -147,7 +201,7 @@ export function EventLeafBackfillPanel({
     } finally {
       setSubmitting(false);
     }
-  }, [apiBase, customerId, fetcher, t]);
+  }, [apiBase, customerId, fetcher, t, windowDaysInput, maxItemsInput]);
 
   const cancel = useCallback(async () => {
     if (!run) return;
@@ -208,6 +262,43 @@ export function EventLeafBackfillPanel({
             <p className="text-sm text-muted-foreground">
               {t("lastRunStatus", { status: t(`status_${run.status}`) })}
             </p>
+          )}
+          <div className="flex flex-wrap gap-3">
+            <label
+              htmlFor="event-backfill-window-days"
+              className="flex flex-col gap-1 text-sm text-foreground"
+            >
+              <span>{t("windowDaysLabel")}</span>
+              <Input
+                id="event-backfill-window-days"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                className="w-28"
+                value={windowDaysInput}
+                onChange={(e) => setWindowDaysInput(e.target.value)}
+              />
+            </label>
+            <label
+              htmlFor="event-backfill-max-items"
+              className="flex flex-col gap-1 text-sm text-foreground"
+            >
+              <span>{t("maxItemsLabel")}</span>
+              <Input
+                id="event-backfill-max-items"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                className="w-28"
+                placeholder={t("maxItemsPlaceholder")}
+                value={maxItemsInput}
+                onChange={(e) => setMaxItemsInput(e.target.value)}
+              />
+            </label>
+          </div>
+          <p className="text-xs text-muted-foreground">{t("scopeHint")}</p>
+          {scopeError && (
+            <p className="text-sm text-destructive">{t("scopeError")}</p>
           )}
           {previewError ? (
             <p className="text-sm text-destructive">{t("previewError")}</p>
