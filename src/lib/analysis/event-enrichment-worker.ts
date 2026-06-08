@@ -129,10 +129,12 @@ async function isStoryMember(
 
 /**
  * Enrich one loose baseline event and persist the per-event verdict.
- * Idempotent: the `known_ioc_hit` write is a monotonic OR, evidence is
- * replaced only when the run produces supporting matches (so a retained
- * monotonic `true` never loses its explaining evidence), and re-running
- * re-marks state. Returns `skipped` when the event has no stored
+ * Idempotent and concurrency-safe: the `known_ioc_hit` write is a monotonic
+ * OR, evidence is replaced only when the run produces supporting matches (so
+ * a retained monotonic `true` never loses its explaining evidence), and the
+ * evidence replace + state upsert are serialized per `(source_aice_id,
+ * event_key)` by a transaction-scoped advisory lock so overlapping runs
+ * cannot duplicate evidence. Returns `skipped` when the event has no stored
  * `baseline_event` row or is a story member (enriched at story scope).
  */
 export async function runEventEnrichment(
@@ -300,6 +302,24 @@ interface PersistArgs {
   completedAt: string;
 }
 
+// Advisory-lock namespace for per-event persistence, distinct from the
+// story enrichment namespace (`ENRICHMENT_LOCK_NS` = 0x361a) so the two
+// paths never contend on shared keys.
+const EVENT_ENRICHMENT_LOCK_NS = 0x492e;
+
+// A stable 31-bit lock key for one logical event, mirroring the story
+// path's `enrichmentLockId2`. `| 1` keeps it non-zero.
+function eventEnrichmentLockId2(
+  sourceAiceId: string,
+  eventKey: string,
+): number {
+  let hash = 0;
+  for (const ch of `${sourceAiceId}/${eventKey}`) {
+    hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash) | 1;
+}
+
 async function persistEventEnrichment(
   customerPool: Pool,
   args: PersistArgs,
@@ -307,6 +327,22 @@ async function persistEventEnrichment(
   const client = await customerPool.connect();
   try {
     await client.query("BEGIN");
+
+    // Serialize concurrent persists for the SAME (source_aice_id, event_key).
+    // The evidence DELETE+INSERT below is not atomic against a concurrent
+    // transaction: under READ COMMITTED neither run's conditional DELETE sees
+    // the other's uncommitted inserts, so two overlapping runs could both
+    // insert the same floor-supporting rows — and `event_ioc_evidence` has no
+    // uniqueness constraint to catch the dup. A transaction-scoped advisory
+    // lock makes the replace sequence serial per event (auto-released on
+    // COMMIT/ROLLBACK); different events never contend. The story path gets
+    // this serialization from its orchestration's advisory lock
+    // (`enrichUnderLock`), but the event orchestration is deferred (#489), so
+    // the primitive serializes its own persist.
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
+      EVENT_ENRICHMENT_LOCK_NS,
+      eventEnrichmentLockId2(args.sourceAiceId, args.eventKey),
+    ]);
 
     // Evidence must stay consistent with the monotonic verdict: a `true`
     // floor has to remain explainable. Replace this event's evidence ONLY
@@ -464,4 +500,6 @@ export async function loadEventEnrichmentVerdict(
 export const __testables = {
   loadLatestBaselineEvent,
   isStoryMember,
+  eventEnrichmentLockId2,
+  EVENT_ENRICHMENT_LOCK_NS,
 } satisfies Record<string, unknown>;

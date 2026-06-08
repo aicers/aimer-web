@@ -387,6 +387,81 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     expect(result.evidenceCount).toBe(1);
   });
 
+  it("breaks an equal-received_at tie by baseline_version DESC", async () => {
+    await importFeodo(authPool, FRESH);
+    // Two rows for the same event with IDENTICAL received_at: the lower
+    // baseline_version has no IOC, the higher one does. The DDL-mandated
+    // deterministic tie-break (baseline_version DESC) must select the higher
+    // version, so the verdict is the hit. If the tie fell through to the
+    // lower version the verdict would be a clean miss.
+    await seedBaselineEvent(customerPool, {
+      eventKey: "12",
+      baselineVersion: "bv1",
+      receivedAt: "2026-05-02T00:00:00Z",
+      rawEvent: { resp_addr: "45.66.230.99" },
+    });
+    await seedBaselineEvent(customerPool, {
+      eventKey: "12",
+      baselineVersion: "bv2",
+      receivedAt: "2026-05-02T00:00:00Z",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "12",
+      opts(authPool, customerPool),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(result.evidenceCount).toBe(1);
+  });
+
+  it("serializes concurrent persists — no duplicate evidence", async () => {
+    await importFeodo(authPool, FRESH);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "13",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    // Two overlapping runs for the same (source_aice_id, event_key). The
+    // transaction-scoped advisory lock in the persist path serializes the
+    // evidence replace + state upsert, so the floor-supporting match lands
+    // exactly once instead of being inserted by both runs (there is no
+    // uniqueness constraint on event_ioc_evidence to dedupe it otherwise).
+    const [a, b] = await Promise.all([
+      runEventEnrichment(
+        CUSTOMER_ID,
+        AICE_ID,
+        "13",
+        opts(authPool, customerPool),
+      ),
+      runEventEnrichment(
+        CUSTOMER_ID,
+        AICE_ID,
+        "13",
+        opts(authPool, customerPool),
+      ),
+    ]);
+    expect(a.knownIocHit).toBe(true);
+    expect(b.knownIocHit).toBe(true);
+
+    const { rows } = await customerPool.query(
+      `SELECT 1 FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 13`,
+      [AICE_ID],
+    );
+    expect(rows).toHaveLength(1);
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "13",
+    );
+    expect(verdict?.knownIocHit).toBe(true);
+    expect(verdict?.coverageStatus).toBe("complete");
+  });
+
   it("does not downgrade a prior true verdict on a source-down re-check", async () => {
     await importFeodo(authPool, FRESH);
     await seedBaselineEvent(customerPool, {
