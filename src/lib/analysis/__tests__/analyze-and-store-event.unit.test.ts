@@ -64,6 +64,8 @@ function baseParams(): AnalyzeAndStoreEventParams {
     ranges: buildRangeSet([]),
     ownedDomains: EMPTY_OWNED_DOMAIN_SET,
     redactionPolicyVersion: "policy-v7",
+    origin: "manual",
+    requestedBy: "acc-1",
     auditBase: {
       actorId: "acc-1",
       authContext: "general",
@@ -123,14 +125,15 @@ describe("analyzeAndStoreEventResult", () => {
     expect(insert).toBeDefined();
     // Column order: aice_id, event_key, lang, model_name, model,
     // model_actual_version (param 6), prompt_version (7), generation (8),
-    // ... redaction_policy_version (16), requested_by (17). Zero-indexed:
-    // provenance at [5]/[6], generation at [7], policy at [15],
-    // requested_by at [16].
+    // ... redaction_policy_version (16), requested_by (17), origin (18).
+    // Zero-indexed: provenance at [5]/[6], generation at [7], policy at
+    // [15], requested_by at [16], origin at [17].
     expect(insert?.params?.[5]).toBe("gpt-4o-2026-05-01");
     expect(insert?.params?.[6]).toBe("v7");
     expect(insert?.params?.[7]).toBe(4);
     expect(insert?.params?.[15]).toBe("policy-v7");
     expect(insert?.params?.[16]).toBe("acc-1");
+    expect(insert?.params?.[17]).toBe("manual");
     // The whole supersede+insert runs inside one transaction.
     expect(writeCalls[0].sql).toBe("BEGIN");
     expect(writeCalls.at(-1)?.sql).toBe("COMMIT");

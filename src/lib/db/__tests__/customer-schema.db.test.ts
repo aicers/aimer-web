@@ -43,7 +43,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0010_ioc_enrichment (RFC 0003 P1a, #361),
     // 0011_enrichment_facts (RFC 0003 C1, #440),
     // 0012_event_provenance_not_null (aimer#480, #474),
-    // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492)
+    // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492),
+    // 0014_event_analysis_result_origin (RFC 0002 amendment, #493)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -59,6 +60,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0011",
       "0012",
       "0013",
+      "0014",
     ]);
   });
 
@@ -591,6 +593,66 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
        WHERE aice_id = 'aice-defaults' AND event_key = 1`,
     );
     expect(types[0]).toEqual({ sev: "array", lik: "array", ttp: "array" });
+  });
+
+  it("event_analysis_result has origin (default manual) + nullable requested_by (#493)", async () => {
+    const { rows } = await pool.query<{
+      column_name: string;
+      is_nullable: string;
+      column_default: string | null;
+    }>(
+      `SELECT column_name, is_nullable, column_default
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'event_analysis_result'
+         AND column_name IN ('origin', 'requested_by')
+       ORDER BY column_name`,
+    );
+    const byName = new Map(rows.map((r) => [r.column_name, r]));
+    // origin: NOT NULL DEFAULT 'manual'.
+    expect(byName.get("origin")?.is_nullable).toBe("NO");
+    expect(byName.get("origin")?.column_default).toContain("'manual'");
+    // requested_by relaxed to nullable for the auto-baseline path.
+    expect(byName.get("requested_by")?.is_nullable).toBe("YES");
+
+    // An auto-baseline row writes requested_by = NULL and origin =
+    // 'auto_baseline'; the default keeps manual rows at 'manual'.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, redaction_policy_version,
+          requested_by, origin)
+       VALUES ('aice-auto', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 0.5, 0.5, 'LOW',
+               'x', 'engine:1.0.0|ranges:empty',
+               NULL, 'auto_baseline')`,
+    );
+    const { rows: stored } = await pool.query<{
+      origin: string;
+      requested_by: string | null;
+    }>(
+      `SELECT origin, requested_by FROM event_analysis_result
+        WHERE aice_id = 'aice-auto' AND event_key = 1`,
+    );
+    expect(stored[0]).toEqual({ origin: "auto_baseline", requested_by: null });
+
+    // origin CHECK rejects an out-of-enum value.
+    await expect(
+      pool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, redaction_policy_version,
+            requested_by, origin)
+         VALUES ('aice-bad-origin', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'mv', 'pv', 0.5, 0.5, 'LOW',
+                 'x', 'engine:1.0.0|ranges:empty',
+                 NULL, 'bogus')`,
+      ),
+    ).rejects.toThrow();
   });
 
   it("rejects out-of-enum priority_tier via the CHECK constraint", async () => {

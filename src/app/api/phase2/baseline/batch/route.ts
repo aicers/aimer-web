@@ -25,9 +25,10 @@ export const POST = createPhase2BatchHandler({
       ownedDomains,
     );
     // RFC 0002 Phase 0 (#294) — best-effort hook to mark the customer's
-    // LIVE periodic_report_state row ready/dirty. Failure is logged and
+    // LIVE periodic_report_state row ready/dirty and seed individual
+    // baseline-event auto-analysis jobs (#493). Failure is logged and
     // swallowed (decision 2).
-    await applyBaselineIngestHook(authPool, {
+    await applyBaselineIngestHook(authPool, customerPool, {
       customerId: verified.customerId,
       acceptedEvents: result.acceptedEvents,
     });

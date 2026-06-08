@@ -80,3 +80,49 @@ itself fails, the handler logs an error containing the cursor fields
 and returns 200 — the JTI is already consumed and a retry would hit
 `409 context_jti_replay`. The next envelope from the same customer
 advances the watermark directly.
+
+## Baseline-event auto-analysis (tier-B daily cap)
+
+The worker also auto-analyzes **loose baseline events** — events that
+are not members of any story (story members are analyzed at story
+scope). Each ingested loose event is seeded as a held
+`event_analysis_job` row and classified on a later tick from its
+per-event TI/IOC verdict (`event_enrichment_state`):
+
+- **Tier A** — a known-IOC hit. Always analyzed, **uncapped**.
+- **Tier B** — a clean miss under `coverage_status = 'complete'`.
+  Analyzed only within the customer's daily budget; overflow is written
+  the terminal `budget_skipped` status (queryable, never retried).
+- **Held** — an absent or non-conclusive verdict
+  (`partial`/`unknown`/`stale`) is not classified yet. The worker drives
+  a bounded `runEventEnrichment` re-check loop; a verdict that flips to a
+  known-IOC hit routes to tier A, and on bound exhaustion the event falls
+  back to tier B (with a metric) — never a silent `budget_skipped`.
+
+The tier-B cap is a **seed-time reservation**: the per-`(customer,
+budget_day)` count includes in-flight `queued`/`processing` rows (not
+just `done`), so a backlog cannot over-enqueue past the cap. The budget
+resets on the **customer-tz calendar day** (`customers.timezone`).
+
+The cap resolves through three tiers (per-customer override → admin
+global → env):
+
+| Tier | Source |
+| --- | --- |
+| Per-customer override | `customer_baseline_analysis_cap.daily_cap` row (absence = no override) |
+| Admin global | `system_settings.baseline_auto_analysis_daily_cap` |
+| Env fallback | `BASELINE_AUTO_ANALYSIS_DAILY_CAP` |
+
+| Variable | Default | When used |
+| --- | --- | --- |
+| `BASELINE_AUTO_ANALYSIS_DAILY_CAP` | `0` | Env-level tier-B cap (third tier). `0` disables tier B; tier A stays uncapped. |
+| `BASELINE_AUTO_ANALYSIS_TIER_A_ENABLED` | `true` | Tier-A kill switch for incident response. While `false`, a known-IOC event is held (never demoted to tier B). |
+| `BASELINE_AUTO_ANALYSIS_MAX_ENRICHMENT_ATTEMPTS` | `5` | Held-event enrichment re-check attempt bound. |
+| `BASELINE_AUTO_ANALYSIS_MAX_ENRICHMENT_AGE_MINUTES` | `60` | Held-event enrichment re-check age bound. |
+
+Result rows carry `event_analysis_result.origin = 'auto_baseline'` (the
+manual path keeps `'manual'`) and `requested_by = NULL` (no human
+requester; the worker is attributed via the audit actor). The worker
+emits structured `analysis.baseline_auto.*` log lines
+(`tier_a_analyzed`, `tier_b_admitted`, `budget_skipped`,
+`coverage_holdfallback`, `tier_a_disabled_held`) for rate monitoring.

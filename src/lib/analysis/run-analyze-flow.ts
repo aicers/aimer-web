@@ -518,6 +518,13 @@ export interface AnalyzeAndStoreEventParams {
   langForStorage: SupportedLang;
   modelName: string;
   model: string;
+  /**
+   * The account threaded into aimer's GraphQL request context (the calling
+   * principal aimer attributes the LLM call to). For the synchronous manual
+   * path this is the human account; for the auto-baseline worker path it is
+   * the non-human worker account ({@link WORKER_ACCOUNT_ID}-equivalent).
+   * Distinct from {@link requestedBy}, which is the DB column write.
+   */
   accountId: string;
   /** Redaction map used by the hallucination scan over the LLM output. */
   mergedMap: import("@/lib/redaction").RedactionMap;
@@ -531,6 +538,20 @@ export interface AnalyzeAndStoreEventParams {
    * constant rather than re-redacting under current policy (#463).
    */
   redactionPolicyVersion: string;
+  /**
+   * Provenance stamped into `event_analysis_result.origin`. The manual
+   * synchronous path passes `manual`; the auto-baseline worker passes
+   * `auto_baseline` (#493).
+   */
+  origin: "manual" | "auto_baseline";
+  /**
+   * Value written to `event_analysis_result.requested_by` (nullable since
+   * #493). The manual path passes the human {@link accountId}; the
+   * auto-baseline worker passes `null` (no human requester) and attributes
+   * the action via {@link auditBase}.actorId instead — NOT a synthetic
+   * account id smuggled in to satisfy the column.
+   */
+  requestedBy: string | null;
   auditBase: AuditEmissionBase;
   /** Audit-only flag distinguishing a forced (re)generation. */
   force: boolean;
@@ -741,13 +762,15 @@ export async function analyzeAndStoreEventResult(
             severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
             priority_tier,
-            analysis_text, redaction_policy_version, requested_by)
+            analysis_text, redaction_policy_version, requested_by,
+            origin)
          VALUES ($1, $2::numeric, $3, $4, $5,
                  $6, $7, $8,
                  $9, $10,
                  $11::jsonb, $12::jsonb, $13::jsonb,
                  $14,
-                 $15, $16, $17::uuid)`,
+                 $15, $16, $17::uuid,
+                 $18)`,
         [
           params.aiceId,
           params.eventKey,
@@ -765,7 +788,8 @@ export async function analyzeAndStoreEventResult(
           priorityTier,
           scan.scanned,
           params.redactionPolicyVersion,
-          params.accountId,
+          params.requestedBy,
+          params.origin,
         ],
       );
       await writeClient.query("COMMIT");
@@ -1037,6 +1061,8 @@ export async function runAnalyzeFlow(
     ranges,
     ownedDomains,
     redactionPolicyVersion: analysisPolicyVersion,
+    origin: "manual",
+    requestedBy: params.accountId,
     auditBase,
     force: params.force,
   });

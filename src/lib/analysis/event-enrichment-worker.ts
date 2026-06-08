@@ -81,7 +81,7 @@ export interface EventEnrichmentOutcome {
  * `received_at`, with `baseline_version DESC` as the deterministic
  * tie-breaker on equal timestamps (the dedupe rule the DDL mandates).
  */
-async function loadLatestBaselineEvent(
+export async function loadLatestBaselineEvent(
   customerPool: Pool,
   sourceAiceId: string,
   eventKey: string,
@@ -106,7 +106,7 @@ async function loadLatestBaselineEvent(
  * `story_member` to `story`. A story member is enriched at story scope; the
  * primitive skips it so the two paths never double-work.
  */
-async function isStoryMember(
+export async function isStoryMember(
   customerPool: Pool,
   sourceAiceId: string,
   eventKey: string,

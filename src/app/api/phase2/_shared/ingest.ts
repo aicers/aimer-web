@@ -31,7 +31,22 @@ export interface IngestCounts {
  * compares against `MAX(baseline_event.received_at)`.
  */
 export interface BaselineIngestExtras {
-  acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }>;
+  /**
+   * Every accepted event paired with its canonical customer-DB
+   * `received_at` AND its event identity. The periodic state hook
+   * (`recordBaselineActivity`) reads only `(eventTime, receivedAt)`; the
+   * auto-analysis seeder (#493) additionally needs
+   * `(baselineVersion, sourceAiceId, eventKey)` to seed `event_analysis_job`
+   * rows for loose events. Carried here at INSERT time so the hook does not
+   * re-query the customer DB to recover identities.
+   */
+  acceptedEvents: Array<{
+    eventTime: Date;
+    receivedAt: Date;
+    baselineVersion: string;
+    sourceAiceId: string;
+    eventKey: string;
+  }>;
 }
 
 /**
@@ -71,7 +86,7 @@ export async function ingestBaselineBatch(
 
   return withTransaction(pool, async (client) => {
     let accepted = 0;
-    const acceptedEvents: Array<{ eventTime: Date; receivedAt: Date }> = [];
+    const acceptedEvents: BaselineIngestExtras["acceptedEvents"] = [];
     for (const event of payload.events) {
       const { redacted, policyVersion } = await redactAndMaybeUpsertMap(
         event.raw_event,
@@ -131,6 +146,9 @@ export async function ingestBaselineBatch(
         acceptedEvents.push({
           eventTime: new Date(event.event_time),
           receivedAt: result.rows[0].received_at,
+          baselineVersion: payload.baseline_version,
+          sourceAiceId,
+          eventKey: event.event_key,
         });
       }
     }

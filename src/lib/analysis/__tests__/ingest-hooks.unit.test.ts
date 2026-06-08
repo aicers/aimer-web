@@ -40,12 +40,15 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
 
   it("applyBaselineIngestHook logs and resolves when the auth pool query fails", async () => {
     await expect(
-      applyBaselineIngestHook(failingPool(), {
+      applyBaselineIngestHook(failingPool(), failingPool(), {
         customerId: CUSTOMER_ID,
         acceptedEvents: [
           {
             eventTime: new Date("2026-05-27T10:00:00Z"),
             receivedAt: new Date("2026-05-27T10:00:01Z"),
+            baselineVersion: "bv-1",
+            sourceAiceId: "aice-1",
+            eventKey: "1",
           },
         ],
       }),
@@ -107,7 +110,7 @@ describe("analysis ingest hooks — failure swallowing (decision 2)", () => {
 
   it("empty inputs are no-ops without touching the pool", async () => {
     const pool = failingPool();
-    await applyBaselineIngestHook(pool, {
+    await applyBaselineIngestHook(pool, failingPool(), {
       customerId: CUSTOMER_ID,
       acceptedEvents: [],
     });

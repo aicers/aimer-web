@@ -166,6 +166,10 @@ export async function regenerateEventLeaf(
     // Hold redaction constant: stamp the STORED policy version rather than
     // recomputing under current policy (that is Force Rerun's job).
     redactionPolicyVersion: redaction_policy_version,
+    // Manual (human-initiated) re-analysis: keep `origin='manual'` and
+    // attribute `requested_by` to the acting account (#493).
+    origin: "manual",
+    requestedBy: params.accountId,
     auditBase: {
       actorId: params.accountId,
       authContext: "general",

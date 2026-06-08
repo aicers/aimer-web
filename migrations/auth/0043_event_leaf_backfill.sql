@@ -6,11 +6,14 @@
 -- the report) becomes complete. Story leaves are handled by #466's sibling
 -- backfill; event leaves are handled here.
 --
--- Events have NO `event_analysis_state` / `event_analysis_job` lifecycle
--- table and no re-seed worker: event analysis is per-event and synchronous
--- (`analyzeAndStoreEventResult`). So the backfill cannot lean on a job
--- worker's drain for progress / cancel / per-item status / no-silent-caps
--- reporting the way the story side does. These two tables ARE that
+-- The MANUAL event-analysis path has NO `event_analysis_state` /
+-- `event_analysis_job` lifecycle table and no re-seed worker: manual event
+-- analysis is per-event and synchronous (`analyzeAndStoreEventResult`). (The
+-- auto-baseline path added in #493 does introduce an `event_analysis_job`
+-- table — `auth/0046` — but this backfill targets manual leaves and does
+-- not lean on it.) So the backfill cannot lean on a job worker's drain for
+-- progress / cancel / per-item status / no-silent-caps reporting the way
+-- the story side does. These two tables ARE that
 -- bookkeeping — backfill control state, NOT an event-analysis lifecycle.
 -- The drain-completion signal (#470 Scope §6) is computed from
 -- `event_analysis_result` itself (correct across multiple runs), not from
