@@ -22,6 +22,7 @@ import {
   setGlobalDefaultModel,
 } from "../default-model";
 import { __resetModelCatalogForTest } from "../model-catalog";
+import { seedRealStoryJobs } from "../story-worker";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const LOCK_ID = 1473;
@@ -424,6 +425,95 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
           ),
         ),
       ).resolves.toMatchObject({ changed: true });
+    });
+  });
+
+  // -- Seeding query resolution (story worker) -----------------------------
+  // `seedRealStoryJobs` reimplements the three-tier resolution IN SQL
+  // (LEFT JOIN customer_default_model + the `system_settings` JSON
+  // extraction + COALESCE(override, global, env)), independent of
+  // `resolveDefaultModel`. These cases prove the seeded `story_analysis_job`
+  // row carries the resolved default for each tier, so the seeding SQL and
+  // the resolver cannot silently drift (Scope §4).
+  describe("seedRealStoryJobs resolution", () => {
+    async function seedReadyState(cid: string, storyId: number): Promise<void> {
+      await pool.query(
+        `INSERT INTO story_analysis_state (customer_id, story_id, status)
+         VALUES ($1, $2, 'ready')
+         ON CONFLICT (customer_id, story_id) DO UPDATE SET status = 'ready'`,
+        [cid, storyId],
+      );
+    }
+    async function seededJobModel(
+      cid: string,
+      storyId: number,
+    ): Promise<{ model_name: string; model: string } | null> {
+      const res = await pool.query<{ model_name: string; model: string }>(
+        `SELECT model_name, model FROM story_analysis_job
+          WHERE customer_id = $1 AND story_id = $2::bigint`,
+        [cid, storyId],
+      );
+      return res.rows[0] ?? null;
+    }
+    // story_analysis_job FKs story_analysis_state, so clear jobs first.
+    async function resetSeed(): Promise<void> {
+      await pool.query(`DELETE FROM story_analysis_job`);
+      await pool.query(`DELETE FROM story_analysis_state`);
+    }
+
+    it("seeds the env default when no DB tier is set", async () => {
+      await resetState();
+      await resetSeed();
+      await seedReadyState(customerId, 1);
+      await withClient((c) => seedRealStoryJobs(c, 100));
+      expect(await seededJobModel(customerId, 1)).toEqual({
+        model_name: ENV_DEFAULT.modelName,
+        model: ENV_DEFAULT.model,
+      });
+    });
+
+    it("seeds the admin-set global default over env", async () => {
+      await resetState();
+      await resetSeed();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      await seedReadyState(customerId, 2);
+      await withClient((c) => seedRealStoryJobs(c, 100));
+      expect(await seededJobModel(customerId, 2)).toEqual({
+        model_name: GLOBAL_PAIR.modelName,
+        model: GLOBAL_PAIR.model,
+      });
+    });
+
+    it("seeds the per-customer override; an unconfigured peer gets global", async () => {
+      await resetState();
+      await resetSeed();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      await withClient((c) =>
+        setCustomerDefaultModel(
+          c,
+          "admin",
+          adminAccountId,
+          customerId,
+          CUSTOMER_PAIR,
+        ),
+      );
+      await seedReadyState(customerId, 3);
+      await seedReadyState(otherCustomerId, 3);
+      await withClient((c) => seedRealStoryJobs(c, 100));
+      // The overridden customer seeds at its override; the peer with no
+      // override falls back to the admin-set global default.
+      expect(await seededJobModel(customerId, 3)).toEqual({
+        model_name: CUSTOMER_PAIR.modelName,
+        model: CUSTOMER_PAIR.model,
+      });
+      expect(await seededJobModel(otherCustomerId, 3)).toEqual({
+        model_name: GLOBAL_PAIR.modelName,
+        model: GLOBAL_PAIR.model,
+      });
     });
   });
 

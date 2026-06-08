@@ -98,6 +98,20 @@ run automatically, because re-analyzing all existing data is a bounded,
 cost-controlled operation that an operator launches deliberately. You can
 dismiss the offer; dismissing it changes nothing.
 
+## Default variant and coverage
+
+A report or story is treated as the **default variant** when its model
+matches the customer's resolved default. The detail view marks this
+variant and uses it as the baseline "default" column in the two-model
+compare view, and the coverage indicator is computed against it.
+
+Because the default is now per-customer, this "default variant" decision
+follows the same three-tier resolution as everything else: it tracks the
+customer's effective default rather than a single deployment-wide value.
+The variant the analysis worker seeds as default and the variant the
+coverage logic treats as default are always the same one, so they never
+disagree about which column is the default.
+
 ## Relationship to per-artifact model selection
 
 These two settings coexist as different layers:
