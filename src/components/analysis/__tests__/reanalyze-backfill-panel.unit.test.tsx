@@ -148,6 +148,81 @@ describe("ReanalyzeBackfillPanel", () => {
     expect(fetcher.mock.calls.every((c) => c[1]?.method !== "POST")).toBe(true);
   });
 
+  it("locks the scope controls while a run is in flight", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    const confirmBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => (c as HTMLInputElement).className.includes("mt-1"));
+    if (!confirmBox) throw new Error("confirm checkbox not found");
+    fireEvent.click(confirmBox);
+
+    // Hold the POST in flight so `running` stays true.
+    fetcher.mockReturnValueOnce(new Promise(() => {}));
+    const start = screen.getByText("startButton").closest("button");
+    if (!start) throw new Error("start button not found");
+    fireEvent.click(start);
+
+    // While running, the scope controls must be locked so the operator cannot
+    // widen the scope behind the confirmed/previewed run.
+    const windowInput = document.getElementById(
+      "reanalyze-window-days",
+    ) as HTMLInputElement;
+    const capInput = document.getElementById(
+      "reanalyze-cap",
+    ) as HTMLInputElement;
+    await waitFor(() => expect(windowInput.disabled).toBe(true));
+    expect(capInput.disabled).toBe(true);
+  });
+
+  it("surfaces categorized drain counts and flags failed leaves, scoped to the preview", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    fetcher.mockResolvedValueOnce({
+      totalLeaves: 10,
+      outstanding: 4,
+      drained: false,
+      counts: {
+        drained: 6,
+        absent: 1,
+        queued: 1,
+        processing: 0,
+        failed_outstanding: 2,
+        skipped_dirty: 0,
+        source_unavailable: 1,
+      },
+    });
+    const refresh = screen.getByText("refreshStatus").closest("button");
+    if (!refresh) throw new Error("refresh button not found");
+    fireEvent.click(refresh);
+
+    // The categorized counts must be surfaced, not collapsed to "N outstanding".
+    await waitFor(() => expect(screen.getByText("drainFailed")).toBeDefined());
+    expect(screen.getByText('drainFailedNote:{"count":2}')).toBeDefined();
+    expect(screen.getByText("drainSourceUnavailable")).toBeDefined();
+
+    // The progress query addresses the previewed scope (windowDays=7), not a
+    // live form edit.
+    const statusCall = fetcher.mock.calls.find(
+      (c) => typeof c[0] === "string" && c[0].includes("/status"),
+    );
+    expect(statusCall?.[0]).toContain("windowDays=7");
+  });
+
   it("disables the run when there is nothing to enqueue", async () => {
     fetcher.mockResolvedValueOnce(EMPTY_PREVIEW);
     render(

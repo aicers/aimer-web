@@ -84,23 +84,41 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
   const [status, setStatus] = useState<DrainSignal | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
 
-  const scopeQuery = useCallback(() => {
-    const params = new URLSearchParams();
-    params.set("windowDays", allHistory ? "all" : windowDays);
-    if (cap.trim() !== "") params.set("cap", cap.trim());
-    return params.toString();
-  }, [allHistory, windowDays, cap]);
+  // Build a scope query string from explicit values. The drain status and the
+  // enqueue POST address the scope that was actually previewed/run, never live
+  // form edits, so the query is built from a fixed scope rather than state.
+  const buildScopeQuery = useCallback(
+    (windowDaysValue: number | "all" | string, capValue: number | null) => {
+      const params = new URLSearchParams();
+      params.set("windowDays", String(windowDaysValue));
+      if (capValue != null) params.set("cap", String(capValue));
+      return params.toString();
+    },
+    [],
+  );
 
-  // Any scope edit invalidates the prior preview, its confirmation, and the
-  // last run summary: the shown counts no longer match the edited scope, so
-  // the operator must re-preview and re-acknowledge before Start re-appears.
-  // Without this, a user could confirm the 7-day counts then widen to "all
-  // history" and Start an unpreviewed, larger run (#466 Scope §7).
+  // The live-form scope query, used only by the preview request — the preview
+  // is what the operator is actively editing. Once a preview exists, the run
+  // POST and the status refresh use `preview.scope` instead (see below).
+  const scopeQuery = useCallback(() => {
+    return buildScopeQuery(
+      allHistory ? "all" : windowDays,
+      cap.trim() !== "" ? Number(cap.trim()) : null,
+    );
+  }, [buildScopeQuery, allHistory, windowDays, cap]);
+
+  // Any scope edit invalidates the prior preview, its confirmation, the last
+  // run summary, and the shown progress: the shown counts no longer match the
+  // edited scope, so the operator must re-preview and re-acknowledge before
+  // Start re-appears. Without this, a user could confirm the 7-day counts then
+  // widen to "all history" and Start an unpreviewed, larger run (#466 §7), or
+  // be shown progress for a different scope than the one they edited.
   const invalidatePreview = useCallback(() => {
     setPreview(null);
     setConfirmed(false);
     setRunResult(null);
     setPreviewError(null);
+    setStatus(null);
   }, []);
 
   const loadPreview = useCallback(async () => {
@@ -131,19 +149,28 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
     void loadPreview();
   }, []);
 
+  // Refresh the drain progress for the previewed/run scope when one exists, so
+  // progress always reflects exactly what was enqueued — never an unrelated
+  // live-form edit. Before the first preview (initial state) there is no run to
+  // report on, so it falls back to the live form scope. This mirrors the POST
+  // hardening: the run, its result, and its progress all address one scope.
   const loadStatus = useCallback(async () => {
+    const query = preview
+      ? buildScopeQuery(
+          preview.scope.windowDays === null ? "all" : preview.scope.windowDays,
+          preview.scope.cap,
+        )
+      : scopeQuery();
     setStatusLoading(true);
     try {
-      const data = await fetcher<DrainSignal>(
-        `${apiBase}/status?${scopeQuery()}`,
-      );
+      const data = await fetcher<DrainSignal>(`${apiBase}/status?${query}`);
       setStatus(data);
     } catch {
       setStatus(null);
     } finally {
       setStatusLoading(false);
     }
-  }, [apiBase, fetcher, scopeQuery]);
+  }, [apiBase, fetcher, preview, buildScopeQuery, scopeQuery]);
 
   const handleRun = useCallback(async () => {
     // POST the EXACT scope that was previewed and confirmed — never the live
@@ -199,7 +226,7 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
               type="number"
               min={1}
               value={windowDays}
-              disabled={allHistory || previewing}
+              disabled={allHistory || previewing || running}
               onChange={(e) => {
                 setWindowDays(e.target.value);
                 invalidatePreview();
@@ -211,7 +238,7 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
             <input
               type="checkbox"
               checked={allHistory}
-              disabled={previewing}
+              disabled={previewing || running}
               onChange={(e) => {
                 setAllHistory(e.target.checked);
                 invalidatePreview();
@@ -232,7 +259,7 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
               min={1}
               value={cap}
               placeholder={t("capPlaceholder")}
-              disabled={previewing}
+              disabled={previewing || running}
               onChange={(e) => {
                 setCap(e.target.value);
                 invalidatePreview();
@@ -243,7 +270,7 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
           <Button
             type="button"
             onClick={() => void loadPreview()}
-            disabled={previewing}
+            disabled={previewing || running}
           >
             {previewing ? t("previewing") : t("previewButton")}
           </Button>
@@ -359,14 +386,75 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
           </Button>
         </div>
         {status && (
-          <p className="text-sm text-foreground">
-            {status.drained
-              ? t("drainedYes", { total: status.totalLeaves })
-              : t("drainedNo", {
-                  outstanding: status.outstanding,
-                  total: status.totalLeaves,
+          <div className="space-y-2">
+            <p className="text-sm text-foreground">
+              {status.drained
+                ? t("drainedYes", { total: status.totalLeaves })
+                : t("drainedNo", {
+                    outstanding: status.outstanding,
+                    total: status.totalLeaves,
+                  })}
+            </p>
+            {/* Categorized drain breakdown (#466 §4/§6): never collapse the
+                signal to a bare outstanding count — surface the distinct
+                categories so the operator can see, e.g., a `failed` leaf
+                blocking the gate that needs a retry, not just "N outstanding". */}
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+              <dt className="text-foreground">{t("drainDone")}</dt>
+              <dd className="text-right font-medium text-foreground">
+                {status.counts.drained}
+              </dd>
+              <dt className="text-muted-foreground">{t("drainAbsent")}</dt>
+              <dd className="text-right text-muted-foreground">
+                {status.counts.absent}
+              </dd>
+              <dt className="text-muted-foreground">{t("drainQueued")}</dt>
+              <dd className="text-right text-muted-foreground">
+                {status.counts.queued}
+              </dd>
+              <dt className="text-muted-foreground">{t("drainProcessing")}</dt>
+              <dd className="text-right text-muted-foreground">
+                {status.counts.processing}
+              </dd>
+              <dt
+                className={
+                  status.counts.failed_outstanding > 0
+                    ? "text-destructive"
+                    : "text-muted-foreground"
+                }
+              >
+                {t("drainFailed")}
+              </dt>
+              <dd
+                className={
+                  status.counts.failed_outstanding > 0
+                    ? "text-right font-medium text-destructive"
+                    : "text-right text-muted-foreground"
+                }
+              >
+                {status.counts.failed_outstanding}
+              </dd>
+              <dt className="text-muted-foreground">
+                {t("drainSkippedDirty")}
+              </dt>
+              <dd className="text-right text-muted-foreground">
+                {status.counts.skipped_dirty}
+              </dd>
+              <dt className="text-muted-foreground">
+                {t("drainSourceUnavailable")}
+              </dt>
+              <dd className="text-right text-muted-foreground">
+                {status.counts.source_unavailable}
+              </dd>
+            </dl>
+            {status.counts.failed_outstanding > 0 && (
+              <p className="text-xs text-destructive">
+                {t("drainFailedNote", {
+                  count: status.counts.failed_outstanding,
                 })}
-          </p>
+              </p>
+            )}
+          </div>
         )}
       </div>
     </section>

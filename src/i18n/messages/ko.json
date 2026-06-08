@@ -602,7 +602,15 @@
     "statusLoading": "새로고침 중…",
     "refreshStatus": "진행 상황 새로고침",
     "drainedYes": "범위 내 리프 {total}개가 모두 새 모델로 다시 분석되었습니다.",
-    "drainedNo": "범위 내 리프 {total}개 중 {outstanding}개가 아직 남아 있습니다."
+    "drainedNo": "범위 내 리프 {total}개 중 {outstanding}개가 아직 남아 있습니다.",
+    "drainDone": "다시 분석됨 (완료)",
+    "drainAbsent": "아직 큐에 없음",
+    "drainQueued": "큐에 있음",
+    "drainProcessing": "처리 중",
+    "drainFailed": "실패 (재시도 필요)",
+    "drainSkippedDirty": "소스 변경 대기 중",
+    "drainSourceUnavailable": "소스 삭제됨 (제외)",
+    "drainFailedNote": "리프 {count}개가 실패하여 이 범위가 계속 남아 있습니다. 해결한 후 다시 실행하면 리포트 새로고침 차단이 풀립니다."
   },
   "accountSettings": {
     "title": "계정 설정",

@@ -106,6 +106,15 @@ whose new-model analysis is missing, queued, processing, or **failed**
 keeps the scope un-drained. Stories whose source was removed are excluded
 — they can never be re-analyzed, so they never block progress.
 
+Progress is not collapsed to a single outstanding number: it breaks the
+scope into the same distinct categories the drain signal reports —
+re-analyzed (done), not yet queued, queued, processing, **failed (needs
+retry)**, pending source change, and source removed (excluded). A
+persistently **failed** leaf blocks the gate, so it is called out
+explicitly with a prompt to resolve and re-run; the operator never sees an
+undifferentiated count hiding a blocker. The progress shown always
+addresses the scope that was previewed and run, not any later scope edit.
+
 This progress signal is also what gates the later **report refresh**: a
 report is not refreshed under the new model until its scope's story leaves
 have drained, so a refresh never re-aggregates a stale, not-yet-re-analyzed

@@ -602,7 +602,15 @@
     "statusLoading": "Refreshing…",
     "refreshStatus": "Refresh progress",
     "drainedYes": "All {total} in-scope leaves are re-analyzed under the new model.",
-    "drainedNo": "{outstanding} of {total} in-scope leaves are still outstanding."
+    "drainedNo": "{outstanding} of {total} in-scope leaves are still outstanding.",
+    "drainDone": "Re-analyzed (done)",
+    "drainAbsent": "Not yet queued",
+    "drainQueued": "Queued",
+    "drainProcessing": "Processing",
+    "drainFailed": "Failed (needs retry)",
+    "drainSkippedDirty": "Pending source change",
+    "drainSourceUnavailable": "Source removed (excluded)",
+    "drainFailedNote": "{count} leaves failed and keep this scope outstanding. Re-run after resolving them so the report refresh is no longer blocked."
   },
   "accountSettings": {
     "title": "Account Settings",
