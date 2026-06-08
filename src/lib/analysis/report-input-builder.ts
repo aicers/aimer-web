@@ -483,7 +483,27 @@ async function selectTopEvents(
     // Two-phase preference selection (#465 Scope 1), same structure as
     // `selectTopStories`: `ranked` picks the single rank-1 leaf per
     // (aice_id, event_key) across the preference order; the outer query then
-    // applies the existing tier/score/(aice_id, event_key) top-K ordering.
+    // applies the existing tier/score/(aice_id, event_key) ordering under the
+    // hard ceiling `M` (= `limit`).
+    //
+    // Citation-cut policy (#494): the outer query gates the chosen-per-event
+    // leaves to the citation floor `priority_tier IN ('CRITICAL', 'HIGH',
+    // 'MEDIUM')` alongside `LIMIT M`. Because the ORDER BY is tier-first, this
+    // (a) guarantees every CRITICAL/HIGH leaf is cited up to `M`, (b) fills any
+    // remaining slots with MEDIUM by the same ranking, and (c) never pads with
+    // LOW on a quiet window. When CRITICAL/HIGH exceed `M`, the top-`M` are
+    // cited and the overflow stays recoverable as (full-set CRITICAL/HIGH) −
+    // (cited CRITICAL/HIGH) for #495's long-tail; #494 emits no bespoke
+    // remainder counter (tiers are retained on the cited set for #495 to
+    // subtract).
+    //
+    // The floor predicate MUST stay in the OUTER query, NOT pushed into the
+    // `ranked` CTE: that CTE picks one leaf per (aice_id, event_key) by model
+    // preference (`ORDER BY p.rank, generation`), and filtering LOW before the
+    // pick would drop a report-model LOW leaf and let a fallback-model
+    // higher-tier leaf win that event, breaking #465's cross-model
+    // leaf-selection contract (report model is always rank 1). The floor gates
+    // only after the per-event leaf is already chosen.
     `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
               source_aice_id, event_key, event_time
@@ -527,6 +547,7 @@ async function selectTopEvents(
             rk.analysis_text, rk.redaction_policy_version,
             rk.event_time
        FROM ranked rk
+      WHERE rk.priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM')
       ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "rk.priority_tier")} DESC,
                (rk.severity_score + rk.likelihood_score) DESC,
                rk.aice_id ASC, rk.event_key ASC
