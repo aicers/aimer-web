@@ -49,6 +49,7 @@ import {
   filterFactors,
 } from "./factor-filter";
 import { MITRE_VENDOR_VERSION, validateTtpTags } from "./mitre-ttp";
+import { getModelCatalog } from "./model-catalog";
 import {
   applyLikelihoodFloors,
   computePriorityTier,
@@ -1554,10 +1555,24 @@ export async function seedRealStoryJobs(
   // per row via a LEFT JOIN + COALESCE and carries it forward — what used
   // to be the single env `WORKER_MODEL_NAME`/`WORKER_MODEL` pair is now
   // resolved per customer. `lang` stays the env `WORKER_LANG` (lang is not
-  // DB-backed). Catalog validity of stored values is enforced at save time
-  // by the setter API; the SQL trusts them here (the resolver provides the
-  // defensive read-path fallback). `FOR UPDATE OF s` keeps the row lock on
-  // `story_analysis_state` only — the joined config tables are not locked.
+  // DB-backed).
+  //
+  // DEFENSIVE catalog filtering (#473 review round 1): the SQL must mirror
+  // `resolveDefaultModel`'s read-path fallback so worker seeding and the
+  // page/coverage resolver cannot disagree. A stored per-customer override
+  // or global default that is malformed/partial (e.g. a global JSON missing
+  // `model`, which would otherwise mix the global `modelName` with the env
+  // `model`) or has fallen out of `ANALYSIS_MODEL_CATALOG` after it was
+  // saved (catalog change, or a direct DB write that bypassed the
+  // validating setter) is SKIPPED so resolution falls through to the next
+  // tier instead of seeding under a stale or mixed pair. The catalog is
+  // env/code-resident, so it is passed in as a JSON array ($5) and each DB
+  // tier is filtered against it here. `FOR UPDATE OF s` keeps the row lock
+  // on `story_analysis_state` only — the joined config tables are not
+  // locked.
+  const catalogJson = JSON.stringify(
+    getModelCatalog().map((e) => ({ modelName: e.modelName, model: e.model })),
+  );
   const { rows: actionable } = await authClient.query<{
     customer_id: string;
     story_id: string;
@@ -1565,11 +1580,25 @@ export async function seedRealStoryJobs(
     model_name: string;
     model: string;
   }>(
-    `WITH global_default AS (
-       SELECT value->>'modelName' AS model_name,
-              value->>'model'     AS model
-         FROM system_settings
-        WHERE key = 'analysis_default_model'
+    `WITH catalog AS (
+       SELECT elem->>'modelName' AS model_name,
+              elem->>'model'     AS model
+         FROM jsonb_array_elements($5::jsonb) AS elem
+     ),
+     global_default AS (
+       SELECT g.model_name, g.model
+         FROM (
+           SELECT value->>'modelName' AS model_name,
+                  value->>'model'     AS model
+             FROM system_settings
+            WHERE key = 'analysis_default_model'
+         ) g
+        WHERE g.model_name IS NOT NULL
+          AND g.model IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM catalog c
+             WHERE c.model_name = g.model_name AND c.model = g.model
+          )
      )
      SELECT s.customer_id::text AS customer_id,
             s.story_id::text    AS story_id,
@@ -1577,7 +1606,12 @@ export async function seedRealStoryJobs(
             COALESCE(cdm.model_name, gd.model_name, $3) AS model_name,
             COALESCE(cdm.model,      gd.model,      $4) AS model
        FROM story_analysis_state s
-       LEFT JOIN customer_default_model cdm ON cdm.customer_id = s.customer_id
+       LEFT JOIN customer_default_model cdm
+         ON cdm.customer_id = s.customer_id
+        AND EXISTS (
+          SELECT 1 FROM catalog c
+           WHERE c.model_name = cdm.model_name AND c.model = cdm.model
+        )
        LEFT JOIN global_default gd ON TRUE
       WHERE s.status = 'dirty'
          OR (s.status = 'ready'
@@ -1592,7 +1626,7 @@ export async function seedRealStoryJobs(
       ORDER BY s.customer_id, s.story_id
       LIMIT $1
       FOR UPDATE OF s SKIP LOCKED`,
-    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL],
+    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL, catalogJson],
   );
   for (const row of actionable) {
     if (row.status === "dirty") {

@@ -42,6 +42,7 @@ import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import { getModelCatalog } from "./model-catalog";
 import {
   buildCanonicalPinnedReportInput,
   buildPeriodicReportInput,
@@ -2046,13 +2047,35 @@ export async function seedRealReportJobs(
     // override, admin-set global, env) computed per row via the joins
     // below and carried forward to `seedEagerLangJobs`. The eager set still
     // varies only along the language axis — every eager language shares this
-    // one resolved model pair. `FOR UPDATE OF s` keeps the row lock on the
-    // state table only; the joined config tables are not locked.
-    `WITH global_default AS (
-       SELECT value->>'modelName' AS model_name,
-              value->>'model'     AS model
-         FROM system_settings
-        WHERE key = 'analysis_default_model'
+    // one resolved model pair.
+    //
+    // DEFENSIVE catalog filtering (#473 review round 1): like the story
+    // seeder and `resolveDefaultModel`, a stored per-customer override or
+    // global default that is malformed/partial or has fallen out of
+    // `ANALYSIS_MODEL_CATALOG` is SKIPPED so resolution falls through to the
+    // next tier rather than seeding under a stale or mixed pair. The catalog
+    // is passed in as a JSON array ($5) and each DB tier is filtered against
+    // it. `FOR UPDATE OF s` keeps the row lock on the state table only; the
+    // joined config tables are not locked.
+    `WITH catalog AS (
+       SELECT elem->>'modelName' AS model_name,
+              elem->>'model'     AS model
+         FROM jsonb_array_elements($5::jsonb) AS elem
+     ),
+     global_default AS (
+       SELECT g.model_name, g.model
+         FROM (
+           SELECT value->>'modelName' AS model_name,
+                  value->>'model'     AS model
+             FROM system_settings
+            WHERE key = 'analysis_default_model'
+         ) g
+        WHERE g.model_name IS NOT NULL
+          AND g.model IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM catalog c
+             WHERE c.model_name = g.model_name AND c.model = g.model
+          )
      )
      SELECT s.customer_id::text AS customer_id,
             s.period,
@@ -2062,7 +2085,12 @@ export async function seedRealReportJobs(
             COALESCE(cdm.model_name, gd.model_name, $3) AS model_name,
             COALESCE(cdm.model,      gd.model,      $4) AS model
        FROM periodic_report_state s
-       LEFT JOIN customer_default_model cdm ON cdm.customer_id = s.customer_id
+       LEFT JOIN customer_default_model cdm
+         ON cdm.customer_id = s.customer_id
+        AND EXISTS (
+          SELECT 1 FROM catalog c
+           WHERE c.model_name = cdm.model_name AND c.model = cdm.model
+        )
        LEFT JOIN global_default gd ON TRUE
       WHERE s.period IN ('LIVE', 'DAILY', 'WEEKLY', 'MONTHLY')
         AND (s.status = 'dirty'
@@ -2083,7 +2111,18 @@ export async function seedRealReportJobs(
       ORDER BY s.customer_id, s.period, s.bucket_date, s.tz
       LIMIT $1
       FOR UPDATE OF s SKIP LOCKED`,
-    [batchSize, EAGER_LANGS, WORKER_MODEL_NAME, WORKER_MODEL],
+    [
+      batchSize,
+      EAGER_LANGS,
+      WORKER_MODEL_NAME,
+      WORKER_MODEL,
+      JSON.stringify(
+        getModelCatalog().map((e) => ({
+          modelName: e.modelName,
+          model: e.model,
+        })),
+      ),
+    ],
   );
 
   for (const row of actionable) {

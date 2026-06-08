@@ -22,6 +22,7 @@ import {
   setGlobalDefaultModel,
 } from "../default-model";
 import { __resetModelCatalogForTest } from "../model-catalog";
+import { seedRealReportJobs } from "../report-worker";
 import { seedRealStoryJobs } from "../story-worker";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
@@ -432,8 +433,11 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
   // `seedRealStoryJobs` reimplements the three-tier resolution IN SQL
   // (LEFT JOIN customer_default_model + the `system_settings` JSON
   // extraction + COALESCE(override, global, env)), independent of
-  // `resolveDefaultModel`. These cases prove the seeded `story_analysis_job`
-  // row carries the resolved default for each tier, so the seeding SQL and
+  // `resolveDefaultModel` — but, like the resolver, it filters every DB
+  // tier against the catalog (passed in as JSON) so a stale/invalid stored
+  // value is skipped rather than seeded (#473 review round 1). These cases
+  // prove the seeded `story_analysis_job` row carries the resolved default
+  // for each tier and that stale values fall through, so the seeding SQL and
   // the resolver cannot silently drift (Scope §4).
   describe("seedRealStoryJobs resolution", () => {
     async function seedReadyState(cid: string, storyId: number): Promise<void> {
@@ -513,6 +517,157 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
       expect(await seededJobModel(otherCustomerId, 3)).toEqual({
         model_name: GLOBAL_PAIR.modelName,
         model: GLOBAL_PAIR.model,
+      });
+    });
+
+    // The seeding SQL must mirror the resolver's DEFENSIVE skip of a
+    // stale/invalid stored value (#473 review round 1) — otherwise the
+    // worker would seed jobs under a pair the page/coverage resolver would
+    // itself skip, making the two disagree.
+    it("skips a stale (out-of-catalog) per-customer override and seeds global", async () => {
+      await resetState();
+      await resetSeed();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      // Write an out-of-catalog override directly (bypassing the setter, as
+      // a catalog change after save or a raw DB write would produce).
+      await pool.query(
+        `INSERT INTO customer_default_model
+           (customer_id, model_name, model, updated_by)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          customerId,
+          INVALID_PAIR.modelName,
+          INVALID_PAIR.model,
+          adminAccountId,
+        ],
+      );
+      await seedReadyState(customerId, 4);
+      await withClient((c) => seedRealStoryJobs(c, 100));
+      expect(await seededJobModel(customerId, 4)).toEqual({
+        model_name: GLOBAL_PAIR.modelName,
+        model: GLOBAL_PAIR.model,
+      });
+    });
+
+    it("skips a partial/invalid global default and seeds env (no mixed pair)", async () => {
+      await resetState();
+      await resetSeed();
+      // A partial global JSON (missing `model`) would, under a naive
+      // per-column COALESCE, mix the global modelName with the env model.
+      // The catalog-validated CTE must reject it whole and fall to env.
+      await pool.query(
+        `INSERT INTO system_settings (key, value) VALUES ($1, $2::jsonb)`,
+        [GLOBAL_DEFAULT_MODEL_KEY, JSON.stringify({ modelName: "anthropic" })],
+      );
+      await seedReadyState(customerId, 5);
+      await withClient((c) => seedRealStoryJobs(c, 100));
+      expect(await seededJobModel(customerId, 5)).toEqual({
+        model_name: ENV_DEFAULT.modelName,
+        model: ENV_DEFAULT.model,
+      });
+    });
+  });
+
+  // -- Seeding query resolution (report worker) ----------------------------
+  // The report seeder reimplements the same catalog-validated three-tier
+  // resolution; these cases prove a seeded `periodic_report_job` row carries
+  // the resolved default and that stale/invalid stored values are skipped
+  // exactly as in the story seeder (#473 review round 1).
+  describe("seedRealReportJobs resolution", () => {
+    const PERIOD = "DAILY";
+    const TZ = "UTC";
+    async function seedReadyReportState(
+      cid: string,
+      bucketDate: string,
+    ): Promise<void> {
+      await pool.query(
+        `INSERT INTO periodic_report_state
+           (customer_id, period, bucket_date, tz, status)
+         VALUES ($1, $2, $3::date, $4, 'ready')
+         ON CONFLICT (customer_id, period, bucket_date, tz)
+         DO UPDATE SET status = 'ready'`,
+        [cid, PERIOD, bucketDate, TZ],
+      );
+    }
+    async function seededReportModel(
+      cid: string,
+      bucketDate: string,
+    ): Promise<{ model_name: string; model: string } | null> {
+      const res = await pool.query<{ model_name: string; model: string }>(
+        `SELECT DISTINCT model_name, model FROM periodic_report_job
+          WHERE customer_id = $1 AND period = $2 AND bucket_date = $3::date`,
+        [cid, PERIOD, bucketDate],
+      );
+      return res.rows[0] ?? null;
+    }
+    // periodic_report_job FKs periodic_report_state, so clear jobs first.
+    async function resetReportSeed(): Promise<void> {
+      await pool.query(`DELETE FROM periodic_report_job`);
+      await pool.query(`DELETE FROM periodic_report_state`);
+    }
+
+    it("seeds the per-customer override over global and env", async () => {
+      await resetState();
+      await resetReportSeed();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      await withClient((c) =>
+        setCustomerDefaultModel(
+          c,
+          "admin",
+          adminAccountId,
+          customerId,
+          CUSTOMER_PAIR,
+        ),
+      );
+      await seedReadyReportState(customerId, "2026-01-01");
+      await withClient((c) => seedRealReportJobs(c, 100));
+      expect(await seededReportModel(customerId, "2026-01-01")).toEqual({
+        model_name: CUSTOMER_PAIR.modelName,
+        model: CUSTOMER_PAIR.model,
+      });
+    });
+
+    it("skips a stale (out-of-catalog) per-customer override and seeds global", async () => {
+      await resetState();
+      await resetReportSeed();
+      await withClient((c) =>
+        setGlobalDefaultModel(c, adminAccountId, GLOBAL_PAIR),
+      );
+      await pool.query(
+        `INSERT INTO customer_default_model
+           (customer_id, model_name, model, updated_by)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          customerId,
+          INVALID_PAIR.modelName,
+          INVALID_PAIR.model,
+          adminAccountId,
+        ],
+      );
+      await seedReadyReportState(customerId, "2026-01-02");
+      await withClient((c) => seedRealReportJobs(c, 100));
+      expect(await seededReportModel(customerId, "2026-01-02")).toEqual({
+        model_name: GLOBAL_PAIR.modelName,
+        model: GLOBAL_PAIR.model,
+      });
+    });
+
+    it("skips a partial/invalid global default and seeds env (no mixed pair)", async () => {
+      await resetState();
+      await resetReportSeed();
+      await pool.query(
+        `INSERT INTO system_settings (key, value) VALUES ($1, $2::jsonb)`,
+        [GLOBAL_DEFAULT_MODEL_KEY, JSON.stringify({ modelName: "anthropic" })],
+      );
+      await seedReadyReportState(customerId, "2026-01-03");
+      await withClient((c) => seedRealReportJobs(c, 100));
+      expect(await seededReportModel(customerId, "2026-01-03")).toEqual({
+        model_name: ENV_DEFAULT.modelName,
+        model: ENV_DEFAULT.model,
       });
     });
   });
