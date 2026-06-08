@@ -18,6 +18,10 @@ default model. It is a deliberate, cost-bounded, operator-launched action
 > alongside this one; the report refresh runs only after the story-leaf
 > backfill has drained.
 
+> The backfill re-analyzes the **default analysis language** — the same
+> language the analysis worker maintains and that reports aggregate over.
+> On-demand analyses in other languages are not touched.
+
 ## Who can run it
 
 The backfill uses the same permissions as the per-customer default-model

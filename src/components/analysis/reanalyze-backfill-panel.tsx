@@ -91,6 +91,18 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
     return params.toString();
   }, [allHistory, windowDays, cap]);
 
+  // Any scope edit invalidates the prior preview, its confirmation, and the
+  // last run summary: the shown counts no longer match the edited scope, so
+  // the operator must re-preview and re-acknowledge before Start re-appears.
+  // Without this, a user could confirm the 7-day counts then widen to "all
+  // history" and Start an unpreviewed, larger run (#466 Scope §7).
+  const invalidatePreview = useCallback(() => {
+    setPreview(null);
+    setConfirmed(false);
+    setRunResult(null);
+    setPreviewError(null);
+  }, []);
+
   const loadPreview = useCallback(async () => {
     setPreviewing(true);
     setPreviewError(null);
@@ -134,13 +146,18 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
   }, [apiBase, fetcher, scopeQuery]);
 
   const handleRun = useCallback(async () => {
+    // POST the EXACT scope that was previewed and confirmed — never the live
+    // form values — so a scope edit slipping past `invalidatePreview` can
+    // never turn the confirmed run into a different one.
+    if (!preview) return;
     setRunning(true);
     setRunError(null);
     try {
       const body = {
         confirm: true,
-        windowDays: allHistory ? "all" : Number(windowDays),
-        cap: cap.trim() === "" ? null : Number(cap.trim()),
+        windowDays:
+          preview.scope.windowDays === null ? "all" : preview.scope.windowDays,
+        cap: preview.scope.cap,
       };
       const data = await fetcher<{ counts: EnqueueCounts }>(apiBase, {
         method: "POST",
@@ -153,7 +170,7 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
     } finally {
       setRunning(false);
     }
-  }, [apiBase, fetcher, allHistory, windowDays, cap, loadStatus, t]);
+  }, [apiBase, fetcher, preview, loadStatus, t]);
 
   const counts = preview?.counts;
   const toEnqueue = counts ? counts.seeded + counts.requeued : 0;
@@ -183,7 +200,10 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
               min={1}
               value={windowDays}
               disabled={allHistory || previewing}
-              onChange={(e) => setWindowDays(e.target.value)}
+              onChange={(e) => {
+                setWindowDays(e.target.value);
+                invalidatePreview();
+              }}
               className="w-28 rounded-md border border-border bg-background px-2 py-1 text-sm"
             />
           </div>
@@ -192,7 +212,10 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
               type="checkbox"
               checked={allHistory}
               disabled={previewing}
-              onChange={(e) => setAllHistory(e.target.checked)}
+              onChange={(e) => {
+                setAllHistory(e.target.checked);
+                invalidatePreview();
+              }}
             />
             {t("allHistoryLabel")}
           </label>
@@ -210,7 +233,10 @@ export function ReanalyzeBackfillPanel({ apiBase, fetcher }: Props) {
               value={cap}
               placeholder={t("capPlaceholder")}
               disabled={previewing}
-              onChange={(e) => setCap(e.target.value)}
+              onChange={(e) => {
+                setCap(e.target.value);
+                invalidatePreview();
+              }}
               className="w-28 rounded-md border border-border bg-background px-2 py-1 text-sm"
             />
           </div>

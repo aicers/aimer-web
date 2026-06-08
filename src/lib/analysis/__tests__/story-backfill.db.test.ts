@@ -2,9 +2,10 @@
 //
 // The classification / cap / drain logic is unit-tested with fakes in
 // `story-backfill.unit.test.ts`. THIS test exercises the real SQL in
-// `createBackfillDeps` against Postgres: the candidate scan (the LATERAL
-// per-lang expansion, the target-variant LEFT JOIN, the recent-window
-// filter, and the recency ordering) and the idempotent seed / requeue
+// `createBackfillDeps` against Postgres: the candidate scan (the
+// WORKER_LANG existence filter, the target-variant LEFT JOIN, the
+// recent-window filter, and the recency ordering) and the idempotent seed /
+// requeue
 // writes. `liveStoryIds` reads the per-customer runtime pool global and is
 // covered by the unit-level source-availability cases instead.
 
@@ -134,7 +135,10 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
     // 1002: ready, recent, already has the TARGET leaf done.
     await addState(1002, "ready", 2);
     await addJob(1002, "ENGLISH", TARGET.modelName, TARGET.model, "done");
-    // 1003: dirty, recent, old-model leaf in two langs → two candidates.
+    // 1003: dirty, recent, old-model leaf in two langs → ONLY the
+    // worker-refreshed ENGLISH leaf is a candidate; the KOREAN leaf is out of
+    // scope (the worker never refreshes it, so the dirty/drain contract can't
+    // cover it).
     await addState(1003, "dirty", 3);
     await addJob(1003, "ENGLISH", "openai", "gpt-4o", "done");
     await addJob(1003, "KOREAN", "openai", "gpt-4o", "done");
@@ -149,20 +153,19 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
     await addJob(1006, "ENGLISH", "openai", "gpt-4o", "queued");
     // 1007: ready, recent, but NO job rows → not an existing analysis.
     await addState(1007, "ready", 1);
+    // 1008: ready, recent, but ONLY a non-default-language (KOREAN) leaf →
+    // not a candidate, since the backfill scans only WORKER_LANG (ENGLISH).
+    await addState(1008, "ready", 1);
+    await addJob(1008, "KOREAN", "openai", "gpt-4o", "done");
 
     const deps = createBackfillDeps(pool, NOW_MS);
     const within = await deps.scanCandidates(scope({ windowDays: 7 }));
     const keys = within.map((c) => `${c.storyId}:${c.lang}`);
 
-    // 1005 (window), 1006 (pending), 1007 (no jobs) excluded.
+    // 1005 (window), 1006 (pending), 1007 (no jobs), 1008 (KOREAN-only)
+    // excluded; only the ENGLISH leaf of each surviving story remains.
     expect(keys.sort()).toEqual(
-      [
-        "1001:ENGLISH",
-        "1002:ENGLISH",
-        "1003:ENGLISH",
-        "1003:KOREAN",
-        "1004:ENGLISH",
-      ].sort(),
+      ["1001:ENGLISH", "1002:ENGLISH", "1003:ENGLISH", "1004:ENGLISH"].sort(),
     );
 
     const byKey = new Map(within.map((c) => [`${c.storyId}:${c.lang}`, c]));

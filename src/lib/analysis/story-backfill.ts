@@ -26,6 +26,20 @@
 // break leaf idempotency), and NOT a post-flip dirty-mark (a state row
 // carries no model and cannot do an already-current skip).
 //
+// LANGUAGE SCOPE: this backfill operates ONLY on the worker-refreshed
+// language (`WORKER_LANG`, env `ANALYSIS_DEFAULT_LANG`, default `ENGLISH`).
+// `seedRealStoryJobs` (story-worker.ts) re-seeds the `dirty` branch — and the
+// whole automatic analysis pipeline that reports aggregate over — under that
+// single language only. Scanning other languages (e.g. on-demand `KOREAN`
+// leaves created via the regenerate endpoint) would break two contracts the
+// `dirty`/drain policy depends on: a `skipped_dirty` non-default leaf would
+// never actually be refreshed by the worker (which only touches WORKER_LANG
+// before flipping the state back to `ready`), so the drain query would then
+// either misreport a stale `done` leaf as `drained` or leave an `absent`
+// non-default variant blocking the scope forever. Limiting the scan to
+// WORKER_LANG keeps the dirty-refresh assumption sound and the drain signal
+// honest (#466 review round 1).
+//
 // SERVER-ONLY. Reads the auth DB (state/job rows) and each customer's
 // runtime DB (the live `story` row, for the source-availability check).
 
@@ -42,6 +56,14 @@ import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
  * within this many days, so a no-scope run never re-analyzes all history.
  */
 export const DEFAULT_WINDOW_DAYS = 7;
+
+/**
+ * The single language the story worker re-seeds (and reports aggregate over).
+ * Mirrors `WORKER_LANG` in story-worker.ts. The backfill scans/enqueues/drains
+ * ONLY this language so the `dirty`-refresh and drain contracts hold (see the
+ * language-scope note above).
+ */
+export const WORKER_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 
 /** Story-analysis job lifecycle statuses (matches the CHECK constraint). */
 type JobStatus = "queued" | "processing" | "done" | "failed";
@@ -66,9 +88,11 @@ export interface BackfillScope {
 }
 
 /**
- * One scanned `(story_id, lang)` candidate leaf: a story that already has at
- * least one analysis job (so there IS an existing analysis to re-run) plus
- * the status of its TARGET `(lang, modelName, model)` variant job, if any.
+ * One scanned candidate leaf: a story that already has an existing
+ * `WORKER_LANG` analysis job (so there IS a worker-maintained leaf to re-run)
+ * plus the status of its TARGET `(WORKER_LANG, modelName, model)` variant job,
+ * if any. `lang` is therefore always `WORKER_LANG` — non-default-language
+ * leaves are out of scope (see the language-scope note at the top of file).
  */
 export interface CandidateLeaf {
   storyId: string;
@@ -454,9 +478,12 @@ export function createBackfillDeps(
   return {
     async scanCandidates(scope) {
       const since = windowStartIso(scope.windowDays, nowMs);
-      // Candidates are existing analyses: a `(story_id, lang)` pair that
-      // already has at least one job row (any model). The LEFT JOIN resolves
-      // the TARGET-variant job for the requested `(modelName, model)`.
+      // Candidates are existing WORKER_LANG analyses: a story that already has
+      // a `WORKER_LANG` job row (any model). Only the worker-refreshed
+      // language is scanned — non-default-language leaves are out of scope so
+      // the dirty-refresh / drain contracts hold (see the language-scope note
+      // at the top of this file). The LEFT JOIN resolves the TARGET-variant
+      // job for the requested `(WORKER_LANG, modelName, model)`.
       const res = await authPool.query<{
         story_id: string;
         lang: string;
@@ -465,28 +492,28 @@ export function createBackfillDeps(
         target_dry_run: boolean;
       }>(
         `SELECT st.story_id::text          AS story_id,
-                j.lang                      AS lang,
+                $5::text                    AS lang,
                 st.status                   AS state_status,
                 tgt.status                  AS target_status,
                 COALESCE(tgt.dry_run, FALSE) AS target_dry_run
            FROM story_analysis_state st
-           JOIN LATERAL (
-                  SELECT DISTINCT lang
-                    FROM story_analysis_job
-                   WHERE customer_id = st.customer_id
-                     AND story_id = st.story_id
-                ) j ON TRUE
            LEFT JOIN story_analysis_job tgt
                   ON tgt.customer_id = st.customer_id
                  AND tgt.story_id    = st.story_id
-                 AND tgt.lang        = j.lang
+                 AND tgt.lang        = $5
                  AND tgt.model_name  = $2
                  AND tgt.model       = $3
           WHERE st.customer_id = $1
             AND st.status IN ('ready', 'dirty', 'archived')
             AND ($4::timestamptz IS NULL OR st.last_member_at >= $4::timestamptz)
-          ORDER BY st.last_member_at DESC NULLS LAST, st.story_id, j.lang`,
-        [scope.customerId, scope.modelName, scope.model, since],
+            AND EXISTS (
+                  SELECT 1 FROM story_analysis_job j
+                   WHERE j.customer_id = st.customer_id
+                     AND j.story_id    = st.story_id
+                     AND j.lang        = $5
+                )
+          ORDER BY st.last_member_at DESC NULLS LAST, st.story_id`,
+        [scope.customerId, scope.modelName, scope.model, since, WORKER_LANG],
       );
       return res.rows.map((r) => ({
         storyId: r.story_id,

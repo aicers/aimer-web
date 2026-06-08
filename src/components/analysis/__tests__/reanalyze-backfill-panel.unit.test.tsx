@@ -112,6 +112,42 @@ describe("ReanalyzeBackfillPanel", () => {
     });
   });
 
+  it("invalidates a prior confirmation when the scope is edited", async () => {
+    fetcher.mockResolvedValueOnce(PREVIEW); // preview on mount
+    render(
+      <ReanalyzeBackfillPanel
+        apiBase="/api/x/reanalyze"
+        fetcher={fetcher as never}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("5")).toBeDefined());
+
+    // Confirm the previewed 7-day scope.
+    const confirmBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => (c as HTMLInputElement).className.includes("mt-1"));
+    if (!confirmBox) throw new Error("confirm checkbox not found");
+    fireEvent.click(confirmBox);
+    expect(
+      screen
+        .getByText("startButton")
+        .closest("button")
+        ?.hasAttribute("disabled"),
+    ).toBe(false);
+
+    // Widen the scope to "all history" — this must invalidate the preview and
+    // confirmation, so Start is no longer offered for the unpreviewed scope.
+    const allHistoryBox = screen
+      .getAllByRole("checkbox")
+      .find((c) => !(c as HTMLInputElement).className.includes("mt-1"));
+    if (!allHistoryBox) throw new Error("all-history checkbox not found");
+    fireEvent.click(allHistoryBox);
+
+    await waitFor(() => expect(screen.queryByText("startButton")).toBeNull());
+    // No POST happened — only the mount preview was fetched.
+    expect(fetcher.mock.calls.every((c) => c[1]?.method !== "POST")).toBe(true);
+  });
+
   it("disables the run when there is nothing to enqueue", async () => {
     fetcher.mockResolvedValueOnce(EMPTY_PREVIEW);
     render(
