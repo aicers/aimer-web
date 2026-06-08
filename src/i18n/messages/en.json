@@ -475,6 +475,24 @@
     "saveGenericError": "Failed to save the global default analysis model.",
     "notInCatalog": "That model is not in the allowed model catalog."
   },
+  "adminCustomerDefaultModel": {
+    "title": "Default analysis model (per customer)",
+    "description": "Set or clear a single customer's per-customer override. This applies to any customer, even when you are not assigned to it as an analyst. Clearing the override reverts the customer to the global default.",
+    "customerLabel": "Customer",
+    "customerPlaceholder": "Select a customer…",
+    "customersLoadError": "Failed to load the customer list.",
+    "loading": "Loading...",
+    "loadError": "Failed to load this customer's default analysis model.",
+    "label": "Model",
+    "currentSource": "Currently using {model} (from the {source}).",
+    "sourceCustomer": "per-customer override",
+    "sourceGlobal": "global default",
+    "sourceEnv": "deployment fallback",
+    "save": "Save",
+    "resetToGlobal": "Reset to global default",
+    "saveGenericError": "Failed to save the default analysis model.",
+    "notInCatalog": "That model is not in the allowed model catalog."
+  },
   "customerSettings": {
     "loading": "Loading...",
     "save": "Save",
@@ -531,6 +549,7 @@
     "defaultModelNotInCatalog": "That model is not in the allowed model catalog.",
     "defaultModelReanalyzeOfferTitle": "Re-analyze existing data?",
     "defaultModelReanalyzeOfferBody": "The new default applies to future analyses only — existing results are unchanged. Re-analyzing this customer's existing data under the new model is a separate, cost-bounded action and is never run automatically.",
+    "defaultModelReanalyzeOfferLaunch": "Re-analyze existing data",
     "defaultModelReanalyzeOfferDismiss": "Dismiss"
   },
   "accountSettings": {

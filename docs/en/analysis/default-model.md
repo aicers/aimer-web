@@ -39,9 +39,9 @@ model. Every change records who made it.
 
 ## Setting a customer's default model
 
-The per-customer default lives in **Customer Settings**, under
-**Default analysis model**. Open Customer Settings while scoped to a
-single customer.
+An Analyst assigned to the customer sets the per-customer default from
+**Customer Settings**, under **Default analysis model**. Open Customer
+Settings while scoped to a single customer.
 
 1. Choose a model from the **Model** dropdown. The list is the allowed
     model catalog for this deployment.
@@ -52,6 +52,13 @@ the per-customer override, the global default, or the deployment
 fallback.
 
 ![The Customer Settings "Default analysis model" section: the current-source line ("Currently using openai / gpt-5.5 (from the per-customer override)"), the model dropdown, and the Save and "Reset to global default" buttons](../../assets/analysis-default-model-customer.en.png)
+
+A System Administrator can set **any** customer's override — including
+customers they are not assigned to as an analyst — from the **Admin →
+Settings** page, under **Default analysis model (per customer)**. Pick a
+customer, then choose a model and **Save**, or **Reset to global default**
+to clear the override. This admin surface and the analyst-facing Customer
+Settings control drive the same underlying setting.
 
 ### Clearing the override (reset to global)
 
@@ -88,10 +95,12 @@ force-regenerate calls that do not name a model) only. **Existing results
 are not changed.**
 
 After a successful change, the page offers to re-analyze the customer's
-existing data under the new model. This is an **offer only** — it is never
-run automatically, because re-analyzing all existing data is a bounded,
-cost-controlled operation that an operator launches deliberately. You can
-dismiss the offer; dismissing it changes nothing.
+existing data under the new model. The offer is the **entry point** to
+that follow-on action: a **Re-analyze existing data** button opens the
+re-analysis guidance, and a **Dismiss** button closes the offer without
+doing anything. It is an **offer only** — nothing is re-analyzed
+automatically, because re-analyzing all existing data is a bounded,
+cost-controlled operation that an operator launches deliberately.
 
 ## Default variant and coverage
 
