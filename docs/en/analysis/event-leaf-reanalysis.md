@@ -37,6 +37,12 @@ Managers and Users cannot launch a re-analysis.
 2. Open the re-analysis page from that offer. The **Re-analyze event
    leaves** panel shows a **cost preview** for the recent window.
 3. *(Optional)* Adjust the scope before confirming:
+   - **Target language** — which language's report leaves the run targets.
+     Report variants are language-specific, so a run re-analyzes one
+     language at a time. It defaults to your current interface language;
+     switch it to backfill the other language's leaves. The preview, the
+     confirmation, and the launched run all show the exact target language
+     so it is never implicit.
    - **Recent window (days)** — how far back the run reaches, on the
      report's event-time basis. Defaults to **7 days**. A shorter window
      re-analyzes fewer events.
@@ -48,7 +54,10 @@ Managers and Users cannot launch a re-analysis.
    see the effect before committing.
 4. Review the preview counts, then choose **Re-analyze N event leaves**
    and **confirm**. The run starts in the background on exactly that scope;
-   the page shows live progress and a **Cancel** control.
+   the page shows live progress and a **Cancel** control. After the run
+   reaches a terminal state (completed, cancelled, or failed) the page keeps
+   showing the last run's frozen scope and its categorized outcome counts,
+   so a capped or cancelled run can still be audited.
 
 The confirmation is **required** — nothing runs until you confirm. The
 preview shows **counts and scope only**; it never shows a monetary figure.

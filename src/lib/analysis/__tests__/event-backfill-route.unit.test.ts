@@ -142,6 +142,33 @@ describe("event-backfill route handlers", () => {
     expect(body.run.id).toBe("run-1");
   });
 
+  it("preview honours an explicit non-default target language", async () => {
+    const res = await handlePreview(
+      req(`/api/admin/customers/${CUSTOMER}/event-backfill/preview`, {
+        search: "lang=KOREAN",
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.target.lang).toBe("KOREAN");
+  });
+
+  it("create passes the explicit target language through to the run", async () => {
+    const res = await handleCreateRun(
+      req(`/api/admin/customers/${CUSTOMER}/event-backfill`, {
+        body: { windowDays: 7, lang: "KOREAN", confirm: true },
+      }),
+      auth,
+      "admin",
+    );
+    expect(res.status).toBe(201);
+    expect(createRun).toHaveBeenCalledOnce();
+    const params = createRun.mock.calls[0][2] as { target: { lang: string } };
+    expect(params.target.lang).toBe("KOREAN");
+  });
+
   it("cancel returns 409 when the run is not cancellable", async () => {
     const res = await handleCancelRun(
       req(`/api/admin/customers/${CUSTOMER}/event-backfill/runs/${RUN}/cancel`),

@@ -9,10 +9,11 @@
 // the analyst page passes `apiFetch` + the `/api/customers/.../analysis/...`
 // base. The cost preview shows counts/scope only — never a monetary figure.
 
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 
 interface PreviewCounts {
   totalUniverse: number;
@@ -39,6 +40,10 @@ type RunStatus = "pending" | "running" | "completed" | "cancelled" | "failed";
 interface BackfillRun {
   id: string;
   status: RunStatus;
+  lang: string;
+  modelName: string;
+  model: string;
+  windowDays: number;
   totalUniverse: number;
   reanalyzedCount: number;
   alreadyCurrentCount: number;
@@ -50,6 +55,18 @@ interface BackfillRun {
 const ACTIVE: RunStatus[] = ["pending", "running"];
 const DEFAULT_WINDOW_DAYS = 7;
 const POLL_MS = 3000;
+
+// Analysis languages that are valid report-variant axes (mirrors the
+// server's accepted set). `lang` is part of the target variant the report
+// selector is strict on, so the operator picks which language's report
+// leaves this run targets.
+const LANGS = ["ENGLISH", "KOREAN"] as const;
+type Lang = (typeof LANGS)[number];
+
+/** Default the language control to the operator's current UI locale. */
+function localeToLang(locale: string): Lang {
+  return locale.toLowerCase().startsWith("ko") ? "KOREAN" : "ENGLISH";
+}
 
 /**
  * Parse an operator-entered positive-integer field. Empty string → the
@@ -82,6 +99,13 @@ export function EventLeafBackfillPanel({
   fetcher,
 }: EventLeafBackfillPanelProps) {
   const t = useTranslations("eventLeafBackfill");
+  const locale = useLocale();
+
+  /** Human label for an analysis language code. */
+  const langLabel = useCallback(
+    (lang: string) => (lang === "KOREAN" ? t("langKorean") : t("langEnglish")),
+    [t],
+  );
 
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewError, setPreviewError] = useState(false);
@@ -99,6 +123,12 @@ export function EventLeafBackfillPanel({
     String(DEFAULT_WINDOW_DAYS),
   );
   const [maxItemsInput, setMaxItemsInput] = useState("");
+  // Target language axis (Scope §2). Defaults to the operator's UI locale so
+  // a Korean-locale operator targets Korean report leaves by default; it is
+  // operator-changeable and flows into both preview and create so the
+  // launched run matches what was previewed. The `(model_name, model)` pair
+  // stays fixed to the customer's new default from the #473 launch flow.
+  const [langInput, setLangInput] = useState<Lang>(localeToLang(locale));
   const [scopeError, setScopeError] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -115,7 +145,10 @@ export function EventLeafBackfillPanel({
       return;
     }
     setScopeError(false);
-    const params = new URLSearchParams({ window_days: String(windowDays) });
+    const params = new URLSearchParams({
+      window_days: String(windowDays),
+      lang: langInput,
+    });
     if (maxItems != null) params.set("max_items", String(maxItems));
     try {
       const data = await fetcher<PreviewResponse>(
@@ -126,7 +159,7 @@ export function EventLeafBackfillPanel({
     } catch {
       setPreviewError(true);
     }
-  }, [apiBase, customerId, fetcher, windowDaysInput, maxItemsInput]);
+  }, [apiBase, customerId, fetcher, windowDaysInput, maxItemsInput, langInput]);
 
   const loadActiveRun = useCallback(async () => {
     if (!customerId) return;
@@ -188,7 +221,11 @@ export function EventLeafBackfillPanel({
     setActionError(null);
     try {
       // Launch the run on EXACTLY the scope the preview was computed over.
-      const body: Record<string, unknown> = { windowDays, confirm: true };
+      const body: Record<string, unknown> = {
+        windowDays,
+        lang: langInput,
+        confirm: true,
+      };
       if (maxItems != null) body.maxItems = maxItems;
       const data = await fetcher<{ run: BackfillRun }>(apiBase, {
         method: "POST",
@@ -201,7 +238,15 @@ export function EventLeafBackfillPanel({
     } finally {
       setSubmitting(false);
     }
-  }, [apiBase, customerId, fetcher, t, windowDaysInput, maxItemsInput]);
+  }, [
+    apiBase,
+    customerId,
+    fetcher,
+    t,
+    windowDaysInput,
+    maxItemsInput,
+    langInput,
+  ]);
 
   const cancel = useCallback(async () => {
     if (!run) return;
@@ -216,6 +261,34 @@ export function EventLeafBackfillPanel({
       setActionError(t("cancelError"));
     }
   }, [apiBase, run, fetcher, t]);
+
+  // Categorized progress + outcome counts for a run. Reused for the active
+  // run and, after it reaches a terminal state, for the last run — so the
+  // `reanalyzed` / `already_current` / `source_unavailable` / `failed` /
+  // `cap_excluded` breakdown stays visible after completion/cancel/failure
+  // (no-silent-caps audit) rather than disappearing when polling observes a
+  // terminal status (Scope §7/§8).
+  const renderRunCounts = (r: BackfillRun) => (
+    <>
+      <p className="text-sm text-foreground">
+        {t("runProgress", {
+          done:
+            r.reanalyzedCount +
+            r.failedCount +
+            r.alreadyCurrentCount +
+            r.sourceUnavailableCount,
+          total: r.totalUniverse,
+        })}
+      </p>
+      <ul className="text-sm text-muted-foreground">
+        <li>{t("runReanalyzed", { n: r.reanalyzedCount })}</li>
+        <li>{t("runAlreadyCurrent", { n: r.alreadyCurrentCount })}</li>
+        <li>{t("runSourceUnavailable", { n: r.sourceUnavailableCount })}</li>
+        <li>{t("runFailed", { n: r.failedCount })}</li>
+        <li>{t("runCapExcluded", { n: r.capExcludedCount })}</li>
+      </ul>
+    </>
+  );
 
   const isActive = run != null && ACTIVE.includes(run.status);
 
@@ -234,24 +307,7 @@ export function EventLeafBackfillPanel({
           <p className="text-sm text-muted-foreground">
             {t("runStatus", { status: t(`status_${run.status}`) })}
           </p>
-          <p className="text-sm text-foreground">
-            {t("runProgress", {
-              done:
-                run.reanalyzedCount +
-                run.failedCount +
-                run.alreadyCurrentCount +
-                run.sourceUnavailableCount,
-              total: run.totalUniverse,
-            })}
-          </p>
-          <ul className="text-sm text-muted-foreground">
-            <li>{t("runReanalyzed", { n: run.reanalyzedCount })}</li>
-            <li>{t("runFailed", { n: run.failedCount })}</li>
-            <li>
-              {t("runSourceUnavailable", { n: run.sourceUnavailableCount })}
-            </li>
-            <li>{t("runCapExcluded", { n: run.capExcludedCount })}</li>
-          </ul>
+          {renderRunCounts(run)}
           <Button variant="destructive" onClick={cancel}>
             {t("cancelButton")}
           </Button>
@@ -259,11 +315,39 @@ export function EventLeafBackfillPanel({
       ) : (
         <div className="space-y-2">
           {run && (
-            <p className="text-sm text-muted-foreground">
-              {t("lastRunStatus", { status: t(`status_${run.status}`) })}
-            </p>
+            <div className="space-y-1 rounded-md border border-border p-3">
+              <p className="text-sm font-medium text-foreground">
+                {t("lastRunStatus", { status: t(`status_${run.status}`) })}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t("lastRunScope", {
+                  days: run.windowDays,
+                  lang: langLabel(run.lang),
+                  model: `${run.modelName} / ${run.model}`,
+                })}
+              </p>
+              {renderRunCounts(run)}
+            </div>
           )}
           <div className="flex flex-wrap gap-3">
+            <label
+              htmlFor="event-backfill-lang"
+              className="flex flex-col gap-1 text-sm text-foreground"
+            >
+              <span>{t("langLabel")}</span>
+              <Select
+                id="event-backfill-lang"
+                className="w-40"
+                value={langInput}
+                onChange={(e) => setLangInput(e.target.value as Lang)}
+              >
+                {LANGS.map((l) => (
+                  <option key={l} value={l}>
+                    {langLabel(l)}
+                  </option>
+                ))}
+              </Select>
+            </label>
             <label
               htmlFor="event-backfill-window-days"
               className="flex flex-col gap-1 text-sm text-foreground"
@@ -307,6 +391,12 @@ export function EventLeafBackfillPanel({
               <p className="text-sm font-medium text-foreground">
                 {t("countsTitle", { days: preview.windowDays })}
               </p>
+              <p className="text-xs text-muted-foreground">
+                {t("targetSummary", {
+                  lang: langLabel(preview.target.lang),
+                  model: `${preview.target.modelName} / ${preview.target.model}`,
+                })}
+              </p>
               <ul className="text-sm text-muted-foreground">
                 <li>{t("countTotal", { n: preview.counts.totalUniverse })}</li>
                 <li>{t("countReanalyze", { n: preview.counts.reanalyze })}</li>
@@ -336,6 +426,7 @@ export function EventLeafBackfillPanel({
                   <p className="text-sm text-foreground">
                     {t("confirmBody", {
                       n: preview.counts.reanalyze,
+                      lang: langLabel(preview.target.lang),
                       model: `${preview.target.modelName} / ${preview.target.model}`,
                     })}
                   </p>
