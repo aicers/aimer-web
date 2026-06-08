@@ -94,26 +94,28 @@ const baseInput = {
   model: "gpt-4o",
 };
 
+function resultRowData(extras: Record<string, unknown> = {}) {
+  return {
+    severity_score: 0.42,
+    likelihood_score: 0.81,
+    priority_tier: "HIGH",
+    severity_factors: ["broad blast radius"],
+    likelihood_factors: ["lateral movement potential"],
+    ttp_tags: ["T1078", "T9999"],
+    analysis_text: "attacker <<REDACTED_IP_001>> reached us",
+    model_actual_version: "gpt-4o-2026-05-01",
+    prompt_version: "v3",
+    generation: 1,
+    requested_by: "acc-1",
+    requested_at: new Date("2026-05-20T00:00:00Z"),
+    ...extras,
+  };
+}
+
 function pushResultRow(extras: Record<string, unknown> = {}) {
   pushStub({
     match: (s) => s.includes("FROM event_analysis_result"),
-    rows: [
-      {
-        severity_score: 0.42,
-        likelihood_score: 0.81,
-        priority_tier: "HIGH",
-        severity_factors: ["broad blast radius"],
-        likelihood_factors: ["lateral movement potential"],
-        ttp_tags: ["T1078", "T9999"],
-        analysis_text: "attacker <<REDACTED_IP_001>> reached us",
-        model_actual_version: "gpt-4o-2026-05-01",
-        prompt_version: "v3",
-        generation: 1,
-        requested_by: "acc-1",
-        requested_at: new Date("2026-05-20T00:00:00Z"),
-        ...extras,
-      },
-    ],
+    rows: [resultRowData(extras)],
   });
 }
 
@@ -428,6 +430,101 @@ describe("loadAnalysisResultPage", () => {
         bridgeScope: { aiceId: AICE_ID, customerIds: [CUSTOMER_ID] },
       }),
     );
+  });
+
+  it("resolves an analyst's unpinned model-only compare variant (#464)", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    pushResultRow(); // primary
+    pushMapRow();
+    pushSourcePresent(true);
+    // Compare lookup: a second `event_analysis_result` row for the compare
+    // model. Its text carries a redacted token to prove the compare column
+    // reuses the SAME decrypted map (events key the map on aice/event only).
+    pushStub({
+      match: (s) => s.includes("FROM event_analysis_result"),
+      rows: [
+        {
+          severity_score: 0.9,
+          likelihood_score: 0.7,
+          priority_tier: "CRITICAL",
+          severity_factors: ["compare sev"],
+          likelihood_factors: ["compare lik"],
+          ttp_tags: ["T1110"],
+          analysis_text: "compare saw <<REDACTED_IP_001>>",
+          model_actual_version: "claude-2026-02",
+          prompt_version: "v4",
+          generation: 7,
+        },
+      ],
+    });
+
+    const mod = await import("../result-page-loader");
+    const outcome = await mod.loadAnalysisResultPage({
+      ...baseInput,
+      compare: { modelName: "anthropic", model: "claude-3-5" },
+    });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.compare?.kind).toBe("ok");
+    if (outcome.data.compare?.kind !== "ok") return;
+    expect(outcome.data.compare.data.generation).toBe(7);
+    expect(outcome.data.compare.data.model).toBe("claude-3-5");
+    expect(outcome.data.compare.data.priorityTier).toBe("CRITICAL");
+    expect(outcome.data.compare.data.ttpTags).toEqual([
+      { id: "T1110", name: null },
+    ]);
+    // Token restored against the reused map.
+    expect(outcome.data.compare.data.analysisText).toBe("compare saw 10.0.0.1");
+    // The compare lookup is an unpinned, latest-non-superseded SELECT.
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) =>
+        String(c[0]).includes("FROM event_analysis_result") &&
+        (c[1] as unknown[])?.[4] === "claude-3-5",
+    );
+    expect(String(compareCall?.[0])).toContain("superseded_at IS NULL");
+    expect(String(compareCall?.[0])).not.toContain("generation = $");
+  });
+
+  it("returns not_generated when the compare variant has no stored row (#464)", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    // No compare stub pushed → the compare lookup finds no row.
+    const mod = await import("../result-page-loader");
+    const outcome = await mod.loadAnalysisResultPage({
+      ...baseInput,
+      compare: { modelName: "anthropic", model: "claude-3-5" },
+    });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.compare).toEqual({
+      kind: "not_generated",
+      modelName: "anthropic",
+      model: "claude-3-5",
+    });
+  });
+
+  it("ignores a non-analyst's crafted compare params (#464)", async () => {
+    mockIsAnalyst.mockResolvedValue(false);
+    pushResultRow();
+    pushMapRow();
+    pushSourcePresent(true);
+    pushStub({
+      match: (s) => s.includes("FROM event_analysis_result"),
+      rows: [resultRowData({ generation: 7 })],
+    });
+    const mod = await import("../result-page-loader");
+    const outcome = await mod.loadAnalysisResultPage({
+      ...baseInput,
+      compare: { modelName: "anthropic", model: "claude-3-5" },
+    });
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    // The compare axis never resolves for a non-analyst, and the compare model
+    // is never queried.
+    expect(outcome.data.compare).toBeUndefined();
+    const compareCall = customerPool.query.mock.calls.find(
+      (c) => (c[1] as unknown[])?.[4] === "claude-3-5",
+    );
+    expect(compareCall).toBeUndefined();
   });
 
   it("passes through analysis text when there is no map row at all", async () => {

@@ -3,6 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import {
+  initialModelIndex,
+  type ModelOption,
+  ModelSelect,
+} from "@/components/analysis/model-select";
 
 interface Props {
   locale: string;
@@ -12,15 +17,28 @@ interface Props {
   /**
    * The active event variant the page was opened with. The event page is
    * variant-specific (it resolves a row by `(aice_id, event_key, lang,
-   * model_name, model)`), so the button forwards the current variant and
-   * the endpoint regenerates exactly that one (B1). Choosing a *different*
-   * model is the out-of-scope B2 picker, so there is no model dropdown here.
+   * model_name, model)`), so the button forwards the current variant. `lang`
+   * is held constant (the model axis only); `model_name`/`model` seed the
+   * picker default unless overridden by `defaultModel` (#464).
    */
   variant: {
     lang: string;
     modelName: string;
     model: string;
   };
+  /**
+   * Analyst-only model catalog (#464), passed down from the server page (the
+   * catalog module is server-only). When present, the modal shows a model
+   * dropdown and the chosen `(model_name, model)` is submitted on the POST and
+   * used to build the post-success navigation URL — so an analyst can
+   * regenerate a *different* (non-current) model variant (the "B2" picker).
+   */
+  models?: ModelOption[];
+  /**
+   * Preselect this `(modelName, model)` in the dropdown instead of the current
+   * variant's model. Used by the compare "variant not generated" CTA (#464).
+   */
+  defaultModel?: { modelName: string; model: string };
 }
 
 /**
@@ -45,6 +63,8 @@ export function EventRegenerateButton({
   aiceId,
   eventKey,
   variant,
+  models,
+  defaultModel,
 }: Props) {
   const t = useTranslations("analysis");
   const router = useRouter();
@@ -55,6 +75,12 @@ export function EventRegenerateButton({
     | { kind: "navigating"; generation: number }
     | { kind: "error"; message: string }
   >({ kind: "idle" });
+  const [modelIndex, setModelIndex] = useState(() =>
+    initialModelIndex(
+      models ?? [],
+      defaultModel ?? { modelName: variant.modelName, model: variant.model },
+    ),
+  );
 
   async function submit() {
     setBusy(true);
@@ -64,10 +90,17 @@ export function EventRegenerateButton({
           .split("; ")
           .find((c) => c.startsWith("csrf="))
           ?.slice("csrf=".length) ?? "";
+      // The model comes from the picker when a catalog is present (#464),
+      // letting an analyst regenerate a different model variant; `lang` stays
+      // the current variant's (model axis only). The endpoint already accepts
+      // `?lang=&model_name=&model=` and regenerates exactly that variant.
+      const chosen = models?.[modelIndex];
+      const modelName = chosen?.modelName ?? variant.modelName;
+      const model = chosen?.model ?? variant.model;
       const query = new URLSearchParams();
       if (variant.lang) query.set("lang", variant.lang);
-      if (variant.modelName) query.set("model_name", variant.modelName);
-      if (variant.model) query.set("model", variant.model);
+      if (modelName) query.set("model_name", modelName);
+      if (model) query.set("model", model);
       const qs = query.toString();
       const res = await fetch(
         `/api/customers/${customerId}/aice/${encodeURIComponent(
@@ -85,12 +118,15 @@ export function EventRegenerateButton({
         const body = (await res.json()) as { generation: number };
         setStatus({ kind: "navigating", generation: body.generation });
         setOpen(false);
-        // Build the target URL from the CURRENT locale + variant + the new
-        // generation, then refresh so the server component re-resolves it.
+        // Build the target URL from the CURRENT locale + the CHOSEN model
+        // (the regenerated variant) + the new generation, then refresh so the
+        // server component re-resolves it. When the analyst picked a different
+        // model, the new generation belongs to that variant, so the view URL
+        // must point at the chosen model — not the originally-open one (#464).
         const dest = new URLSearchParams();
         if (variant.lang) dest.set("lang", variant.lang);
-        if (variant.modelName) dest.set("model_name", variant.modelName);
-        if (variant.model) dest.set("model", variant.model);
+        if (modelName) dest.set("model_name", modelName);
+        if (model) dest.set("model", model);
         dest.set("generation", String(body.generation));
         router.push(
           `/${locale}/customers/${customerId}/aice/${encodeURIComponent(
@@ -146,6 +182,16 @@ export function EventRegenerateButton({
                 code: (chunks) => <code>{chunks}</code>,
               })}
             </p>
+            {models && models.length > 0 ? (
+              <ModelSelect
+                id="event-regenerate-model"
+                label={t("regenerate.modelLabel")}
+                models={models}
+                selectedIndex={modelIndex}
+                onSelect={setModelIndex}
+                disabled={busy}
+              />
+            ) : null}
             <div className="flex justify-end gap-2">
               <button
                 type="button"

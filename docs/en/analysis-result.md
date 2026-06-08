@@ -207,11 +207,11 @@ on the event that was already ingested.
 
 This path holds redaction **constant**: it re-analyzes the same redacted
 event already stored for this event (recovering its original event time),
-so aimer never sees raw payload and aice-web-next is not contacted. It
-regenerates the **variant you are currently viewing** — the language and
-model in the page's URL — rather than a fixed default. When the new result
-lands it supersedes the latest generation (the previous result row is
-preserved with a `superseded_at` stamp), and the page navigates to the new
+so aimer never sees raw payload and aice-web-next is not contacted. By
+default it regenerates the **variant you are currently viewing** — the
+language and model in the page's URL. When the new result lands it
+supersedes the latest generation (the previous result row is preserved
+with a `superseded_at` stamp), and the page navigates to the new
 generation.
 
 Event analysis is synchronous, so unlike the story/report Regenerate
@@ -221,6 +221,55 @@ written.
 <!-- Screenshot placeholder: the in-app event Regenerate confirmation
      modal. Capture from an analyst session once a real-data stack is
      available. -->
+
+## Model selection and comparison
+
+The model controls are analyst-only. Choosing a model and comparing two
+models are independent of any standing per-customer default — they are
+one-off overrides on this artifact, not a change to the default model.
+
+### Choosing a model on regenerate
+
+The Regenerate confirmation modal includes a **Model** dropdown, listing
+the configured model catalog and defaulting to the model you are currently
+viewing. Submitting regenerates the event analysis at the chosen
+`(provider, model)` — the same stored redacted event and recovered event
+time, only the model varies — and the page navigates to the new generation
+of **that** model variant (keeping your current language and locale). A
+non-default model is its own persisted variant; switching the dropdown lets
+you populate a second variant without leaving the page.
+
+### Side-by-side comparison
+
+A **Compare with** selector sits above the analysis body. Picking a second
+model renders the open variant and the compared variant in two columns,
+aligned field by field: analysis text, severity / likelihood scores and
+their factor chips, MITRE ATT&CK techniques, priority tier, and per-column
+provenance (provider, model, model snapshot, prompt version, generation).
+The columns stack vertically on a narrow screen. The selection is stored in
+the URL (`?compareModelName=…&compareModel=…`), so a comparison is
+shareable; **Exit comparison** clears it.
+
+Comparison is **read-only** over already-stored variants — entering compare
+mode never generates anything. The primary column honors any pinned
+generation; the compare column resolves to the latest live analysis of the
+same language for the compared model. If the compared model has not been
+generated for this event yet, the page shows a notice with a **Regenerate**
+action (preselected to that model) rather than auto-generating — a fresh
+analysis consumes an aimer call, so it stays an explicit choice. When the
+source event has been swept by retention, regeneration is impossible, so
+that notice appears without a dead Regenerate control.
+
+The compare selector is available to **every** analyst, including a
+[bridge-session](cross-customer-overview.md) analyst who cannot regenerate:
+reading a 2-model comparison is a read, so it is not withheld. Only the
+write actions — the regenerate model picker and the missing-variant
+Regenerate CTA — require a non-bridge analyst session and a present source
+event.
+
+<!-- Screenshot placeholder: the analyst event compare view with two model
+     variants side by side. Capture from a real-data stack carrying two
+     stored event variants once available. -->
 
 ## Force re-run
 

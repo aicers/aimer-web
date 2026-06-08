@@ -46,6 +46,41 @@ export type ResultPageOutcome =
   | { kind: "pin_unavailable"; generation: number }
   | { kind: "ok"; data: AnalysisResultPageData };
 
+/**
+ * One compare column's rendered data for the analyst-only side-by-side event
+ * view (#464): the token-restored analysis text, scores, severity/likelihood
+ * factors, TTP tags, priority tier, and the analyst-only provenance. Built by a
+ * read-only EXACT lookup at the primary's language + the compare model — it
+ * never enqueues work. An event analysis is self-contained (it re-uses the same
+ * stored redacted event across models, #463), so unlike the report path there
+ * is no leaf-coverage caveat to carry here.
+ */
+export interface EventCompareColumn {
+  modelName: string;
+  model: string;
+  modelActualVersion: string | null;
+  promptVersion: string | null;
+  generation: number;
+  lang: "KOREAN" | "ENGLISH";
+  severityScore: number;
+  likelihoodScore: number;
+  priorityTier: PriorityTier;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+  ttpTags: Array<{ id: string; name: string | null }>;
+  analysisText: string;
+}
+
+/**
+ * Outcome of resolving the analyst-only compare column (#464). `not_generated`
+ * means no stored `event_analysis_result` row exists for that
+ * `(model_name, model)` at the primary's language — the page shows the
+ * regenerate CTA rather than generating work.
+ */
+export type EventCompareOutcome =
+  | { kind: "ok"; data: EventCompareColumn }
+  | { kind: "not_generated"; modelName: string; model: string };
+
 export interface AnalysisResultPageData {
   customerId: string;
   aiceId: string;
@@ -132,6 +167,15 @@ export interface AnalysisResultPageData {
     generation: number;
     priorityTier: PriorityTier;
   }>;
+  /**
+   * Analyst-only side-by-side compare column (#464), present only when a
+   * compare variant was requested (`?compareModelName=&compareModel=`) AND the
+   * viewer is an analyst. Resolved by a read-only EXACT lookup at the primary's
+   * language + the compare model — it never enqueues a job, so a
+   * not-yet-generated compare variant returns `not_generated` (the page shows
+   * the regenerate CTA).
+   */
+  compare?: EventCompareOutcome;
 }
 
 export interface ResultPageInput {
@@ -149,6 +193,17 @@ export interface ResultPageInput {
    * fallback to latest).
    */
   generation?: number;
+  /**
+   * Analyst-only compare variant (#464). The second column's model pair; the
+   * loader resolves it via a read-only EXACT, unpinned model-only lookup at the
+   * primary's language (latest non-superseded row for that
+   * `(lang, model_name, model)`) — NOT a generation-keyed pin. Only honored for
+   * an analyst viewer; a non-analyst's crafted `?compareModel` is ignored.
+   */
+  compare?: {
+    modelName: string;
+    model: string;
+  };
 }
 
 export async function loadAnalysisResultPage(
@@ -320,8 +375,12 @@ export async function loadAnalysisResultPage(
     return { kind: "pin_unavailable", generation: pinnedGeneration };
   }
 
-  // Always restore tokens — there is no "view redacted" mode.
+  // Always restore tokens — there is no "view redacted" mode. The decrypted
+  // map is hoisted so the analyst-only compare column (#464) can reuse it: an
+  // event's `event_redaction_map` is keyed on `(aice_id, event_key)` only, so
+  // every model variant of the same event shares one map — no second decrypt.
   let restoredText = row.analysis_text;
+  let redactionMap: RedactionMap = {};
   const mapRow = await customerPool.query<{
     ciphertext: Buffer;
     wrapped_dek: string;
@@ -331,9 +390,8 @@ export async function loadAnalysisResultPage(
     [input.aiceId, input.eventKey],
   );
   if (mapRow.rows.length > 0) {
-    let map: RedactionMap;
     try {
-      map = await decryptRedactionMap(
+      redactionMap = await decryptRedactionMap(
         input.customerId,
         mapRow.rows[0].ciphertext,
         mapRow.rows[0].wrapped_dek,
@@ -343,9 +401,9 @@ export async function loadAnalysisResultPage(
       // outage). Surfacing the token-form text is safer than a 500
       // — the page can still render the analysis with raw tokens
       // and the operator can retry.
-      map = {};
+      redactionMap = {};
     }
-    restoredText = restoreRedactedTokens(row.analysis_text, map);
+    restoredText = restoreRedactedTokens(row.analysis_text, redactionMap);
   }
 
   const sourcePresent = await customerPool.query<{ exists: boolean }>(
@@ -398,6 +456,27 @@ export async function loadAnalysisResultPage(
       priorityTier: r.priority_tier,
     }));
 
+  // Analyst-only compare column (#464): a read-only EXACT, unpinned model-only
+  // lookup of the compare model at the primary's language. Gated on the analyst
+  // flag so a non-analyst's crafted `?compareModel` never resolves analyst-only
+  // data. The lookup re-uses the already-decrypted redaction map (same event →
+  // same map) and is side-effect-free — it never enqueues a job, so a
+  // not-yet-generated variant returns `not_generated` (the page shows the CTA).
+  let compare: EventCompareOutcome | undefined;
+  if (input.compare && isViewerAnalyst) {
+    compare = await resolveEventCompareColumn(
+      customerPool,
+      {
+        aiceId: input.aiceId,
+        eventKey: input.eventKey,
+        lang: input.lang,
+        modelName: input.compare.modelName,
+        model: input.compare.model,
+      },
+      redactionMap,
+    );
+  }
+
   return {
     kind: "ok",
     data: {
@@ -423,6 +502,87 @@ export async function loadAnalysisResultPage(
       canRegenerate,
       sourceEventPresent: sourcePresent.rows[0]?.exists === true,
       parentStories,
+      compare,
+    },
+  };
+}
+
+/**
+ * Read-only EXACT, unpinned model-only lookup of a compare model variant at the
+ * primary's language (#464). Resolves the latest non-superseded
+ * `event_analysis_result` row for `(aice_id, event_key, lang, model_name,
+ * model)`, restores its analysis text against the event's already-decrypted
+ * redaction map, and returns `not_generated` when no stored row exists.
+ * Side-effect-free — it never enqueues a job. Factors / TTP tags / scores are
+ * forwarded as-is, mirroring the primary event column's render shape.
+ */
+async function resolveEventCompareColumn(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  params: {
+    aiceId: string;
+    eventKey: string;
+    lang: string;
+    modelName: string;
+    model: string;
+  },
+  redactionMap: RedactionMap,
+): Promise<EventCompareOutcome> {
+  const { aiceId, eventKey, lang, modelName, model } = params;
+  const resultRow = await customerPool.query(
+    `SELECT
+       severity_score,
+       likelihood_score,
+       priority_tier,
+       severity_factors,
+       likelihood_factors,
+       ttp_tags,
+       analysis_text,
+       model_actual_version,
+       prompt_version,
+       generation
+     FROM event_analysis_result
+     WHERE aice_id = $1
+       AND event_key = $2::numeric
+       AND lang = $3
+       AND model_name = $4
+       AND model = $5
+       AND superseded_at IS NULL
+     ORDER BY generation DESC
+     LIMIT 1`,
+    [aiceId, eventKey, lang, modelName, model],
+  );
+  if (resultRow.rows.length === 0) {
+    return { kind: "not_generated", modelName, model };
+  }
+  const row = resultRow.rows[0] as {
+    severity_score: number;
+    likelihood_score: number;
+    priority_tier: PriorityTier;
+    severity_factors: string[];
+    likelihood_factors: string[];
+    ttp_tags: string[];
+    analysis_text: string;
+    model_actual_version: string | null;
+    prompt_version: string | null;
+    generation: number;
+  };
+  return {
+    kind: "ok",
+    data: {
+      modelName,
+      model,
+      modelActualVersion: row.model_actual_version,
+      promptVersion: row.prompt_version,
+      generation: row.generation,
+      lang: lang as "KOREAN" | "ENGLISH",
+      severityScore: row.severity_score,
+      likelihoodScore: row.likelihood_score,
+      priorityTier: row.priority_tier,
+      severityFactors: row.severity_factors,
+      likelihoodFactors: row.likelihood_factors,
+      ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      analysisText: restoreRedactedTokens(row.analysis_text, redactionMap),
     },
   };
 }
