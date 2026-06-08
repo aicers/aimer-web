@@ -3,6 +3,7 @@
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { EventLeafBackfillPanel } from "@/components/analysis/event-leaf-backfill-panel";
 import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
 import { Button } from "@/components/ui/button";
 import { useCustomerContext } from "@/hooks/use-customer-context";
@@ -26,11 +27,11 @@ interface DefaultModelView {
  *
  * The post-change offer in the customer settings default-model section
  * deep-links HERE (a stable in-app, customer-scoped route) rather than
- * straight to external docs. It now hosts the #466 story-leaf backfill
+ * straight to external docs. It hosts the #466 story-leaf backfill
  * controls (cost preview, scoping, confirm-gated enqueue, drain progress)
- * via `ReanalyzeBackfillPanel`. Event-leaf re-analysis (#470) and report
- * refresh (#469) are sequenced after the story-leaf run drains and land on
- * this same surface as they ship.
+ * via `ReanalyzeBackfillPanel` and the #470 event-leaf backfill controls
+ * via `EventLeafBackfillPanel`. Report refresh (#469) is sequenced after
+ * both leaf runs drain and lands on this same surface as it ships.
  */
 export default function CustomerReanalyzePage() {
   const t = useTranslations("customerReanalyze");
@@ -104,6 +105,12 @@ export default function CustomerReanalyzePage() {
 
       <ReanalyzeBackfillPanel
         apiBase={`/api/customers/${singleCustomerId}/analysis/reanalyze`}
+        fetcher={apiFetch}
+      />
+
+      <EventLeafBackfillPanel
+        customerId={singleCustomerId}
+        apiBase={`/api/customers/${singleCustomerId}/analysis/event-backfill`}
         fetcher={apiFetch}
       />
 

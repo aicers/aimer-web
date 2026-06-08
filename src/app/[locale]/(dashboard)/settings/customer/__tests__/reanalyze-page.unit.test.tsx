@@ -2,15 +2,36 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The re-analysis entry point (#473 Scope 7) is the stable, customer-scoped
-// in-app destination the post-change offer deep-links to. These tests cover
-// its scope/permission gating and that it renders the entry-point copy
-// (never enqueuing anything).
+// The re-analysis entry point (#473 Scope 7 / #466 / #470) is the stable,
+// customer-scoped in-app destination the post-change offer deep-links to.
+// These tests cover its scope/permission gating and that it renders the
+// entry-point copy, the story-leaf backfill panel (#466, stubbed), and the
+// event-leaf backfill panel (#470) — never enqueuing anything.
 
 const mockApiFetch = vi.fn();
 vi.mock("@/lib/api/client", () => ({
   apiFetch: (...args: unknown[]) => mockApiFetch(...args),
 }));
+
+// The #470 backfill panel issues its own preview/list fetches; route each
+// to a benign shape so the panel mounts without error.
+function routeBackfillFetch(url: string): unknown | null {
+  if (url.includes("/event-backfill/preview")) {
+    return {
+      target: { lang: "ENGLISH", modelName: "openai", model: "gpt-5.5" },
+      windowDays: 7,
+      counts: {
+        totalUniverse: 0,
+        reanalyze: 0,
+        alreadyCurrent: 0,
+        sourceUnavailable: 0,
+        capExcluded: 0,
+      },
+    };
+  }
+  if (url.endsWith("/event-backfill")) return { runs: [] };
+  return null;
+}
 
 const t = (key: string, vars?: Record<string, unknown>) =>
   vars ? `${key}:${JSON.stringify(vars)}` : key;
@@ -86,15 +107,21 @@ describe("CustomerReanalyzePage", () => {
     expect(screen.getByText("forbidden")).toBeDefined();
   });
 
-  it("renders the backfill panel wired to the scoped customer's general API", async () => {
+  it("renders the entry-point copy, both backfill panels, and the new default model", async () => {
     arrange({ singleCustomerId: "c1", canViewCustomerSettings: true });
-    mockApiFetch.mockResolvedValue({
-      effective: { modelName: "openai", model: "gpt-5.5" },
-      source: "customer",
+    mockApiFetch.mockImplementation(async (url: string) => {
+      const routed = routeBackfillFetch(url);
+      if (routed) return routed;
+      return {
+        effective: { modelName: "openai", model: "gpt-5.5" },
+        source: "customer",
+      };
     });
     render(<CustomerReanalyzePage />);
 
     expect(screen.getByText("title")).toBeDefined();
+    // The #470 event-leaf backfill panel replaces the placeholder.
+    expect(screen.getByText("panelTitle")).toBeDefined();
     expect(screen.getByText("guaranteeNote")).toBeDefined();
     expect(screen.getByText("backfill-panel")).toBeDefined();
     expect(mockPanel).toHaveBeenCalledWith(

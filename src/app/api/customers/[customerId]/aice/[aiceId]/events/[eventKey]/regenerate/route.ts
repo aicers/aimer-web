@@ -31,24 +31,14 @@
 import type { NextRequest } from "next/server";
 import { analyzeErrorResponse } from "@/lib/analysis/analyze-types";
 import { resolveDefaultModel } from "@/lib/analysis/default-model";
-import { parseEventTime } from "@/lib/analysis/event-time";
-import {
-  analyzeAndStoreEventResult,
-  isSupportedLang,
-  type SupportedLang,
-} from "@/lib/analysis/run-analyze-flow";
+import { regenerateEventLeaf } from "@/lib/analysis/regenerate-event";
+import { isSupportedLang } from "@/lib/analysis/run-analyze-flow";
 import { authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { eventKeyString } from "@/lib/event-key";
-import {
-  decryptRedactionMap,
-  loadCustomerOwnedDomains,
-  loadCustomerRanges,
-  type RedactionMap,
-} from "@/lib/redaction";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -155,110 +145,38 @@ export const POST = withAuth(
         return Response.json(errorBody("Forbidden"), { status: 403 });
       }
 
-      // Source the event from storage, NOT the request body. The button is
+      // Source the event from storage, NOT the request body — via the
+      // shared regenerate helper (#463 → #470 extraction). The button is
       // hidden when no `detection_events` row survives (retention swept the
-      // source but the analysis row remains), so this 404 is a server-side
-      // guard for a button that won't normally be shown — it is NOT a
-      // "fall back to Force Rerun" case.
+      // source but the analysis row remains), so the `source_unavailable`
+      // 404 is a server-side guard for a button that won't normally be
+      // shown — it is NOT a "fall back to Force Rerun" case. The bulk
+      // backfill (#470) calls the same helper per event.
       const customerPool = getCustomerRuntimePool(customerId);
-      const sourceRow = await customerPool.query<{
-        redacted_event: unknown;
-        redaction_policy_version: string;
-      }>(
-        `SELECT redacted_event, redaction_policy_version
-           FROM detection_events
-          WHERE aice_id = $1 AND event_key = $2::numeric`,
-        [aiceId, eventKey],
-      );
-      if (sourceRow.rows.length === 0) {
-        return Response.json(errorBody("source_unavailable"), { status: 404 });
-      }
-      const { redacted_event: redactedEvent, redaction_policy_version } =
-        sourceRow.rows[0];
-
-      // Recover `event_time` from the stored redacted event (the cache-
-      // poisoning guard the analyze flow already uses). A stored event that
-      // somehow lacks a parseable `event_time` cannot be re-analyzed.
-      const eventTimeForAimer =
-        typeof redactedEvent === "object" && redactedEvent !== null
-          ? parseEventTime(
-              (redactedEvent as Record<string, unknown>).event_time,
-            )
-          : null;
-      if (eventTimeForAimer === null) {
-        return analyzeErrorResponse(
-          "event_time_invalid",
-          "stored redacted_event.event_time is missing or invalid",
-        );
-      }
-
-      // Load the redaction map for the hallucination scan over the LLM
-      // output. A decrypt failure (KEK rotation race / vault outage) is
-      // non-fatal: the scan runs against an empty map rather than failing
-      // the regenerate, mirroring the read loader's degradation.
-      let mergedMap: RedactionMap = {};
-      const mapRow = await customerPool.query<{
-        ciphertext: Buffer;
-        wrapped_dek: string;
-      }>(
-        `SELECT ciphertext, wrapped_dek FROM event_redaction_map
-          WHERE aice_id = $1 AND event_key = $2::numeric`,
-        [aiceId, eventKey],
-      );
-      if (mapRow.rows.length > 0) {
-        try {
-          mergedMap = await decryptRedactionMap(
-            customerId,
-            mapRow.rows[0].ciphertext,
-            mapRow.rows[0].wrapped_dek,
-          );
-        } catch {
-          mergedMap = {};
-        }
-      }
-
-      const ranges = await loadCustomerRanges(authPool, customerId);
-      const ownedDomains = await loadCustomerOwnedDomains(authPool, customerId);
-
-      const langForStorage: SupportedLang = lang;
-      const stored = await analyzeAndStoreEventResult({
+      const outcome = await regenerateEventLeaf({
+        authPool,
         customerPool,
+        customerId,
         aiceId,
         eventKey,
-        redactedEvent,
-        eventTimeForAimer,
-        // Regenerate the exact viewed variant: pass the concrete lang as
-        // both the GraphQL variable and the storage PK component.
-        lang: langForStorage,
-        langForStorage,
+        lang,
         modelName,
         model,
         accountId: auth.accountId,
-        mergedMap,
-        ranges,
-        ownedDomains,
-        // Hold redaction constant: stamp the STORED policy version rather
-        // than recomputing under current policy (that is Force Rerun's job).
-        redactionPolicyVersion: redaction_policy_version,
-        auditBase: {
-          actorId: auth.accountId,
-          authContext: "general",
-          targetType: "event_analysis_result",
-          ipAddress: auth.meta.ipAddress,
-          sid: auth.sessionId,
-          customerId,
-          aiceId,
-        },
+        auditMeta: { ipAddress: auth.meta.ipAddress, sid: auth.sessionId },
         force: true,
       });
-      if (stored.kind === "error") {
-        return analyzeErrorResponse(stored.errorCode, stored.message);
+      if (outcome.kind === "source_unavailable") {
+        return Response.json(errorBody("source_unavailable"), { status: 404 });
+      }
+      if (outcome.kind === "error") {
+        return analyzeErrorResponse(outcome.errorCode, outcome.message);
       }
 
       // Locale-agnostic: return `{ generation }` only. The client builds the
       // target URL from its own locale + variant params, so we never reuse
       // the analyze flow's hardcoded `en` permalink locale.
-      return Response.json({ generation: stored.generation }, { status: 200 });
+      return Response.json({ generation: outcome.generation }, { status: 200 });
     } catch (err) {
       if (err instanceof HttpError) {
         return Response.json(errorBody(err.message), {

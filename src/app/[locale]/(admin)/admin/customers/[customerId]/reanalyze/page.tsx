@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { EventLeafBackfillPanel } from "@/components/analysis/event-leaf-backfill-panel";
 import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/i18n/navigation";
@@ -29,11 +30,11 @@ interface DefaultModelView {
  * customer, so a System Administrator — who may have no general customer
  * scope and therefore cannot reach the dashboard route — still gets a
  * stable launch surface after changing any customer's override. Like its
- * dashboard twin it now hosts the #466 story-leaf backfill controls (cost
+ * dashboard twin it hosts the #466 story-leaf backfill controls (cost
  * preview, scoping, confirm-gated enqueue, drain progress) via
- * `ReanalyzeBackfillPanel`. Event-leaf re-analysis (#470) and report
- * refresh (#469) are sequenced after the story-leaf run drains and land on
- * this same surface as they ship.
+ * `ReanalyzeBackfillPanel` and the #470 event-leaf backfill controls via
+ * `EventLeafBackfillPanel`. Report refresh (#469) is sequenced after both
+ * leaf runs drain and lands on this same surface as it ships.
  */
 export default function AdminCustomerReanalyzePage() {
   const t = useTranslations("adminCustomerReanalyze");
@@ -86,6 +87,12 @@ export default function AdminCustomerReanalyzePage() {
 
       <ReanalyzeBackfillPanel
         apiBase={`/api/admin/customers/${customerId}/reanalyze`}
+        fetcher={adminFetch}
+      />
+
+      <EventLeafBackfillPanel
+        customerId={customerId ?? null}
+        apiBase={`/api/admin/customers/${customerId}/event-backfill`}
         fetcher={adminFetch}
       />
 

@@ -27,7 +27,9 @@ import { HttpError } from "../auth/errors";
 import type { AuthenticatedRequest } from "../auth/guards";
 import { verifyCsrf, verifyOrigin } from "../auth/guards";
 import { getAuthPool, withTransaction } from "../db/client";
+import { getCurrentTimestamp } from "../instrumentation/time";
 import { resolveDefaultModel } from "./default-model";
+import { storyDrainToLeafStatus } from "./leaf-drain";
 import {
   auditBackfillRun,
   type BackfillScope,
@@ -36,6 +38,7 @@ import {
   getStoryBackfillDrainSignal,
   previewStoryBackfill,
   runStoryBackfill,
+  WORKER_LANG,
 } from "./story-backfill";
 
 const UUID_RE =
@@ -175,7 +178,28 @@ export async function handleBackfillStatus(
       scope,
       createBackfillDeps(),
     );
-    return Response.json(signal);
+    // Emit the shared `LeafDrainStatus` (kind / scope / universe /
+    // outstanding / sourceUnavailable / drained) at the top level so #469
+    // can gate on the story- and event-leaf signals through one shape
+    // (#470 Scope §6). The legacy `counts` / `totalLeaves` are retained for
+    // the #466 status panel, which #469 ignores.
+    const windowEnd = getCurrentTimestamp();
+    const windowStart =
+      windowDays === null
+        ? null
+        : new Date(
+            windowEnd.getTime() - windowDays * 24 * 60 * 60 * 1000,
+          ).toISOString();
+    const leafStatus = storyDrainToLeafStatus(signal, {
+      lang: WORKER_LANG,
+      windowStart,
+      windowEnd: windowEnd.toISOString(),
+    });
+    return Response.json({
+      ...leafStatus,
+      counts: signal.counts,
+      totalLeaves: signal.totalLeaves,
+    });
   } catch (err) {
     return errorResponse(err);
   }
