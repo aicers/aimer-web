@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import { ClientError } from "graphql-request";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { getCustomerByExternalKey } from "@/lib/auth/customers";
@@ -555,10 +555,30 @@ export interface AnalyzeAndStoreEventParams {
   auditBase: AuditEmissionBase;
   /** Audit-only flag distinguishing a forced (re)generation. */
   force: boolean;
+  /**
+   * Optional eligibility re-check run INSIDE the storage transaction, after
+   * the per-variant advisory lock is acquired and IMMEDIATELY before the
+   * supersede+insert. Return a reason string to ABORT the store (the
+   * transaction rolls back and the call returns `{ kind: "skipped", reason }`
+   * — no row is superseded and no new row is inserted), or `null` to proceed.
+   *
+   * The auto-baseline worker (#493) uses this to re-check story membership and
+   * the live-leaf dedupe under the SAME lock that serializes the supersede,
+   * closing the window between the worker's claim-time check and this
+   * (post-LLM) store during which a manual / default-variant leaf or a story
+   * membership can appear. For the live-leaf case the lock is load-bearing: a
+   * concurrent `analyzeAndStoreEventResult` for the same variant blocks on the
+   * same lock, so any committed leaf is visible to this re-read. The check
+   * runs on the transaction's own client so its reads see committed state
+   * under the lock. The manual / regenerate callers omit it (no behavior
+   * change).
+   */
+  preStoreCheck?: (client: PoolClient) => Promise<string | null>;
 }
 
 export type AnalyzeAndStoreEventResult =
   | { kind: "success"; generation: number }
+  | { kind: "skipped"; reason: string }
   | { kind: "error"; errorCode: AnalyzeErrorCode; message: string };
 
 /**
@@ -723,6 +743,18 @@ export async function analyzeAndStoreEventResult(
           params.model,
         ),
       ]);
+      // Eligibility re-check under the lock, immediately before the
+      // supersede+insert. The auto-baseline worker (#493) uses this to abort
+      // when a story member or a live leaf appeared during the LLM window;
+      // rolling back here means no live row is ever superseded and no stale
+      // `auto_baseline` row is inserted (#493 review round 4).
+      if (params.preStoreCheck) {
+        const skipReason = await params.preStoreCheck(writeClient);
+        if (skipReason !== null) {
+          await writeClient.query("ROLLBACK");
+          return { kind: "skipped", reason: skipReason };
+        }
+      }
       const { rows: genRows } = await writeClient.query<{
         next_generation: number;
       }>(

@@ -151,4 +151,52 @@ describe("analyzeAndStoreEventResult", () => {
     expect(res.kind).toBe("error");
     expect(customerPool.connect).not.toHaveBeenCalled();
   });
+
+  // ---- preStoreCheck (#493 review round 4) ------------------------------
+  // The auto-baseline worker re-checks eligibility (story membership / live
+  // leaf) one last time INSIDE the storage transaction, under the variant
+  // lock, immediately before supersede+insert. A non-null return rolls the
+  // store back so no live row is ever superseded.
+
+  it("aborts the store (rollback, no supersede/insert) when preStoreCheck returns a reason", async () => {
+    const preStoreCheck = vi.fn(async () => "live_leaf_appeared");
+    const res = await analyzeAndStoreEventResult({
+      ...baseParams(),
+      preStoreCheck,
+    });
+    expect(res).toEqual({ kind: "skipped", reason: "live_leaf_appeared" });
+
+    // Runs on the transaction's own client, AFTER the lock is acquired.
+    expect(preStoreCheck).toHaveBeenCalledTimes(1);
+    expect(preStoreCheck).toHaveBeenCalledWith(client);
+    const sqls = writeCalls.map((c) => c.sql);
+    const beginIdx = sqls.indexOf("BEGIN");
+    const lockIdx = sqls.findIndex((s) => s.includes("pg_advisory_xact_lock"));
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(lockIdx).toBeGreaterThan(beginIdx);
+
+    // No generation read, no supersede, no INSERT — the tx rolled back.
+    expect(sqls.some((s) => s.includes("next_generation"))).toBe(false);
+    expect(sqls.some((s) => s.includes("SET superseded_at"))).toBe(false);
+    expect(
+      sqls.some((s) => s.includes("INSERT INTO event_analysis_result")),
+    ).toBe(false);
+    expect(sqls).toContain("ROLLBACK");
+    expect(sqls).not.toContain("COMMIT");
+  });
+
+  it("proceeds with the store when preStoreCheck returns null", async () => {
+    const preStoreCheck = vi.fn(async () => null);
+    const res = await analyzeAndStoreEventResult({
+      ...baseParams(),
+      preStoreCheck,
+    });
+    expect(res).toEqual({ kind: "success", generation: 4 });
+    expect(preStoreCheck).toHaveBeenCalledTimes(1);
+    const sqls = writeCalls.map((c) => c.sql);
+    expect(
+      sqls.some((s) => s.includes("INSERT INTO event_analysis_result")),
+    ).toBe(true);
+    expect(sqls.at(-1)).toBe("COMMIT");
+  });
 });

@@ -29,7 +29,7 @@
 
 import "server-only";
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import {
   decryptRedactionMap,
   loadCustomerOwnedDomains,
@@ -37,6 +37,7 @@ import {
   type RedactionMap,
 } from "@/lib/redaction";
 import type { AnalyzeErrorCode } from "./analyze-types";
+import { isStoryMember } from "./event-enrichment-worker";
 import { parseEventTime } from "./event-time";
 import {
   analyzeAndStoreEventResult,
@@ -52,11 +53,21 @@ import {
  *                            `(source_aice_id, event_key, baseline_version)`
  *                            (rebaselined away / retention swept); cannot
  *                            analyze.
+ *   - `stale`              — the pre-store eligibility re-check (run inside the
+ *                            storage transaction, under the event-variant lock,
+ *                            immediately before supersede+insert) found the job
+ *                            became ineligible DURING the LLM window: a story
+ *                            member adopted the event or a live leaf appeared
+ *                            after the worker's claim-time check. The store was
+ *                            rolled back — no live row was superseded and no
+ *                            `auto_baseline` row inserted. The worker cancels
+ *                            the job terminally (same as the claim-time path).
  *   - `error`              — aimer call / storage / event_time failure.
  */
 export type AnalyzeBaselineEventOutcome =
   | { kind: "analyzed"; generation: number }
   | { kind: "source_unavailable" }
+  | { kind: "stale"; reason: string }
   | { kind: "error"; errorCode: AnalyzeErrorCode; message: string };
 
 export interface AnalyzeBaselineEventParams {
@@ -189,7 +200,20 @@ export async function analyzeBaselineEventLeaf(
       aiceId,
     },
     force: false,
+    // Re-check eligibility a final time INSIDE the storage transaction, under
+    // the event-variant lock, immediately before supersede+insert (#493 review
+    // round 4). The worker's claim-time check runs BEFORE the (long) LLM call;
+    // in that window a story batch can adopt the event or a manual /
+    // default-variant leaf can be written. Without this last check the auto
+    // path would supersede that leaf (changing the manual path's visible
+    // result) or produce an `auto_baseline` leaf for a now-story-member event —
+    // both violate the settled dedupe rule. Returning a reason rolls the store
+    // back; the worker then cancels the job terminally.
+    preStoreCheck: (client) => recheckEligibility(client, aiceId, params),
   });
+  if (stored.kind === "skipped") {
+    return { kind: "stale", reason: stored.reason };
+  }
   if (stored.kind === "error") {
     return {
       kind: "error",
@@ -198,4 +222,42 @@ export async function analyzeBaselineEventLeaf(
     };
   }
   return { kind: "analyzed", generation: stored.generation };
+}
+
+/**
+ * Pre-store eligibility re-check for the auto-baseline path. Runs on the
+ * storage transaction's own client (so its reads see committed state under the
+ * event-variant advisory lock the transaction already holds). Returns a reason
+ * string when the job is no longer eligible — to be analyzed by the worker —
+ * or `null` to proceed:
+ *
+ *   - `story_member_appeared` — the event is now a member of some story
+ *     (story members are enriched/analyzed at story scope, never here).
+ *   - `live_leaf_appeared`    — a non-superseded `event_analysis_result` for
+ *     the target `(aice_id, event_key, lang, model_name, model)` variant now
+ *     exists (a manual / default-variant analysis landed); superseding it would
+ *     change the manual path's visible result.
+ *
+ * For the live-leaf case the lock is load-bearing: a concurrent
+ * `analyzeAndStoreEventResult` for the same variant blocks on the same lock, so
+ * a committed leaf is always visible to this re-read.
+ */
+async function recheckEligibility(
+  client: PoolClient,
+  aiceId: string,
+  params: AnalyzeBaselineEventParams,
+): Promise<string | null> {
+  if (await isStoryMember(client, params.sourceAiceId, params.eventKey)) {
+    return "story_member_appeared";
+  }
+  const { rows } = await client.query<{ one: number }>(
+    `SELECT 1 AS one
+       FROM event_analysis_result
+      WHERE aice_id = $1 AND event_key = $2::numeric
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND superseded_at IS NULL
+      LIMIT 1`,
+    [aiceId, params.eventKey, params.lang, params.modelName, params.model],
+  );
+  return rows.length > 0 ? "live_leaf_appeared" : null;
 }

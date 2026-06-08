@@ -870,6 +870,25 @@ export async function processEventJob(
     });
     return;
   }
+  if (outcome.kind === "stale") {
+    // The pre-store eligibility re-check (inside the storage transaction,
+    // under the event-variant lock, immediately before supersede+insert)
+    // found the job became ineligible during the LLM window — a story member
+    // adopted the event or a live leaf appeared after the claim-time check.
+    // The store rolled back (no supersede, no `auto_baseline` leaf), so cancel
+    // terminally, same as the claim-time stale path. A tier-B row reserved
+    // before the LLM call keeps its reserved slot (status `done`, still counted
+    // in the reservation) — a negligible, rare under-spend that errs safe;
+    // un-reserving here is not worth the extra write for this edge case.
+    await cancelStaleJob(opts.authPool, job, outcome.reason);
+    emitMetric("stale_cancelled", {
+      customer_id: job.customer_id,
+      aice_id: job.aice_id,
+      event_key: job.event_key,
+      reason: outcome.reason,
+    });
+    return;
+  }
   if (outcome.kind === "source_unavailable") {
     // The exact baseline_version was rebaselined away / swept. Terminal:
     // there is no payload to analyze.

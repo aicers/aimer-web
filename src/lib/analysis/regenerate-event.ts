@@ -188,5 +188,14 @@ export async function regenerateEventLeaf(
       message: stored.message,
     };
   }
+  if (stored.kind === "skipped") {
+    // Unreachable: the regenerate path passes no `preStoreCheck`, so the
+    // primitive never aborts the store. Handled only to keep the union total.
+    return {
+      kind: "error",
+      errorCode: "storage_failed",
+      message: `store skipped: ${stored.reason}`,
+    };
+  }
   return { kind: "reanalyzed", generation: stored.generation };
 }

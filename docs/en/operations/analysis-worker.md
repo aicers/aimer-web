@@ -116,6 +116,16 @@ reason in `last_error`) **before** any budget or LLM spend and before it
 could supersede the live leaf — so story members are never auto-analyzed
 and the manual path's visible result is never overwritten.
 
+The same eligibility check runs once more **inside the storage
+transaction** — under the per-event-variant advisory lock, immediately
+before the result is written — to close the window during the (longer)
+LLM call itself. If a story member or a live leaf appears while the auto
+analysis is in flight, the store is rolled back (nothing is superseded,
+no `auto_baseline` row is written) and the job is cancelled the same way.
+For the live-leaf case the lock is what makes this safe: a concurrent
+manual analysis of the same variant takes the same lock, so its result is
+always visible to this final check.
+
 When an auto-analyzed leaf is stored, the worker re-dirties the periodic
 report buckets the event falls into (the same dirty signal the baseline
 ingest hook raises). The leaf is produced asynchronously over several
