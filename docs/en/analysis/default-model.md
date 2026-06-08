@@ -51,10 +51,7 @@ The section shows the model currently in effect and where it comes from —
 the per-customer override, the global default, or the deployment
 fallback.
 
-<!-- Screenshot placeholder: the Customer Settings "Default analysis
-model" section, showing the current-source line, the model dropdown, and
-the Save / Reset buttons. Capture from a running stack once available
-(this surface does not depend on aice-web-next data). -->
+![The Customer Settings "Default analysis model" section: the current-source line ("Currently using openai / gpt-5.5 (from the per-customer override)"), the model dropdown, and the Save and "Reset to global default" buttons](../../assets/analysis-default-model-customer.en.png)
 
 ### Clearing the override (reset to global)
 
@@ -74,9 +71,7 @@ Settings** page, under **Default analysis model (global)**.
 Use **Clear global default** to remove it and revert global resolution to
 the deployment fallback.
 
-<!-- Screenshot placeholder: the Admin Settings "Default analysis model
-(global)" section. Capture from a running stack once available (this
-surface does not depend on aice-web-next data). -->
+![The Admin Settings "Default analysis model (global)" section: the current-global line ("Current global default: anthropic / claude-3-5-sonnet"), the model dropdown, and the Save and "Clear global default" buttons](../../assets/analysis-default-model-global.en.png)
 
 ## Invalid values
 
