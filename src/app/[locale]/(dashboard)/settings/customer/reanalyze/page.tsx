@@ -3,6 +3,7 @@
 import { useLocale, useTranslations } from "next-intl";
 import { useCallback, useEffect, useState } from "react";
 
+import { ReanalyzeBackfillPanel } from "@/components/analysis/reanalyze-backfill-panel";
 import { Button } from "@/components/ui/button";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -25,12 +26,11 @@ interface DefaultModelView {
  *
  * The post-change offer in the customer settings default-model section
  * deep-links HERE (a stable in-app, customer-scoped route) rather than
- * straight to external docs, so the scoped re-analysis owned by
- * #466 (story leaves) / #470 (event leaves) → drain → #469 (report
- * refresh) has a stable launch surface to own. This page is the ENTRY
- * POINT only: it never enqueues re-analysis. The actual cost preview,
- * scoping, drain-gating and throttling land with those issues, which will
- * replace the "not yet available" panel below with the real controls.
+ * straight to external docs. It now hosts the #466 story-leaf backfill
+ * controls (cost preview, scoping, confirm-gated enqueue, drain progress)
+ * via `ReanalyzeBackfillPanel`. Event-leaf re-analysis (#470) and report
+ * refresh (#469) are sequenced after the story-leaf run drains and land on
+ * this same surface as they ship.
  */
 export default function CustomerReanalyzePage() {
   const t = useTranslations("customerReanalyze");
@@ -100,29 +100,27 @@ export default function CustomerReanalyzePage() {
         </p>
       )}
 
-      <section className="space-y-2 rounded-md border border-border bg-card p-4">
-        <h2 className="text-base font-semibold text-foreground">
-          {t("notYetAvailableTitle")}
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {t("notYetAvailableBody")}
-        </p>
-        <p className="text-sm text-foreground">{t("guaranteeNote")}</p>
-        <div className="pt-2">
-          <Button asChild variant="ghost">
-            <a
-              href={`${manualUrl(
-                "analysis/default-model",
-                locale === "ko" ? "ko" : "en",
-              )}#what-a-change-affects`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {t("docsLink")}
-            </a>
-          </Button>
-        </div>
-      </section>
+      <p className="text-sm text-muted-foreground">{t("guaranteeNote")}</p>
+
+      <ReanalyzeBackfillPanel
+        apiBase={`/api/customers/${singleCustomerId}/analysis/reanalyze`}
+        fetcher={apiFetch}
+      />
+
+      <div>
+        <Button asChild variant="ghost">
+          <a
+            href={`${manualUrl(
+              "analysis/reanalyze-backfill",
+              locale === "ko" ? "ko" : "en",
+            )}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {t("docsLink")}
+          </a>
+        </Button>
+      </div>
     </div>
   );
 }

@@ -115,11 +115,14 @@ bounded, cost-controlled operation that an operator launches
 deliberately.
 
 The re-analysis page is the stable, in-app entry point for that scoped
-run (re-running the customer's story and event analyses, then refreshing
-its reports). The cost preview and launch controls for that run are
-delivered separately; until then the page explains the action, shows the
-new default model, and restates that existing results stay untouched
-until a re-analysis is deliberately started.
+run. It now carries the **story-leaf re-analysis backfill** — a
+cost-bounded, operator-confirmed run that re-queues the customer's
+existing story analyses under the new model. See
+[Story-leaf re-analysis backfill](reanalyze-backfill.md) for the
+operator workflow, scoping, and cost implications. Report refresh and
+event-leaf re-analysis are delivered separately and sequenced after the
+story-leaf run drains. Existing results stay untouched until a
+re-analysis is deliberately started.
 
 ## Default variant and coverage
 
