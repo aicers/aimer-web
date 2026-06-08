@@ -42,7 +42,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0009_citation_reverse_lookup_gin (T2, #396),
     // 0010_ioc_enrichment (RFC 0003 P1a, #361),
     // 0011_enrichment_facts (RFC 0003 C1, #440),
-    // 0012_event_provenance_not_null (aimer#480, #474)
+    // 0012_event_provenance_not_null (aimer#480, #474),
+    // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -57,6 +58,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0010",
       "0011",
       "0012",
+      "0013",
     ]);
   });
 
