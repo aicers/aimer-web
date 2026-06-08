@@ -54,7 +54,7 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
   async function seedLeaf(
     eventKey: string,
     model: string,
-    opts: { superseded?: boolean; generation?: number } = {},
+    opts: { superseded?: boolean; generation?: number; lang?: string } = {},
   ) {
     await pool.query(
       `INSERT INTO event_analysis_result
@@ -64,7 +64,7 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier, analysis_text, redaction_policy_version,
           requested_by, superseded_at)
-       VALUES ($1, $2::numeric, 'ENGLISH', 'openai', $3,
+       VALUES ($1, $2::numeric, $6, 'openai', $3,
                'mv', 'pv', $4, 0.5, 0.5,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
                'MEDIUM', 'text', 'policy-A', gen_random_uuid(),
@@ -75,6 +75,7 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
         model,
         opts.generation ?? 1,
         opts.superseded ? IN_WINDOW : null,
+        opts.lang ?? "ENGLISH",
       ],
     );
   }
@@ -121,6 +122,16 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
     await seedLeaf("1005", "gpt-5.5", { superseded: true, generation: 1 });
     await seedLeaf("1005", "gpt-4o", { generation: 1 });
     await seedDetection("1005");
+
+    // F: in-window, source present, but its ONLY live leaf is KOREAN — a
+    // different language from the ENGLISH target. `lang` is a real variant
+    // axis (the report selector is strict on it), so F is NOT part of the
+    // ENGLISH universe and must be excluded entirely: re-analyzing it would
+    // expand English coverage beyond the existing English leaf set, and it
+    // must never block the English drain.
+    await seedBaseline("1006", IN_WINDOW);
+    await seedLeaf("1006", "gpt-4o", { lang: "KOREAN" });
+    await seedDetection("1006");
   });
 
   afterAll(async () => {
@@ -133,6 +144,9 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
     const byKey = new Map(members.map((m) => [m.eventKey, m]));
     // D (out of window) is excluded.
     expect(byKey.has("1004")).toBe(false);
+    // F (only a live KOREAN leaf, different language) is excluded from the
+    // ENGLISH universe — `lang` is a real variant axis.
+    expect(byKey.has("1006")).toBe(false);
     expect(members).toHaveLength(4);
 
     expect(byKey.get("1001")).toMatchObject({

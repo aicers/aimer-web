@@ -9,8 +9,11 @@
 //   - Universe          — `(aice_id, event_key)` whose latest baseline_event
 //                         event_time falls in the scope window AND which
 //                         already have a non-superseded `event_analysis_result`
-//                         leaf under SOME model (this backfill re-analyzes
-//                         existing leaves, not never-analyzed events).
+//                         leaf under SOME model IN THE TARGET LANGUAGE (this
+//                         backfill re-analyzes existing target-language leaves,
+//                         not never-analyzed events and not other-language
+//                         leaves — `lang` is a real variant axis, matching the
+//                         report selector's `e.lang` constraint).
 //   - Work candidates   — universe members with NO non-superseded leaf for
 //                         the target `(lang, model_name, model)` variant.
 //   - already_current   — universe members that DO have a target-variant
@@ -110,6 +113,18 @@ export async function loadUniverse(
          JOIN latest_baseline lb
            ON lb.aice_id = e.aice_id AND lb.event_key = e.event_key
         WHERE e.superseded_at IS NULL
+          -- Constrain the existing-leaf universe to the TARGET LANGUAGE, the
+          -- same way the report event selector is strict on language
+          -- (report-input-builder.ts selectTopEvents, e.lang = lang). lang is
+          -- a real variant axis, not a fallback axis: this backfill
+          -- re-analyzes EXISTING target-language leaves under a new model, so
+          -- an event whose only live leaf is in another language is NOT part
+          -- of this variant's universe. Without this filter a Korean-only
+          -- event would be pulled into an English backfill, re-analyzed into
+          -- English (expanding English coverage beyond the existing English
+          -- leaf set), and could block drain on a leaf the report variant
+          -- would never select.
+          AND e.lang = $3
           AND lb.event_time >= $1::timestamptz
           AND lb.event_time <  $2::timestamptz
      )
