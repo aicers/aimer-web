@@ -13,8 +13,10 @@ import {
 vi.mock("server-only", () => ({}));
 
 import {
+  claimItem,
   createRun,
   getRun,
+  recordItemResult,
   requestCancel,
 } from "../../analysis/event-leaf-backfill-store";
 import type { RegenerateEventOutcome } from "../../analysis/regenerate-event";
@@ -394,6 +396,137 @@ describe.skipIf(!hasPostgres)("event backfill worker (DB)", () => {
     expect(r2.cancelled).toBe(true);
     const run = await getRun(pool, cust, runId);
     expect(run?.status).toBe("cancelled");
+  });
+
+  it("does not re-analyze an item already claimed by a concurrent worker", async () => {
+    // Simulate a second replica holding the only work item in `processing`
+    // (fresh claim, not stale). This tick must NOT call the model for it,
+    // must NOT double-count, and must NOT finalize the run as completed.
+    const cust = await freshCustomer("ebf-concurrent");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "70",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    await pool.query(
+      `UPDATE event_leaf_backfill_items
+          SET status = 'processing', updated_at = $2::timestamptz
+        WHERE run_id = $1`,
+      [runId, "2026-06-08T00:00:00.000Z"],
+    );
+    let regenerateCalls = 0;
+    const result = await runEventBackfillTickOnce(
+      deps({
+        customerPool: cp,
+        regenerate: async () => {
+          regenerateCalls += 1;
+          return { kind: "reanalyzed", generation: 2 };
+        },
+      }),
+    );
+    expect(regenerateCalls).toBe(0);
+    expect(result.completed).toBe(false);
+    const run = await getRun(pool, cust, runId);
+    expect(run?.status).toBe("running");
+    expect(run?.reanalyzedCount).toBe(0);
+  });
+
+  it("reclaims a stale processing item and re-runs it", async () => {
+    // An item left `processing` by a crashed worker (claim older than the
+    // lease) is reset to pending and processed on the next tick.
+    const cust = await freshCustomer("ebf-reclaim");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "80",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    // Stale claim: updated_at well before now - lease (15 min).
+    await pool.query(
+      `UPDATE event_leaf_backfill_items
+          SET status = 'processing', updated_at = $2::timestamptz
+        WHERE run_id = $1`,
+      [runId, "2026-06-07T00:00:00.000Z"],
+    );
+    let regenerateCalls = 0;
+    const result = await runEventBackfillTickOnce(
+      deps({
+        customerPool: cp,
+        regenerate: async () => {
+          regenerateCalls += 1;
+          return { kind: "reanalyzed", generation: 2 };
+        },
+      }),
+    );
+    expect(regenerateCalls).toBe(1);
+    expect(result.completed).toBe(true);
+    const run = await getRun(pool, cust, runId);
+    expect(run?.reanalyzedCount).toBe(1);
+    expect(run?.status).toBe("completed");
+  });
+
+  it("records a terminal item once: a duplicate record is a no-op", async () => {
+    // recordItemResult only bumps the run aggregate when it transitions a
+    // `processing` item, so a second worker recording the same item cannot
+    // double-count.
+    const cust = await freshCustomer("ebf-once");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "90",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    const item = { aiceId: "a", eventKey: "90" };
+    const client = await pool.connect();
+    try {
+      const claimed = await claimItem(
+        client,
+        runId,
+        item,
+        "2026-06-08T00:00:00.000Z",
+      );
+      expect(claimed).toBe(true);
+      // A second claim loses — the item is no longer pending.
+      expect(
+        await claimItem(client, runId, item, "2026-06-08T00:00:00.000Z"),
+      ).toBe(false);
+      const first = await recordItemResult(
+        client,
+        runId,
+        item,
+        "reanalyzed",
+        "2026-06-08T00:00:00.000Z",
+      );
+      const second = await recordItemResult(
+        client,
+        runId,
+        item,
+        "reanalyzed",
+        "2026-06-08T00:00:00.000Z",
+      );
+      expect(first).toBe(true);
+      expect(second).toBe(false);
+    } finally {
+      client.release();
+    }
+    const run = await getRun(pool, cust, runId);
+    expect(run?.reanalyzedCount).toBe(1);
   });
 
   it("returns the existing active run instead of duplicating", async () => {

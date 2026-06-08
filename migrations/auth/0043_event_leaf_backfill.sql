@@ -87,22 +87,34 @@ CREATE INDEX event_leaf_backfill_runs_customer_idx
 -- aggregate counts. `aice_id` / `event_key` mirror the customer-DB
 -- `event_analysis_result` key types (TEXT / NUMERIC); there is no
 -- cross-database FK.
+--
+-- `processing` is the in-flight claim state. Because the run/item tables can
+-- be drained by more than one server process (every replica installs the
+-- worker), the worker claims each item with a conditional transition
+-- (`pending` -> `processing`, guarded on `status = 'pending'`) BEFORE the
+-- model call — mirroring the story worker's queued->processing claim. Only
+-- the winner of that transition calls the model and records the terminal
+-- status, so two replicas never re-analyze the same event or double-count
+-- the run aggregates. A `processing` row whose worker crashed is reclaimed
+-- back to `pending` by the worker once its claim goes stale (lease lapses).
 CREATE TABLE event_leaf_backfill_items (
     run_id      UUID           NOT NULL REFERENCES event_leaf_backfill_runs(id) ON DELETE CASCADE,
     aice_id     TEXT           NOT NULL,
     event_key   NUMERIC(39, 0) NOT NULL,
     status      TEXT           NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'reanalyzed', 'already_current',
-                          'source_unavailable', 'failed', 'cap_excluded')),
+        CHECK (status IN ('pending', 'processing', 'reanalyzed',
+                          'already_current', 'source_unavailable', 'failed',
+                          'cap_excluded')),
     error       TEXT,
     updated_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
     PRIMARY KEY (run_id, aice_id, event_key)
 );
 
--- Drain loop reads pending items for the active run.
-CREATE INDEX event_leaf_backfill_items_pending_idx
-    ON event_leaf_backfill_items (run_id)
-    WHERE status = 'pending';
+-- Drain loop reads pending items for the active run; the partial index also
+-- serves the stale-`processing` reclaim scan.
+CREATE INDEX event_leaf_backfill_items_unfinished_idx
+    ON event_leaf_backfill_items (run_id, status)
+    WHERE status IN ('pending', 'processing');
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON event_leaf_backfill_runs TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON event_leaf_backfill_items TO aimer_auth;

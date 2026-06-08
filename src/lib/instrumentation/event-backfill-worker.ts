@@ -28,12 +28,14 @@ import type { Pool } from "pg";
 import { hasTargetVariantLeaf } from "../analysis/event-leaf-backfill";
 import {
   type BackfillRun,
+  claimItem,
   claimRun,
-  countPending,
+  countUnfinished,
   fetchPendingItems,
   finalizeRun,
   isCancelRequested,
   type PendingItem,
+  reclaimStaleItems,
   recordItemResult,
 } from "../analysis/event-leaf-backfill-store";
 import {
@@ -54,6 +56,12 @@ import { getCurrentTimestamp } from "./time";
 
 const DEFAULT_BATCH_SIZE = 5;
 const DEFAULT_POLL_INTERVAL_MS = 10_000;
+
+// How long an item may stay `processing` before another tick treats the
+// claim as stale (the claiming worker crashed) and resets it to `pending`.
+// Must comfortably exceed a single re-analysis model call so an in-flight
+// item is never reclaimed out from under a live worker.
+const ITEM_LEASE_MS = 15 * 60_000;
 
 function resolvePositiveInt(raw: string | undefined, fallback: number): number {
   if (raw == null || raw === "") return fallback;
@@ -171,21 +179,39 @@ export async function runEventBackfillTickOnce(
       };
     }
 
+    // Reclaim items left `processing` by a crashed worker so they are
+    // retried this tick rather than stranding the run short of completion.
+    const staleBeforeIso = new Date(
+      deps.now().getTime() - ITEM_LEASE_MS,
+    ).toISOString();
+    await reclaimStaleItems(authClient, run.id, staleBeforeIso);
+
     const items = await fetchPendingItems(authClient, run.id, deps.batchSize);
     if (items.length === 0) {
-      // Nothing left — drain done.
-      await finalizeRun(
-        authClient,
-        run.id,
-        "completed",
-        deps.now().toISOString(),
-      );
+      // No pending items to pick up. Only finalize as completed once NO
+      // unfinished items remain — an item still `processing` on another
+      // replica must not let this worker declare the run done early.
+      if ((await countUnfinished(authClient, run.id)) === 0) {
+        await finalizeRun(
+          authClient,
+          run.id,
+          "completed",
+          deps.now().toISOString(),
+        );
+        return {
+          claimed: true,
+          runId: run.id,
+          processed: 0,
+          cancelled: false,
+          completed: true,
+        };
+      }
       return {
         claimed: true,
         runId: run.id,
         processed: 0,
         cancelled: false,
-        completed: true,
+        completed: false,
       };
     }
 
@@ -207,6 +233,18 @@ export async function runEventBackfillTickOnce(
           completed: false,
         };
       }
+
+      // Claim the item (pending -> processing) BEFORE any model call. If
+      // another replica already claimed it, skip without re-analyzing — this
+      // is what keeps the per-event model call (and the cost bound) at
+      // most-once across replicas.
+      const claimed = await claimItem(
+        authClient,
+        run.id,
+        item,
+        deps.now().toISOString(),
+      );
+      if (!claimed) continue;
 
       // Idempotency re-check: a target-variant leaf may have appeared since
       // materialization (concurrent run / manual regenerate). Skip rather
@@ -274,8 +312,10 @@ export async function runEventBackfillTickOnce(
       processed += 1;
     }
 
-    // Finalize promptly if this batch drained the run.
-    const remaining = await countPending(authClient, run.id);
+    // Finalize promptly if this batch drained the run. Count BOTH pending
+    // and processing so a concurrent replica's in-flight item is not
+    // mistaken for a drained run.
+    const remaining = await countUnfinished(authClient, run.id);
     if (remaining === 0) {
       await finalizeRun(
         authClient,

@@ -28,11 +28,15 @@ export type RunStatus =
 
 export type ItemStatus =
   | "pending"
+  | "processing"
   | "reanalyzed"
   | "already_current"
   | "source_unavailable"
   | "failed"
   | "cap_excluded";
+
+/** Terminal item statuses (everything except the in-flight claim states). */
+export type TerminalItemStatus = Exclude<ItemStatus, "pending" | "processing">;
 
 /** The no-silent-caps aggregate counts on a run (Scope §8). */
 export interface RunCounts {
@@ -309,8 +313,18 @@ export async function requestCancel(
 /**
  * Atomically claim the oldest active (pending or running) run for the
  * worker, flipping it to `running` and stamping `started_at` on first
- * pickup. `FOR UPDATE SKIP LOCKED` keeps it safe under multiple replicas;
- * picking up a `running` run resumes one interrupted by a restart.
+ * pickup. Picking up a `running` run resumes one interrupted by a restart.
+ *
+ * `FOR UPDATE SKIP LOCKED` only serializes concurrent *claims* (two ticks
+ * never pick the same row in the same instant); it does NOT give the caller
+ * exclusive ownership of the run afterwards, because the row lock is
+ * released when this statement's transaction commits. A run therefore stays
+ * claimable while it is `running`, so a second replica can also pick it up.
+ * That is intentional (it is how an interrupted run resumes), and it is made
+ * safe at the ITEM level: the worker claims each item with
+ * `claimItem` (a guarded `pending` -> `processing` transition) before the
+ * model call, so two workers sharing a run never re-analyze the same event
+ * or double-count its aggregates.
  */
 export async function claimRun(
   client: PoolClient,
@@ -368,22 +382,73 @@ export async function fetchPendingItems(
   return rows.map((r) => ({ aiceId: r.aice_id, eventKey: r.event_key }));
 }
 
-/** Count remaining pending items for a run. */
-export async function countPending(
+/**
+ * Atomically claim a single pending item for this worker, flipping it to
+ * `processing` only if it is still `pending`. Returns `true` when this
+ * worker won the claim (and must process it), `false` when another worker
+ * already took it — mirroring the story worker's guarded `queued` ->
+ * `processing` transition. This is what makes the run safe to drain from
+ * more than one process: the model call happens only for the claim winner.
+ */
+export async function claimItem(
+  client: PoolClient | Pool,
+  runId: string,
+  item: PendingItem,
+  nowIso: string,
+): Promise<boolean> {
+  const res = await client.query(
+    `UPDATE event_leaf_backfill_items
+        SET status = 'processing', updated_at = $4::timestamptz
+      WHERE run_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+        AND status = 'pending'`,
+    [runId, item.aiceId, item.eventKey, nowIso],
+  );
+  return res.rowCount === 1;
+}
+
+/**
+ * Reset `processing` items whose claim has gone stale (the claiming worker
+ * crashed mid-call) back to `pending` so a later tick retries them. The
+ * lease threshold must comfortably exceed a single model call so an
+ * in-flight item is never reclaimed out from under a live worker. Returns
+ * the number reclaimed.
+ */
+export async function reclaimStaleItems(
+  client: PoolClient | Pool,
+  runId: string,
+  staleBeforeIso: string,
+): Promise<number> {
+  const res = await client.query(
+    `UPDATE event_leaf_backfill_items
+        SET status = 'pending'
+      WHERE run_id = $1 AND status = 'processing'
+        AND updated_at < $2::timestamptz`,
+    [runId, staleBeforeIso],
+  );
+  return res.rowCount ?? 0;
+}
+
+/**
+ * Count remaining unfinished items for a run — both `pending` (not yet
+ * claimed) and `processing` (claimed, in flight). A run is only complete
+ * when this is zero, so an item being processed by another replica never
+ * lets one worker finalize the run early.
+ */
+export async function countUnfinished(
   client: PoolClient | Pool,
   runId: string,
 ): Promise<number> {
   const { rows } = await client.query<{ n: string }>(
     `SELECT COUNT(*)::text AS n
        FROM event_leaf_backfill_items
-      WHERE run_id = $1 AND status = 'pending'`,
+      WHERE run_id = $1 AND status IN ('pending', 'processing')`,
     [runId],
   );
   return Number(rows[0]?.n ?? "0");
 }
 
 const COUNT_COLUMN: Record<
-  Exclude<ItemStatus, "pending">,
+  TerminalItemStatus,
   keyof Pick<
     RunRow,
     | "reanalyzed_count"
@@ -402,36 +467,49 @@ const COUNT_COLUMN: Record<
 
 /**
  * Record a terminal status on an item and bump the matching run aggregate
- * count, in one transaction. `already_current` / `source_unavailable`
+ * count, in one transaction. The aggregate is bumped ONLY when this call
+ * actually transitions the item out of `processing` — guarded on
+ * `status = 'processing'` so a second worker that somehow records the same
+ * item is a no-op (its item UPDATE matches zero rows) and the run counter is
+ * never double-incremented. `already_current` / `source_unavailable`
  * discovered DURING the drain (a leaf created or a source swept since
  * create-time materialization) are disjoint from the create-time aggregate
- * seed, so the bump never double-counts.
+ * seed, so the bump never double-counts those either.
+ *
+ * Returns `true` when the transition (and count bump) happened, `false`
+ * when the item was no longer `processing` (already finalized by another
+ * worker).
  */
 export async function recordItemResult(
   client: PoolClient,
   runId: string,
   item: PendingItem,
-  status: Exclude<ItemStatus, "pending">,
+  status: TerminalItemStatus,
   nowIso: string,
   error?: string,
-): Promise<void> {
+): Promise<boolean> {
   const countCol = COUNT_COLUMN[status];
   await client.query("BEGIN");
   try {
-    await client.query(
+    const upd = await client.query(
       `UPDATE event_leaf_backfill_items
           SET status = $4, error = $5, updated_at = $6::timestamptz
-        WHERE run_id = $1 AND aice_id = $2 AND event_key = $3::numeric`,
+        WHERE run_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+          AND status = 'processing'`,
       [runId, item.aiceId, item.eventKey, status, error ?? null, nowIso],
     );
-    await client.query(
-      `UPDATE event_leaf_backfill_runs
-          SET ${countCol} = ${countCol} + 1,
-              last_progress_at = $2::timestamptz
-        WHERE id = $1`,
-      [runId, nowIso],
-    );
+    const transitioned = upd.rowCount === 1;
+    if (transitioned) {
+      await client.query(
+        `UPDATE event_leaf_backfill_runs
+            SET ${countCol} = ${countCol} + 1,
+                last_progress_at = $2::timestamptz
+          WHERE id = $1`,
+        [runId, nowIso],
+      );
+    }
     await client.query("COMMIT");
+    return transitioned;
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
