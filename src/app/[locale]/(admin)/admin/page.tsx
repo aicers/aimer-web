@@ -1,4 +1,5 @@
 import { getTranslations } from "next-intl/server";
+import { AnalysisDefaultModelSection } from "./analysis-default-model-section";
 
 export default async function AdminPage() {
   const t = await getTranslations("admin");
@@ -7,11 +8,7 @@ export default async function AdminPage() {
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-foreground">{t("settings")}</h1>
       </div>
-      <div className="rounded-md border border-border bg-card p-8">
-        <p className="text-sm text-muted-foreground">
-          System administration pages are under construction.
-        </p>
-      </div>
+      <AnalysisDefaultModelSection />
     </div>
   );
 }

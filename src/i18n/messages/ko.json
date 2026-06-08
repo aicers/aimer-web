@@ -462,6 +462,19 @@
     "minLength": "최소 {min}자 이상 입력해 주세요",
     "maxLength": "최대 {max}자까지 입력할 수 있습니다"
   },
+  "adminAnalysisModel": {
+    "title": "기본 분석 모델 (전역)",
+    "description": "시스템 전역 기본 분석 모델입니다. 고객별 재정의가 없는 모든 고객에 적용됩니다. 설정하지 않으면 배포 기본값이 사용됩니다.",
+    "loading": "불러오는 중...",
+    "loadError": "전역 기본 분석 모델을 불러오지 못했습니다.",
+    "label": "모델",
+    "currentGlobal": "현재 전역 기본값: {model}.",
+    "currentEnv": "전역 기본값이 설정되지 않아 배포 기본값을 사용 중입니다: {model}.",
+    "save": "저장",
+    "clear": "전역 기본값 지우기",
+    "saveGenericError": "전역 기본 분석 모델을 저장하지 못했습니다.",
+    "notInCatalog": "허용된 모델 목록에 없는 모델입니다."
+  },
   "customerSettings": {
     "loading": "불러오는 중...",
     "save": "저장",
@@ -504,7 +517,21 @@
     "retentionShortenTitle": "보존 기간 단축 확인",
     "retentionShortenConfirm": "예, 적용합니다",
     "retentionConfirmShortenFinite": "보존 기간을 줄이면 다음 정리 작업 시 새 기간을 초과한 행이 삭제됩니다. 계속하시겠습니까?",
-    "retentionConfirmShortenUnlimited": "무제한에서 유한 기간으로 변경하면 다음 정리 작업 시 새 기간을 초과한 분석 행이 삭제됩니다. 계속하시겠습니까?"
+    "retentionConfirmShortenUnlimited": "무제한에서 유한 기간으로 변경하면 다음 정리 작업 시 새 기간을 초과한 분석 행이 삭제됩니다. 계속하시겠습니까?",
+    "defaultModelTitle": "기본 분석 모델",
+    "defaultModelDescription": "이 고객의 새 분석에 기본으로 사용되는 모델입니다. 분석가가 개별 보고서나 스토리를 다시 생성할 때 일회성으로 선택하는 모델과는 별개의 상시 기본값입니다.",
+    "defaultModelLoadError": "기본 분석 모델을 불러오지 못했습니다.",
+    "defaultModelLabel": "모델",
+    "defaultModelCurrentSource": "현재 {model} 사용 중입니다 (출처: {source}).",
+    "defaultModelSourceCustomer": "고객별 재정의",
+    "defaultModelSourceGlobal": "전역 기본값",
+    "defaultModelSourceEnv": "배포 기본값",
+    "defaultModelResetToGlobal": "전역 기본값으로 초기화",
+    "defaultModelSaveGenericError": "기본 분석 모델을 저장하지 못했습니다.",
+    "defaultModelNotInCatalog": "허용된 모델 목록에 없는 모델입니다.",
+    "defaultModelReanalyzeOfferTitle": "기존 데이터를 다시 분석할까요?",
+    "defaultModelReanalyzeOfferBody": "새 기본값은 향후 분석에만 적용되며 기존 결과는 변경되지 않습니다. 이 고객의 기존 데이터를 새 모델로 다시 분석하는 것은 별도의 비용 제한 작업이며 자동으로 실행되지 않습니다.",
+    "defaultModelReanalyzeOfferDismiss": "닫기"
   },
   "accountSettings": {
     "title": "계정 설정",

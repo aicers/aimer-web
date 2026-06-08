@@ -462,6 +462,19 @@
     "minLength": "Must be at least {min} characters",
     "maxLength": "Must be at most {max} characters"
   },
+  "adminAnalysisModel": {
+    "title": "Default analysis model (global)",
+    "description": "The system-wide default analysis model. It applies to any customer without a per-customer override. When unset, the deployment fallback is used.",
+    "loading": "Loading...",
+    "loadError": "Failed to load the global default analysis model.",
+    "label": "Model",
+    "currentGlobal": "Current global default: {model}.",
+    "currentEnv": "No global default set; using the deployment fallback: {model}.",
+    "save": "Save",
+    "clear": "Clear global default",
+    "saveGenericError": "Failed to save the global default analysis model.",
+    "notInCatalog": "That model is not in the allowed model catalog."
+  },
   "customerSettings": {
     "loading": "Loading...",
     "save": "Save",
@@ -504,7 +517,21 @@
     "retentionShortenTitle": "Confirm shorter retention window",
     "retentionShortenConfirm": "Yes, apply",
     "retentionConfirmShortenFinite": "Reducing the retention window will cause rows beyond the new window to be deleted on the next sweep. Continue?",
-    "retentionConfirmShortenUnlimited": "Switching from unlimited to a finite window will cause analysis rows beyond the new window to be deleted on the next sweep. Continue?"
+    "retentionConfirmShortenUnlimited": "Switching from unlimited to a finite window will cause analysis rows beyond the new window to be deleted on the next sweep. Continue?",
+    "defaultModelTitle": "Default analysis model",
+    "defaultModelDescription": "The model new analyses for this customer use by default. This is a standing default — separate from the one-off model an analyst can pick when regenerating a single report or story.",
+    "defaultModelLoadError": "Failed to load the default analysis model.",
+    "defaultModelLabel": "Model",
+    "defaultModelCurrentSource": "Currently using {model} (from the {source}).",
+    "defaultModelSourceCustomer": "per-customer override",
+    "defaultModelSourceGlobal": "global default",
+    "defaultModelSourceEnv": "deployment fallback",
+    "defaultModelResetToGlobal": "Reset to global default",
+    "defaultModelSaveGenericError": "Failed to save the default analysis model.",
+    "defaultModelNotInCatalog": "That model is not in the allowed model catalog.",
+    "defaultModelReanalyzeOfferTitle": "Re-analyze existing data?",
+    "defaultModelReanalyzeOfferBody": "The new default applies to future analyses only — existing results are unchanged. Re-analyzing this customer's existing data under the new model is a separate, cost-bounded action and is never run automatically.",
+    "defaultModelReanalyzeOfferDismiss": "Dismiss"
   },
   "accountSettings": {
     "title": "Account Settings",

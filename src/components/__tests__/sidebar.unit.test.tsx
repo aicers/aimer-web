@@ -177,6 +177,8 @@ function mockPermissions(
     canWriteRedactionRanges: true,
     canViewRetention: true,
     canWriteRetention: true,
+    canViewDefaultModel: true,
+    canWriteDefaultModel: true,
     canUseAnalystFeatures: false,
     ...overrides,
   });

@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
 
+import { DefaultModelSection } from "./default-model-section";
 import { RedactionRangesSection } from "./redaction-ranges-section";
 import { RetentionSection } from "./retention-section";
 
@@ -18,6 +19,8 @@ export default function CustomerSettingsPage() {
     canWriteRedactionRanges,
     canViewRetention,
     canWriteRetention,
+    canViewDefaultModel,
+    canWriteDefaultModel,
   } = usePermissions();
 
   // Customer Settings renders against a single customer. Under a multi-/
@@ -58,6 +61,13 @@ export default function CustomerSettingsPage() {
         <RetentionSection
           customerId={singleCustomerId}
           canWrite={canWriteRetention}
+        />
+      )}
+
+      {canViewDefaultModel && (
+        <DefaultModelSection
+          customerId={singleCustomerId}
+          canWrite={canWriteDefaultModel}
         />
       )}
     </div>
