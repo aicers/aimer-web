@@ -24,7 +24,7 @@
 
 import "server-only";
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { hasTargetVariantLeaf } from "../analysis/event-leaf-backfill";
 import {
   type BackfillRun,
@@ -140,6 +140,30 @@ export interface TickResult {
 }
 
 /**
+ * Finalize a drained run (no unfinished items left). Re-checks the cancel
+ * flag FIRST so a cancel requested while the last item was in flight — i.e.
+ * after the per-item cancel check but before the run drained — is honoured
+ * as `cancelled` rather than silently reported as `completed`. `finalizeRun`
+ * is status-guarded, so if another replica already finalized this run (e.g.
+ * to `cancelled` at claim time) this is a harmless no-op and `completed`
+ * never clobbers it.
+ */
+async function finalizeDrainedRun(
+  authClient: PoolClient,
+  runId: string,
+  now: () => Date,
+): Promise<{ cancelled: boolean }> {
+  const cancelled = await isCancelRequested(authClient, runId);
+  await finalizeRun(
+    authClient,
+    runId,
+    cancelled ? "cancelled" : "completed",
+    now().toISOString(),
+  );
+  return { cancelled };
+}
+
+/**
  * One worker tick: claim an active run and process up to `batchSize`
  * pending items via the shared regenerate helper, observing cancel and
  * recording categorized per-item status. Finalizes the run to `completed`
@@ -188,22 +212,22 @@ export async function runEventBackfillTickOnce(
 
     const items = await fetchPendingItems(authClient, run.id, deps.batchSize);
     if (items.length === 0) {
-      // No pending items to pick up. Only finalize as completed once NO
-      // unfinished items remain — an item still `processing` on another
-      // replica must not let this worker declare the run done early.
+      // No pending items to pick up. Only finalize once NO unfinished items
+      // remain — an item still `processing` on another replica must not let
+      // this worker declare the run done early. A late cancel is honoured
+      // over `completed` (see finalizeDrainedRun).
       if ((await countUnfinished(authClient, run.id)) === 0) {
-        await finalizeRun(
+        const { cancelled } = await finalizeDrainedRun(
           authClient,
           run.id,
-          "completed",
-          deps.now().toISOString(),
+          deps.now,
         );
         return {
           claimed: true,
           runId: run.id,
           processed: 0,
-          cancelled: false,
-          completed: true,
+          cancelled,
+          completed: !cancelled,
         };
       }
       return {
@@ -314,21 +338,22 @@ export async function runEventBackfillTickOnce(
 
     // Finalize promptly if this batch drained the run. Count BOTH pending
     // and processing so a concurrent replica's in-flight item is not
-    // mistaken for a drained run.
+    // mistaken for a drained run. Re-check the cancel flag before declaring
+    // the run completed so a cancel requested during the last item's model
+    // call is honoured as `cancelled`, not silently `completed`.
     const remaining = await countUnfinished(authClient, run.id);
     if (remaining === 0) {
-      await finalizeRun(
+      const { cancelled } = await finalizeDrainedRun(
         authClient,
         run.id,
-        "completed",
-        deps.now().toISOString(),
+        deps.now,
       );
       return {
         claimed: true,
         runId: run.id,
         processed,
-        cancelled: false,
-        completed: true,
+        cancelled,
+        completed: !cancelled,
       };
     }
     return {

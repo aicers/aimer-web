@@ -15,6 +15,7 @@ vi.mock("server-only", () => ({}));
 import {
   claimItem,
   createRun,
+  finalizeRun,
   getRun,
   recordItemResult,
   requestCancel,
@@ -394,6 +395,82 @@ describe.skipIf(!hasPostgres)("event backfill worker (DB)", () => {
     // Next tick observes the flag and finalizes cancelled.
     const r2 = await runEventBackfillTickOnce(deps({ customerPool: cp }));
     expect(r2.cancelled).toBe(true);
+    const run = await getRun(pool, cust, runId);
+    expect(run?.status).toBe("cancelled");
+  });
+
+  it("honours a cancel requested during the last item as cancelled", async () => {
+    // A cancel submitted DURING the last item's model call (after the
+    // per-item cancel check) must finalize the run `cancelled`, not silently
+    // report it `completed`.
+    const cust = await freshCustomer("ebf-cancel-last");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "60",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    const result = await runEventBackfillTickOnce(
+      deps({
+        customerPool: cp,
+        regenerate: async () => {
+          // Operator cancels while the last item is in flight.
+          await requestCancel(pool, cust, runId, "2026-06-08T00:00:00.000Z");
+          return { kind: "reanalyzed", generation: 2 };
+        },
+      }),
+    );
+    expect(result.cancelled).toBe(true);
+    expect(result.completed).toBe(false);
+    const run = await getRun(pool, cust, runId);
+    expect(run?.status).toBe("cancelled");
+    // The in-flight item's model call already happened, so it is recorded.
+    expect(run?.reanalyzedCount).toBe(1);
+  });
+
+  it("status-guards finalize: completed cannot overwrite cancelled", async () => {
+    // finalizeRun is guarded on a non-terminal status, so a late `completed`
+    // from one replica cannot clobber a `cancelled` already written by
+    // another.
+    const cust = await freshCustomer("ebf-guard");
+    const cp = fakeCustomerPool({
+      universe: [
+        {
+          aice_id: "a",
+          event_key: "65",
+          already_current: false,
+          source_present: true,
+        },
+      ],
+    });
+    const runId = await makeRun(cust, cp);
+    const client = await pool.connect();
+    try {
+      expect(
+        await finalizeRun(
+          client,
+          runId,
+          "cancelled",
+          "2026-06-08T00:00:00.000Z",
+        ),
+      ).toBe(true);
+      // A later finalize against the now-terminal run is a no-op.
+      expect(
+        await finalizeRun(
+          client,
+          runId,
+          "completed",
+          "2026-06-08T00:01:00.000Z",
+        ),
+      ).toBe(false);
+    } finally {
+      client.release();
+    }
     const run = await getRun(pool, cust, runId);
     expect(run?.status).toBe("cancelled");
   });

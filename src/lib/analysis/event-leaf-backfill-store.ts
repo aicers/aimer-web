@@ -516,20 +516,29 @@ export async function recordItemResult(
   }
 }
 
-/** Finalize a run to a terminal status. */
+/**
+ * Finalize a run to a terminal status. Guarded on `status IN ('pending',
+ * 'running')` so a terminal status is written at most once: once a run is
+ * `cancelled` / `completed` / `failed`, a later finalize from another
+ * replica (or a late-arriving completion after a cancel) is a no-op and
+ * cannot overwrite it. Whichever terminal status lands first wins, so
+ * `completed` can never clobber a `cancelled`/`failed` run. Returns `true`
+ * when this call performed the transition.
+ */
 export async function finalizeRun(
   client: PoolClient | Pool,
   runId: string,
   status: Extract<RunStatus, "completed" | "cancelled" | "failed">,
   nowIso: string,
   errorMessage?: string,
-): Promise<void> {
-  await client.query(
+): Promise<boolean> {
+  const res = await client.query(
     `UPDATE event_leaf_backfill_runs
         SET status = $2, finished_at = $3::timestamptz,
             last_progress_at = $3::timestamptz,
             error_message = COALESCE($4, error_message)
-      WHERE id = $1`,
+      WHERE id = $1 AND status IN ('pending', 'running')`,
     [runId, status, nowIso, errorMessage ?? null],
   );
+  return res.rowCount === 1;
 }
