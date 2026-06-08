@@ -11,10 +11,8 @@ import { SourcesPanel } from "@/components/analysis/sources-panel";
 import { AnalysisBody } from "@/components/analysis-body";
 import { Timestamp } from "@/components/timestamp";
 import { type AppLocale, reportLanguageToAppLocale } from "@/i18n/locale";
-import {
-  getDefaultModelPair,
-  getModelCatalog,
-} from "@/lib/analysis/model-catalog";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
+import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
   isValidBucketDate,
@@ -270,6 +268,12 @@ export default async function ReportDetailPage({
 
   const data = outcome.data;
 
+  // The "default" column in the compare view is the customer's resolved
+  // default model (#473 — per-customer override → admin global → env), the
+  // same pair the loader used to pick the unpinned variant, so the compare
+  // view and the loaded report never disagree on which column is default.
+  const defaultModelPair = await resolveDefaultModel(customerId);
+
   // Analyst-only model catalog (#458). Read server-side and passed to the
   // client picker/compare controls as serializable props — the catalog module
   // is server-only. Gated on `isViewerAnalyst`, the same flag that gates the
@@ -479,7 +483,7 @@ export default async function ReportDetailPage({
           primaryLabel={primaryLabel}
           compare={data.compare}
           compareTargetLabel={compareTargetLabel}
-          defaultModel={getDefaultModelPair()}
+          defaultModel={defaultModelPair}
           regenerateCta={
             <ReportRegenerateButton
               customerId={data.customerId}

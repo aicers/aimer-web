@@ -43,7 +43,8 @@ import {
   type CategoryCount,
   computeBaselineDrift,
 } from "./baseline-drift";
-import { getDefaultModelPair, getModelCatalog } from "./model-catalog";
+import { type ModelPair, resolveDefaultModel } from "./default-model";
+import { getModelCatalog } from "./model-catalog";
 import {
   computePriorityTier,
   maxTier,
@@ -199,7 +200,8 @@ const TIER_RANK_SQL = `(CASE priority_tier
  * Scope 1 / Scope 7 — never-drop coverage).
  *
  * The report's OWN `(model_name, model)` is always rank 1. For a DEFAULT report
- * (report model == `getDefaultModelPair()`) the configured `getModelCatalog()`
+ * (report model == the customer's resolved default, `defaultPair`, from
+ * `resolveDefaultModel`) the configured `getModelCatalog()`
  * order then supplies the fallback ranks (report pair removed, since it is
  * already rank 1) so a candidate story/event whose report-model leaf is missing
  * still surfaces from the first available fallback model — never silently
@@ -216,11 +218,12 @@ const TIER_RANK_SQL = `(CASE priority_tier
  */
 function leafPreferenceOrder(
   variant: ReportVariant,
+  defaultPair: ModelPair,
 ): Array<{ modelName: string; model: string }> {
   const reportPair = { modelName: variant.modelName, model: variant.model };
-  const def = getDefaultModelPair();
   const isDefaultReport =
-    variant.modelName === def.modelName && variant.model === def.model;
+    variant.modelName === defaultPair.modelName &&
+    variant.model === defaultPair.model;
   if (!isDefaultReport) return [reportPair];
   const order = [reportPair];
   for (const entry of getModelCatalog()) {
@@ -347,13 +350,14 @@ async function selectTopStories(
   args: {
     customerId: string;
     variant: ReportVariant;
+    defaultPair: ModelPair;
     readyStoryIds: string[];
     windows: Windows;
     limit: number;
   },
 ): Promise<StoryLeafRow[]> {
   if (args.readyStoryIds.length === 0) return [];
-  const pref = leafPreferenceOrder(args.variant);
+  const pref = leafPreferenceOrder(args.variant, args.defaultPair);
   const prefModelNames = pref.map((p) => p.modelName);
   const prefModels = pref.map((p) => p.model);
   // Two-phase, deliberately NOT collapsed (#465 Scope 1):
@@ -457,6 +461,7 @@ async function selectTopEvents(
   customerPool: Pool,
   args: {
     variant: ReportVariant;
+    defaultPair: ModelPair;
     windows: Windows;
     covered: Array<{ aice_id: string; event_key: string }>;
     limit: number;
@@ -464,7 +469,7 @@ async function selectTopEvents(
 ): Promise<EventLeafRow[]> {
   const coveredAice = args.covered.map((c) => c.aice_id);
   const coveredKey = args.covered.map((c) => c.event_key);
-  const pref = leafPreferenceOrder(args.variant);
+  const pref = leafPreferenceOrder(args.variant, args.defaultPair);
   const prefModelNames = pref.map((p) => p.modelName);
   const prefModels = pref.map((p) => p.model);
   const { rows } = await customerPool.query<EventLeafRow>(
@@ -767,11 +772,18 @@ export async function buildPeriodicReportInput(
     args.nowIso,
   );
 
+  // The customer's effective default pair drives the never-drop leaf
+  // fallback: only a DEFAULT report (report model == this pair) folds in
+  // other-model leaves. Resolved once here (per #473) so selection and
+  // the downstream coverage indicator agree on what "default" means.
+  const defaultPair = await resolveDefaultModel(args.customerId, args.authPool);
+
   // --- Top stories (variant + freshness + window overlap) -------------
   const readyStoryIds = await loadReadyStoryIds(args.authPool, args.customerId);
   const stories = await selectTopStories(args.customerPool, {
     customerId: args.customerId,
     variant: args.variant,
+    defaultPair,
     readyStoryIds,
     windows,
     limit: topStoriesK,
@@ -784,6 +796,7 @@ export async function buildPeriodicReportInput(
   );
   const events = await selectTopEvents(args.customerPool, {
     variant: args.variant,
+    defaultPair,
     windows,
     covered,
     limit: topEventsK,

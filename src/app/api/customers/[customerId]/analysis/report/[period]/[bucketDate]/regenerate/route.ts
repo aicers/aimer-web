@@ -24,6 +24,7 @@
 // variant: {tz, lang, model_name, model}, generation}`.
 
 import type { NextRequest } from "next/server";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import {
   isValidBucketDate,
   LIVE_BUCKET_DATE,
@@ -39,8 +40,6 @@ const UUID_RE =
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 const ALLOWED_LANGS = new Set(["KOREAN", "ENGLISH"]);
 
 function extractCustomerId(req: NextRequest): string | null {
@@ -96,13 +95,18 @@ export const POST = withAuth(
         { status: 400 },
       );
     }
-    const modelName =
-      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
-    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+    // Default model is per-customer (#473): resolve the customer's
+    // effective default (override → global → env) when the caller omits
+    // the model axis. An explicitly supplied param still wins.
+    const modelNameParam = req.nextUrl.searchParams.get("model_name");
+    const modelParam = req.nextUrl.searchParams.get("model");
 
     const pool = getAuthPool();
     const client = await pool.connect();
     try {
+      const def = await resolveDefaultModel(customerId, client);
+      const modelName = modelNameParam ?? def.modelName;
+      const model = modelParam ?? def.model;
       const authResult = await authorize(
         client,
         "general",

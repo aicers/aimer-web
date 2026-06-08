@@ -22,6 +22,9 @@ vi.mock("../redaction-ranges-section", () => ({
 vi.mock("../retention-section", () => ({
   RetentionSection: () => <div data-testid="retention-section" />,
 }));
+vi.mock("../default-model-section", () => ({
+  DefaultModelSection: () => <div data-testid="default-model-section" />,
+}));
 
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";

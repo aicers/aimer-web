@@ -36,14 +36,13 @@ import { getSessionPolicy } from "@/lib/auth/session-policy";
 import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { resolveDefaultModel } from "./default-model";
 import type { PriorityTier } from "./priority-tier";
 import type { PeriodKind } from "./report-bucket-date";
 
 // English is the guaranteed baseline (parent #386), the second link in the
 // per-bucket fallback chain (viewer language → English → any available).
 const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 // Per-period cap on the recent-bucket list so the index never renders an
 // unbounded list (#369). LIVE is a single rolling bucket; the calendar
@@ -255,8 +254,9 @@ export async function discoverReportBuckets(
   // --- Enrichment (customer DB): latest non-superseded result per bucket AND
   // language, at the default model variant. The default variant matches
   // `tz = state.tz` (the row's bucket tz, NOT the customer's current timezone
-  // — those differ after a tz change) and the env-default `(model_name,
-  // model)`. Unlike the prior pass this is NOT pinned to a single language:
+  // — those differ after a tz change) and the customer's resolved default
+  // `(model_name, model)` (#473 — per-customer override → admin global → env).
+  // Unlike the prior pass this is NOT pinned to a single language:
   // it returns every available language per bucket so the result can be
   // resolved to the viewer's language with the fallback chain (#388), and the
   // available-language set can drive the per-bucket hint + switcher. Best-
@@ -264,6 +264,7 @@ export async function discoverReportBuckets(
   // customer DB unavailable) degrades to links-only rather than failing.
   if (items.length > 0) {
     try {
+      const defaultPair = await resolveDefaultModel(customerId, authPool);
       const periods = items.map((i) => i.period);
       const bucketDates = items.map((i) => i.bucketDate);
       const tzs = items.map((i) => i.tz);
@@ -299,8 +300,8 @@ export async function discoverReportBuckets(
           bucketDates,
           tzs,
           customerId,
-          DEFAULT_MODEL_NAME,
-          DEFAULT_MODEL,
+          defaultPair.modelName,
+          defaultPair.model,
         ],
       );
       // Group the per-(bucket, language) winners by bucket so each bucket can

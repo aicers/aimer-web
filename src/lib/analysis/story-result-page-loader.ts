@@ -19,14 +19,13 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { type ModelPair, resolveDefaultModel } from "./default-model";
 import { restoreStoryFactTokens } from "./fact-token";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreStoryAnalysisTokens } from "./story-token-restore";
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 /**
  * One compare column's rendered data for the side-by-side story view (#458):
@@ -265,6 +264,12 @@ export async function loadStoryResultPage(
   );
   if (!auth.authorized) return { kind: "unauthorized" };
 
+  // The default MODEL is per-customer (#473): resolve the customer's
+  // effective default (override → global → env) once and use it wherever
+  // the "default variant" was previously the env pair. `lang` stays the
+  // env `DEFAULT_LANG` (lang is not DB-backed).
+  const defaultPair = await resolveDefaultModel(input.customerId, authPool);
+
   // The story read loader allows bridge sessions, but the story regenerate
   // endpoint authorizes with `operationKind: "write"`, which a bridge
   // session can never pass (`bridge_write_blocked`). So gate the button on
@@ -293,8 +298,8 @@ export async function loadStoryResultPage(
   // report-language enum the leaf row is keyed on.
   const lang = input.pin?.lang ?? input.variant?.lang ?? DEFAULT_LANG;
   const modelName =
-    input.pin?.modelName ?? input.variant?.modelName ?? DEFAULT_MODEL_NAME;
-  const model = input.pin?.model ?? input.variant?.model ?? DEFAULT_MODEL;
+    input.pin?.modelName ?? input.variant?.modelName ?? defaultPair.modelName;
+  const model = input.pin?.model ?? input.variant?.model ?? defaultPair.model;
   const pinnedGeneration = input.pin?.generation ?? null;
 
   const customerPool = getCustomerRuntimePool(input.customerId);
@@ -357,7 +362,11 @@ export async function loadStoryResultPage(
   // Fetched at the canonical event variant so the cards match the
   // Suspicious Events list; ordered by the member ordinal (`index`).
   const refs = Array.isArray(row.input_event_refs) ? row.input_event_refs : [];
-  const memberEvents = await fetchMemberEventDisplays(customerPool, refs);
+  const memberEvents = await fetchMemberEventDisplays(
+    customerPool,
+    refs,
+    defaultPair,
+  );
 
   // Analyst-only compare column (#458): a read-only EXACT, unpinned model-only
   // lookup of the compare model at the primary's language. Unlike the story
@@ -401,8 +410,8 @@ export async function loadStoryResultPage(
       memberEvents,
       memberEventVariant: {
         lang: DEFAULT_LANG,
-        modelName: DEFAULT_MODEL_NAME,
-        model: DEFAULT_MODEL,
+        modelName: defaultPair.modelName,
+        model: defaultPair.model,
       },
       compare,
     },
@@ -652,6 +661,9 @@ async function fetchMemberEventDisplays(
   // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
   customerPool: any,
   refs: ReadonlyArray<{ index: number; aiceId: string; eventKey: string }>,
+  // The canonical event variant the member cards match — keyed on the
+  // customer's per-customer default model (#473), not the env pair.
+  defaultPair: ModelPair,
 ): Promise<StoryMemberEvent[]> {
   const ordered = [...refs].sort((a, b) => a.index - b.index);
   if (ordered.length === 0) return [];
@@ -661,7 +673,7 @@ async function fetchMemberEventDisplays(
     .join(", ");
   const params: unknown[] = ordered.flatMap((r) => [r.aiceId, r.eventKey]);
   const base = ordered.length * 2;
-  params.push(DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL);
+  params.push(DEFAULT_LANG, defaultPair.modelName, defaultPair.model);
 
   const { rows } = await customerPool.query(
     `SELECT DISTINCT ON (aice_id, event_key)

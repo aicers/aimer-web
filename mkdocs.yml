@@ -33,6 +33,7 @@ plugins:
             - Threat Stories: analysis/threat-stories.md
             - Suspicious Events: analysis/suspicious-events.md
             - Periodic Security Reports: analysis/reports.md
+            - Default Analysis Model: analysis/default-model.md
             - Authentication: authentication.md
             - Navigation: navigation.md
             - Cross-Customer Overview: cross-customer-overview.md
@@ -65,6 +66,7 @@ plugins:
             - Threat Stories: analysis/threat-stories.md
             - Suspicious Events: analysis/suspicious-events.md
             - Periodic Security Reports: analysis/reports.md
+            - Default Analysis Model: analysis/default-model.md
             - Authentication: authentication.md
             - Navigation: navigation.md
             - Cross-Customer Overview: cross-customer-overview.md
@@ -94,6 +96,7 @@ plugins:
             Threat Stories: 위협 스토리
             Suspicious Events: 의심 이벤트
             Periodic Security Reports: 정기 보안 리포트
+            Default Analysis Model: 기본 분석 모델
             Authentication: 인증
             Navigation: 내비게이션
             Cross-Customer Overview: 고객 통합 개요

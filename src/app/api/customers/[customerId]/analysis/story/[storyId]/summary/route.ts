@@ -19,6 +19,7 @@
 // without the required permission gets a generic 403 Forbidden.
 
 import type { NextRequest } from "next/server";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { type AuthorizeResult, authorize } from "@/lib/auth/authorization";
 import { withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
@@ -28,8 +29,6 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
@@ -102,7 +101,10 @@ export const GET = withAuth(
       return Response.json(errorBody("Forbidden"), { status: 403 });
     }
 
-    // Read the latest non-superseded result for the default variant.
+    // Read the latest non-superseded result for the default variant. The
+    // default MODEL is per-customer (#473): resolve it (override → global →
+    // env) rather than reading env directly. `lang` stays the env default.
+    const def = await resolveDefaultModel(customerId);
     const customerPool = getCustomerRuntimePool(customerId);
     const rows = await customerPool.query<{
       priority_tier: string;
@@ -117,7 +119,7 @@ export const GET = withAuth(
           AND superseded_at IS NULL
         ORDER BY generation DESC
         LIMIT 1`,
-      [customerId, storyId, DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL],
+      [customerId, storyId, DEFAULT_LANG, def.modelName, def.model],
     );
     if (rows.rows.length === 0) {
       return Response.json({ exists: false });

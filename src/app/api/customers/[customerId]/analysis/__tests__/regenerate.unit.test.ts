@@ -13,6 +13,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+// The regenerate routes resolve the per-customer default model (#473)
+// before the upsert. Mock it to a fixed pair so it does not consume the
+// sequential `mockClientQuery` stubs the DB-shape assertions rely on.
+vi.mock("@/lib/analysis/default-model", () => ({
+  resolveDefaultModel: vi.fn(async () => ({
+    modelName: "openai",
+    model: "gpt-4o",
+  })),
+}));
+
 const mockAssertAuthorized = vi.fn();
 const mockAuthorize = vi.fn();
 const mockClientQuery = vi.fn();

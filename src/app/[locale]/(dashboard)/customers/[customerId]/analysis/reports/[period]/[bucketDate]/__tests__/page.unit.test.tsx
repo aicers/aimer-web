@@ -22,7 +22,12 @@ vi.mock("@/lib/analysis/report-result-page-loader", () => ({
 // analyst-only compare controls out of these (non-compare) render assertions.
 vi.mock("@/lib/analysis/model-catalog", () => ({
   getModelCatalog: () => [],
-  getDefaultModelPair: () => ({ modelName: "openai", model: "gpt-4o" }),
+}));
+
+// The page resolves the per-customer default model (#473) for the compare
+// view's "default" column; stub it (also `server-only`) to a fixed pair.
+vi.mock("@/lib/analysis/default-model", () => ({
+  resolveDefaultModel: async () => ({ modelName: "openai", model: "gpt-4o" }),
 }));
 
 vi.mock("next/navigation", () => ({

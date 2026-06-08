@@ -26,12 +26,15 @@ import "server-only";
 import type { Pool } from "pg";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { resolveCustomerReadAccess } from "./customer-read-access";
+import {
+  getEnvDefaultModel,
+  type ModelPair,
+  resolveDefaultModel,
+} from "./default-model";
 import { decodeCursor, encodeCursor } from "./keyset-cursor";
 import { type PriorityTier, priorityRankCaseSql } from "./priority-tier";
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 export const DEFAULT_PAGE_SIZE = 25;
 
@@ -108,19 +111,28 @@ export async function loadEventListPage(
   // a real 403.
   if (!access.permissions.has("analyses:read")) return { kind: "forbidden" };
 
+  // Default MODEL is per-customer (#473): the suspicious-events list shows
+  // the customer's default-variant analyses. Resolved here (override →
+  // global → env) and threaded into the pure query path.
+  const defaultPair = await resolveDefaultModel(input.customerId);
   const page = await queryEventListPage(
     getCustomerRuntimePool(input.customerId),
     input,
+    defaultPair,
   );
   return { kind: "ok", page };
 }
 
 /**
  * Pure query path without the auth preamble — exported for DB testing.
+ * `defaultPair` is the customer's resolved default model (#473); it
+ * defaults to the env pair so DB tests that omit it keep their prior
+ * behavior. `lang` remains the env default (lang is not DB-backed).
  */
 export async function queryEventListPage(
   customerPool: Pool,
   input: EventListPageInput,
+  defaultPair: ModelPair = getEnvDefaultModel(),
 ): Promise<EventListPage> {
   const pageSize =
     input.pageSize && input.pageSize > 0 ? input.pageSize : DEFAULT_PAGE_SIZE;
@@ -134,8 +146,8 @@ export async function queryEventListPage(
   const rankCase = priorityRankCaseSql("priority_tier");
 
   const lang = p(DEFAULT_LANG);
-  const modelName = p(DEFAULT_MODEL_NAME);
-  const model = p(DEFAULT_MODEL);
+  const modelName = p(defaultPair.modelName);
+  const model = p(defaultPair.model);
 
   const cursor = decodeCursor(input.cursor, isEventCursor);
 
@@ -265,8 +277,8 @@ export async function queryEventListPage(
     nextCursor,
     variant: {
       lang: DEFAULT_LANG,
-      modelName: DEFAULT_MODEL_NAME,
-      model: DEFAULT_MODEL,
+      modelName: defaultPair.modelName,
+      model: defaultPair.model,
     },
   };
 }

@@ -41,6 +41,7 @@ import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import { resolveDefaultModel } from "./default-model";
 import { buildFactTokenMap, type FactInput, type FactRef } from "./fact-token";
 import {
   type FactorAxis,
@@ -48,6 +49,7 @@ import {
   filterFactors,
 } from "./factor-filter";
 import { MITRE_VENDOR_VERSION, validateTtpTags } from "./mitre-ttp";
+import { getModelCatalog } from "./model-catalog";
 import {
   applyLikelihoodFloors,
   computePriorityTier,
@@ -1142,19 +1144,22 @@ async function finalizeJob(
   // WS3 (#392) — denormalize the canonical variant's priority onto
   // `story_analysis_state` so the Threat Stories list can order
   // priority-first and keyset-paginate in a single auth-DB query. Only the
-  // default (`WORKER_LANG`/`WORKER_MODEL_NAME`/`WORKER_MODEL`) variant feeds
-  // these columns — `story_analysis_state` carries one row per
-  // `(customer_id, story_id)`, and the list resolves each story to its
-  // single canonical variant, so a non-default-variant finalize must not
-  // overwrite the mirror. The scores stored here are the raw on-disk values
-  // (matching `story_analysis_result`), not the floored likelihood used only
-  // for tier lookup. Guarded on `status <> 'archived'`: a row that archived
-  // while this generation was in flight stays archived (the result is
-  // already superseded by the lifecycle).
+  // default variant feeds these columns — `story_analysis_state` carries one
+  // row per `(customer_id, story_id)`, and the list resolves each story to
+  // its single canonical variant, so a non-default-variant finalize must not
+  // overwrite the mirror. The default MODEL is now per-customer (#473):
+  // resolved through `resolveDefaultModel` so the mirror tracks the same
+  // variant the seeder treats as default (no silent mismatch). `lang` stays
+  // the env `WORKER_LANG` (lang is not DB-backed). The scores stored here are
+  // the raw on-disk values (matching `story_analysis_result`), not the
+  // floored likelihood used only for tier lookup. Guarded on
+  // `status <> 'archived'`: a row that archived while this generation was in
+  // flight stays archived (the result is already superseded by the lifecycle).
+  const defaultPair = await resolveDefaultModel(job.customer_id, authPool);
   if (
     job.lang === WORKER_LANG &&
-    job.model_name === WORKER_MODEL_NAME &&
-    job.model === WORKER_MODEL
+    job.model_name === defaultPair.modelName &&
+    job.model === defaultPair.model
   ) {
     await authPool.query(
       `UPDATE story_analysis_state
@@ -1543,15 +1548,71 @@ export async function seedRealStoryJobs(
   batchSize: number,
   nowIso: string = getCurrentTimestamp().toISOString(),
 ): Promise<void> {
+  // The default MODEL is per-customer (#473): the effective default for a
+  // customer is COALESCE(per-customer override, admin-set global, env). The
+  // override / global tiers live in `customer_default_model` /
+  // `system_settings`, so the seeding query computes the effective pair
+  // per row via a LEFT JOIN + COALESCE and carries it forward — what used
+  // to be the single env `WORKER_MODEL_NAME`/`WORKER_MODEL` pair is now
+  // resolved per customer. `lang` stays the env `WORKER_LANG` (lang is not
+  // DB-backed).
+  //
+  // DEFENSIVE catalog filtering (#473 review round 1): the SQL must mirror
+  // `resolveDefaultModel`'s read-path fallback so worker seeding and the
+  // page/coverage resolver cannot disagree. A stored per-customer override
+  // or global default that is malformed/partial (e.g. a global JSON missing
+  // `model`, which would otherwise mix the global `modelName` with the env
+  // `model`) or has fallen out of `ANALYSIS_MODEL_CATALOG` after it was
+  // saved (catalog change, or a direct DB write that bypassed the
+  // validating setter) is SKIPPED so resolution falls through to the next
+  // tier instead of seeding under a stale or mixed pair. The catalog is
+  // env/code-resident, so it is passed in as a JSON array ($5) and each DB
+  // tier is filtered against it here. `FOR UPDATE OF s` keeps the row lock
+  // on `story_analysis_state` only — the joined config tables are not
+  // locked.
+  const catalogJson = JSON.stringify(
+    getModelCatalog().map((e) => ({ modelName: e.modelName, model: e.model })),
+  );
   const { rows: actionable } = await authClient.query<{
     customer_id: string;
     story_id: string;
     status: "ready" | "dirty";
+    model_name: string;
+    model: string;
   }>(
-    `SELECT s.customer_id::text AS customer_id,
+    `WITH catalog AS (
+       SELECT elem->>'modelName' AS model_name,
+              elem->>'model'     AS model
+         FROM jsonb_array_elements($5::jsonb) AS elem
+     ),
+     global_default AS (
+       SELECT g.model_name, g.model
+         FROM (
+           SELECT value->>'modelName' AS model_name,
+                  value->>'model'     AS model
+             FROM system_settings
+            WHERE key = 'analysis_default_model'
+         ) g
+        WHERE g.model_name IS NOT NULL
+          AND g.model IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM catalog c
+             WHERE c.model_name = g.model_name AND c.model = g.model
+          )
+     )
+     SELECT s.customer_id::text AS customer_id,
             s.story_id::text    AS story_id,
-            s.status
+            s.status,
+            COALESCE(cdm.model_name, gd.model_name, $3) AS model_name,
+            COALESCE(cdm.model,      gd.model,      $4) AS model
        FROM story_analysis_state s
+       LEFT JOIN customer_default_model cdm
+         ON cdm.customer_id = s.customer_id
+        AND EXISTS (
+          SELECT 1 FROM catalog c
+           WHERE c.model_name = cdm.model_name AND c.model = cdm.model
+        )
+       LEFT JOIN global_default gd ON TRUE
       WHERE s.status = 'dirty'
          OR (s.status = 'ready'
              AND NOT EXISTS (
@@ -1559,13 +1620,13 @@ export async function seedRealStoryJobs(
                 WHERE j.customer_id = s.customer_id
                   AND j.story_id    = s.story_id
                   AND j.lang        = $2
-                  AND j.model_name  = $3
-                  AND j.model       = $4
+                  AND j.model_name  = COALESCE(cdm.model_name, gd.model_name, $3)
+                  AND j.model       = COALESCE(cdm.model,      gd.model,      $4)
              ))
       ORDER BY s.customer_id, s.story_id
       LIMIT $1
-      FOR UPDATE SKIP LOCKED`,
-    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL],
+      FOR UPDATE OF s SKIP LOCKED`,
+    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL, catalogJson],
   );
   for (const row of actionable) {
     if (row.status === "dirty") {
@@ -1597,13 +1658,7 @@ export async function seedRealStoryJobs(
         `SELECT generation FROM story_analysis_job
           WHERE customer_id = $1 AND story_id = $2::bigint
             AND lang = $3 AND model_name = $4 AND model = $5`,
-        [
-          row.customer_id,
-          row.story_id,
-          WORKER_LANG,
-          WORKER_MODEL_NAME,
-          WORKER_MODEL,
-        ],
+        [row.customer_id, row.story_id, WORKER_LANG, row.model_name, row.model],
       );
       if (existingJob.length === 0) {
         // Sub-case (c): no default-variant job to bump. Seed a fresh
@@ -1620,8 +1675,8 @@ export async function seedRealStoryJobs(
             row.customer_id,
             row.story_id,
             WORKER_LANG,
-            WORKER_MODEL_NAME,
-            WORKER_MODEL,
+            row.model_name,
+            row.model,
             nowIso,
           ],
         );
@@ -1657,8 +1712,8 @@ export async function seedRealStoryJobs(
             row.customer_id,
             row.story_id,
             WORKER_LANG,
-            WORKER_MODEL_NAME,
-            WORKER_MODEL,
+            row.model_name,
+            row.model,
             nowIso,
             MAX_GENERATION,
           ],
@@ -1686,8 +1741,8 @@ export async function seedRealStoryJobs(
         row.customer_id,
         row.story_id,
         WORKER_LANG,
-        WORKER_MODEL_NAME,
-        WORKER_MODEL,
+        row.model_name,
+        row.model,
         nowIso,
       ],
     );

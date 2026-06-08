@@ -64,12 +64,11 @@ import { getSessionPolicy } from "@/lib/auth/session-policy";
 import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { resolveDefaultModel } from "./default-model";
 import { type PriorityTier, tierRank } from "./priority-tier";
 import type { PeriodKind } from "./report-bucket-date";
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 /** Default top-K cap on the capped highest-risk / most-recent set (#391). */
 export const OVERVIEW_CAP = 25;
@@ -343,6 +342,9 @@ export async function fetchCustomerReports(
   const periods = stateRes.rows.map((r) => r.period);
   const bucketDates = stateRes.rows.map((r) => r.bucket_date);
   const tzs = stateRes.rows.map((r) => r.tz);
+  // Default MODEL is per-customer (#473): resolve this customer's effective
+  // default (override → global → env) for the canonical-variant enrichment.
+  const defaultPair = await resolveDefaultModel(customerId, authPool);
 
   // Step 2 — enrich from the customer DB: the canonical default-variant, non-
   // superseded, latest-generation result per `(period, bucket_date, tz)`,
@@ -389,8 +391,8 @@ export async function fetchCustomerReports(
     [
       customerId,
       DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
+      defaultPair.modelName,
+      defaultPair.model,
       periods,
       bucketDates,
       tzs,
@@ -421,7 +423,11 @@ export async function fetchCustomerEvents(
   // Customer DB only. `event_analysis_result` has no `customer_id` column —
   // the DB the row came from IS the customer attribution, so no
   // `detection_events` join is needed. Canonical row per `(aice_id,
-  // event_key)`: default variant, latest generation, not superseded.
+  // event_key)`: default variant, latest generation, not superseded. The
+  // default MODEL is per-customer (#473) — resolved on the shared auth pool;
+  // defensive fallback keeps a transient auth-DB hiccup from failing the
+  // overview tile.
+  const defaultPair = await resolveDefaultModel(customerId);
   const res = await pool.query<{
     aice_id: string;
     event_key: string;
@@ -454,7 +460,7 @@ export async function fetchCustomerEvents(
                severity_score DESC, likelihood_score DESC, requested_at DESC,
                aice_id ASC, event_key ASC
       LIMIT $4`,
-    [DEFAULT_LANG, DEFAULT_MODEL_NAME, DEFAULT_MODEL, cap],
+    [DEFAULT_LANG, defaultPair.modelName, defaultPair.model, cap],
   );
   const total = res.rows.length > 0 ? Number(res.rows[0].total_count) : 0;
   const rows: EventOverviewRow[] = res.rows.map((r) => ({
@@ -505,6 +511,9 @@ export async function fetchCustomerStories(
   if (total === 0) return { rows: [], total: 0 };
   const eligibleIds = stateRes.rows.map((r) => r.story_id);
   const eligibleRecency = stateRes.rows.map((r) => r.recency_at);
+  // Default MODEL is per-customer (#473): resolve this customer's effective
+  // default (override → global → env) for the canonical-variant enrichment.
+  const defaultPair = await resolveDefaultModel(customerId, authPool);
 
   // Step 2 — candidate priority/scores from the customer DB
   // `story_analysis_result`: canonical default variant, latest generation, not
@@ -553,8 +562,8 @@ export async function fetchCustomerStories(
     [
       customerId,
       DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
+      defaultPair.modelName,
+      defaultPair.model,
       eligibleIds,
       eligibleRecency,
       fetchCap,

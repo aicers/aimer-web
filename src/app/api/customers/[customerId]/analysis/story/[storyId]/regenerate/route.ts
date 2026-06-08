@@ -23,6 +23,7 @@
 // model_name, model}, generation}`.
 
 import type { NextRequest } from "next/server";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -33,8 +34,6 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 // Aimer's `Language` GraphQL enum is closed; sending anything else
 // would persist a bad job row that fails at the LLM call far from the
@@ -96,13 +95,19 @@ export const POST = withAuth(
         { status: 400 },
       );
     }
-    const modelName =
-      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
-    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+    // Default model is per-customer (#473): when the caller omits the
+    // model axis, resolve the customer's effective default (override →
+    // global → env) rather than reading env directly. Resolved below on
+    // the same auth client. An explicitly supplied param still wins.
+    const modelNameParam = req.nextUrl.searchParams.get("model_name");
+    const modelParam = req.nextUrl.searchParams.get("model");
 
     const pool = getAuthPool();
     const client = await pool.connect();
     try {
+      const def = await resolveDefaultModel(customerId, client);
+      const modelName = modelNameParam ?? def.modelName;
+      const model = modelParam ?? def.model;
       // Use `authorize()` directly (not `assertAuthorized`) because
       // bridge-write rejections need to surface as
       // `{error: "bridge_write_blocked"}` per the RFC 0002 / #296

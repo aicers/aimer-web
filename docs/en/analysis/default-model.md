@@ -1,0 +1,146 @@
+# Default Analysis Model
+
+The **default analysis model** is the model new analyses for a customer
+use by default. It is a standing, DB-backed setting resolved in three
+tiers, so different customers can use different models (for cost or
+quality trade-offs) without an environment redeploy.
+
+This is a separate layer from the one-off model an analyst can pick when
+regenerating a single report or story (see
+[Relationship to per-artifact selection](#relationship-to-per-artifact-model-selection)).
+
+## Resolution order
+
+When a default model is needed for a customer — for new analyses and for
+force-regenerate or summary/detail views that do not name a model
+explicitly — it is resolved in this order:
+
+1. **Per-customer override** — a value set for that specific customer.
+2. **Admin-set global default** — a single system-wide default set by a
+    System Administrator.
+3. **Deployment fallback** — the environment defaults
+    (`ANALYSIS_DEFAULT_MODEL_NAME` / `ANALYSIS_DEFAULT_MODEL`), which keep
+    existing deployments working when neither database tier is set.
+
+The first tier that has a usable value wins. If a stored value is no
+longer in the allowed model catalog (for example, a model that was later
+removed from the catalog), it is skipped and the next tier is used, so a
+stale setting never breaks page loads.
+
+## Permissions
+
+| Setting | Who can view and change it |
+| --- | --- |
+| **Global default** | System Administrator only. |
+| **Per-customer override** | System Administrator (any customer) and an Analyst assigned to that customer. |
+
+Managers and Users can neither view nor change the default analysis
+model. Every change records who made it.
+
+## Setting a customer's default model
+
+An Analyst assigned to the customer sets the per-customer default from
+**Customer Settings**, under **Default analysis model**. Open Customer
+Settings while scoped to a single customer.
+
+1. Choose a model from the **Model** dropdown. The list is the allowed
+    model catalog for this deployment.
+2. Click **Save**.
+
+The section shows the model currently in effect and where it comes from —
+the per-customer override, the global default, or the deployment
+fallback.
+
+![The Customer Settings "Default analysis model" section: the current-source line ("Currently using openai / gpt-5.5 (from the per-customer override)"), the model dropdown, and the Save and "Reset to global default" buttons](../../assets/analysis-default-model-customer.en.png)
+
+A System Administrator can set **any** customer's override — including
+customers they are not assigned to as an analyst — from the **Admin →
+Settings** page, under **Default analysis model (per customer)**. Pick a
+customer, then choose a model and **Save**, or **Reset to global default**
+to clear the override. This admin surface and the analyst-facing Customer
+Settings control drive the same underlying setting, and — like the analyst
+surface — both offer to re-analyze the customer's existing data after a
+successful change (see [What a change affects](#what-a-change-affects)).
+
+### Clearing the override (reset to global)
+
+When a per-customer override is set, a **Reset to global default** button
+appears. Clearing the override removes the customer-specific value and
+reverts the customer to the global default (or, if no global default is
+set, to the deployment fallback).
+
+## Setting the global default
+
+A System Administrator sets the system-wide default from the **Admin →
+Settings** page, under **Default analysis model (global)**.
+
+1. Choose a model from the **Model** dropdown.
+2. Click **Save**.
+
+Use **Clear global default** to remove it and revert global resolution to
+the deployment fallback.
+
+![The Admin Settings "Default analysis model (global)" section: the current-global line ("Current global default: anthropic / claude-3-5-sonnet"), the model dropdown, and the Save and "Clear global default" buttons](../../assets/analysis-default-model-global.en.png)
+
+## Invalid values
+
+The setter blocks a model that is not in the allowed catalog: the save is
+rejected and the section shows an error rather than storing an unusable
+value. As a second safeguard, if a stored value later falls out of the
+catalog, resolution skips it and falls back to the next tier instead of
+failing.
+
+In that case the **global default** section does not advertise the stale
+value as if it were live: it shows the stored value as ignored alongside
+the deployment fallback that is actually in effect, and prompts the
+administrator to pick a valid model or clear the global default. The
+settings page therefore always matches what the resolver actually uses.
+
+## What a change affects
+
+Changing a customer's default model affects **future** analyses (and
+force-regenerate calls that do not name a model) only. **Existing results
+are not changed.**
+
+After a successful change — whether made from Customer Settings or from
+the Admin per-customer surface — the section offers to re-analyze the
+customer's existing data under the new model. The offer is the **entry
+point** to that follow-on action: a **Re-analyze existing data** button
+opens a customer-scoped re-analysis page (the analyst surface opens the
+Customer Settings re-analysis page; the admin surface opens the equivalent
+admin re-analysis page for the selected customer), and a **Dismiss** button
+closes the offer without doing anything. It is an **offer only** — nothing
+is re-analyzed automatically, because re-analyzing all existing data is a
+bounded, cost-controlled operation that an operator launches
+deliberately.
+
+The re-analysis page is the stable, in-app entry point for that scoped
+run (re-running the customer's story and event analyses, then refreshing
+its reports). The cost preview and launch controls for that run are
+delivered separately; until then the page explains the action, shows the
+new default model, and restates that existing results stay untouched
+until a re-analysis is deliberately started.
+
+## Default variant and coverage
+
+A report or story is treated as the **default variant** when its model
+matches the customer's resolved default. The detail view marks this
+variant and uses it as the baseline "default" column in the two-model
+compare view, and the coverage indicator is computed against it.
+
+Because the default is now per-customer, this "default variant" decision
+follows the same three-tier resolution as everything else: it tracks the
+customer's effective default rather than a single deployment-wide value.
+The variant the analysis worker seeds as default and the variant the
+coverage logic treats as default are always the same one, so they never
+disagree about which column is the default.
+
+## Relationship to per-artifact model selection
+
+These two settings coexist as different layers:
+
+- **Per-customer default model (this page)** — the standing model new
+    analyses for the customer use by default.
+- **Per-artifact selection** — a one-off override when an analyst
+    regenerates a single report or story, or runs a two-model compare. It
+    does **not** change the customer default.

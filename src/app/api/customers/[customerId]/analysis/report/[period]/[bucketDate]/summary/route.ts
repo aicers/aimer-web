@@ -29,6 +29,7 @@ import {
   isSupportedLocale,
   type ReportLanguage,
 } from "@/i18n/locale";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import {
   isValidBucketDate,
   LIVE_BUCKET_DATE,
@@ -48,8 +49,6 @@ const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 // `ANALYSIS_DEFAULT_LANG` — keeping the endpoint locale-stateless (#388).
 // Viewer-aware callers pass the resolved locale-code `?lang=`.
 const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
@@ -166,9 +165,13 @@ export const GET = withAuth(
     const lang = isSupportedLocale(langParam)
       ? appLocaleToReportLanguage(langParam)
       : ENGLISH_BASELINE;
+    // Default model is per-customer (#473): resolve the customer's
+    // effective default (override → global → env) when the caller omits
+    // the model axis. An explicitly supplied param still wins.
+    const def = await resolveDefaultModel(customerId);
     const modelName =
-      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
-    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+      req.nextUrl.searchParams.get("model_name") ?? def.modelName;
+    const model = req.nextUrl.searchParams.get("model") ?? def.model;
 
     const customerPool = getCustomerRuntimePool(customerId);
     const rows = await customerPool.query<{
