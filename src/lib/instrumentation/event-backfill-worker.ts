@@ -40,6 +40,10 @@ import {
   type RegenerateEventOutcome,
   regenerateEventLeaf,
 } from "../analysis/regenerate-event";
+import {
+  isSupportedLang,
+  type SupportedLang,
+} from "../analysis/run-analyze-flow";
 import { getAuthPool } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
 import { getCurrentTimestamp } from "./time";
@@ -104,7 +108,10 @@ function defaultDeps(): EventBackfillDeps {
         customerId: run.customerId,
         aiceId: item.aiceId,
         eventKey: item.eventKey,
-        lang: run.lang as never,
+        // The create path only ever stores ENGLISH/KOREAN; narrow defensively.
+        lang: (isSupportedLang(run.lang)
+          ? run.lang
+          : "ENGLISH") as SupportedLang,
         modelName: run.modelName,
         model: run.model,
         accountId: run.createdBy ?? "",
