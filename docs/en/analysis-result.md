@@ -81,7 +81,8 @@ fields](#analyst-only-fields) below):
 - **Model snapshot** — the provider-reported specific model version.
 - **Prompt version** — the aimer prompt template version.
 - **Requested by** — the account id that triggered the analysis, as
-  stored on the analysis row.
+  stored on the analysis row. For a result produced by the baseline-event
+  auto-analysis worker (no human requester), this reads **system**.
 - **Requested at** — when the analysis was requested, shown in your
   timezone with an explicit timezone label. See
   [Account Preferences → Timezone](account-preferences.md#timezone) for
@@ -190,12 +191,18 @@ link. The retention banner makes the end-of-chain state explicit.
 
 ## Retention banner
 
-If the source `detection_events` row has been removed by retention but
-the analysis row survives, the page shows a yellow banner reading
-"Source event removed by retention; analysis result preserved." Both the
-"View source event" hop and the "Force re-run" button are hidden in this
-state: the raw event no longer exists to link to, and force re-run
-requires the original event payload, which only aice-web-next holds.
+If the source row has been removed by retention but the analysis row
+survives, the page shows a yellow banner reading "Source event removed by
+retention; analysis result preserved." Both the "View source event" hop
+and the "Force re-run" button are hidden in this state: the raw event no
+longer exists to link to, and force re-run requires the original event
+payload, which only aice-web-next holds.
+
+The source row probed depends on how the result was produced: a manual
+result probes `detection_events`, while a baseline-event auto-analysis
+result probes `baseline_event` (an auto result never has a
+`detection_events` row, so it is not treated as retention-swept while its
+baseline event still exists).
 
 ## Regenerate this event (in-app)
 

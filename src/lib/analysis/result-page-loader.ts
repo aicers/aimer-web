@@ -8,8 +8,10 @@
 //      (operationKind: 'read').
 //   3. Fetch the `event_analysis_result` row + the matching
 //      `event_redaction_map` row from the customer DB.
-//   4. Note whether the underlying `detection_events` row still
-//      exists (cascade-edge state for the force re-run button).
+//   4. Note whether the underlying source row still exists (cascade-edge
+//      state for the force re-run button). The source table depends on the
+//      result's `origin`: a `manual` row probes `detection_events`, an
+//      `auto_baseline` row probes `baseline_event` (#493).
 //
 // Returns a discriminated union so the page renders a typed result
 // without ever throwing across the network boundary.
@@ -123,7 +125,21 @@ export interface AnalysisResultPageData {
   ttpTags: Array<{ id: string; name: string | null }>;
   /** Token-restored analysis text — safe to render as-is. */
   analysisText: string;
-  requestedBy: string;
+  /**
+   * How the result was produced (#493): `manual` is the synchronous
+   * analyst-requested path; `auto_baseline` is the baseline-event
+   * auto-analysis worker. Auto rows have a `NULL` `requestedBy` (no human
+   * requester) and their source row lives in `baseline_event`, not
+   * `detection_events` — both render branches key off this.
+   */
+  origin: "manual" | "auto_baseline";
+  /**
+   * The human who requested the analysis. `null` for an `auto_baseline`
+   * row, which has no human requester (the worker is attributed via the
+   * audit actor instead). The page renders the localized "system" label
+   * in that case, mirroring the story/report pages.
+   */
+  requestedBy: string | null;
   requestedAt: Date;
   /**
    * Whether the viewer is an analyst for this customer (#457/#463). Gates
@@ -142,11 +158,15 @@ export interface AnalysisResultPageData {
    */
   canRegenerate: boolean;
   /**
-   * Whether the source `detection_events` row still exists. When
-   * `false`, retention has swept the source event but the analysis
-   * row + map row survive (RFC 0001 §"Retention" cascade rule). The
-   * page renders the "source event removed by retention; analysis
-   * preserved" banner and hides the force re-run button.
+   * Whether the source row still exists. The source table depends on
+   * `origin`: a `manual` row probes `detection_events`; an
+   * `auto_baseline` row probes `baseline_event` (an auto row has no
+   * `detection_events` row by design, so probing that table would falsely
+   * report a retention sweep even while the baseline event survives). When
+   * `false`, retention has swept the source event but the analysis row +
+   * map row survive (RFC 0001 §"Retention" cascade rule). The page renders
+   * the "source event removed by retention; analysis preserved" banner and
+   * hides the force re-run button.
    */
   sourceEventPresent: boolean;
   /**
@@ -306,8 +326,9 @@ export async function loadAnalysisResultPage(
     prompt_version: string | null;
     generation: number;
     superseded_at: Date | null;
-    requested_by: string;
+    requested_by: string | null;
     requested_at: Date;
+    origin: "manual" | "auto_baseline";
   }>(
     pinnedGeneration === null
       ? `SELECT
@@ -323,7 +344,8 @@ export async function loadAnalysisResultPage(
            generation,
            superseded_at,
            requested_by,
-           requested_at
+           requested_at,
+           origin
          FROM event_analysis_result
          WHERE aice_id = $1
            AND event_key = $2::numeric
@@ -346,7 +368,8 @@ export async function loadAnalysisResultPage(
            generation,
            superseded_at,
            requested_by,
-           requested_at
+           requested_at,
+           origin
          FROM event_analysis_result
          WHERE aice_id = $1
            AND event_key = $2::numeric
@@ -410,11 +433,23 @@ export async function loadAnalysisResultPage(
     restoredText = restoreRedactedTokens(row.analysis_text, redactionMap);
   }
 
+  // Source-presence probe. The source table depends on how the result was
+  // produced: a manual row's source lives in `detection_events`; an
+  // auto-baseline row's source lives in `baseline_event` (keyed by
+  // `source_aice_id`, which the seeder maps to `aice_id`). An auto row never
+  // has a `detection_events` row, so probing that table unconditionally would
+  // falsely raise the retention banner on a freshly auto-analyzed event whose
+  // baseline source still exists (#493).
   const sourcePresent = await customerPool.query<{ exists: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM detection_events
-       WHERE aice_id = $1 AND event_key = $2::numeric
-     ) AS exists`,
+    row.origin === "auto_baseline"
+      ? `SELECT EXISTS (
+           SELECT 1 FROM baseline_event
+           WHERE source_aice_id = $1 AND event_key = $2::numeric
+         ) AS exists`
+      : `SELECT EXISTS (
+           SELECT 1 FROM detection_events
+           WHERE aice_id = $1 AND event_key = $2::numeric
+         ) AS exists`,
     [input.aiceId, input.eventKey],
   );
 
@@ -500,6 +535,7 @@ export async function loadAnalysisResultPage(
       likelihoodFactors: row.likelihood_factors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
       analysisText: restoredText,
+      origin: row.origin,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
       isViewerAnalyst,

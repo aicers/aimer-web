@@ -156,6 +156,8 @@ function okOutcome(
     isViewerAnalyst?: boolean;
     canRegenerate?: boolean;
     sourceEventPresent?: boolean;
+    origin?: "manual" | "auto_baseline";
+    requestedBy?: string | null;
     compare?: EventCompareOutcome;
   } = {},
 ): ResultPageOutcome {
@@ -178,7 +180,9 @@ function okOutcome(
       likelihoodFactors: ["lateral movement"],
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
       analysisText: "narrative",
-      requestedBy: "acc-1",
+      origin: viewer.origin ?? "manual",
+      requestedBy:
+        viewer.requestedBy === undefined ? "acc-1" : viewer.requestedBy,
       requestedAt: new Date("2026-05-20T00:00:00Z"),
       isViewerAnalyst: viewer.isViewerAnalyst ?? false,
       canRegenerate: viewer.canRegenerate ?? false,
@@ -249,6 +253,27 @@ describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () 
     expect(screen.queryByTestId("event-regenerate-button")).toBeNull();
     expect(screen.queryByTestId("force-rerun-link")).toBeNull();
     expect(screen.getByTestId("retention-banner")).toBeTruthy();
+  });
+
+  it("renders the system label and no retention banner for an auto-baseline result", async () => {
+    // An auto-baseline leaf has `requestedBy=NULL` (no human requester) and
+    // its backing `baseline_event` still exists, so the loader reports
+    // `sourceEventPresent=true`. The page must show the localized "system"
+    // label instead of an empty Requested-by field and must NOT raise the
+    // retention banner (#493).
+    mockLoad.mockResolvedValueOnce(
+      okOutcome({
+        isViewerAnalyst: true,
+        canRegenerate: true,
+        origin: "auto_baseline",
+        requestedBy: null,
+        sourceEventPresent: true,
+      }),
+    );
+    await renderPage(VARIANT);
+    expect(screen.getByText("Requested by")).toBeTruthy();
+    expect(screen.getByText("system")).toBeTruthy();
+    expect(screen.queryByTestId("retention-banner")).toBeNull();
   });
 });
 
