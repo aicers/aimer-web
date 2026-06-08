@@ -27,6 +27,7 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { resolveDefaultModel } from "./default-model";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { buildReportTokenMap } from "./report-token";
@@ -39,8 +40,6 @@ import { enqueueOnDemandReportJob } from "./report-worker";
 // L2 defaults the report language to the *viewer's* locale, not the
 // deployment's configured generation default (#388 scope).
 const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 /**
  * Phase-2 on-demand status for the requested (not-yet-available) language,
@@ -450,7 +449,9 @@ export async function loadReportResultPage(
 
   // Variant resolution: each selector falls back to its default when the
   // caller did not pin it. Default tz = the customer's current timezone
-  // snapshot; model_name/model default to the env-configured variant.
+  // snapshot; model_name/model default to the customer's resolved default
+  // (#473 — per-customer override → admin global → env), so the page and the
+  // coverage indicator below agree on which variant is "the default".
   let tz: string;
   if (input.variant?.tz) {
     tz = input.variant.tz;
@@ -461,8 +462,9 @@ export async function loadReportResultPage(
     );
     tz = tzRow.rows[0]?.timezone ?? "UTC";
   }
-  const modelName = input.variant?.model_name ?? DEFAULT_MODEL_NAME;
-  const model = input.variant?.model ?? DEFAULT_MODEL;
+  const defaultPair = await resolveDefaultModel(input.customerId, authPool);
+  const modelName = input.variant?.model_name ?? defaultPair.modelName;
+  const model = input.variant?.model ?? defaultPair.model;
 
   // Requested language = pinned `?lang` (validated to a real app locale) →
   // else the viewer's locale (validated) → else the English baseline. The

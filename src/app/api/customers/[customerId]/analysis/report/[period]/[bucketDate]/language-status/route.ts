@@ -21,6 +21,7 @@ import {
   isSupportedLocale,
   type ReportLanguage,
 } from "@/i18n/locale";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import {
   isValidBucketDate,
   LIVE_BUCKET_DATE,
@@ -33,8 +34,6 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PERIODS = new Set(["LIVE", "DAILY", "WEEKLY", "MONTHLY"]);
 const ENGLISH_BASELINE: ReportLanguage = "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
@@ -113,9 +112,12 @@ export const GET = withAuth(
       const lang = isSupportedLocale(langParam)
         ? appLocaleToReportLanguage(langParam)
         : ENGLISH_BASELINE;
+      // Default model is per-customer (#473): resolve on the same auth
+      // client (override → global → env). An explicit param still wins.
+      const def = await resolveDefaultModel(customerId, client);
       const modelName =
-        req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
-      const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+        req.nextUrl.searchParams.get("model_name") ?? def.modelName;
+      const model = req.nextUrl.searchParams.get("model") ?? def.model;
 
       const jobRow = await client.query<{ status: string }>(
         `SELECT status FROM periodic_report_job

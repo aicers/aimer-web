@@ -24,17 +24,18 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { resolveDefaultModel } from "./default-model";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreRedactedTokens } from "./restore";
 
-// Default variant the story detail page resolves when a backlink opens it
+// Default LANG the story detail page resolves when a backlink opens it
 // without explicit variant params (mirrors `story-result-page-loader.ts`).
-// The event→story backlink lookup is scoped to this variant so the
+// The default MODEL is per-customer (#473) and resolved at request time via
+// `resolveDefaultModel`, so only `lang` remains env-derived here. The
+// event→story backlink lookup is scoped to that default variant so the
 // generation it pins is one the story page can actually render.
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 export type ResultPageOutcome =
   | { kind: "unauthorized" }
@@ -220,6 +221,9 @@ export async function loadAnalysisResultPage(
   );
   if (!auth.authorized) return { kind: "unauthorized" };
 
+  // The default MODEL for the parent-story backlink is per-customer (#473).
+  const defaultPair = await resolveDefaultModel(input.customerId, authPool);
+
   // The event read loader allows bridge sessions, but the in-app regenerate
   // endpoint authorizes with `operationKind: "write"`, which a bridge
   // session can never pass (`bridge_write_blocked`). Gate the button on a
@@ -386,8 +390,8 @@ export async function loadAnalysisResultPage(
       input.customerId,
       JSON.stringify([{ aiceId: input.aiceId, eventKey: input.eventKey }]),
       DEFAULT_LANG,
-      DEFAULT_MODEL_NAME,
-      DEFAULT_MODEL,
+      defaultPair.modelName,
+      defaultPair.model,
     ],
   );
   const parentStories = [...parentStoryRows.rows]

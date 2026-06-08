@@ -30,6 +30,7 @@
 
 import type { NextRequest } from "next/server";
 import { analyzeErrorResponse } from "@/lib/analysis/analyze-types";
+import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { parseEventTime } from "@/lib/analysis/event-time";
 import {
   analyzeAndStoreEventResult,
@@ -53,8 +54,6 @@ const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
-const DEFAULT_MODEL_NAME = process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? "openai";
-const DEFAULT_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? "gpt-4o";
 
 // aimer's `Language` GraphQL enum is closed; the API boundary enforces it
 // so a bad value cannot reach the LLM call.
@@ -108,13 +107,18 @@ export const POST = withAuth(
         { status: 400 },
       );
     }
-    const modelName =
-      req.nextUrl.searchParams.get("model_name") ?? DEFAULT_MODEL_NAME;
-    const model = req.nextUrl.searchParams.get("model") ?? DEFAULT_MODEL;
+    // Default model is per-customer (#473): resolve the customer's
+    // effective default (override → global → env) when the caller omits
+    // the model axis. An explicitly supplied param still wins.
+    const modelNameParam = req.nextUrl.searchParams.get("model_name");
+    const modelParam = req.nextUrl.searchParams.get("model");
 
     const authPool = getAuthPool();
     const client = await authPool.connect();
     try {
+      const def = await resolveDefaultModel(customerId, client);
+      const modelName = modelNameParam ?? def.modelName;
+      const model = modelParam ?? def.model;
       // Use `authorize()` directly so a bridge-write rejection surfaces as
       // `{error: "bridge_write_blocked"}` rather than a generic 403 — same
       // contract as the story regenerate route (#296/#463).
