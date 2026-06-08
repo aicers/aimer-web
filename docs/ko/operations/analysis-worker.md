@@ -106,6 +106,15 @@ Tier-B 상한은 **시드 시점 예약(seed-time reservation)** 입니다:
 **가장 이른** 이벤트가 예산을 차지합니다 — 송신자 필드 기반 재정렬은
 없습니다.
 
+적격성(eligibility)은 시드 시점뿐 아니라 워커가 작업을 클레임(claim)할
+때 다시 확인합니다. 워커는 비동기이므로, 시드와 픽업 사이의 간극에서
+스토리 배치가 해당 이벤트를 멤버로 편입하거나 수동/기본 변형
+`event_analysis_result`가 나타날 수 있습니다. 두 경우 모두 이제 무효가
+된(stale) 자동 작업은 예산이나 LLM 비용을 쓰기 **전에**, 그리고 라이브
+리프를 supersede 하기 전에 종료 상태 `done`으로 취소됩니다(사유는
+`last_error`에 기록). 따라서 스토리 멤버는 결코 자동 분석되지 않고,
+수동 경로의 가시적 결과도 덮어쓰이지 않습니다.
+
 자동 분석된 리프(leaf)가 저장되면 워커는 해당 이벤트가 속한 주기
 리포트 버킷을 다시 더티(dirty) 처리합니다(베이스라인 인제스트 훅이
 올리는 것과 동일한 더티 신호). 리프는 여러 틱에 걸쳐 비동기적으로
@@ -137,4 +146,4 @@ Tier-B 상한은 **시드 시점 예약(seed-time reservation)** 입니다:
 액터로 귀속됨)이 기록됩니다. 워커는 비율 모니터링을 위해 구조화된
 `analysis.baseline_auto.*` 로그 라인(`tier_a_analyzed`,
 `tier_b_admitted`, `budget_skipped`, `coverage_holdfallback`,
-`tier_a_disabled_held`)을 방출합니다.
+`tier_a_disabled_held`, `stale_cancelled`)을 방출합니다.

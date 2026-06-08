@@ -286,6 +286,74 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     expect(held?.selection_tier).toBeNull(); // held: not yet classified
   });
 
+  // ---- claim-time eligibility re-check (stale-job races) ----------------
+
+  it("cancels a stale job when a story member appears AFTER seeding", async () => {
+    // The event is loose at seed time (tier-A IOC verdict → would analyze),
+    // but a story batch adopts it as a member before the worker picks it up.
+    // The async auto job must NOT produce an `auto_baseline` leaf (#493: story
+    // members are never auto-analyzed here).
+    await writeVerdict("130", { knownIocHit: true, coverage: "complete" });
+    await seed(["130"]);
+    await seedStoryMember("130"); // becomes a member in the seed→pickup gap
+
+    const localAnalyze = vi.fn(async () => ({
+      kind: "analyzed" as const,
+      generation: 1,
+    }));
+    await process(
+      "130",
+      baseOpts({
+        analyzeLeaf:
+          localAnalyze as unknown as ProcessEventJobOptions["analyzeLeaf"],
+      }),
+    );
+
+    expect(localAnalyze).not.toHaveBeenCalled(); // no LLM spend
+    const job = await loadJob("130");
+    expect(job?.status).toBe("done"); // terminal, never re-picked
+    expect(job?.selection_tier).toBeNull(); // never classified → no budget used
+  });
+
+  it("cancels a stale job when a live leaf appears AFTER seeding (manual path preserved)", async () => {
+    // The event is loose + unanalyzed at seed time (complete-coverage miss →
+    // would be tier B), but a manual/default-variant leaf appears before the
+    // worker picks it up. The auto job must NOT run — running it would
+    // supersede the live (manual) leaf before inserting an `auto_baseline`
+    // row, changing the manual path's visible result and violating the
+    // settled live-leaf dedupe rule.
+    await writeVerdict("131", { knownIocHit: false, coverage: "complete" });
+    await seed(["131"]);
+    await seedLiveLeaf("131"); // a live leaf appears in the seed→pickup gap
+
+    const localAnalyze = vi.fn(async () => ({
+      kind: "analyzed" as const,
+      generation: 1,
+    }));
+    await process(
+      "131",
+      baseOpts({
+        analyzeLeaf:
+          localAnalyze as unknown as ProcessEventJobOptions["analyzeLeaf"],
+      }),
+    );
+
+    expect(localAnalyze).not.toHaveBeenCalled();
+    const job = await loadJob("131");
+    expect(job?.status).toBe("done");
+    expect(job?.selection_tier).toBeNull();
+    // The pre-existing leaf is untouched: still the single live row, NOT
+    // superseded by the cancelled auto job.
+    const { rows } = await customerPool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric
+          AND lang = $3 AND model_name = $4 AND model = $5
+          AND superseded_at IS NULL`,
+      [AICE_ID, "131", LANG, MODEL_NAME, MODEL],
+    );
+    expect(Number(rows[0].n)).toBe(1);
+  });
+
   // ---- tier A -----------------------------------------------------------
 
   it("always analyzes a tier-A IOC verdict", async () => {

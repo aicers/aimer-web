@@ -334,6 +334,8 @@ export interface ProcessEventJobOptions {
   loadVerdict?: typeof loadEventEnrichmentVerdict;
   driveEnrichment?: typeof runEventEnrichment;
   analyzeLeaf?: typeof analyzeBaselineEventLeaf;
+  /** Loose-membership predicate (#492), re-checked at claim time. */
+  storyMemberCheck?: typeof isStoryMember;
   /** Options threaded into `runEventEnrichment` (feed store, redaction map). */
   enrichmentOptions?: Partial<EventEnrichmentOptions>;
   now?: () => Date;
@@ -689,6 +691,62 @@ async function requeueOrFailAnalysis(
   );
 }
 
+/**
+ * A non-superseded target-variant leaf already exists (a manual result, a
+ * default-variant regenerate, or a prior auto run). The settled live-leaf
+ * dedupe rule (#493, mirroring #470): never re-analyze when such a leaf
+ * exists. Re-checked at claim time, not just at seed time.
+ */
+async function liveLeafExists(
+  customerPool: Pool,
+  job: EventJobPickup,
+): Promise<boolean> {
+  const { rows } = await customerPool.query<{ one: number }>(
+    `SELECT 1 AS one
+       FROM event_analysis_result
+      WHERE aice_id = $1 AND event_key = $2::numeric
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND superseded_at IS NULL
+      LIMIT 1`,
+    [job.aice_id, job.event_key, job.lang, job.model_name, job.model],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Cancel a stale auto job that became ineligible after seeding (a story
+ * member or a live leaf appeared in the async gap before pickup). Terminal
+ * `done`: the job's goal — that this loose event is covered — now holds via
+ * another path (story scope / the existing leaf), so there is no further work.
+ * `selection_tier` stays whatever it was (NULL for a row cancelled before
+ * classification, so no tier-B slot is consumed); the reason is recorded in
+ * `last_error`. The queued-job pickup never re-selects a `done` row.
+ */
+async function cancelStaleJob(
+  authPool: Pool,
+  job: EventJobPickup,
+  reason: string,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE event_analysis_job
+        SET status = 'done',
+            last_error = $7,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+        AND lang = $4 AND model_name = $5 AND model = $6
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.aice_id,
+      job.event_key,
+      job.lang,
+      job.model_name,
+      job.model,
+      reason,
+    ],
+  );
+}
+
 export async function processEventJob(
   job: EventJobPickup,
   opts: ProcessEventJobOptions,
@@ -720,6 +778,38 @@ export async function processEventJob(
     ],
   );
   if (claim.rowCount === 0) return; // lost the pickup race
+
+  // Re-check eligibility at claim time. Seeding screened story membership and
+  // the live-leaf dedupe, but the worker is asynchronous: in the gap between
+  // seed and pickup a story batch may have adopted this event as a member, or
+  // a manual / default-variant `event_analysis_result` may have appeared.
+  // Either makes this auto job stale — #493 says story members are never
+  // auto-analyzed here, and the live-leaf dedupe is settled. Re-checking now,
+  // BEFORE spending the tier-B budget / the LLM call and BEFORE
+  // `analyzeAndStoreEventResult` would supersede the live leaf (and thereby
+  // change the manual path's visible result), cancels the stale job instead
+  // of producing an `auto_baseline` leaf that violates either rule.
+  const storyMemberCheck = opts.storyMemberCheck ?? isStoryMember;
+  if (await storyMemberCheck(customerPool, job.aice_id, job.event_key)) {
+    await cancelStaleJob(opts.authPool, job, "story_member_appeared");
+    emitMetric("stale_cancelled", {
+      customer_id: job.customer_id,
+      aice_id: job.aice_id,
+      event_key: job.event_key,
+      reason: "story_member_appeared",
+    });
+    return;
+  }
+  if (await liveLeafExists(customerPool, job)) {
+    await cancelStaleJob(opts.authPool, job, "live_leaf_appeared");
+    emitMetric("stale_cancelled", {
+      customer_id: job.customer_id,
+      aice_id: job.aice_id,
+      event_key: job.event_key,
+      reason: "live_leaf_appeared",
+    });
+    return;
+  }
 
   // Classify held rows (drive enrichment + reserve budget). A null return
   // means the row was re-queued (still held) — stop for this tick.

@@ -107,6 +107,15 @@ Queued jobs are picked in neutral chronological order (the source
 `event_time`, then `received_at`), so under a low cap the **earliest**
 events of the day claim the budget — there is no sender-field re-ranking.
 
+Eligibility is re-checked when the worker claims a job, not only at seed
+time. Because the worker is asynchronous, a story batch may adopt the
+event as a member, or a manual/default-variant `event_analysis_result`
+may appear, in the gap between seeding and pickup. In either case the now
+stale auto job is cancelled to the terminal `done` status (with the
+reason in `last_error`) **before** any budget or LLM spend and before it
+could supersede the live leaf — so story members are never auto-analyzed
+and the manual path's visible result is never overwritten.
+
 When an auto-analyzed leaf is stored, the worker re-dirties the periodic
 report buckets the event falls into (the same dirty signal the baseline
 ingest hook raises). The leaf is produced asynchronously over several
@@ -138,4 +147,5 @@ manual path keeps `'manual'`) and `requested_by = NULL` (no human
 requester; the worker is attributed via the audit actor). The worker
 emits structured `analysis.baseline_auto.*` log lines
 (`tier_a_analyzed`, `tier_b_admitted`, `budget_skipped`,
-`coverage_holdfallback`, `tier_a_disabled_held`) for rate monitoring.
+`coverage_holdfallback`, `tier_a_disabled_held`, `stale_cancelled`) for
+rate monitoring.
