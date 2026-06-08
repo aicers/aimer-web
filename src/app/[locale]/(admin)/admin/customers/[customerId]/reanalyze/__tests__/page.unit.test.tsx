@@ -2,10 +2,11 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The admin re-analysis entry point (#473 Scope 7 / #470) is the
+// The admin re-analysis entry point (#473 Scope 7 / #466 / #470) is the
 // admin-context, customer-scoped destination the admin per-customer offer
-// deep-links to. These tests cover that it renders the entry-point copy and
-// the event-leaf backfill panel for the selected customer.
+// deep-links to. These tests cover that it renders the entry-point copy, the
+// story-leaf backfill panel (#466, stubbed), and the event-leaf backfill
+// panel (#470) for the selected customer.
 
 const mockAdminFetch = vi.fn();
 vi.mock("@/lib/api/admin-client", () => ({
@@ -51,16 +52,27 @@ vi.mock("next/navigation", () => ({
   useParams: () => ({ customerId: "c1" }),
 }));
 
+// The backfill panel (#466) has its own unit test; stub it here so the page
+// test stays focused on the entry-point copy and panel wiring.
+const mockPanel = vi.fn();
+vi.mock("@/components/analysis/reanalyze-backfill-panel", () => ({
+  ReanalyzeBackfillPanel: (props: { apiBase: string }) => {
+    mockPanel(props);
+    return <div>backfill-panel</div>;
+  },
+}));
+
 import AdminCustomerReanalyzePage from "../page";
 
 beforeEach(() => {
   mockAdminFetch.mockReset();
+  mockPanel.mockReset();
 });
 
 afterEach(() => cleanup());
 
 describe("AdminCustomerReanalyzePage", () => {
-  it("renders the entry-point copy, the backfill panel, and the default model", async () => {
+  it("renders the entry-point copy, both backfill panels, and the default model", async () => {
     mockAdminFetch.mockImplementation(async (url: string) => {
       const routed = routeBackfillFetch(url);
       if (routed) return routed;
@@ -75,6 +87,12 @@ describe("AdminCustomerReanalyzePage", () => {
     // The #470 event-leaf backfill panel replaces the placeholder.
     expect(screen.getByText("panelTitle")).toBeDefined();
     expect(screen.getByText("guaranteeNote")).toBeDefined();
+    expect(screen.getByText("backfill-panel")).toBeDefined();
+    expect(mockPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiBase: "/api/admin/customers/c1/reanalyze",
+      }),
+    );
     // The current default model is shown once the lookup resolves, scoped
     // to the customer in the route param.
     await waitFor(() =>
@@ -91,8 +109,9 @@ describe("AdminCustomerReanalyzePage", () => {
     mockAdminFetch.mockRejectedValue(new Error("forbidden"));
     render(<AdminCustomerReanalyzePage />);
 
-    // Entry-point copy + panel are non-fatal on failed lookups.
+    // Entry-point copy + both panels are non-fatal on failed lookups.
     expect(screen.getByText("panelTitle")).toBeDefined();
+    expect(screen.getByText("guaranteeNote")).toBeDefined();
     await waitFor(() => expect(mockAdminFetch).toHaveBeenCalled());
     expect(screen.queryByText(/^targetModel:/)).toBeNull();
   });

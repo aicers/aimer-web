@@ -2,10 +2,11 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The re-analysis entry point (#473 Scope 7) is the stable, customer-scoped
-// in-app destination the post-change offer deep-links to. These tests cover
-// its scope/permission gating and that it renders the entry-point copy
-// (never enqueuing anything).
+// The re-analysis entry point (#473 Scope 7 / #466 / #470) is the stable,
+// customer-scoped in-app destination the post-change offer deep-links to.
+// These tests cover its scope/permission gating and that it renders the
+// entry-point copy, the story-leaf backfill panel (#466, stubbed), and the
+// event-leaf backfill panel (#470) — never enqueuing anything.
 
 const mockApiFetch = vi.fn();
 vi.mock("@/lib/api/client", () => ({
@@ -54,6 +55,16 @@ vi.mock("@/hooks/use-permissions", () => ({
   usePermissions: vi.fn(),
 }));
 
+// The backfill panel (#466) has its own unit test; stub it here so the page
+// test stays focused on scope/permission gating and the panel wiring.
+const mockPanel = vi.fn();
+vi.mock("@/components/analysis/reanalyze-backfill-panel", () => ({
+  ReanalyzeBackfillPanel: (props: { apiBase: string }) => {
+    mockPanel(props);
+    return <div>backfill-panel</div>;
+  },
+}));
+
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
 import CustomerReanalyzePage from "../reanalyze/page";
@@ -75,6 +86,7 @@ function arrange(opts: {
 
 beforeEach(() => {
   mockApiFetch.mockReset();
+  mockPanel.mockReset();
   mockedUseCustomerContext.mockReset();
   mockedUsePermissions.mockReset();
 });
@@ -95,7 +107,7 @@ describe("CustomerReanalyzePage", () => {
     expect(screen.getByText("forbidden")).toBeDefined();
   });
 
-  it("renders the entry-point copy, the backfill panel, and the new default model", async () => {
+  it("renders the entry-point copy, both backfill panels, and the new default model", async () => {
     arrange({ singleCustomerId: "c1", canViewCustomerSettings: true });
     mockApiFetch.mockImplementation(async (url: string) => {
       const routed = routeBackfillFetch(url);
@@ -111,6 +123,12 @@ describe("CustomerReanalyzePage", () => {
     // The #470 event-leaf backfill panel replaces the placeholder.
     expect(screen.getByText("panelTitle")).toBeDefined();
     expect(screen.getByText("guaranteeNote")).toBeDefined();
+    expect(screen.getByText("backfill-panel")).toBeDefined();
+    expect(mockPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiBase: "/api/customers/c1/analysis/reanalyze",
+      }),
+    );
     // The current default model is shown once the lookup resolves.
     await waitFor(() =>
       expect(

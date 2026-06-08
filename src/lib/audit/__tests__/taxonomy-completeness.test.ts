@@ -157,6 +157,13 @@ const PRODUCED: Record<string, string> = {
   "retention_sweep.tick_failed": "src/lib/retention/sweeper.ts",
   // Audit (internal) — emitted via raw SQL in anonymize.ts
   "audit.anonymize": "src/lib/audit/anonymize.ts",
+  // Per-customer / global default analysis model (#473)
+  "customer_default_model.updated": "src/lib/analysis/default-model.ts",
+  "customer_default_model.cleared": "src/lib/analysis/default-model.ts",
+  "system.default_model_updated": "src/lib/analysis/default-model.ts",
+  "system.default_model_cleared": "src/lib/analysis/default-model.ts",
+  // Story-leaf re-analysis backfill (#466)
+  "story_reanalysis.backfill_enqueued": "src/lib/analysis/story-backfill.ts",
 } satisfies Partial<Record<AuditAction, string>>;
 
 // ---------------------------------------------------------------------------
