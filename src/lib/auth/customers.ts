@@ -1,5 +1,9 @@
 import type { Pool, PoolClient } from "pg";
 import { HttpError } from "./errors";
+import {
+  DEFAULT_ANALYSIS_RETENTION_DAYS,
+  DEFAULT_INGESTION_RETENTION_DAYS,
+} from "./retention-defaults";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -312,13 +316,20 @@ export async function createCustomer(
     // Auto-insert the retention policy row. Both the retention
     // sweeper and the settings UI treat absence as a bug — the row
     // must exist from the moment a customer exists. analysis_days
-    // is supplied explicitly (1095 ≈ 36 months); the column default
-    // is NULL ("unlimited"), reserved for operator opt-in.
+    // is supplied explicitly (~36 months); the column default is NULL
+    // ("unlimited"), reserved for operator opt-in. The defaults come
+    // from the shared retention-defaults constants so the group
+    // analysis-retention default tracks this one (#506).
     await client.query(
       `INSERT INTO customer_retention_policy
          (customer_id, ingestion_days, analysis_days, updated_by)
-       VALUES ($1, 365, 1095, $2)`,
-      [customerId, params.managerAccountId],
+       VALUES ($1, $2, $3, $4)`,
+      [
+        customerId,
+        DEFAULT_INGESTION_RETENTION_DAYS,
+        DEFAULT_ANALYSIS_RETENTION_DAYS,
+        params.managerAccountId,
+      ],
     );
 
     return {

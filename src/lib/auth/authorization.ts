@@ -194,6 +194,115 @@ async function authorizeGeneral(
 }
 
 // ---------------------------------------------------------------------------
+// computeMemberAccess — per-customer access facts for a set of customers
+// ---------------------------------------------------------------------------
+
+export interface MemberAccess {
+  /** Membership role name on this customer (e.g. "Manager"), null if none. */
+  role: string | null;
+  /** Active analyst assignment AND the account's `analyst_eligible = true`. */
+  isAnalyst: boolean;
+  /**
+   * Effective permission keys this account holds for this customer: the
+   * union of membership-role grants and analyst-assignment grants (the
+   * analyst branch gated by `analyst_eligible`) — the SAME union
+   * `authorizeGeneral` computes, scoped to this one customer.
+   */
+  permissions: Set<string>;
+}
+
+/**
+ * Per-customer access facts for `accountId` across `customerIds`,
+ * computed with the same membership ∪ analyst(`analyst_eligible`-gated)
+ * grant logic as `authorizeGeneral` / `listAccessibleCustomersDetailed`.
+ *
+ * This is the single shared per-customer grant computation the group
+ * all-member predicates build on (#506) — reusing it (rather than a
+ * fresh query) keeps the `analyst_eligible` gate from being dropped: a
+ * stale assignment on an ineligible account never qualifies.
+ *
+ * Customers the account has no membership/eligible-analyst relationship
+ * with — and non-existent customer ids — are simply ABSENT from the
+ * returned map. Customer operational status (`status` /
+ * `database_status`) is intentionally NOT considered here; callers that
+ * need it check it separately.
+ */
+export async function computeMemberAccess(
+  client: PoolClient,
+  accountId: string,
+  customerIds: string[],
+): Promise<Map<string, MemberAccess>> {
+  const result = new Map<string, MemberAccess>();
+  if (customerIds.length === 0) return result;
+
+  // Role + analyst-eligibility per customer (mirrors the projection in
+  // `listAccessibleCustomersDetailed`, minus the active-status filter so
+  // an already-created group can still be managed/deleted when a member
+  // is later suspended — member-state handling is #510's concern).
+  const accessRows = await client.query<{
+    customer_id: string;
+    role_name: string | null;
+    is_analyst: boolean;
+  }>(
+    `SELECT c.id AS customer_id,
+            r.name AS role_name,
+            (aca.account_id IS NOT NULL AND a.analyst_eligible = true) AS is_analyst
+       FROM customers c
+       LEFT JOIN account_customer_memberships acm
+         ON acm.customer_id = c.id AND acm.account_id = $1
+       LEFT JOIN roles r ON r.id = acm.role_id
+       LEFT JOIN analyst_customer_assignments aca
+         ON aca.customer_id = c.id AND aca.account_id = $1
+       CROSS JOIN accounts a
+      WHERE a.id = $1 AND c.id = ANY($2::uuid[])
+        AND (acm.account_id IS NOT NULL
+             OR (aca.account_id IS NOT NULL AND a.analyst_eligible = true))`,
+    [accountId, customerIds],
+  );
+
+  for (const row of accessRows.rows) {
+    result.set(row.customer_id, {
+      role: row.role_name,
+      isAnalyst: row.is_analyst,
+      permissions: new Set(),
+    });
+  }
+
+  // Effective permission keys per customer — same union as
+  // `authorizeGeneral`, scoped to the requested customers.
+  const permRows = await client.query<{
+    customer_id: string;
+    permission: string;
+  }>(
+    `SELECT acm.customer_id, rp.permission
+       FROM account_customer_memberships acm
+       JOIN role_permissions rp ON rp.role_id = acm.role_id
+      WHERE acm.account_id = $1 AND acm.customer_id = ANY($2::uuid[])
+     UNION
+     SELECT aca.customer_id, rp.permission
+       FROM analyst_customer_assignments aca
+       JOIN accounts a ON a.id = aca.account_id AND a.analyst_eligible = true
+       JOIN roles r ON r.name = 'Analyst' AND r.auth_context = 'general'
+       JOIN role_permissions rp ON rp.role_id = r.id
+      WHERE aca.account_id = $1 AND aca.customer_id = ANY($2::uuid[])`,
+    [accountId, customerIds],
+  );
+
+  for (const row of permRows.rows) {
+    let access = result.get(row.customer_id);
+    if (!access) {
+      // Defensive: a permission row implies a relationship the access
+      // query should have matched; ensure an entry exists regardless.
+      access = { role: null, isAnalyst: false, permissions: new Set() };
+      result.set(row.customer_id, access);
+    }
+    access.permissions.add(row.permission);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // isAnalystForCustomer — single-pair analyst-assignment predicate
 // ---------------------------------------------------------------------------
 

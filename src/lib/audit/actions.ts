@@ -67,6 +67,11 @@ export type AuditAction =
   | "customer_redaction_ranges.retroactive_failed"
   | "customer_redaction_ranges.retroactive_cancelled"
   | "customer_retention_policy.updated"
+  // Customer groups (#506)
+  | "customer_group.created"
+  | "customer_group.deleted"
+  | "customer_group.timezone_updated"
+  | "group_retention_policy.updated"
   // Per-customer default analysis model (#473)
   | "customer_default_model.updated"
   | "customer_default_model.cleared"

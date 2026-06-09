@@ -65,6 +65,13 @@ const PRODUCED: Record<string, string> = {
     "src/app/api/admin/customers/[customerId]/redaction-ranges/[rangeId]/route.ts",
   "customer_retention_policy.updated":
     "src/app/api/admin/customers/[customerId]/retention/route.ts",
+  // Customer groups (#506)
+  "customer_group.created": "src/app/api/groups/route.ts",
+  "customer_group.deleted": "src/app/api/groups/[groupId]/route.ts",
+  "customer_group.timezone_updated":
+    "src/app/api/groups/[groupId]/timezone/route.ts",
+  "group_retention_policy.updated":
+    "src/app/api/groups/[groupId]/retention/route.ts",
   "customer_redaction_ranges.retroactive_started":
     "src/lib/instrumentation/redaction-job-worker.ts",
   "customer_redaction_ranges.retroactive_completed":
