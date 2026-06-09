@@ -127,10 +127,13 @@ identical:
   when this notice is present.
 
 The notice reflects the coverage status of the **current canonical
-version** of the story. The priority tier, scores, and factors are
-**unchanged** by coverage — the floor reads only the boolean signal, and
-this notice is a transparency surface layered on top, never an input to
-tier derivation.
+version** of the story, and only once that version's enrichment has
+**completed**. A story whose enrichment has not finished yet — or whose
+canonical version hard-failed before completing — shows no notice, since
+"not checked yet" is a different state from a completed-but-degraded
+check. The priority tier, scores, and factors are **unchanged** by
+coverage — the floor reads only the boolean signal, and this notice is a
+transparency surface layered on top, never an input to tier derivation.
 
 <!-- Screenshot placeholder: the story header with the "Threat-intel
      coverage incomplete" notice shown above the score fields. Requires a

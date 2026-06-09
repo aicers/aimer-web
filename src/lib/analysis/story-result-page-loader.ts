@@ -694,10 +694,16 @@ async function resolveStoryCompareColumn(
  * (`story-worker.ts` `loadCanonicalMembers`): pick the latest
  * `(story_id, story_version)` from `story` by `received_at DESC,
  * story_version DESC`, then LEFT JOIN `story_enrichment_state` on it. Both
- * tables live in the same customer DB, so this is one in-DB join. Returns
- * `null` when the story has no row (already ruled out upstream) or when no
- * enrichment-state row exists for the canonical version (enrichment has not
- * completed). Never throws the page — it is additive transparency.
+ * tables live in the same customer DB, so this is one in-DB join. The join is
+ * gated on `ses.status = 'complete'` so only a *completed* enrichment run
+ * surfaces coverage: a hard failure persists `status = 'failed',
+ * coverage_status = 'unknown'` (`enrichment-worker.ts`
+ * `persistEnrichmentFailure`), which is "not checked yet" — not the
+ * false-unknown (completed-but-degraded) case this banner is for — so a
+ * `failed` row is treated as no coverage. Returns `null` when the story has
+ * no row (already ruled out upstream), when no enrichment-state row exists
+ * for the canonical version, or when that row has not completed. Never
+ * throws the page — it is additive transparency.
  */
 async function loadCanonicalCoverageStatus(
   // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
@@ -710,6 +716,7 @@ async function loadCanonicalCoverageStatus(
        LEFT JOIN story_enrichment_state ses
          ON ses.story_id = s.story_id
         AND ses.story_version = s.story_version
+        AND ses.status = 'complete'
       WHERE s.story_id = $1::bigint
       ORDER BY s.received_at DESC, s.story_version DESC
       LIMIT 1`,

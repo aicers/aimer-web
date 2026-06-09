@@ -526,6 +526,25 @@ describe("loadStoryResultPage — IOC coverage status (#498)", () => {
     expect(coverageCall?.[1]).toEqual([STORY_ID]);
   });
 
+  it("gates the coverage join on a completed enrichment run", async () => {
+    // A hard enrichment failure persists `status = 'failed',
+    // coverage_status = 'unknown'` (`enrichment-worker.ts`
+    // `persistEnrichmentFailure`). That is "not checked yet", not the
+    // false-unknown (completed-but-degraded) case the banner is for, so the
+    // join is gated on `ses.status = 'complete'` and such a row must not
+    // surface as `unknown`. The DB applies the gate, so the LEFT JOIN comes
+    // back with `coverage_status = NULL` for a never-completed failed row.
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [{ coverage_status: null }];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBeNull();
+    const coverageCall = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("story_enrichment_state"),
+    );
+    expect(String(coverageCall?.[0])).toContain("ses.status = 'complete'");
+  });
+
   it("does not let coverage status alter the floored priority tier (floor unchanged)", async () => {
     // The floor runs in the worker and reads only `known_ioc_hit`; the loader
     // surfaces coverage additively. Proven here: the loaded `priorityTier` is
