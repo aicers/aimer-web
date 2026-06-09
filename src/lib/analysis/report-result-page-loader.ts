@@ -1381,7 +1381,8 @@ async function buildReportTokenPlaintext(
   // Composite key re-associating a batched row with its positional ref. The
   // leaf PKs (story_id|aice_id+event_key, generation, model_name, model) are
   // unique within a (member, lang), so each ref tuple matches at most one row.
-  const leafKey = (...parts: Array<string | number>): string => parts.join(" ");
+  const leafKey = (...parts: Array<string | number>): string =>
+    parts.join("\u0000");
 
   // Fetch story leaf narratives + their member refs at the pinned
   // generation AND the report variant, from the OWNING member's DB.
