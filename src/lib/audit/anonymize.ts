@@ -63,6 +63,15 @@ export async function anonymizeCustomerAuditLogs(
 }
 
 /**
+ * JSONB keys scrubbed on group hard-delete, extending {@link
+ * PII_DETAIL_KEYS} with `memberIds`. Unlike a single opaque customer id,
+ * the member-id *list* encodes the group's membership *relationship* — who
+ * was grouped with whom. That relationship is the sensitive fact a group
+ * crypto-shred is meant to erase, so it is redacted (not preserved) here.
+ */
+const GROUP_PII_DETAIL_KEYS = [...PII_DETAIL_KEYS, "memberIds"] as const;
+
+/**
  * Anonymize audit log entries for a deleted customer group (#507).
  *
  * Peer of `anonymizeCustomerAuditLogs`. Group audit rows are NOT keyed by
@@ -71,11 +80,12 @@ export async function anonymizeCustomerAuditLogs(
  * by `target_id` captures exactly this group's rows
  * (`customer_group.*` / `group_retention_policy.updated` / `group_db.*`).
  *
- * Scrub target: the PII-bearing `details.name` (the human-given group
- * name, which can carry an organization name) and `ip_address`. Member
- * ids (`details.memberIds`) are opaque customer UUIDs — like `actor_id`
- * and `customer_id`, not PII by themselves — so they are PRESERVED for
- * forensic value, matching `anonymizeCustomerAuditLogs`.
+ * Scrub target ({@link GROUP_PII_DETAIL_KEYS}): the PII-bearing
+ * `details.name` (the human-given group name, which can carry an
+ * organization name), the `details.memberIds` membership list (the
+ * sensitive who-was-grouped-with-whom relationship the crypto-shred
+ * erases), and `ip_address`. `actor_id` and the group `target_id` are
+ * preserved as opaque scoping ids, matching `anonymizeCustomerAuditLogs`.
  *
  * Must be called with the audit **owner** pool (`aimer_audit_owner`); the
  * runtime role lacks UPDATE permission. The self-audit INSERT uses direct
@@ -85,7 +95,7 @@ export async function anonymizeGroupAuditLogs(
   auditOwnerPool: Pool,
   groupId: string,
 ): Promise<void> {
-  const redactClauses = PII_DETAIL_KEYS.map(
+  const redactClauses = GROUP_PII_DETAIL_KEYS.map(
     (key) =>
       `CASE WHEN details ? '${key}' THEN jsonb_build_object('${key}', '"[redacted]"'::jsonb) ELSE '{}'::jsonb END`,
   ).join(" || ");

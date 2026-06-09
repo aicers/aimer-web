@@ -99,6 +99,13 @@ export const POST = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let released = false;
+    const releaseClient = () => {
+      if (!released) {
+        released = true;
+        client.release();
+      }
+    };
     try {
       // Binding gate: Manager/Analyst on every member. A non-existent
       // member yields no grant and is rejected here as 403 (no existence
@@ -165,6 +172,16 @@ export const POST = withAuth(
         details: { name: created.name, memberIds: created.memberIds, tz },
       });
 
+      // Release the auth-pool client BEFORE the slow provisioning phase.
+      // provisionGroupDb() reads/updates customer_groups via the same auth
+      // pool, so holding this idle client across that work risks
+      // self-starvation under pool saturation (every concurrent create
+      // pins one client, then all wait for another to store the DEK / flip
+      // status). The customer create path likewise exits its
+      // transaction/client scope before provisioning. releaseClient() is
+      // idempotent — the finally below is a no-op once we have released.
+      releaseClient();
+
       // Provision the group's dedicated data DB after the auth-DB
       // transaction commits, and AWAIT it before responding (mirroring the
       // customer create path — not fire-and-forget). The 201 body carries
@@ -202,7 +219,7 @@ export const POST = withAuth(
       }
       throw err;
     } finally {
-      client.release();
+      releaseClient();
     }
   },
   { ctx: "general" },

@@ -43,6 +43,13 @@ export const DELETE = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let released = false;
+    const releaseClient = () => {
+      if (!released) {
+        released = true;
+        client.release();
+      }
+    };
     try {
       const loaded = await getGroupWithMembers(client, groupId);
       if (!loaded) {
@@ -68,6 +75,14 @@ export const DELETE = withAuth(
         details: { memberIds: loaded.memberIds },
       });
 
+      // Release the auth-pool client BEFORE the slow teardown phase. The
+      // DROP DATABASE / anonymize / Transit-destroy sequence is post-commit
+      // infra work that does not need the auth client; holding it across
+      // teardown can exhaust auth-pool connections under load. The customer
+      // delete path likewise releases before its Phase 2. releaseClient()
+      // is idempotent — the finally below is a no-op once we have released.
+      releaseClient();
+
       // Tear down the group's dedicated data DB AFTER the auth-DB delete
       // commits, as a best-effort post-commit step (mirroring
       // delete-customer Phase 2, same order: terminate connections → DROP
@@ -91,7 +106,7 @@ export const DELETE = withAuth(
       }
       throw err;
     } finally {
-      client.release();
+      releaseClient();
     }
   },
   { ctx: "general" },

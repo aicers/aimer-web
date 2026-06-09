@@ -197,7 +197,7 @@ describeDb("anonymizeGroupAuditLogs", () => {
     await closeAdminPool();
   });
 
-  it("redacts the group name and ip_address, preserving member ids", async () => {
+  it("redacts the group name, member ids, and ip_address", async () => {
     await anonymizeGroupAuditLogs(pool, groupId);
 
     const result = await pool.query(
@@ -206,16 +206,18 @@ describeDb("anonymizeGroupAuditLogs", () => {
     );
     expect(result.rows).toHaveLength(2);
 
-    // created row: name redacted, member ids preserved as forensic context.
+    // created row: name AND the membership list are redacted — the
+    // who-was-grouped-with-whom relationship is the sensitive fact the
+    // crypto-shred erases.
     expect(result.rows[0].details).toEqual({
       name: "[redacted]",
-      memberIds: [memberA, memberB],
+      memberIds: "[redacted]",
     });
     expect(result.rows[0].ip_address).toBeNull();
     expect(result.rows[0].actor_id).toBe("actor-a");
 
-    // deleted row: no name key → details otherwise unchanged, ip nulled.
-    expect(result.rows[1].details).toEqual({ memberIds: [memberA, memberB] });
+    // deleted row: no name key → membership list redacted, ip nulled.
+    expect(result.rows[1].details).toEqual({ memberIds: "[redacted]" });
     expect(result.rows[1].ip_address).toBeNull();
   });
 
