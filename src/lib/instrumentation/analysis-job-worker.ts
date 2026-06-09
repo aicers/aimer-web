@@ -43,6 +43,7 @@ import {
   recoverStuckEventJobs,
   tickEventJobsOnce,
 } from "../analysis/event-analysis-worker";
+import { tickGroupReadiness } from "../analysis/group-readiness";
 import {
   recoverStuckReportJobs,
   requeueLiveReportJobs,
@@ -469,6 +470,20 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // at the start of the tick and a job row inserted at the end share
   // exactly one timestamp).
   const nowIso = getCurrentTimestamp().toISOString();
+  // Group readiness (#524 scope 5): seed + recompute group
+  // `periodic_report_state` from the member DBs BEFORE the seeding tx, so the
+  // group's freshly-seeded `pending` buckets are promoted and its `dirty`
+  // recomputes are picked up by `tickPeriodicStates`/`seedRealReportJobs` in
+  // this same tick. A group has no ingest hook, so without this its buckets
+  // would never appear. Runs on the pool (its own writes + member
+  // connections), outside the seeding tx.
+  try {
+    await tickGroupReadiness({ authPool: pool }, nowIso);
+  } catch (err) {
+    // A group readiness failure (e.g. one member DB unreachable) must not
+    // stall the per-customer seeding/dispatch below.
+    console.error("[analysis-job-worker] tickGroupReadiness failed:", err);
+  }
   // Seeding pass (state → job rows) runs inside a single auth-DB tx.
   // The LLM-dispatch pass runs OUTSIDE that tx — each job's
   // `processing` marker is its own short tx, so a slow aimer call does

@@ -167,6 +167,40 @@ export function refCustomerId(
   return ref.customer_id ?? subjectId;
 }
 
+/**
+ * The opaque story citation/wire key shared by the `aimerInputs` source key,
+ * the citation guard's allowed set, and the de-redaction loader (#524). Bare
+ * `story_id` on the single-customer path (`memberQualified === false`, so
+ * citations and `input_hash` are unchanged); member-qualified
+ * `customer_id:story_id` on the group path, since the same `story_id` can
+ * exist in more than one member DB and the keys must not collide. A single
+ * definition keeps the builder's source keys, the guard, and the loader on the
+ * exact same key.
+ */
+export function storyWireKey(
+  ref: { story_id: string; customer_id?: string },
+  subjectId: string,
+  memberQualified: boolean,
+): string {
+  return memberQualified
+    ? `${refCustomerId(ref, subjectId)}:${ref.story_id}`
+    : ref.story_id;
+}
+
+/**
+ * The opaque event citation/wire key, the event analogue of
+ * {@link storyWireKey} (#524). Bare `aice_id:event_key` on the single-customer
+ * path, member-qualified `customer_id:aice_id:event_key` on the group path.
+ */
+export function eventWireKey(
+  ref: { aice_id: string; event_key: string; customer_id?: string },
+  subjectId: string,
+  memberQualified: boolean,
+): string {
+  const base = `${ref.aice_id}:${ref.event_key}`;
+  return memberQualified ? `${refCustomerId(ref, subjectId)}:${base}` : base;
+}
+
 export interface PeriodicReportBuildResult {
   /** Structured bundle passed verbatim to aimer. */
   aimerInputs: PeriodicReportInputs;
@@ -204,6 +238,15 @@ export interface PeriodicReportBuildResult {
 interface StoryLeafRow {
   story_id: string;
   generation: number;
+  /**
+   * The member customer DB this leaf was read from (#524). On the
+   * single-customer path it is the subject's own customer id; on the group
+   * path it identifies which member DB the leaf came from, so the union
+   * top-K tie-break, the member-qualified wire/citation keys, and the
+   * persisted ref's `customer_id` all derive from one field. Stamped by the
+   * selector caller, not the SQL.
+   */
+  customer_id: string;
   /** The selected leaf's own model (#465 Scope 2) — surfaced so ref
    *  persistence and the hybrid report-model partition read it without a
    *  re-query. Under the fallback this may differ from the report's model. */
@@ -247,6 +290,8 @@ interface EventLeafRow {
   aice_id: string;
   event_key: string;
   generation: number;
+  /** Member customer DB this leaf was read from (#524). See `StoryLeafRow`. */
+  customer_id: string;
   /** The selected leaf's own model (#465 Scope 2). See `StoryLeafRow`. */
   model_name: string;
   model: string;
@@ -495,7 +540,10 @@ async function selectTopStories(
       args.limit,
     ],
   );
-  return rows;
+  // Stamp the member id (#524): the SQL is scoped to one `customer_id`, so
+  // every returned leaf belongs to it. On the group path the caller runs this
+  // per member; the field then drives the union tie-break and ref identity.
+  return rows.map((r) => ({ ...r, customer_id: args.customerId }));
 }
 
 async function loadStoryMemberKeys(
@@ -612,6 +660,7 @@ function rankedCteParams(args: {
 async function selectTopEvents(
   customerPool: Pool,
   args: {
+    customerId: string;
     variant: ReportVariant;
     defaultPair: ModelPair;
     windows: Windows;
@@ -644,7 +693,7 @@ async function selectTopEvents(
       LIMIT $8`,
     [...rankedCteParams(args), args.limit],
   );
-  return rows;
+  return rows.map((r) => ({ ...r, customer_id: args.customerId }));
 }
 
 /**
@@ -661,6 +710,7 @@ async function selectTopEvents(
 async function selectUniverseEvents(
   customerPool: Pool,
   args: {
+    customerId: string;
     variant: ReportVariant;
     defaultPair: ModelPair;
     windows: Windows;
@@ -674,7 +724,7 @@ async function selectUniverseEvents(
       ORDER BY rk.aice_id ASC, rk.event_key ASC`,
     rankedCteParams(args),
   );
-  return rows;
+  return rows.map((r) => ({ ...r, customer_id: args.customerId }));
 }
 
 async function categoryCounts(
@@ -863,7 +913,10 @@ function tierDistribution(
 }
 
 /** Compare two event leaves by the exemplar representative ranking:
- *  `tier desc → (severity + likelihood) desc → (aice_id, event_key)`. */
+ *  `tier desc → (severity + likelihood) desc → customer_id → (aice_id,
+ *  event_key)`. The `customer_id` tie-break (#524) keeps the union over member
+ *  pools deterministic when two members' leaves tie on tier/score; it is a
+ *  no-op on the single-customer path (one constant `customer_id`). */
 function compareLeafRank(a: EventLeafRow, b: EventLeafRow): number {
   const t = tierRank(b.priority_tier) - tierRank(a.priority_tier);
   if (t !== 0) return t;
@@ -872,6 +925,8 @@ function compareLeafRank(a: EventLeafRow, b: EventLeafRow): number {
     b.likelihood_score -
     (a.severity_score + a.likelihood_score);
   if (s !== 0) return s;
+  if (a.customer_id !== b.customer_id)
+    return a.customer_id < b.customer_id ? -1 : 1;
   if (a.aice_id !== b.aice_id) return a.aice_id < b.aice_id ? -1 : 1;
   return a.event_key < b.event_key ? -1 : a.event_key > b.event_key ? 1 : 0;
 }
@@ -926,9 +981,20 @@ function clusterExemplars(uncited: ReadonlyArray<EventLeafRow>): {
   };
 }
 
-/** Stable `(aice_id, event_key)` identity key for an event leaf / ref. */
-function eventKeyOf(e: { aice_id: string; event_key: string }): string {
-  return `${e.aice_id}:${e.event_key}`;
+/**
+ * Stable member-qualified identity key for an event leaf / ref (#524):
+ * `customer_id:aice_id:event_key`. Across a member union the same
+ * `(aice_id, event_key)` can exist in two member DBs, so the dedup /
+ * cited-subset / exemplar-index keying must carry the member id or distinct
+ * members' leaves would collide. On the single-customer path `customer_id` is
+ * one constant value, so this is byte-identical in effect to the old bare key.
+ */
+function eventKeyOf(e: {
+  customer_id: string;
+  aice_id: string;
+  event_key: string;
+}): string {
+  return `${e.customer_id}:${e.aice_id}:${e.event_key}`;
 }
 
 /**
@@ -1023,6 +1089,9 @@ function planAnalyzedAggregates(args: {
       generation: cluster.repLeaf.generation,
       model_name: cluster.repLeaf.model_name,
       model: cluster.repLeaf.model,
+      // The member DB the exemplar rep leaf came from (#524). On the group
+      // path the universe spans members, so the rep leaf carries which one.
+      customer_id: cluster.repLeaf.customer_id,
     });
     // Carry the rep leaf's policy version into the precondition: its factor is
     // prompt input once rewritten to report scope (#495 review r1, item 2).
@@ -1233,6 +1302,7 @@ export async function buildPeriodicReportInput(
     stories.map((s) => s.story_id),
   );
   const events = await selectTopEvents(args.customerPool, {
+    customerId: args.customerId,
     variant: args.variant,
     defaultPair,
     windows,
@@ -1245,6 +1315,7 @@ export async function buildPeriodicReportInput(
   // (so `cited ⊆ universe`). The cited set is consumed directly for the
   // partition; the universe drives the analyzed-event aggregates + exemplars.
   const universe = await selectUniverseEvents(args.customerPool, {
+    customerId: args.customerId,
     variant: args.variant,
     defaultPair,
     windows,
@@ -1262,10 +1333,18 @@ export async function buildPeriodicReportInput(
     },
   });
 
+  // Baseline aggregates from the single customer pool (bare sensor keys).
+  const baseline = await loadBaselineAggregates(
+    args.customerPool,
+    windows,
+    false,
+    args.customerId,
+  );
+
   return assembleReportInput(
     {
-      customerPool: args.customerPool,
-      customerId: args.customerId,
+      subjectId: args.customerId,
+      memberQualified: false,
       period: args.period,
       bucketDate: args.bucketDate,
       variant: args.variant,
@@ -1274,28 +1353,346 @@ export async function buildPeriodicReportInput(
     stories,
     events,
     aggregatesPlan,
+    baseline,
   );
 }
 
 /**
- * Build the full `PeriodicReportBuildResult` from an already-selected set
- * of story / event leaves — everything downstream of leaf selection
- * (token rewrite, baseline aggregates, drift, aggregations, provenance,
- * `input_hash`). Shared by the default top-K selection path
- * (`buildPeriodicReportInput`) and the canonical-ref-pinned path
- * (`buildCanonicalPinnedReportInput`); the two differ ONLY in how the
- * leaves are chosen, so this keeps token numbering / hashing identical.
+ * Load the period-level baseline aggregates for ONE pool into a
+ * {@link BaselineAggregateBundle}. The single-customer path calls this with
+ * its own pool; the group path calls it per member and sums the bundles
+ * (`sumBaselineBundles`) before assembly (#524). When `memberQualified` is
+ * true the `topSensors` key is prefixed with `customer_id:` so a member's
+ * sensors stay distinct in the union; otherwise the bare `source_aice_id` is
+ * kept (single-customer, `input_hash` unchanged).
  */
+async function loadBaselineAggregates(
+  pool: Pool,
+  windows: Windows,
+  memberQualified: boolean,
+  customerId: string,
+): Promise<BaselineAggregateBundle> {
+  const currentCounts = await categoryCounts(
+    pool,
+    windows.curStart,
+    windows.curEnd,
+  );
+  const previousCounts = await categoryCounts(
+    pool,
+    windows.prevStart,
+    windows.prevEnd,
+  );
+  const totals = await windowBaselineTotals(
+    pool,
+    windows.curStart,
+    windows.curEnd,
+  );
+  const storyTotal = await storyCountInWindow(
+    pool,
+    windows.curStart,
+    windows.curEnd,
+  );
+  const sensors = await topSensors(
+    pool,
+    windows.curStart,
+    windows.curEnd,
+    TOP_AGGREGATE_K,
+  );
+  return {
+    currentCounts,
+    previousCounts,
+    totalsEvents: totals.events,
+    totalsHosts: totals.hosts,
+    storyTotal,
+    sensors: memberQualified
+      ? sensors.map((s) => ({ key: `${customerId}:${s.key}`, count: s.count }))
+      : sensors,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Group multi-member input path (#524)
+// ---------------------------------------------------------------------------
+
+/** One resolved member customer pool for the group builder (#524). */
+export interface GroupMemberPool {
+  /** The member subject id (the customer id). */
+  customerId: string;
+  pool: Pool;
+}
+
+export interface GroupBuildReportInputArgs {
+  authPool: Pool;
+  /** The group subject id — stamped as `subject_id` on the result + hash. */
+  groupId: string;
+  /** Ordered member pools (the #523 resolver's `memberPools`). */
+  memberPools: ReadonlyArray<GroupMemberPool>;
+  period: PeriodicPeriod;
+  bucketDate: string;
+  /** Variant — `tz` is the GROUP tz; `model_name`/`model` the group policy. */
+  variant: ReportVariant;
+  nowIso: string;
+  topStoriesK?: number;
+  topEventsK?: number;
+}
+
+/**
+ * Compare two story leaves by the union top-K ranking (#524): `tier desc →
+ * (severity + likelihood) desc → customer_id → story_id`. The `customer_id`
+ * tie-break makes the cross-member `R{j}` numbering reproducible when two
+ * members' stories tie on tier/score; within one member it reduces to the
+ * single-customer `... story_id ASC` SQL order.
+ */
+function compareStoryRank(a: StoryLeafRow, b: StoryLeafRow): number {
+  const t = tierRank(b.priority_tier) - tierRank(a.priority_tier);
+  if (t !== 0) return t;
+  const s =
+    b.severity_score +
+    b.likelihood_score -
+    (a.severity_score + a.likelihood_score);
+  if (s !== 0) return s;
+  if (a.customer_id !== b.customer_id)
+    return a.customer_id < b.customer_id ? -1 : 1;
+  return a.story_id < b.story_id ? -1 : a.story_id > b.story_id ? 1 : 0;
+}
+
+/**
+ * Sum a set of per-member {@link BaselineAggregateBundle}s into one (#524):
+ * per-category counts are summed across members (drift is then derived ONCE
+ * from the summed counts by `assembleReportInput`, never averaged per member);
+ * event/host/story totals are summed; the already-member-qualified sensor
+ * lists are merged and re-topped to {@link TOP_AGGREGATE_K} by `count desc,
+ * key asc` (member-qualified keys are globally distinct, so no key merges).
+ */
+function sumBaselineBundles(
+  bundles: ReadonlyArray<BaselineAggregateBundle>,
+): BaselineAggregateBundle {
+  const sumCounts = (
+    pick: (b: BaselineAggregateBundle) => CategoryCount[],
+  ): CategoryCount[] => {
+    const m = new Map<string | null, number>();
+    for (const b of bundles) {
+      for (const c of pick(b))
+        m.set(c.category, (m.get(c.category) ?? 0) + c.count);
+    }
+    return Array.from(m.entries()).map(([category, count]) => ({
+      category,
+      count,
+    }));
+  };
+  const sensors = bundles
+    .flatMap((b) => b.sensors)
+    .sort(
+      (a, b) =>
+        b.count - a.count || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+    )
+    .slice(0, TOP_AGGREGATE_K);
+  return {
+    currentCounts: sumCounts((b) => b.currentCounts),
+    previousCounts: sumCounts((b) => b.previousCounts),
+    totalsEvents: bundles.reduce((s, b) => s + b.totalsEvents, 0),
+    totalsHosts: bundles.reduce((s, b) => s + b.totalsHosts, 0),
+    storyTotal: bundles.reduce((s, b) => s + b.storyTotal, 0),
+    sensors,
+  };
+}
+
+/**
+ * Build the aggregated `PeriodicReportBuildResult` for a GROUP subject (#524).
+ * The single-customer builder reads one `customerPool`; this unions the
+ * group's MEMBER pools:
+ *
+ *   1. Per member, select that member's top-K stories (variant + freshness +
+ *      window), stamping each leaf with its member id.
+ *   2. Union the per-member sets and re-rank with the `customer_id`-inclusive
+ *      tie-break to take the global top-K cited stories — the cross-member
+ *      `R{j}` numbering is deterministic by construction.
+ *   3. Partition the cited stories by member and load each member's covered
+ *      `(aice_id, event_key)` set from ITS OWN DB only (member-local: a member
+ *      A story never suppresses a member B event).
+ *   4. Per member, select top-K events + the long-tail universe excluding that
+ *      member's covered set; union + global top-K events; union universe.
+ *   5. Sum baseline totals / per-category counts / sensors across members
+ *      (drift derived once from the summed counts).
+ *
+ * Every persisted ref carries its member `customer_id`; the `aimerInputs`
+ * source keys, guard, and loader are member-qualified (`memberQualified`).
+ * Token-bearing inputs are member-side analysis / story-analysis rows (the
+ * selectors read `event_analysis_result` / `story_analysis_result` only), so
+ * `analysis_days` governs their redaction-map horizon (B4 / #509).
+ */
+export async function buildGroupPeriodicReportInput(
+  args: GroupBuildReportInputArgs,
+): Promise<PeriodicReportBuildResult> {
+  const topStoriesK = args.topStoriesK ?? 5;
+  const topEventsK = args.topEventsK ?? 10;
+
+  const windowPool = args.memberPools[0]?.pool;
+  if (windowPool === undefined) {
+    // A group always has >= 2 members (creation invariant); guard anyway so a
+    // degenerate empty-member group fails loudly rather than silently emitting
+    // a baseline-only report against no source.
+    throw new Error(`group ${args.groupId} has no member pools`);
+  }
+  // Window math is pure tz arithmetic over no member tables, so resolve once
+  // against any member pool, in the GROUP tz.
+  const windows = await resolveWindows(
+    windowPool,
+    args.period,
+    args.bucketDate,
+    args.variant.tz,
+    args.nowIso,
+  );
+
+  // The member's effective default model decides its own never-drop fallback
+  // (the group report variant is the global/env default — #524 scope 6).
+  const defaultPairs = new Map<string, ModelPair>();
+  for (const m of args.memberPools) {
+    defaultPairs.set(
+      m.customerId,
+      await resolveDefaultModel(m.customerId, args.authPool),
+    );
+  }
+
+  // --- Stories: per-member top-K → union → global top-K ----------------
+  const memberStorySets: StoryLeafRow[][] = [];
+  for (const m of args.memberPools) {
+    const readyStoryIds = await loadReadyStoryIds(args.authPool, m.customerId);
+    memberStorySets.push(
+      await selectTopStories(m.pool, {
+        customerId: m.customerId,
+        variant: args.variant,
+        // biome-ignore lint/style/noNonNullAssertion: populated above per member.
+        defaultPair: defaultPairs.get(m.customerId)!,
+        readyStoryIds,
+        windows,
+        limit: topStoriesK,
+      }),
+    );
+  }
+  const citedStories = memberStorySets
+    .flat()
+    .sort(compareStoryRank)
+    .slice(0, topStoriesK);
+
+  // Partition the GLOBAL cited stories by member so each member's covered set
+  // is derived only from its own cited stories (member-local exclusion).
+  const citedStoriesByMember = new Map<string, StoryLeafRow[]>();
+  for (const s of citedStories) {
+    const arr = citedStoriesByMember.get(s.customer_id) ?? [];
+    arr.push(s);
+    citedStoriesByMember.set(s.customer_id, arr);
+  }
+
+  // --- Events + universe + baseline, per member ------------------------
+  const memberEventSets: EventLeafRow[][] = [];
+  const memberUniverseSets: EventLeafRow[][] = [];
+  const baselineBundles: BaselineAggregateBundle[] = [];
+  for (const m of args.memberPools) {
+    // biome-ignore lint/style/noNonNullAssertion: populated above per member.
+    const defaultPair = defaultPairs.get(m.customerId)!;
+    const memberCited = citedStoriesByMember.get(m.customerId) ?? [];
+    const covered = await loadStoryMemberKeys(
+      m.pool,
+      memberCited.map((s) => s.story_id),
+    );
+    memberEventSets.push(
+      await selectTopEvents(m.pool, {
+        customerId: m.customerId,
+        variant: args.variant,
+        defaultPair,
+        windows,
+        covered,
+        limit: topEventsK,
+      }),
+    );
+    memberUniverseSets.push(
+      await selectUniverseEvents(m.pool, {
+        customerId: m.customerId,
+        variant: args.variant,
+        defaultPair,
+        windows,
+        covered,
+      }),
+    );
+    baselineBundles.push(
+      await loadBaselineAggregates(m.pool, windows, true, m.customerId),
+    );
+  }
+  const citedEvents = memberEventSets
+    .flat()
+    .sort(compareLeafRank)
+    .slice(0, topEventsK);
+  // The universe is the full non-cited-floored set (no top-K), so its union is
+  // a plain concatenation; `planAnalyzedAggregates` derives uncited = universe
+  // − cited via the member-qualified `eventKeyOf`.
+  const universe = memberUniverseSets.flat();
+  const aggregatesPlan = planAnalyzedAggregates({
+    windows,
+    universe,
+    cited: citedEvents,
+    warnContext: {
+      subjectId: args.groupId,
+      period: args.period,
+      bucketDate: args.bucketDate,
+      tz: args.variant.tz,
+    },
+  });
+
+  const baseline = sumBaselineBundles(baselineBundles);
+
+  return assembleReportInput(
+    {
+      subjectId: args.groupId,
+      memberQualified: true,
+      period: args.period,
+      bucketDate: args.bucketDate,
+      variant: args.variant,
+    },
+    windows,
+    citedStories,
+    citedEvents,
+    aggregatesPlan,
+    baseline,
+  );
+}
+
+/**
+ * The period-level baseline aggregates `assembleReportInput` needs, computed
+ * by the caller so the single-customer path reads them from its one pool while
+ * the group path SUMS them across member pools (#524) before assembly. Drift
+ * is derived here from the (summed) per-category counts — never averaged per
+ * member. `sensors` is already merged + top-K and keyed exactly as it should
+ * appear in `aimerInputs` (bare on the single-customer path; member-qualified
+ * on the group path), so assembly passes it through verbatim.
+ */
+interface BaselineAggregateBundle {
+  currentCounts: CategoryCount[];
+  previousCounts: CategoryCount[];
+  totalsEvents: number;
+  totalsHosts: number;
+  storyTotal: number;
+  sensors: BaselineCountInput[];
+}
+
 async function assembleReportInput(
   ctx: {
-    customerPool: Pool;
     /**
-     * The report's subject id (#523). Stamped as the member `customer_id` on
-     * every persisted ref — for the single-customer path this is the subject's
-     * own customer DB, so it equals `subject_id` and is stripped from the hash;
-     * it is also the `subjectId` threaded into `computeInputHash`.
+     * The report's subject id (#523/#524) — a customer id on the
+     * single-customer path, a group id on the group path. Threaded into
+     * `computeInputHash`; a ref whose `customer_id` equals it is the
+     * single-customer default and is stripped from the hash.
      */
-    customerId: string;
+    subjectId: string;
+    /**
+     * Member-qualify the opaque wire / citation keys (#524). On the group
+     * path the same `story_id` / `(aice_id, event_key)` can exist in two
+     * member DBs, so `aimerInputs` source keys (and the guard/loader that
+     * share them) must carry the member id: `customer_id:story_id` and
+     * `customer_id:aice_id:event_key`. The single-customer path keeps bare
+     * keys so `input_hash` and citations are unchanged (backward compatible).
+     */
+    memberQualified: boolean;
     period: PeriodicPeriod;
     bucketDate: string;
     variant: ReportVariant;
@@ -1304,39 +1701,21 @@ async function assembleReportInput(
   stories: StoryLeafRow[],
   events: EventLeafRow[],
   aggregatesPlan: AnalyzedAggregatesPlan,
+  baseline: BaselineAggregateBundle,
 ): Promise<PeriodicReportBuildResult> {
   // --- Baseline aggregates + drift ------------------------------------
-  const currentCounts = await categoryCounts(
-    ctx.customerPool,
-    windows.curStart,
-    windows.curEnd,
+  // Counts/totals are precomputed by the caller (summed across members on the
+  // group path). Drift is derived ONCE from the summed per-category counts.
+  const drift = computeBaselineDrift(
+    baseline.currentCounts,
+    baseline.previousCounts,
   );
-  const previousCounts = await categoryCounts(
-    ctx.customerPool,
-    windows.prevStart,
-    windows.prevEnd,
-  );
-  const drift = computeBaselineDrift(currentCounts, previousCounts);
-
-  // Period-level baseline totals for aimer's `BaselineTotalsInput` +
-  // `topSensors`. `events`/`hosts` come from the deduped baseline window;
-  // `stories` from the canonical story set overlapping the window.
-  const baselineTotals = await windowBaselineTotals(
-    ctx.customerPool,
-    windows.curStart,
-    windows.curEnd,
-  );
-  const storyTotal = await storyCountInWindow(
-    ctx.customerPool,
-    windows.curStart,
-    windows.curEnd,
-  );
-  const sensors = await topSensors(
-    ctx.customerPool,
-    windows.curStart,
-    windows.curEnd,
-    TOP_AGGREGATE_K,
-  );
+  const baselineTotals = {
+    events: baseline.totalsEvents,
+    hosts: baseline.totalsHosts,
+  };
+  const storyTotal = baseline.storyTotal;
+  const sensors = baseline.sensors;
 
   // --- Redaction policy precondition (consumed leaves only) -----------
   // Includes the kept exemplar representative leaves (#495 review r1, item 2):
@@ -1440,7 +1819,11 @@ async function assembleReportInput(
   // leaf's nullable scores, factor arrays, and TTP tags — no `priorityTier`
   // (kept internal for aggregation, not part of the wire shape).
   const storyAnalyses: StoryAnalysisInput[] = stories.map((s, i) => ({
-    storyId: s.story_id,
+    // Opaque source key (#524): bare `story_id` for a single customer,
+    // member-qualified `customer_id:story_id` for a group so two members'
+    // identical `story_id`s do not collide. The guard's allowed set and the
+    // step-3 loader derive the same key via `storyWireKey`.
+    storyId: storyWireKey(s, ctx.subjectId, ctx.memberQualified),
     timeRangeStart: s.time_window_start.toISOString(),
     timeRangeEnd: s.time_window_end.toISOString(),
     sections: rewrittenStoryTexts[i],
@@ -1459,8 +1842,9 @@ async function assembleReportInput(
     // `${aice_id}:${event_key}` composite the codebase already uses as the
     // event-identity key (report token restore, dedup) so the narrative's
     // event references stay unambiguous and check cleanly against
-    // `input_event_refs`.
-    eventRef: `${e.aice_id}:${e.event_key}`,
+    // `input_event_refs`. On the group path the key is member-qualified
+    // (`customer_id:aice_id:event_key`) via `eventWireKey` (#524).
+    eventRef: eventWireKey(e, ctx.subjectId, ctx.memberQualified),
     eventTime: e.event_time.toISOString(),
     sections: rewrittenEventTexts[i],
     severityScore: e.severity_score,
@@ -1502,17 +1886,16 @@ async function assembleReportInput(
   // path can pin a fallback-model leaf by its real model instead of the report
   // row's. Persisted additively into the `input_*_refs` JSONB — no migration.
   // Each ref also carries the member `customer_id` of the leaf's customer DB
-  // (#523); on this single-customer path every leaf came from `ctx.customerId`
-  // (== the subject), so all refs are stamped with it. Exemplar refs from a
-  // canonical row already carry their `customer_id`, so degrade to the subject
-  // only when absent (the freshly-planned native case) — never overwrite a
-  // ref that already names a member.
+  // (#523/#524): the selectors stamp each leaf with the member it came from.
+  // On the single-customer path that is the subject's own customer id (== the
+  // subject), so the hash strips it and `input_hash` is unchanged; on the
+  // group path it is the true member id, distinguishing cross-member refs.
   const storyRefs: StoryRef[] = stories.map((s) => ({
     story_id: s.story_id,
     generation: s.generation,
     model_name: s.model_name,
     model: s.model,
-    customer_id: ctx.customerId,
+    customer_id: s.customer_id,
   }));
   const eventRefs: EventRef[] = events.map((e) => ({
     aice_id: e.aice_id,
@@ -1520,15 +1903,18 @@ async function assembleReportInput(
     generation: e.generation,
     model_name: e.model_name,
     model: e.model,
-    customer_id: ctx.customerId,
+    customer_id: e.customer_id,
   }));
+  // Exemplar refs already carry their leaf's `customer_id` (stamped in
+  // `planAnalyzedAggregates`); degrade to the subject only for a legacy/pinned
+  // ref that predates member identity.
   const exemplarRefs: ExemplarRef[] = aggregatesPlan.exemplarRefs.map((r) => ({
     ...r,
-    customer_id: r.customer_id ?? ctx.customerId,
+    customer_id: r.customer_id ?? ctx.subjectId,
   }));
 
   const inputHash = computeInputHash({
-    subjectId: ctx.customerId,
+    subjectId: ctx.subjectId,
     period: ctx.period,
     bucketDate: ctx.bucketDate,
     variant: ctx.variant,
@@ -1538,10 +1924,19 @@ async function assembleReportInput(
     aimerInputs,
   });
 
+  // Member-qualify the audit aice-id set on the group path so two members'
+  // identical `source_aice_id`s do not silently merge (#524); bare on the
+  // single-customer path.
   const sourceAiceIds = Array.from(
     new Set([
-      ...stories.map((s) => s.source_aice_id),
-      ...events.map((e) => e.aice_id),
+      ...stories.map((s) =>
+        ctx.memberQualified
+          ? `${s.customer_id}:${s.source_aice_id}`
+          : s.source_aice_id,
+      ),
+      ...events.map((e) =>
+        ctx.memberQualified ? `${e.customer_id}:${e.aice_id}` : e.aice_id,
+      ),
     ]),
   );
 
@@ -1644,6 +2039,7 @@ export async function buildCanonicalPinnedReportInput(
 
   const events = await fetchEventLeavesByRefs(
     args.customerPool,
+    args.customerId,
     args.variant,
     args.eventRefs,
   );
@@ -1675,10 +2071,20 @@ export async function buildCanonicalPinnedReportInput(
     finalize: () => args.analyzedEventAggregates,
   };
 
+  // Pinned non-English replay is single-customer only (#524 groups always
+  // translate non-English), so baseline aggregates come from the one pool
+  // with bare sensor keys — identical to the canonical's.
+  const baseline = await loadBaselineAggregates(
+    args.customerPool,
+    windows,
+    false,
+    args.customerId,
+  );
+
   const built = await assembleReportInput(
     {
-      customerPool: args.customerPool,
-      customerId: args.customerId,
+      subjectId: args.customerId,
+      memberQualified: false,
       period: args.period,
       bucketDate: args.bucketDate,
       variant: args.variant,
@@ -1687,6 +2093,7 @@ export async function buildCanonicalPinnedReportInput(
     stories,
     events,
     aggregatesPlan,
+    baseline,
   );
   return { complete: true, built };
 }
@@ -1746,7 +2153,7 @@ async function fetchStoryLeavesByRefs(
     [storyIds, generations, variant.lang, refModelNames, refModels, customerId],
   );
   return orderByRefs(
-    rows,
+    rows.map((r) => ({ ...r, customer_id: customerId })),
     refs,
     (row) => `${row.story_id}|${row.generation}|${row.model_name}|${row.model}`,
     (ref) =>
@@ -1762,6 +2169,7 @@ async function fetchStoryLeavesByRefs(
  */
 async function fetchEventLeavesByRefs(
   customerPool: Pool,
+  customerId: string,
   variant: ReportVariant,
   refs: EventRef[],
 ): Promise<EventLeafRow[] | null> {
@@ -1800,7 +2208,7 @@ async function fetchEventLeavesByRefs(
     [aiceIds, eventKeys, generations, variant.lang, refModelNames, refModels],
   );
   return orderByRefs(
-    rows,
+    rows.map((r) => ({ ...r, customer_id: customerId })),
     refs,
     (row) =>
       `${row.aice_id}|${row.event_key}|${row.generation}|${row.model_name}|${row.model}`,
@@ -1913,7 +2321,12 @@ export async function buildPinnedTokenRefs(
     storyRefs,
   );
   if (stories === null) return null;
-  const events = await fetchEventLeavesByRefs(customerPool, variant, eventRefs);
+  const events = await fetchEventLeavesByRefs(
+    customerPool,
+    customerId,
+    variant,
+    eventRefs,
+  );
   if (events === null) return null;
   // Exemplar leaves replay at `DEFAULT_LANG` regardless of the row's variant
   // (#495): the cited refs use the row/restoration variant above; the
@@ -1935,6 +2348,136 @@ export async function buildPinnedTokenRefs(
     exemplarLeaves,
   );
   return refs;
+}
+
+// ---------------------------------------------------------------------------
+// Group pinned token reconstruction (#524 — translate-path leak scan)
+// ---------------------------------------------------------------------------
+
+const storyLeafKey = (l: {
+  customer_id: string;
+  story_id: string;
+  generation: number;
+  model_name: string;
+  model: string;
+}): string =>
+  `${l.customer_id}|${l.story_id}|${l.generation}|${l.model_name}|${l.model}`;
+
+const storyRefKeyG = (r: StoryRef, variant: ReportVariant): string =>
+  `${r.customer_id}|${r.story_id}|${r.generation}|${r.model_name ?? variant.modelName}|${r.model ?? variant.model}`;
+
+const eventLeafKey = (l: {
+  customer_id: string;
+  aice_id: string;
+  event_key: string;
+  generation: number;
+  model_name: string;
+  model: string;
+}): string =>
+  `${l.customer_id}|${l.aice_id}|${l.event_key}|${l.generation}|${l.model_name}|${l.model}`;
+
+const eventRefKeyG = (r: EventRef, variant: ReportVariant): string =>
+  `${r.customer_id}|${r.aice_id}|${r.event_key}|${r.generation}|${r.model_name ?? variant.modelName}|${r.model ?? variant.model}`;
+
+const exemplarRefKeyG = (r: ExemplarRef): string =>
+  `${r.customer_id}|${r.aice_id}|${r.event_key}|${r.generation}|${r.model_name}|${r.model}`;
+
+/**
+ * Reconstruct the report-scope token refs for a GROUP's pinned cited-leaf set
+ * (#524), the group analogue of {@link buildPinnedTokenRefs}: the cited leaves
+ * live across the MEMBER pools (each ref carries its `customer_id`), so this
+ * fans the by-ref fetches out per member and reassembles the leaves in the
+ * canonical ref order before a single `buildReportTokenMap` pass — keeping the
+ * `R{j}` numbering identical to the order the group builder minted it in.
+ * Returns `null` if any pinned leaf is missing in its member DB (caller treats
+ * that as an integrity failure, exactly like the single-customer path).
+ */
+export async function buildGroupPinnedTokenRefs(
+  memberPools: ReadonlyArray<GroupMemberPool>,
+  variant: ReportVariant,
+  storyRefs: StoryRef[],
+  eventRefs: EventRef[],
+  exemplarRefs: ExemplarRef[] = [],
+): Promise<ReportTokenRef[] | null> {
+  const poolByCustomer = new Map(
+    memberPools.map((m) => [m.customerId, m.pool]),
+  );
+
+  // Stories — fetch per member, reassemble in canonical order.
+  const storyByKey = new Map<string, StoryLeafRow>();
+  for (const [cid, subset] of groupRefsByCustomer(storyRefs)) {
+    const pool = poolByCustomer.get(cid);
+    if (pool === undefined) return null;
+    const leaves = await fetchStoryLeavesByRefs(pool, cid, variant, subset);
+    if (leaves === null) return null;
+    for (const l of leaves) storyByKey.set(storyLeafKey(l), l);
+  }
+  const stories: StoryLeafRow[] = [];
+  for (const r of storyRefs) {
+    const l = storyByKey.get(storyRefKeyG(r, variant));
+    if (l === undefined) return null;
+    stories.push(l);
+  }
+
+  // Events.
+  const eventByKey = new Map<string, EventLeafRow>();
+  for (const [cid, subset] of groupRefsByCustomer(eventRefs)) {
+    const pool = poolByCustomer.get(cid);
+    if (pool === undefined) return null;
+    const leaves = await fetchEventLeavesByRefs(pool, cid, variant, subset);
+    if (leaves === null) return null;
+    for (const l of leaves) eventByKey.set(eventLeafKey(l), l);
+  }
+  const events: EventLeafRow[] = [];
+  for (const r of eventRefs) {
+    const l = eventByKey.get(eventRefKeyG(r, variant));
+    if (l === undefined) return null;
+    events.push(l);
+  }
+
+  // Exemplar leaves (always English) — same fan-out, reassembled in order.
+  const exemplarByKey = new Map<string, ReportLeafText>();
+  for (const [cid, subset] of groupRefsByCustomer(exemplarRefs)) {
+    const pool = poolByCustomer.get(cid);
+    if (pool === undefined) return null;
+    const leaves = await fetchExemplarLeavesByRefs(pool, subset);
+    if (leaves === null) return null;
+    for (let i = 0; i < subset.length; i += 1) {
+      exemplarByKey.set(exemplarRefKeyG(subset[i]), leaves[i]);
+    }
+  }
+  const exemplarLeaves: ReportLeafText[] = [];
+  for (const r of exemplarRefs) {
+    const l = exemplarByKey.get(exemplarRefKeyG(r));
+    if (l === undefined) return null;
+    exemplarLeaves.push(l);
+  }
+
+  const { refs } = buildReportTokenMap(
+    stories.map(maskedStoryLeaf),
+    events.map((e) => ({
+      analysis: e.analysis_text,
+      severityFactors: e.severity_factors,
+      likelihoodFactors: e.likelihood_factors,
+    })),
+    exemplarLeaves,
+  );
+  return refs;
+}
+
+/** Group refs by their `customer_id`, preserving each member's ref order. */
+function groupRefsByCustomer<T extends { customer_id?: string }>(
+  refs: ReadonlyArray<T>,
+): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const r of refs) {
+    // A group's persisted refs always carry `customer_id`; degrade is moot.
+    const cid = r.customer_id ?? "";
+    const arr = out.get(cid);
+    if (arr) arr.push(r);
+    else out.set(cid, [r]);
+  }
+  return out;
 }
 
 export const __testables = {

@@ -43,19 +43,25 @@ import {
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
 import { TranslateReportDocument } from "@/lib/graphql/__generated__/translate-report";
 import { graphqlRequest } from "@/lib/graphql/client";
+import { fetchMemberStates } from "@/lib/groups/groups";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import { getModelCatalog } from "./model-catalog";
 import {
   buildCanonicalPinnedReportInput,
+  buildGroupPeriodicReportInput,
+  buildGroupPinnedTokenRefs,
   buildPeriodicReportInput,
   buildPinnedTokenRefs,
   type EventRef,
   type ExemplarRef,
+  eventWireKey,
+  type GroupMemberPool,
   type PeriodicPeriod,
   type ReportVariant,
   type StoryRef,
+  storyWireKey,
 } from "./report-input-builder";
 import {
   type ReportTokenRef,
@@ -407,10 +413,20 @@ function findCitationStructureMismatches(
 function allowedCitationKeys(
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
+  subjectId: string,
+  memberQualified: boolean,
 ): { storyIds: Set<string>; eventRefs: Set<string> } {
+  // The allowed sets must use the SAME wire key the builder put in
+  // `aimerInputs` (#524): bare on the single-customer path, member-qualified
+  // (`customer_id:...`) on the group path — `storyWireKey`/`eventWireKey` are
+  // the single source of that format.
   return {
-    storyIds: new Set(storyRefs.map((r) => r.story_id)),
-    eventRefs: new Set(eventRefs.map((r) => `${r.aice_id}:${r.event_key}`)),
+    storyIds: new Set(
+      storyRefs.map((r) => storyWireKey(r, subjectId, memberQualified)),
+    ),
+    eventRefs: new Set(
+      eventRefs.map((r) => eventWireKey(r, subjectId, memberQualified)),
+    ),
   };
 }
 
@@ -494,20 +510,37 @@ export async function processReportJob(
 ): Promise<void> {
   const callLlm = opts.callGenerateReport ?? callGenerateReport;
   // Resolve the subject's pools up front through the #523 resolver (mirrors
-  // story-worker resolving the pool before the claim): a missing/unknown
-  // subject or absent DB throws here, before the claim, so the job is left
-  // `queued` for the next tick rather than stranded. For a `customer` subject
-  // the resolver returns `getCustomerRuntimePool(subject_id)` as the result
-  // pool — behavior-identical to the prior direct call — and the existing
-  // single-customer logic below runs against it unchanged. Group end-to-end
-  // generation is NOT opened here (that is #524); no group report jobs are
-  // dispatched yet, so the customer path is the only one that runs.
-  const subjectPools: SubjectPools = await (
-    opts.resolveSubjectPools ?? resolveSubjectPools
-  )(opts.authPool, job.subject_id, {
-    getCustomerPool: opts.resolveCustomerPool,
-  });
+  // story-worker resolving the pool before the claim). For a `customer`
+  // subject the resolver returns `getCustomerRuntimePool(subject_id)` as the
+  // result pool — behavior-identical to the prior direct call. For a `group`
+  // subject it returns the group DB as the result pool plus the ordered member
+  // pools the aggregated build reads from (#524).
+  //
+  // The resolver THROWS on a subject (or group row) missing at run time. A
+  // deleted group has its state + jobs removed by FK cascade, so normally no
+  // job reaches here; if one does (a torn/raced delete), take the defined
+  // terminal path rather than retry-looping: release it `source_unavailable`
+  // (#524 scope 4).
+  let subjectPools: SubjectPools;
+  try {
+    subjectPools = await (opts.resolveSubjectPools ?? resolveSubjectPools)(
+      opts.authPool,
+      job.subject_id,
+      { getCustomerPool: opts.resolveCustomerPool },
+    );
+  } catch (err) {
+    // Only a GENUINELY missing subject / group row is the terminal
+    // `source_unavailable` case (#524 scope 4). A transient/config error
+    // (pool env, DB connectivity) must propagate so the existing tick handler
+    // leaves the job `queued` for the next tick — never burns it to `failed`.
+    if (isMissingSubjectError(err)) {
+      await releaseJobSourceUnavailable(opts.authPool, job, err);
+      return;
+    }
+    throw err;
+  }
   const customerPool = subjectPools.resultPool;
+  const isGroup = subjectPools.kind === "group";
 
   const claim = await opts.authPool.query<{ processing_started_at: string }>(
     `UPDATE periodic_report_job
@@ -615,6 +648,39 @@ export async function processReportJob(
     return;
   }
 
+  // --- Operational gate (#524 scope 4) -------------------------------
+  // A group report aggregates member DBs, so it must skip generation while the
+  // group is suspended/deleted or any member is non-operational: the group's
+  // own `database_status` must be `active`, and EVERY member must have
+  // `status = 'active'` AND `database_status = 'active'`. A skip is a
+  // NON-TERMINAL defer (status stays `queued`, `attempts` unchanged, a future
+  // `next_due_at`), so generation resumes once the group/members return to
+  // active — never a `failed` (which would burn the retry budget) or a hot
+  // `queued` loop. Single-customer jobs are unaffected.
+  if (isGroup) {
+    const blocked = await groupGenerationBlockedReason(
+      opts.authPool,
+      job.subject_id,
+      subjectPools.memberPools,
+    );
+    if (blocked !== null) {
+      await deferJobForOperational(opts.authPool, job, claimMarker);
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "analysis.report_group_not_operational",
+          subject_id: job.subject_id,
+          period: job.period,
+          bucket_date: job.bucket_date,
+          tz: job.tz,
+          generation: job.generation,
+          reason: blocked,
+        }),
+      );
+      return;
+    }
+  }
+
   const variant: ReportVariant = {
     tz: job.tz,
     lang: job.lang,
@@ -639,17 +705,29 @@ export async function processReportJob(
   // EXACT same cited leaves (when they all exist in the target lang) or
   // translated from the canonical's stored `sections`.
   if (job.lang === DEFAULT_LANG) {
-    const built = await buildPeriodicReportInput({
-      authPool: opts.authPool,
-      customerPool,
-      customerId: job.subject_id,
-      period: job.period,
-      bucketDate: job.bucket_date,
-      variant,
-      nowIso,
-      topStoriesK: TOP_STORIES_K,
-      topEventsK: TOP_EVENTS_K,
-    });
+    const built = isGroup
+      ? await buildGroupPeriodicReportInput({
+          authPool: opts.authPool,
+          groupId: job.subject_id,
+          memberPools: subjectPools.memberPools,
+          period: job.period,
+          bucketDate: job.bucket_date,
+          variant,
+          nowIso,
+          topStoriesK: TOP_STORIES_K,
+          topEventsK: TOP_EVENTS_K,
+        })
+      : await buildPeriodicReportInput({
+          authPool: opts.authPool,
+          customerPool,
+          customerId: job.subject_id,
+          period: job.period,
+          bucketDate: job.bucket_date,
+          variant,
+          nowIso,
+          topStoriesK: TOP_STORIES_K,
+          topEventsK: TOP_EVENTS_K,
+        });
     await runNativeGeneration({
       job,
       opts,
@@ -658,6 +736,7 @@ export async function processReportJob(
       built,
       auditBase,
       callLlm,
+      memberQualified: isGroup,
     });
     return;
   }
@@ -692,6 +771,25 @@ export async function processReportJob(
     return;
   }
 
+  // Groups always TRANSLATE non-English from the English canonical (#524):
+  // the native-pin path re-fetches the exact cited leaves per language, which
+  // for a group would re-run the cross-member union in the target language;
+  // v1 reuses the canonical's stored sections and reconstructs the union token
+  // map across member pools for the leak scan instead (`buildGroupPinnedTokenRefs`).
+  if (isGroup) {
+    await runTranslation({
+      job,
+      opts,
+      customerPool,
+      claimMarker,
+      canonical,
+      auditBase,
+      memberQualified: true,
+      memberPools: subjectPools.memberPools,
+    });
+    return;
+  }
+
   // Completeness gate: build the input pinned to the canonical's exact
   // refs in the target lang. If every cited leaf exists there, generate
   // natively (same `R{j}` numbering as English); otherwise translate.
@@ -718,6 +816,7 @@ export async function processReportJob(
       built: pinned.built,
       auditBase,
       callLlm,
+      memberQualified: false,
     });
     return;
   }
@@ -728,6 +827,8 @@ export async function processReportJob(
     claimMarker,
     canonical,
     auditBase,
+    memberQualified: false,
+    memberPools: [],
   });
 }
 
@@ -751,9 +852,19 @@ async function runNativeGeneration(args: {
   built: Awaited<ReturnType<typeof buildPeriodicReportInput>>;
   auditBase: AuditEmissionBase;
   callLlm: typeof callGenerateReport;
+  /** Group path: validate citations against member-qualified keys (#524). */
+  memberQualified: boolean;
 }): Promise<void> {
-  const { job, opts, customerPool, claimMarker, built, auditBase, callLlm } =
-    args;
+  const {
+    job,
+    opts,
+    customerPool,
+    claimMarker,
+    built,
+    auditBase,
+    callLlm,
+    memberQualified,
+  } = args;
 
   // Redaction-policy precondition across the consumed leaves. A
   // baseline-only report (zero leaves) stamps the reserved sentinel.
@@ -914,7 +1025,12 @@ async function runNativeGeneration(args: {
   // already rejects out-of-bundle ids at generation; aimer-web re-checks the
   // decoded set as defense-in-depth and refuses to persist a fabricated
   // citation that slipped through.
-  const allowed = allowedCitationKeys(built.storyRefs, built.eventRefs);
+  const allowed = allowedCitationKeys(
+    built.storyRefs,
+    built.eventRefs,
+    job.subject_id,
+    memberQualified,
+  );
   const invalidSources = findInvalidCitationSources(
     parsedSections,
     allowed.storyIds,
@@ -1029,8 +1145,21 @@ async function runTranslation(args: {
   claimMarker: string;
   canonical: EnglishCanonical;
   auditBase: AuditEmissionBase;
+  /** Group path: member-qualified citation keys + member-pool token replay. */
+  memberQualified: boolean;
+  /** Group member pools (empty on the single-customer path) (#524). */
+  memberPools: ReadonlyArray<GroupMemberPool>;
 }): Promise<void> {
-  const { job, opts, customerPool, claimMarker, canonical, auditBase } = args;
+  const {
+    job,
+    opts,
+    customerPool,
+    claimMarker,
+    canonical,
+    auditBase,
+    memberQualified,
+    memberPools,
+  } = args;
   const callTranslate = opts.callTranslateReport ?? callTranslateReport;
 
   // Reconstruct the canonical's report-scope token refs from the English
@@ -1043,17 +1172,29 @@ async function runTranslation(args: {
     modelName: canonical.modelName,
     model: canonical.model,
   };
-  const tokenRefs: ReportTokenRef[] | null = await buildPinnedTokenRefs(
-    customerPool,
-    job.subject_id,
-    englishVariant,
-    canonical.storyRefs,
-    canonical.eventRefs,
-    // The translate path is uniformly English (restoration_lang = ENGLISH),
-    // so cited and exemplar leaves both replay at English; the union covers
-    // exemplar `R{j}` tokens that the translation preserved verbatim (#495).
-    canonical.exemplarRefs,
-  );
+  // Group canonicals cite leaves across MEMBER pools (each ref carries its
+  // `customer_id`), so reconstruct the union token map by fanning out per
+  // member (#524); the single-customer path replays from its one pool.
+  const tokenRefs: ReportTokenRef[] | null = memberQualified
+    ? await buildGroupPinnedTokenRefs(
+        memberPools,
+        englishVariant,
+        canonical.storyRefs,
+        canonical.eventRefs,
+        canonical.exemplarRefs,
+      )
+    : await buildPinnedTokenRefs(
+        customerPool,
+        job.subject_id,
+        englishVariant,
+        canonical.storyRefs,
+        canonical.eventRefs,
+        // The translate path is uniformly English (restoration_lang =
+        // ENGLISH), so cited and exemplar leaves both replay at English; the
+        // union covers exemplar `R{j}` tokens the translation preserved
+        // verbatim (#495).
+        canonical.exemplarRefs,
+      );
   if (tokenRefs === null) {
     await failJob(opts.authPool, job, "canonical_leaves_missing", claimMarker, {
       attempts: job.attempts + 1,
@@ -1195,7 +1336,12 @@ async function runTranslation(args: {
   // rewrote a citation to an out-of-bundle leaf must not orphan a citation in
   // a persisted translated row. Allowed keys come from the canonical's refs
   // (the translated row copies them verbatim).
-  const allowed = allowedCitationKeys(canonical.storyRefs, canonical.eventRefs);
+  const allowed = allowedCitationKeys(
+    canonical.storyRefs,
+    canonical.eventRefs,
+    job.subject_id,
+    memberQualified,
+  );
   const invalidSources = findInvalidCitationSources(
     parsedSections,
     allowed.storyIds,
@@ -1779,6 +1925,146 @@ async function deferJobForCanonical(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Group operational gate + terminal source-unavailable release (#524 scope 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a group's generation is currently blocked, and why — or `null` when
+ * it may proceed (#524 scope 4). Blocked when the group's own
+ * `database_status` is not `active`, a member row is missing, or any member is
+ * not operational (`status = 'active'` AND `database_status = 'active'`).
+ * Member state is read via {@link fetchMemberStates}.
+ */
+async function groupGenerationBlockedReason(
+  authPool: Pool,
+  groupId: string,
+  memberPools: ReadonlyArray<GroupMemberPool>,
+): Promise<string | null> {
+  const grp = await authPool.query<{ database_status: string }>(
+    `SELECT database_status FROM customer_groups WHERE id = $1`,
+    [groupId],
+  );
+  if (grp.rows.length === 0) return "group_missing";
+  if (grp.rows[0].database_status !== "active") {
+    return "group_database_not_active";
+  }
+
+  const memberIds = memberPools.map((m) => m.customerId);
+  if (memberIds.length === 0) return "no_members";
+  const client = await authPool.connect();
+  let states: Awaited<ReturnType<typeof fetchMemberStates>>;
+  try {
+    states = await fetchMemberStates(client, memberIds);
+  } finally {
+    client.release();
+  }
+  if (states.length !== memberIds.length) return "member_missing";
+  for (const s of states) {
+    if (s.status !== "active" || s.databaseStatus !== "active") {
+      return "member_not_operational";
+    }
+  }
+  return null;
+}
+
+// Defer a group job non-terminally while the group/members are not
+// operational (#524 scope 4). Identical contract to `deferJobForCanonical`:
+// leaves `status = 'queued'` and `attempts` UNCHANGED, sets a future
+// `next_due_at` so the picker does not hot-spin, keyed by the claim marker so
+// a stale attempt cannot defer a re-claimed one. Generation resumes once the
+// group returns to active (the next pickup re-evaluates the gate).
+async function deferJobForOperational(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE periodic_report_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            next_due_at = NOW() + ($8::bigint * interval '1 millisecond'),
+            last_error = 'group_not_operational',
+            updated_at = NOW()
+      WHERE subject_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $9
+        AND status = 'processing'
+        AND processing_started_at::text = $10`,
+    [
+      job.subject_id,
+      job.period,
+      job.bucket_date,
+      job.tz,
+      job.lang,
+      job.model_name,
+      job.model,
+      CANONICAL_DEFER_MS,
+      job.generation,
+      claimMarker,
+    ],
+  );
+}
+
+// Whether a resolver error means the subject / group row is genuinely missing
+// (a deleted group), as opposed to a transient/config failure (pool env, DB
+// connectivity). `resolveSubjectPools` throws these exact messages; only this
+// class takes the terminal `source_unavailable` path (#524 scope 4).
+function isMissingSubjectError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("unknown subject") || msg.includes("has no group row");
+}
+
+// Terminal release for a job whose subject / pool is missing at run time
+// (#524 scope 4). The resolver throws before the claim (the job is still
+// `queued`), so this is the ONE defined terminal behavior instead of a
+// retry-loop: mark the job `failed` with `last_error = 'source_unavailable'`,
+// leaving `attempts` untouched. A genuinely deleted group has its job removed
+// by FK cascade (this UPDATE then matches zero rows — a harmless no-op); this
+// only fires for a torn/raced delete that left a job behind. No resultless
+// `done` job is ever produced.
+async function releaseJobSourceUnavailable(
+  authPool: Pool,
+  job: JobPickup,
+  err: unknown,
+): Promise<void> {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "analysis.report_source_unavailable",
+      subject_id: job.subject_id,
+      period: job.period,
+      bucket_date: job.bucket_date,
+      tz: job.tz,
+      generation: job.generation,
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
+  await authPool.query(
+    `UPDATE periodic_report_job
+        SET status = 'failed',
+            last_error = 'source_unavailable',
+            processing_started_at = NULL,
+            updated_at = NOW()
+      WHERE subject_id = $1 AND period = $2
+        AND bucket_date = $3::date AND tz = $4
+        AND lang = $5 AND model_name = $6 AND model = $7
+        AND generation = $8
+        AND status = 'queued'`,
+    [
+      job.subject_id,
+      job.period,
+      job.bucket_date,
+      job.tz,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
+    ],
+  );
+}
+
 interface TranslationAudit {
   translationModelName: string;
   translationModel: string;
@@ -2143,8 +2429,16 @@ export async function seedRealReportJobs(
             COALESCE(cdm.model_name, gd.model_name, $3) AS model_name,
             COALESCE(cdm.model,      gd.model,      $4) AS model
        FROM periodic_report_state s
+       JOIN subjects subj ON subj.id = s.subject_id
+       -- Group default-model policy (#524 scope 6): a group subject resolves
+       -- its model from the global/env default ONLY — never a per-customer
+       -- override. customer_default_model.customer_id FKs customers, so a
+       -- group never has a row; the subj.kind = 'customer' guard makes that
+       -- the EXPLICIT, intended policy rather than a silent join miss (and
+       -- keeps a per-group default-model setting cleanly deferred to #512/#513).
        LEFT JOIN customer_default_model cdm
          ON cdm.customer_id = s.subject_id
+        AND subj.kind = 'customer'
         AND EXISTS (
           SELECT 1 FROM catalog c
            WHERE c.model_name = cdm.model_name AND c.model = cdm.model

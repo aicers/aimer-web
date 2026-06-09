@@ -519,7 +519,7 @@ async function reconcileStoryStates(
 // Periodic state seed + forward-patch
 // ---------------------------------------------------------------------------
 
-interface BucketRow {
+export interface BucketRow {
   period: PeriodicPeriod;
   bucket_date: string;
 }
@@ -537,7 +537,7 @@ interface BucketRow {
  * derive its historical buckets. The active-customer scope above
  * already gates whether we run this query at all.
  */
-async function deriveAllBuckets(
+export async function deriveAllBuckets(
   customerConn: CustomerConnection,
   tz: string,
 ): Promise<BucketRow[]> {
@@ -633,7 +633,7 @@ interface BucketMaxEventRow {
   event_count: string;
 }
 
-interface BucketAggregate {
+export interface BucketAggregate {
   maxEventAt: Date;
   maxReceivedAt: Date;
   eventCount: number;
@@ -646,7 +646,7 @@ interface BucketStoryAggregateRow {
   story_count: string;
 }
 
-interface BucketStoryAggregate {
+export interface BucketStoryAggregate {
   maxStoryReceivedAt: Date | null;
   storyCount: number;
 }
@@ -674,7 +674,7 @@ interface BucketStoryAggregate {
  *     is strictly less than the stored count, content was removed and
  *     the row is flipped to `dirty`.
  */
-async function loadPerBucketMaxEventTimes(
+export async function loadPerBucketMaxEventTimes(
   customerConn: CustomerConnection,
   tz: string,
 ): Promise<Map<string, BucketAggregate>> {
@@ -756,7 +756,7 @@ async function loadPerBucketMaxEventTimes(
  * the deletion-detection rule cannot reliably distinguish "the window
  * shifted past the story" from "the story was deleted".
  */
-async function loadPerBucketStoryAggregates(
+export async function loadPerBucketStoryAggregates(
   customerConn: CustomerConnection,
   tz: string,
 ): Promise<Map<string, BucketStoryAggregate>> {
@@ -872,7 +872,7 @@ async function loadPerBucketStoryAggregates(
  * as "no LIVE seed / patch from baseline" and falls back to the
  * story-side LIVE signal if the customer has only story activity.
  */
-async function loadLatestBaselineActivity(
+export async function loadLatestBaselineActivity(
   customerConn: CustomerConnection,
 ): Promise<{
   maxEventAt: Date;
@@ -955,7 +955,7 @@ async function loadLatestBaselineActivity(
  * timestamp (baseline OR story), so this function is only consulted
  * for LIVE rows that should exist.
  */
-async function loadLatestStoryActivity(
+export async function loadLatestStoryActivity(
   customerConn: CustomerConnection,
 ): Promise<{ maxReceivedAt: Date } | null> {
   const { rows } = await customerConn.query<{
