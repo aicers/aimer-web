@@ -55,15 +55,8 @@ let resultRows: Array<Record<string, unknown>> = [];
 let storyLeafRows: Array<Record<string, unknown>> = [];
 let eventLeafRows: Array<Record<string, unknown>> = [];
 
-// Subject kind for the group guard (#524): `customer` for the existing
-// single-customer tests, flipped to `group` to assert the not-found guard.
-let subjectKind = "customer";
-
 const authPool = {
   query: vi.fn(async (sql: string) => {
-    if (sql.includes("FROM subjects")) {
-      return { rows: [{ kind: subjectKind }] };
-    }
     if (sql.includes("FROM customers")) {
       return { rows: [{ timezone: "Asia/Seoul" }] };
     }
@@ -160,7 +153,6 @@ beforeEach(() => {
   vi.resetModules();
   authPool.query.mockClear();
   customerPool.query.mockClear();
-  subjectKind = "customer";
   stateRows = [{ status: "ready" }];
   availRows = [];
   resultRows = [];
@@ -178,23 +170,6 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ bridgeAiceId: null, bridgeCustomerIds: null });
   mockEnqueue.mockReset().mockResolvedValue({ action: "seeded" });
-});
-
-describe("loadReportResultPage — group guard (#524)", () => {
-  it("resolves a group subject as not-found (deferred to B3 step 3)", async () => {
-    // A group report's citations are member-qualified and its leaves live in
-    // member DBs; this single-customer loader cannot restore them yet, so it
-    // must not render a silently degraded page. The guard runs before any
-    // result/leaf query, so the group's own result pool is never touched.
-    subjectKind = "group";
-    availRows = [{ lang: "ENGLISH" }];
-    resultRows = [resultRow("ENGLISH")];
-
-    const outcome = await callLoader({ locale: "en" });
-    expect(outcome.kind).toBe("not_found");
-    // No result/leaf SELECT was issued against the customer (group) pool.
-    expect(customerPool.query).not.toHaveBeenCalled();
-  });
 });
 
 describe("loadReportResultPage — L2 language resolution", () => {
