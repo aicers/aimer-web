@@ -46,6 +46,54 @@
 롤백되며, 다음 틱에서 동일한 고객을 처음부터 다시 실행합니다.
 삭제는 멱등이므로 롤백된 틱은 다음 틱에서 자연스럽게 수렴합니다.
 
+## 그룹 리포트 보존
+
+고객 **그룹**은 둘 이상의 멤버 고객을 모아, 생성된 리포트만 담는
+전용 데이터 DB를 가집니다. 고객을 스윕하는 바로 그 틱이 보존 한도를
+넘긴 **과거 기간**(DAILY/WEEKLY/MONTHLY) 그룹 리포트도 함께
+수거(reap)하므로, 살아남은 모든 과거 그룹 리포트는 항상 완전히
+역비식별 가능합니다.
+
+**순서.** 그룹 수거는 각 틱의 **시작 시점**, 즉 고객별
+`event_redaction_map` 스윕보다 **먼저** 실행됩니다. 이로써 살아남은
+그룹 리포트가 같은 틱에서 멤버가 막 삭제하려는 비식별화 맵을
+참조하는 일이 없도록 보장합니다.
+
+**보존 한도.** 날짜 `D` 버킷의 그룹 리포트는
+`D + min(coalesce(group_policy_days, ∞), min_over_members(H_c))`까지
+보존됩니다. 여기서:
+
+- `group_policy_days`는 그룹 자신의 분석 보존 기간으로,
+  `group_retention_policy.analysis_days`(auth DB)에서 옵니다. `NULL`은
+  *무제한*을 의미하며 — 해당 항이 `min`에서 빠집니다.
+- 각 멤버의 `H_c = max(ingestion_days, coalesce(analysis_days, ∞))`는
+  멤버의 `customer_retention_policy` 행(auth DB)에서 계산합니다.
+  `analysis_days = NULL`인 멤버는 무제한(`H_c = ∞`)이라 `min`에서
+  빠집니다.
+
+그룹 정책과 모든 멤버가 무제한이면 리포트는 결코 수거되지 않습니다.
+모든 한도 입력값은 **auth DB**에서 읽으며 — 수거기는 멤버 DB를 절대
+열지 않으므로, 정지된 멤버라도 `H_c`는 계속 계산 가능합니다.
+
+수거는 **버킷 날짜** `D`를 기준으로 시계를 맞추며(고객 스윕의 행
+기입 시점 기준과는 의도적으로 다릅니다), 한도를 넘긴 행을
+**삭제**합니다 — 저하된 표시로 남기는 폴백은 없습니다.
+`customer_groups.database_status = 'active'`인 그룹만 처리하며,
+`provisioning` / `failed` 그룹은 연결 시도 없이 건너뜁니다.
+
+**LIVE는 버킷 날짜로 수거되지 않습니다.** LIVE는 합성
+`bucket_date = '1970-01-01'`에 저장되는 단일 롤링 "현재" 버킷이며,
+수거기는 `period <> 'LIVE'`로 필터링합니다. LIVE의 역비식별성은 이
+보존 한도가 아니라 재생성 주기로 유지됩니다. (가장 짧은 멤버 보존
+기간보다 오래 재생성이 멈춘 LIVE 결과를 강화하는 작업은 별도
+후속 이슈로 미룹니다.)
+
+**멤버 정책 누락.** 멤버 중 하나라도 `customer_retention_policy`
+행이 없으면, 불완전한 한도 정보로 수거하지 않고 해당 틱에서 그룹을
+**건너뜁니다**(`retention_sweep.group_skipped`로 감사). 멤버를
+`min`에서 빼면 그룹 보존이 잘못 *연장*되기 때문입니다. 다음 틱 전에
+누락된 정책을 조사하십시오.
+
 ## 환경 변수
 
 | 변수 | 기본값 | 설명 |
@@ -74,6 +122,12 @@
 담깁니다. `story_member`, `policy_event` 수치는 부모를 `FOR UPDATE`
 로 잠근 상태에서 측정한 값이며, 부모 `DELETE`의 `rowCount`가 아닌
 실제 캐스케이드로 삭제될 자식 행 수를 의미합니다.
+
+그룹 수거는 자체 이벤트를 기록합니다. 과거 리포트 행이 하나라도
+삭제되면 `retention_sweep.group_reaped`(상세에 `bound_days`,
+`cutoff_bucket_date`, 삭제 행 수 포함), 멤버 정책 누락으로 그룹을
+건너뛰면 `retention_sweep.group_skipped`, 그룹 데이터 DB에 연결할 수
+없거나 삭제가 실패하면 `retention_sweep.group_failed`를 기록합니다.
 
 ## 정책 누락 인바리언트
 
