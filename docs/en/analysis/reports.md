@@ -319,9 +319,13 @@ The worker pipeline runs without operator action:
    plus every other event analyzed in the window — the builder counts the
    analyzed total, how many were cited, the technique leaderboard and tier
    distribution, a technique rollup over the *uncited* remainder, and up to
-   ten technique-clustered exemplar phrasings. A window with no analyzed
-   events beyond the cited set omits this entirely, so those reports read
-   exactly as before.
+   ten technique-clustered exemplar phrasings. Only a window with **no
+   non-story-covered analyzed events at all** (an empty analyzed-in-window
+   set) omits this section entirely, so those reports read exactly as before.
+   A window that *does* have analyzed events but cited every one of them
+   still sends the section — its analyzed total simply equals its cited
+   count, with an empty *uncited* rollup and no exemplars — so it has no
+   long-tail narrative but is otherwise unchanged.
 4. Every included analysis narrative is re-namespaced into a single
    report-scope token namespace (`<<REDACTED_*_R{j}_*>>`) so the same
    placeholder in two different analyses cannot collide, and the bundle is

@@ -15,6 +15,7 @@ const {
   clusterExemplars,
   tierDistribution,
   chooseExemplarFactor,
+  computeInputHash,
 } = __testables;
 
 type Tier = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
@@ -33,6 +34,7 @@ function leaf(
     ttp_tags: string[];
     severity_factors: string[];
     likelihood_factors: string[];
+    redaction_policy_version: string;
   }> = {},
   // biome-ignore lint/suspicious/noExplicitAny: builds a partial leaf row
 ): any {
@@ -116,6 +118,68 @@ describe("tierDistribution", () => {
       { key: "MEDIUM", count: 1 },
       { key: "LOW", count: 2 },
     ]);
+  });
+});
+
+describe("computeInputHash exemplar refs (#495 review r1, item 1)", () => {
+  const base = {
+    period: "DAILY",
+    bucketDate: "2026-06-01",
+    variant: {
+      tz: "UTC",
+      lang: "ENGLISH",
+      modelName: "openai",
+      model: "gpt",
+      // biome-ignore lint/suspicious/noExplicitAny: minimal variant
+    } as any,
+    storyRefs: [],
+    eventRefs: [],
+    // biome-ignore lint/suspicious/noExplicitAny: payload is opaque to the hash
+    aimerInputs: { storyAnalyses: [], eventAnalyses: [] } as any,
+  };
+  const ref = (over: Partial<Record<string, unknown>>) => ({
+    aice_id: "a",
+    event_key: "1",
+    generation: 1,
+    model_name: "openai",
+    model: "gpt",
+    ...over,
+  });
+
+  it("omits empty exemplar refs so the hash is byte-identical to pre-#495", () => {
+    // An empty long-tail must hash exactly as if `exemplar_refs` were never a
+    // field, otherwise every empty-universe report would be marked dirty.
+    expect(computeInputHash({ ...base, exemplarRefs: [] })).toBe(
+      computeInputHash({ ...base, exemplarRefs: [] }),
+    );
+  });
+
+  it("a non-empty exemplar ref changes the hash vs the empty case", () => {
+    expect(computeInputHash({ ...base, exemplarRefs: [ref({})] })).not.toBe(
+      computeInputHash({ ...base, exemplarRefs: [] }),
+    );
+  });
+
+  it("two different exemplar leaves with the same payload hash differently", () => {
+    // The core gap: identical `aimerInputs` (factor strings are report-scope
+    // placeholders) but different generation-pinned provenance must NOT collide.
+    const a = computeInputHash({
+      ...base,
+      exemplarRefs: [ref({ generation: 1 })],
+    });
+    const b = computeInputHash({
+      ...base,
+      exemplarRefs: [ref({ generation: 2 })],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("is order-independent in the exemplar ref list", () => {
+    const r1 = ref({ aice_id: "a", event_key: "1" });
+    const r2 = ref({ aice_id: "b", event_key: "2" });
+    expect(computeInputHash({ ...base, exemplarRefs: [r1, r2] })).toBe(
+      computeInputHash({ ...base, exemplarRefs: [r2, r1] }),
+    );
   });
 });
 
@@ -256,6 +320,30 @@ describe("planAnalyzedAggregates", () => {
     for (const ex of payload.exemplars) {
       expect(ex.factor).toMatch(/^R-factor-\d+$/);
     }
+  });
+
+  it("surfaces each kept rep leaf's redaction_policy_version for the precondition", () => {
+    // A low-only window: no cited leaves, but the uncited LOW leaves seed
+    // exemplar clusters whose factors are sent to aimer. Their policy versions
+    // must reach the redaction precondition (#495 review r1, item 2), else the
+    // report would stamp `baseline-only` while shipping exemplar tokens.
+    const universe = [
+      leaf({ aice_id: "u", event_key: "1", ttp_tags: ["T1"] }),
+      leaf({
+        aice_id: "u",
+        event_key: "2",
+        ttp_tags: ["T2"],
+        redaction_policy_version: "v9",
+      }),
+    ];
+    const plan = planAnalyzedAggregates({
+      windows: WINDOWS,
+      universe,
+      cited: [],
+      warnContext: WARN,
+    });
+    expect(plan.exemplarPolicyVersions).toHaveLength(plan.exemplarRefs.length);
+    expect([...plan.exemplarPolicyVersions].sort()).toEqual(["v1", "v9"]);
   });
 
   it("emits a truncation warning when more than 10 clusters exist", () => {

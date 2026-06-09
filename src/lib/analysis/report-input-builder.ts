@@ -915,6 +915,18 @@ function eventKeyOf(e: { aice_id: string; event_key: string }): string {
 interface AnalyzedAggregatesPlan {
   exemplarLeaves: ReportLeafText[];
   exemplarRefs: ExemplarRef[];
+  /**
+   * `redaction_policy_version` of each kept exemplar representative leaf (#495
+   * review round 1, item 2). The reps' factors are rewritten into report-scope
+   * tokens and sent to aimer, so the redaction-policy precondition must cover
+   * them too — otherwise a low-only window (no cited leaves) would ship
+   * exemplar factor tokens while stamping the `baseline-only` sentinel and
+   * never catch a missing/mismatched policy version. Empty on the pinned path:
+   * the English canonical already validated the (reused) exemplar set, and
+   * mixing English exemplar versions with target-language cited versions in one
+   * equality check could spuriously fail.
+   */
+  exemplarPolicyVersions: string[];
   finalize: (
     rewrittenExemplarTexts: ReadonlyArray<string>,
   ) => AnalyzedEventAggregatesInput | null;
@@ -923,6 +935,7 @@ interface AnalyzedAggregatesPlan {
 const EMPTY_AGGREGATES_PLAN: AnalyzedAggregatesPlan = {
   exemplarLeaves: [],
   exemplarRefs: [],
+  exemplarPolicyVersions: [],
   finalize: () => null,
 };
 
@@ -969,6 +982,7 @@ function planAnalyzedAggregates(args: {
   // token map and `input_exemplar_refs`.
   const exemplarLeaves: ReportLeafText[] = [];
   const exemplarRefs: ExemplarRef[] = [];
+  const exemplarPolicyVersions: string[] = [];
   const leafIndexByKey = new Map<string, number>();
   for (const cluster of kept) {
     const key = eventKeyOf(cluster.repLeaf);
@@ -982,6 +996,9 @@ function planAnalyzedAggregates(args: {
       model_name: cluster.repLeaf.model_name,
       model: cluster.repLeaf.model,
     });
+    // Carry the rep leaf's policy version into the precondition: its factor is
+    // prompt input once rewritten to report scope (#495 review r1, item 2).
+    exemplarPolicyVersions.push(cluster.repLeaf.redaction_policy_version);
   }
 
   const finalize = (
@@ -1016,7 +1033,7 @@ function planAnalyzedAggregates(args: {
     };
   };
 
-  return { exemplarLeaves, exemplarRefs, finalize };
+  return { exemplarLeaves, exemplarRefs, exemplarPolicyVersions, finalize };
 }
 
 function resolveRedactionPolicy(versions: string[]): RedactionPolicyResult {
@@ -1078,6 +1095,7 @@ function computeInputHash(args: {
   variant: ReportVariant;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
+  exemplarRefs: ExemplarRef[];
   aimerInputs: PeriodicReportInputs;
 }): string {
   const storyRefs = [...args.storyRefs].sort(
@@ -1090,6 +1108,22 @@ function computeInputHash(args: {
       a.event_key.localeCompare(b.event_key) ||
       a.generation - b.generation,
   );
+  // Exemplar refs are generation-pinned provenance with the SAME restoration
+  // semantics as cited refs: they decide which event redaction map turns a
+  // long-tail `R{j}` token back into plaintext. Because exemplar `factor`
+  // strings carry only report-scope placeholders, two different exemplar
+  // leaves/generations can yield a byte-identical payload yet restore to
+  // different plaintext — so hashing the payload alone would miss the change
+  // and keep serving stale `input_exemplar_refs`. Hash them like story/event
+  // refs (#495 review round 1, item 1).
+  const exemplarRefs = [...args.exemplarRefs].sort(
+    (a, b) =>
+      a.aice_id.localeCompare(b.aice_id) ||
+      a.event_key.localeCompare(b.event_key) ||
+      a.generation - b.generation ||
+      a.model_name.localeCompare(b.model_name) ||
+      a.model.localeCompare(b.model),
+  );
   const canonical = {
     period: args.period,
     bucket_date: args.bucketDate,
@@ -1099,6 +1133,11 @@ function computeInputHash(args: {
     model: args.variant.model,
     story_refs: storyRefs,
     event_refs: eventRefs,
+    // Omit `exemplar_refs` entirely when empty (no long-tail) so an
+    // empty-universe report hashes byte-identically to pre-#495 — mirrors the
+    // `analyzedEventAggregates` `undefined` omission and keeps those reports
+    // from being marked dirty. A present-but-empty `[]` would change the hash.
+    ...(exemplarRefs.length > 0 ? { exemplar_refs: exemplarRefs } : {}),
     aimer_inputs: args.aimerInputs,
   };
   return createHash("sha256").update(stableStringify(canonical)).digest("hex");
@@ -1239,9 +1278,15 @@ async function assembleReportInput(
   );
 
   // --- Redaction policy precondition (consumed leaves only) -----------
+  // Includes the kept exemplar representative leaves (#495 review r1, item 2):
+  // their factors are rewritten to report-scope tokens and sent to aimer, so a
+  // low-only long-tail window must not stamp `baseline-only` while shipping
+  // exemplar tokens, and a missing/mismatched exemplar policy version must be
+  // caught here before the LLM call.
   const leafPolicyVersions = [
     ...stories.map((s) => s.redaction_policy_version),
     ...events.map((e) => e.redaction_policy_version),
+    ...aggregatesPlan.exemplarPolicyVersions,
   ];
   const redaction = resolveRedactionPolicy(leafPolicyVersions);
 
@@ -1415,6 +1460,7 @@ async function assembleReportInput(
     variant: ctx.variant,
     storyRefs,
     eventRefs,
+    exemplarRefs: aggregatesPlan.exemplarRefs,
     aimerInputs,
   });
 
@@ -1544,6 +1590,12 @@ export async function buildCanonicalPinnedReportInput(
   const aggregatesPlan: AnalyzedAggregatesPlan = {
     exemplarLeaves,
     exemplarRefs: args.exemplarRefs,
+    // Empty by design: the English canonical already ran the redaction-policy
+    // precondition over this exact exemplar set, and the reused leaves are
+    // English while this row's cited leaves are the target language — folding
+    // English exemplar versions into the target-language equality check could
+    // spuriously trip `mismatched` (#495 review r1, item 2).
+    exemplarPolicyVersions: [],
     // Reuse the canonical payload verbatim — never recompute the universe in
     // the target language.
     finalize: () => args.analyzedEventAggregates,
