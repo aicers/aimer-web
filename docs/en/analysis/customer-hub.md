@@ -7,6 +7,15 @@ rather than being reachable only by knowing its ID.
 
 ![The customer hub with the Security Reports, Threat Stories, and Suspicious Events section cards](../../assets/customer-hub.en.png)
 
+## Reaching the hub
+
+Open the hub directly from the **Customers** section of the sidebar,
+which lists every customer you can access and links each one straight to
+its hub (`/subjects/<id>`). See
+[Navigation](../navigation.md#customers-summary-subjects). You no longer
+have to drill into a detail page and backtrack through the breadcrumb to
+get here.
+
 ## Sections
 
 The hub renders up to three section cards, each linking into a list:
