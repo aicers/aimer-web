@@ -3,9 +3,32 @@ import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { changeRole, removeMember } from "@/lib/auth/members";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { reconcileGroupsForCustomer } from "@/lib/groups/lifecycle";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Re-evaluate the lifecycle of every group the customer belongs to after a
+// member role remove/downgrade (#510): the affected account may have stopped
+// qualifying as a manager, triggering owner transfer or auto-delete.
+// Best-effort — the sweep converges if this hiccups.
+async function reconcileGroupsBestEffort(
+  customerId: string,
+  actorId: string,
+  ipAddress: string | undefined,
+  sid: string,
+): Promise<void> {
+  try {
+    await reconcileGroupsForCustomer(getAuthPool(), customerId, {
+      actorContext: { actorId, authContext: "general", ipAddress, sid },
+    });
+  } catch (err) {
+    console.error(
+      `Group lifecycle reconcile after member change on customer ${customerId} failed:`,
+      (err as Error).message,
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DELETE /api/members/:accountId?customer_id=...
@@ -46,6 +69,13 @@ export const DELETE = withAuth(
           targetAccountId,
           customerId,
         }),
+      );
+
+      await reconcileGroupsBestEffort(
+        customerId,
+        auth.accountId,
+        auth.meta.ipAddress,
+        auth.sessionId,
       );
 
       auth.audit.targetId = targetAccountId;
@@ -134,6 +164,13 @@ export const PATCH = withAuth(
           customerId,
           roleId,
         }),
+      );
+
+      await reconcileGroupsBestEffort(
+        customerId,
+        auth.accountId,
+        auth.meta.ipAddress,
+        auth.sessionId,
       );
 
       auth.audit.targetId = targetAccountId;

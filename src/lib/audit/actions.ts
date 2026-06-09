@@ -72,6 +72,11 @@ export type AuditAction =
   | "customer_group.deleted"
   | "customer_group.timezone_updated"
   | "group_retention_policy.updated"
+  // Customer-group lifecycle enforcement (#510)
+  | "customer_group.owner_transferred"
+  | "customer_group.auto_deleted"
+  | "customer_group.suspended"
+  | "customer_group.resumed"
   // Per-customer default analysis model (#473)
   | "customer_default_model.updated"
   | "customer_default_model.cleared"

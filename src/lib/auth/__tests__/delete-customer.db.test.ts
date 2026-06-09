@@ -479,4 +479,72 @@ describe.skipIf(!hasPostgres)("deleteCustomer (DB integration)", () => {
     );
     expect(invAfter.rows.length).toBe(0);
   });
+
+  // =====================================================================
+  // #510: deleting a member customer auto-deletes every group it belonged to
+  // =====================================================================
+
+  it("auto-deletes groups the deleted customer belonged to (#510)", async () => {
+    const memberA = await createTestCustomer("del-grp-a");
+    const memberB = await createTestCustomer("del-grp-b");
+
+    const { createGroup } = await import("../../groups/groups");
+    const client = await authPool.connect();
+    let groupId: string;
+    try {
+      await client.query("BEGIN");
+      const group = await createGroup(client, {
+        name: "Doomed Group",
+        description: null,
+        memberIds: [memberA, memberB],
+        tz: "UTC",
+        creatorAccountId: managerAccountId,
+        analysisDays: 1095,
+      });
+      await client.query("COMMIT");
+      groupId = group.id;
+    } finally {
+      client.release();
+    }
+
+    // The group entity exists before the member is deleted.
+    const before = await authPool.query(
+      "SELECT 1 FROM customer_groups WHERE id = $1",
+      [groupId],
+    );
+    expect(before.rows.length).toBe(1);
+
+    // Deleting one member tears the whole group down: the membership set is
+    // immutable, so a group can never lose a member and keep generating.
+    const { deleteCustomer } = await import("../delete-customer");
+    await deleteCustomer(authPool, auditPool, memberA, undefined, {
+      adminUrl: authDbUrl,
+      skipTransit: true,
+      skipAuditAnonymize: true,
+    });
+
+    // The group entity (and its subject / member / retention rows) are gone.
+    const groupAfter = await authPool.query(
+      "SELECT 1 FROM customer_groups WHERE id = $1",
+      [groupId],
+    );
+    expect(groupAfter.rows.length).toBe(0);
+    const subjectAfter = await authPool.query(
+      "SELECT 1 FROM subjects WHERE id = $1",
+      [groupId],
+    );
+    expect(subjectAfter.rows.length).toBe(0);
+    const membersAfter = await authPool.query(
+      "SELECT 1 FROM customer_group_members WHERE group_id = $1",
+      [groupId],
+    );
+    expect(membersAfter.rows.length).toBe(0);
+
+    // Clean up the surviving member.
+    await deleteCustomer(authPool, auditPool, memberB, undefined, {
+      adminUrl: authDbUrl,
+      skipTransit: true,
+      skipAuditAnonymize: true,
+    });
+  });
 });

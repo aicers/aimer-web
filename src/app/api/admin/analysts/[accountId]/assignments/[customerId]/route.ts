@@ -4,6 +4,7 @@ import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
+import { reconcileGroupsForCustomer } from "@/lib/groups/lifecycle";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -85,6 +86,25 @@ export const DELETE = withAuth(
         ipAddress: auth.meta.ipAddress,
         sid: auth.sessionId,
       });
+
+      // Group lifecycle (#510): removing an analyst assignment can drop the
+      // account's qualification on a member, so re-evaluate every group this
+      // customer belongs to (owner transfer / auto-delete). Best-effort.
+      try {
+        await reconcileGroupsForCustomer(pool, customerId, {
+          actorContext: {
+            actorId: auth.accountId,
+            authContext: "admin",
+            ipAddress: auth.meta.ipAddress,
+            sid: auth.sessionId,
+          },
+        });
+      } catch (err) {
+        console.error(
+          `Group lifecycle reconcile after analyst-assignment removal (${accountId}/${customerId}) failed:`,
+          (err as Error).message,
+        );
+      }
     }
 
     return Response.json({ accountId, customerId });

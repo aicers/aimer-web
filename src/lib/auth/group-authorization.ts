@@ -64,6 +64,20 @@ export async function assertAllMemberManagement(
 }
 
 /**
+ * Assert that `accountId` is the group's current `owner_id`, throwing
+ * `HttpError(403)` otherwise. This is the owner-only gate #510 narrows the
+ * group DELETE and retry-provision endpoints to (the management predicate
+ * still gates retention and timezone). The lifecycle evaluator keeps the
+ * owner a qualifying manager at all times, so owner identity alone is a
+ * sufficient gate here.
+ */
+export function assertGroupOwner(ownerId: string, accountId: string): void {
+  if (ownerId !== accountId) {
+    throw new HttpError("Forbidden", 403);
+  }
+}
+
+/**
  * Whether `accountId` holds `permission` (a per-surface read permission,
  * e.g. `"reports:read"` / `"analyses:read"`) on EVERY member customer,
  * using the same membership ∪ analyst(`analyst_eligible`-gated) grant
