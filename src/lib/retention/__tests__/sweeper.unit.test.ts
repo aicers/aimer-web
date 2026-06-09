@@ -25,7 +25,22 @@ vi.mock("../../db/customer-runtime-pool", () => ({
   },
 }));
 
-const { runRetentionTick, sweepCustomer } = await import("../sweeper");
+vi.mock("../../db/group-runtime-pool", () => ({
+  // Tests inject `connectGroup` via deps; the default factory is never
+  // exercised here, mirroring the customer-runtime-pool stub above.
+  getGroupRuntimePool: () => {
+    throw new Error(
+      "getGroupRuntimePool must not be invoked from unit tests — supply connectGroup via deps",
+    );
+  },
+}));
+
+const {
+  computeGroupRetentionBoundDays,
+  reapGroupReports,
+  runRetentionTick,
+  sweepCustomer,
+} = await import("../sweeper");
 
 // ---------------------------------------------------------------------------
 // In-memory fake customer-db client
@@ -676,5 +691,445 @@ describe("runRetentionTick", () => {
           evt.targetId === "cust-b",
       );
     expect(startedForB.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeGroupRetentionBoundDays (#509)
+// ---------------------------------------------------------------------------
+
+describe("computeGroupRetentionBoundDays", () => {
+  it("is unbounded (null) when group policy is NULL and every member analysis_days is NULL", () => {
+    expect(
+      computeGroupRetentionBoundDays(null, [
+        { ingestion_days: 365, analysis_days: null },
+        { ingestion_days: 30, analysis_days: null },
+      ]),
+    ).toBeNull();
+  });
+
+  it("is unbounded (null) when there are no members and no group policy", () => {
+    expect(computeGroupRetentionBoundDays(null, [])).toBeNull();
+  });
+
+  it("drops a NULL group policy term out of the min (does not treat it as 0/finite)", () => {
+    // group policy NULL ⇒ only the member H_c bounds: max(365, 1095) = 1095.
+    expect(
+      computeGroupRetentionBoundDays(null, [
+        { ingestion_days: 365, analysis_days: 1095 },
+      ]),
+    ).toBe(1095);
+  });
+
+  it("drops a NULL member analysis_days out of the min but keeps finite members", () => {
+    // Member A unbounded (H_c = ∞, dropped); member B H_c = max(30, 90) = 90.
+    expect(
+      computeGroupRetentionBoundDays(null, [
+        { ingestion_days: 365, analysis_days: null },
+        { ingestion_days: 30, analysis_days: 90 },
+      ]),
+    ).toBe(90);
+  });
+
+  it("takes the min across the group policy and every finite member H_c", () => {
+    // group policy 200; H_c(A) = max(365, 1095) = 1095; H_c(B) = max(60, 45) = 60.
+    expect(
+      computeGroupRetentionBoundDays(200, [
+        { ingestion_days: 365, analysis_days: 1095 },
+        { ingestion_days: 60, analysis_days: 45 },
+      ]),
+    ).toBe(60);
+  });
+
+  it("uses H_c = max(ingestion_days, analysis_days) when ingestion dominates", () => {
+    // ingestion 400 > analysis 90 ⇒ H_c = 400; the only term ⇒ bound 400.
+    expect(
+      computeGroupRetentionBoundDays(null, [
+        { ingestion_days: 400, analysis_days: 90 },
+      ]),
+    ).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reapGroupReports + ordering inside runRetentionTick (#509)
+// ---------------------------------------------------------------------------
+
+type GroupConn = NonNullable<
+  Awaited<
+    ReturnType<
+      NonNullable<Parameters<typeof reapGroupReports>[0]["connectGroup"]>
+    >
+  >
+>;
+
+function makeGroupConn(rowCount = 0) {
+  const queries: QueryRecord[] = [];
+  let ended = false;
+  const query = vi.fn(async (sql: string, params?: unknown[]) => {
+    queries.push({ sql, params });
+    return { rows: [], rowCount };
+  });
+  const conn: GroupConn = {
+    query: query as unknown as GroupConn["query"],
+    end: vi.fn(async () => {
+      ended = true;
+    }),
+  };
+  return { conn, queries, isEnded: () => ended };
+}
+
+// One (group × member) row as the auth-DB join produces it.
+function groupRow(
+  overrides: Partial<{
+    group_id: string;
+    has_group_policy: boolean;
+    group_policy_days: number | null;
+    member_id: string | null;
+    has_member_policy: boolean;
+    member_ingestion_days: number | null;
+    member_analysis_days: number | null;
+  }> = {},
+) {
+  return {
+    group_id: "grp-1",
+    has_group_policy: true,
+    group_policy_days: null,
+    member_id: "mem-1",
+    has_member_policy: true,
+    member_ingestion_days: 365,
+    member_analysis_days: 1095,
+    ...overrides,
+  };
+}
+
+describe("reapGroupReports", () => {
+  it("deletes historical rows by bucket_date excluding LIVE, with the bound cutoff", async () => {
+    const { conn, queries } = makeGroupConn(3);
+    const { pool } = makeAuthPool([
+      groupRow({ member_ingestion_days: 30, member_analysis_days: 90 }),
+    ]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup: async () => conn,
+      },
+      NOW,
+    );
+
+    const del = queries.find((q) =>
+      q.sql.includes("DELETE FROM periodic_report_result"),
+    );
+    expect(del, "expected group report DELETE").toBeDefined();
+    // LIVE must never be reaped by bucket date.
+    expect(del?.sql).toContain("period <> 'LIVE'");
+    expect(del?.sql).toContain("bucket_date < $1");
+    // bound = min(∞, max(30, 90)) = 90 days before NOW.
+    const cutoff = new Date(NOW.getTime() - 90 * 86_400_000);
+    expect((del?.params?.[0] as Date).getTime()).toBe(cutoff.getTime());
+
+    const reaped = auditLogMock.mock.calls
+      .map(
+        (c) =>
+          c[0] as {
+            action: string;
+            details: { deleted_periodic_report_result?: number };
+          },
+      )
+      .find((e) => e.action === "retention_sweep.group_reaped");
+    expect(reaped?.details.deleted_periodic_report_result).toBe(3);
+  });
+
+  it("skips and audits group_skipped when a member is missing its policy; never opens the group DB", async () => {
+    const connectGroup = vi.fn();
+    const { pool } = makeAuthPool([
+      groupRow({ member_id: "mem-ok" }),
+      groupRow({
+        member_id: "mem-bad",
+        has_member_policy: false,
+        member_ingestion_days: null,
+        member_analysis_days: null,
+      }),
+    ]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup,
+      },
+      NOW,
+    );
+
+    expect(connectGroup).not.toHaveBeenCalled();
+    const skipped = auditLogMock.mock.calls
+      .map(
+        (c) =>
+          c[0] as {
+            action: string;
+            details: { error_message?: string; member_id?: string };
+          },
+      )
+      .find((e) => e.action === "retention_sweep.group_skipped");
+    expect(skipped?.details.error_message).toBe("missing_retention_policy");
+    expect(skipped?.details.member_id).toBe("mem-bad");
+  });
+
+  it("never opens the group DB for an unbounded group (NULL group policy + all members unbounded)", async () => {
+    const connectGroup = vi.fn();
+    const { pool } = makeAuthPool([
+      groupRow({ group_policy_days: null, member_analysis_days: null }),
+    ]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup,
+      },
+      NOW,
+    );
+
+    expect(connectGroup).not.toHaveBeenCalled();
+    expect(
+      auditLogMock.mock.calls.some((c) =>
+        (c[0] as { action: string }).action.startsWith(
+          "retention_sweep.group_",
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it("audits group_failed when the group DB connection throws", async () => {
+    const connectGroup = vi
+      .fn()
+      .mockRejectedValue(new Error("group DB unreachable"));
+    const { pool } = makeAuthPool([groupRow()]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup,
+      },
+      NOW,
+    );
+
+    const failed = auditLogMock.mock.calls
+      .map(
+        (c) => c[0] as { action: string; details: { error_message?: string } },
+      )
+      .find((e) => e.action === "retention_sweep.group_failed");
+    expect(failed?.details.error_message).toBe("group DB unreachable");
+  });
+
+  it("only processes active groups (the auth query filters database_status = 'active')", async () => {
+    const { pool, query } = makeAuthPool([]);
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup: async () => makeGroupConn().conn,
+      },
+      NOW,
+    );
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/cg\.database_status\s*=\s*'active'/);
+    expect(sql).toContain("FROM customer_groups cg");
+    expect(sql).toContain("group_retention_policy");
+    expect(sql).toContain("customer_group_members");
+  });
+
+  it("archives over-bound historical states BEFORE deleting result rows, gating regeneration", async () => {
+    const order: string[] = [];
+    let archiveSql = "";
+    let archiveParams: unknown[] = [];
+    const authQuery = vi.fn(async (sql: string, params?: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("FROM customer_groups cg")) {
+        return {
+          rows: [
+            groupRow({
+              group_policy_days: 200,
+              member_ingestion_days: 365,
+              member_analysis_days: 1095,
+            }),
+          ],
+        };
+      }
+      if (text.includes("UPDATE periodic_report_state")) {
+        order.push("archive");
+        archiveSql = text;
+        archiveParams = params ?? [];
+        return { rows: [], rowCount: 2 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const pool = { query: authQuery } as unknown as Parameters<
+      typeof reapGroupReports
+    >[0]["authPool"];
+
+    const groupConn = (() => {
+      const query = vi.fn(async (sql: string) => {
+        if (String(sql).includes("DELETE FROM periodic_report_result")) {
+          order.push("delete");
+        }
+        return { rows: [], rowCount: 3 };
+      });
+      return {
+        query: query as unknown as GroupConn["query"],
+        end: vi.fn(async () => {}),
+      } satisfies GroupConn;
+    })();
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup: async () => groupConn,
+      },
+      NOW,
+    );
+
+    // The auth-side state archive (the regeneration gate) must run before
+    // the group-DB result delete.
+    expect(order).toEqual(["archive", "delete"]);
+    // The archive targets historical states only, past the bound cutoff,
+    // flipping non-archived rows to the terminal `archived` status.
+    expect(archiveSql).toContain("SET status = 'archived'");
+    expect(archiveSql).toContain("period <> 'LIVE'");
+    expect(archiveSql).toContain("bucket_date < $3");
+    expect(archiveSql).toContain("status <> 'archived'");
+    expect(archiveParams[0]).toBe("grp-1");
+    // bound = min(200, max(365, 1095) = 1095) = 200 days before NOW.
+    const cutoff = new Date(NOW.getTime() - 200 * 86_400_000);
+    expect((archiveParams[2] as Date).getTime()).toBe(cutoff.getTime());
+
+    const reaped = auditLogMock.mock.calls
+      .map(
+        (c) =>
+          c[0] as {
+            action: string;
+            details: {
+              archived_periodic_report_state?: number;
+              deleted_periodic_report_result?: number;
+            };
+          },
+      )
+      .find((e) => e.action === "retention_sweep.group_reaped");
+    expect(reaped?.details.archived_periodic_report_state).toBe(2);
+    expect(reaped?.details.deleted_periodic_report_result).toBe(3);
+  });
+
+  it("skips and audits group_skipped when the group is missing its policy row; never opens the group DB", async () => {
+    const connectGroup = vi.fn();
+    const { pool } = makeAuthPool([
+      groupRow({ has_group_policy: false, group_policy_days: null }),
+    ]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup,
+      },
+      NOW,
+    );
+
+    // A missing `group_retention_policy` row is incomplete bound info, not
+    // an operator no-expiry: skip rather than guess a bound.
+    expect(connectGroup).not.toHaveBeenCalled();
+    const skipped = auditLogMock.mock.calls
+      .map(
+        (c) => c[0] as { action: string; details: { error_message?: string } },
+      )
+      .find((e) => e.action === "retention_sweep.group_skipped");
+    expect(skipped?.details.error_message).toBe(
+      "missing_group_retention_policy",
+    );
+  });
+});
+
+describe("runRetentionTick group/customer ordering", () => {
+  it("reaps group reports BEFORE the per-customer event_redaction_map sweep", async () => {
+    const events: string[] = [];
+
+    // Group conn records when the group report DELETE runs.
+    const groupConn = (() => {
+      const query = vi.fn(async (sql: string) => {
+        if (String(sql).includes("DELETE FROM periodic_report_result")) {
+          events.push("group_reap");
+        }
+        return { rows: [], rowCount: 1 };
+      });
+      return {
+        query: query as unknown as GroupConn["query"],
+        end: vi.fn(async () => {}),
+      } satisfies GroupConn;
+    })();
+
+    // Customer conn records when the event_redaction_map cascade runs.
+    const { conn: custConn } = makeConn((sql) => {
+      if (sql.includes("pg_try_advisory_xact_lock"))
+        return { rows: [{ locked: true }] };
+      if (sql.includes("COUNT(*)")) return { rows: [{ c: 0 }] };
+      if (sql.includes("DELETE FROM event_redaction_map")) {
+        events.push("customer_map_sweep");
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    // The auth pool now serves three query shapes per tick: the group
+    // join, the per-group state-archive UPDATE, and the customers join.
+    // Dispatch on SQL so the archive UPDATE (which records ordering)
+    // does not consume the customers-join mock.
+    const query = vi.fn(async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("FROM customer_groups cg")) {
+        return {
+          rows: [
+            groupRow({ member_ingestion_days: 30, member_analysis_days: 90 }),
+          ],
+        };
+      }
+      if (text.includes("UPDATE periodic_report_state")) {
+        events.push("group_state_archive");
+        return { rows: [], rowCount: 1 };
+      }
+      if (text.includes("FROM customers c")) {
+        return {
+          rows: [
+            {
+              customer_id: "cust-1",
+              external_key: "k",
+              ingestion_days: 365,
+              analysis_days: 1095,
+            },
+          ],
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const pool = { query } as unknown as Parameters<
+      typeof runRetentionTick
+    >[0]["authPool"];
+
+    await runRetentionTick({
+      authPool: pool,
+      connectCustomer: async () => custConn,
+      connectGroup: async () => groupConn,
+      now: () => NOW,
+    });
+
+    // The state archive runs before the result delete (regeneration
+    // gate in place first), and the whole group reap precedes the
+    // per-customer map sweep.
+    expect(events).toEqual([
+      "group_state_archive",
+      "group_reap",
+      "customer_map_sweep",
+    ]);
   });
 });

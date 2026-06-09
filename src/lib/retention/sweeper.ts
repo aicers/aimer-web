@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { auditLog } from "../audit";
 import { getAuthPool } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
+import { getGroupRuntimePool } from "../db/group-runtime-pool";
 import { buildRedactionMapCascadeDelete } from "../redaction/cascade";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,16 @@ export interface CustomerConnection {
   end: () => Promise<void>;
 }
 
+export interface GroupConnection {
+  /**
+   * Pg-compatible client for the group's dedicated data DB. Peer of
+   * `CustomerConnection`; the group reap issues a single `DELETE`, so
+   * a pooled `query` is sufficient.
+   */
+  query: PoolClient["query"];
+  end: () => Promise<void>;
+}
+
 export interface SweepDeps {
   authPool: Pool;
   /**
@@ -38,6 +49,14 @@ export interface SweepDeps {
    * for calling `end()` to release it.
    */
   connectCustomer: (customerId: string) => Promise<CustomerConnection>;
+  /**
+   * Open a single group-data-db connection for the group-report reaper
+   * (#509). Mirrors `connectCustomer`; defaults to
+   * `getGroupRuntimePool(groupId)` when omitted so the reap is
+   * unit-testable against an injected fake exactly like the customer
+   * path.
+   */
+  connectGroup?: (groupId: string) => Promise<GroupConnection>;
   /**
    * Override `NOW()` for tests. Defaults to `new Date()`.
    */
@@ -313,6 +332,309 @@ export async function sweepCustomer(
 }
 
 // ---------------------------------------------------------------------------
+// Group-report retention reaper (#509)
+// ---------------------------------------------------------------------------
+
+interface GroupMemberPolicy {
+  ingestion_days: number;
+  analysis_days: number | null;
+}
+
+/**
+ * Compute the group retention bound in days per RFC 0004:
+ *
+ *   D + min(coalesce(group_policy_days, ∞), min_over_members(H_c))
+ *
+ * with `H_c = max(ingestion_days, coalesce(analysis_days, ∞))`.
+ *
+ * Returns `null` when the bound is unbounded — i.e. when the group's own
+ * policy is NULL (no expiry) *and* every member's `analysis_days` is NULL
+ * (each member's `H_c = ∞`). A NULL group policy and a NULL member
+ * `analysis_days` each drop their term out of the `min` rather than being
+ * treated as `0`/finite, so an unbounded group is never reaped.
+ */
+export function computeGroupRetentionBoundDays(
+  groupPolicyDays: number | null,
+  members: GroupMemberPolicy[],
+): number | null {
+  const terms: number[] = [];
+  if (groupPolicyDays != null) terms.push(groupPolicyDays);
+  for (const m of members) {
+    // NULL analysis_days ⇒ H_c = ∞ ⇒ this member does not bound the group.
+    if (m.analysis_days == null) continue;
+    terms.push(Math.max(m.ingestion_days, m.analysis_days));
+  }
+  if (terms.length === 0) return null;
+  return Math.min(...terms);
+}
+
+interface GroupReapRow {
+  group_id: string;
+  has_group_policy: boolean;
+  group_policy_days: number | null;
+  member_id: string | null;
+  has_member_policy: boolean;
+  member_ingestion_days: number | null;
+  member_analysis_days: number | null;
+}
+
+interface GroupReapState {
+  hasPolicy: boolean;
+  policyDays: number | null;
+  members: GroupReapRow[];
+}
+
+async function defaultConnectGroup(groupId: string): Promise<GroupConnection> {
+  // Mirror defaultConnectCustomer: resolve through the per-group runtime
+  // pool so the reap inherits the restricted `aimer_customer` role
+  // binding and connection recycling.
+  const pool = getGroupRuntimePool(groupId);
+  const client = await pool.connect();
+  return {
+    query: client.query.bind(client) as PoolClient["query"],
+    end: async () => {
+      client.release();
+    },
+  };
+}
+
+/**
+ * Reap one active group's over-bound historical reports.
+ *
+ *   - A group missing its `group_retention_policy` row, or any member
+ *     missing its `customer_retention_policy` row, is the same
+ *     foundation-bug condition the customer tick flags. #506 inserts a
+ *     `group_retention_policy` row at group creation, so an absent row is
+ *     incomplete bound info — NOT an operator-selected "no expiry" (which
+ *     is a present row with `analysis_days = NULL`). We do NOT guess a
+ *     bound from incomplete info (which could wrongly lengthen retention);
+ *     instead we audit `group_skipped` and leave every report until the
+ *     policy is well-formed.
+ *   - An unbounded group (NULL group policy + every member unbounded)
+ *     is never reaped, and its data DB is never opened.
+ *   - LIVE rows are never reaped by bucket date (`period <> 'LIVE'`):
+ *     LIVE is a single rolling bucket on the synthetic `1970-01-01`
+ *     bucket_date, kept de-redactable by regeneration cadence, not by
+ *     this retention bound (see #509 LIVE pin).
+ *
+ * The reap also **archives** the over-bound historical
+ * `periodic_report_state` rows (auth DB) before deleting the result rows
+ * (group data DB). Deleting only the result would leave the auth-side
+ * state/job machinery free to regenerate the same over-bound bucket
+ * (worker pickup/claim, the eager seeder, or the regenerate route),
+ * defeating the drop and potentially re-creating a report that references
+ * a member map the same tick's later `event_redaction_map` sweep deletes.
+ * `archived` is the existing terminal status those paths already refuse to
+ * generate from (worker pickup/claim gate on `status <> 'archived'`, the
+ * eager seeder only acts on `dirty`/`ready`, the regenerate route returns
+ * `409 source_unavailable`, and the group dirty-marker never revives an
+ * archived row), so archiving durably closes the reap→regenerate gap.
+ */
+async function reapGroup(
+  groupId: string,
+  state: GroupReapState,
+  authPool: Pool,
+  connectGroup: (groupId: string) => Promise<GroupConnection>,
+  now: Date,
+): Promise<void> {
+  if (!state.hasPolicy) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_skipped",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: "missing_group_retention_policy",
+      },
+    });
+    return;
+  }
+
+  const missingMember = state.members.find((m) => !m.has_member_policy);
+  if (missingMember) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_skipped",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        member_id: missingMember.member_id,
+        error_message: "missing_retention_policy",
+      },
+    });
+    return;
+  }
+
+  const boundDays = computeGroupRetentionBoundDays(
+    state.policyDays,
+    state.members.map((m) => ({
+      ingestion_days: m.member_ingestion_days as number,
+      analysis_days: m.member_analysis_days,
+    })),
+  );
+  // Unbounded ⇒ never reap and never open the group DB.
+  if (boundDays == null) return;
+
+  const cutoff = new Date(now.getTime() - boundDays * DAY_MS);
+
+  // Archive the over-bound historical states FIRST (auth DB), so no worker
+  // pickup/claim, eager seeder, or regenerate request can re-create the
+  // result we are about to delete. Done before the group-DB delete so the
+  // regeneration gate is in place even if the data-DB connection fails.
+  let archived: number;
+  try {
+    const archiveResult = await authPool.query(
+      `UPDATE periodic_report_state
+          SET status = 'archived', updated_at = $2
+        WHERE subject_id = $1
+          AND period <> 'LIVE'
+          AND bucket_date < $3
+          AND status <> 'archived'`,
+      [groupId, now, cutoff],
+    );
+    archived = archiveResult.rowCount ?? 0;
+  } catch (err) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_failed",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return;
+  }
+
+  let conn: GroupConnection;
+  try {
+    conn = await connectGroup(groupId);
+  } catch (err) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_failed",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return;
+  }
+
+  try {
+    // Clock on `bucket_date` (a deliberate difference from the row-entry
+    // clock of the customer sweep). LIVE is excluded by `period <> 'LIVE'`.
+    const result = await conn.query(
+      `DELETE FROM periodic_report_result
+        WHERE period <> 'LIVE' AND bucket_date < $1`,
+      [cutoff],
+    );
+    const deleted = result.rowCount ?? 0;
+    if (deleted > 0 || archived > 0) {
+      await auditLog({
+        actorId: SYSTEM_ACTOR,
+        action: "retention_sweep.group_reaped",
+        targetType: "customer_group",
+        targetId: groupId,
+        details: {
+          group_id: groupId,
+          bound_days: boundDays,
+          cutoff_bucket_date: cutoff.toISOString(),
+          deleted_periodic_report_result: deleted,
+          archived_periodic_report_state: archived,
+        },
+      });
+    }
+  } catch (err) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_failed",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: err instanceof Error ? err.message : String(err),
+      },
+    });
+  } finally {
+    await conn.end().catch(() => {});
+  }
+}
+
+/**
+ * Reap over-bound historical (DAILY/WEEKLY/MONTHLY) group reports for
+ * every `database_status = 'active'` group. All bound inputs — the
+ * per-group `group_retention_policy`, the `customer_group_members`
+ * join, and each member's `customer_retention_policy` — are read from
+ * the auth DB, so a suspended member still keeps `H_c` computable and no
+ * member-DB connection is ever required.
+ *
+ * This MUST run before the per-customer `event_redaction_map` sweeps in
+ * `runRetentionTick`: a group reap that ran after a member already
+ * deleted a map would leave a transient window where a still-surviving
+ * group report references a gone map — the exact failure the ordering
+ * forbids.
+ */
+export async function reapGroupReports(
+  deps: SweepDeps,
+  now: Date = new Date(),
+): Promise<void> {
+  const connectGroup = deps.connectGroup ?? defaultConnectGroup;
+  const rows = await deps.authPool.query<GroupReapRow>(
+    `SELECT cg.id AS group_id,
+            grp.subject_id IS NOT NULL AS has_group_policy,
+            grp.analysis_days AS group_policy_days,
+            m.customer_id AS member_id,
+            crp.customer_id IS NOT NULL AS has_member_policy,
+            crp.ingestion_days AS member_ingestion_days,
+            crp.analysis_days AS member_analysis_days
+       FROM customer_groups cg
+       LEFT JOIN group_retention_policy grp ON grp.subject_id = cg.id
+       LEFT JOIN customer_group_members m ON m.group_id = cg.id
+       LEFT JOIN customer_retention_policy crp ON crp.customer_id = m.customer_id
+      WHERE cg.database_status = 'active'
+      ORDER BY cg.id, m.customer_id`,
+  );
+
+  // Collapse the (group × member) rows into one state per group. A LEFT
+  // JOIN keeps a memberless group as a single row with a NULL member_id;
+  // such a group has no finite member term and (unless its own policy
+  // bounds it) is left unreaped. `has_group_policy` distinguishes an
+  // absent `group_retention_policy` row (incomplete bound info ⇒ skip)
+  // from a present row with `analysis_days = NULL` (operator no-expiry).
+  const groups = new Map<string, GroupReapState>();
+  for (const row of rows.rows) {
+    let state = groups.get(row.group_id);
+    if (!state) {
+      state = {
+        hasPolicy: row.has_group_policy,
+        policyDays: row.group_policy_days,
+        members: [],
+      };
+      groups.set(row.group_id, state);
+    }
+    if (row.member_id != null) state.members.push(row);
+  }
+
+  for (const [groupId, state] of groups) {
+    try {
+      await reapGroup(groupId, state, deps.authPool, connectGroup, now);
+    } catch (err) {
+      // reapGroup converts connect/delete failures into a persisted
+      // `group_failed` audit row. Reaching here means an audit write
+      // itself threw; log but keep iterating so one group cannot stall
+      // the rest of the reap or the customer sweeps that follow.
+      console.error(`[retention] group reap aborted for ${groupId}:`, err);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Per-tick driver
 // ---------------------------------------------------------------------------
 
@@ -331,6 +653,13 @@ export async function sweepCustomer(
  */
 export async function runRetentionTick(deps: SweepDeps): Promise<void> {
   const now = deps.now ? deps.now() : new Date();
+
+  // Reap over-bound historical group reports FIRST, before any
+  // per-customer `event_redaction_map` sweep below. This ordering
+  // guarantees no surviving group report references a map a member is
+  // about to delete in the same tick (#509).
+  await reapGroupReports(deps, now);
+
   const rows = await deps.authPool.query<PolicyJoinRow>(
     `SELECT c.id AS customer_id,
             c.external_key,
@@ -409,6 +738,7 @@ function defaultDeps(): SweepDeps {
   return {
     authPool: getAuthPool(),
     connectCustomer: defaultConnectCustomer,
+    connectGroup: defaultConnectGroup,
   };
 }
 

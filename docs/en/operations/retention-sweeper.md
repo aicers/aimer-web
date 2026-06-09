@@ -44,6 +44,79 @@ If any step throws, the entire customer transaction rolls back and
 the next tick re-runs the customer from scratch. Deletion is
 idempotent, so a rolled-back tick converges on the next pass.
 
+## Group-report retention
+
+Customer **groups** aggregate two or more member customers into their
+own dedicated data DB holding generated reports only. The same tick
+that sweeps customers also reaps over-bound **historical**
+(DAILY/WEEKLY/MONTHLY) group reports, so every surviving historical
+group report stays fully de-redactable.
+
+**Ordering.** The group reap runs at the **start** of each tick,
+**before** any per-customer `event_redaction_map` sweep. This
+guarantees no surviving group report can reference a redaction map a
+member is about to delete in the same tick.
+
+**Retention bound.** A group report bucketed at date `D` is retained
+until `D + min(coalesce(group_policy_days, ∞), min_over_members(H_c))`,
+where:
+
+- `group_policy_days` is the group's own analysis-retention window from
+  `group_retention_policy.analysis_days` (auth DB). `NULL` means *no
+  expiry* — the term drops out of the `min`.
+- `H_c = max(ingestion_days, coalesce(analysis_days, ∞))` for each
+  member, from its `customer_retention_policy` row (auth DB). A member
+  with `analysis_days = NULL` is unbounded (`H_c = ∞`) and drops out of
+  the `min`.
+
+If the group policy **and** every member are unbounded, the report is
+never reaped. All bound inputs are read from the **auth DB** — the
+reaper never opens a member DB, so a suspended member still keeps `H_c`
+computable.
+
+The reap clocks on the **bucket date** `D` (a deliberate difference from
+the customer sweep's row-entry clock) and **drops** over-bound rows —
+there is no degraded-display fallback. Only
+`customer_groups.database_status = 'active'` groups are processed;
+`provisioning` / `failed` groups are skipped without a connection
+attempt.
+
+**The drop is durable (regeneration gate).** Before deleting the result
+rows in the group data DB, the reaper **archives** the matching over-bound
+historical `periodic_report_state` rows in the auth DB (sets `status =
+'archived'`, the existing terminal status). This is required because the
+report result and the report state/job machinery live in different
+databases: deleting only the result would leave the auth-side state free
+to regenerate the same over-bound bucket — the report worker would re-pick
+a queued job, the eager seeder would re-seed one, or an operator could hit
+the regenerate endpoint — re-creating a report that the same tick's later
+`event_redaction_map` sweep is about to strip the maps for. `archived` is
+the status every generation path already refuses to act on (worker
+pickup/claim gate on `status <> 'archived'`, the eager seeder only acts on
+`dirty`/`ready` states, the regenerate endpoint returns `409
+source_unavailable`, and the group dirty-marker never revives an archived
+row), so archiving terminally closes the reap→regenerate gap. The archive
+runs first so the gate is in place even if the group data-DB connection
+later fails.
+
+**LIVE is never reaped by bucket date.** LIVE is a single rolling "now"
+bucket stored on the synthetic `bucket_date = '1970-01-01'`; the reaper
+filters `period <> 'LIVE'`. LIVE de-redactability is maintained by its
+regeneration cadence, not by this retention bound. (Hardening a LIVE
+result that stops regenerating for longer than the shortest member's
+retention is deferred to a separate follow-up.)
+
+**Missing policy.** If the group is missing its own
+`group_retention_policy` row, or any member is missing its
+`customer_retention_policy` row, the group is **skipped** for the tick
+(audited as `retention_sweep.group_skipped`) rather than reaped on
+incomplete bound info — guessing a bound from a missing term would wrongly
+*lengthen* the group's retention. A missing `group_retention_policy` row
+is a foundation bug (group creation always inserts one), and is distinct
+from a *present* row with `analysis_days = NULL`, which is the
+operator-selected "no expiry". Investigate the missing policy before the
+next tick.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -75,6 +148,18 @@ per-table row counts, with the `story_member` and `policy_event`
 counts taken under the `FOR UPDATE` lock — they reflect the number
 of rows actually cascaded by the parent `DELETE`, not the parent's
 own `rowCount`.
+
+The group reap emits its own events: `retention_sweep.group_reaped`
+when at least one historical report row is deleted **or** at least one
+over-bound state is archived (details carry `bound_days`, the
+`cutoff_bucket_date`, the deleted-result count in
+`deleted_periodic_report_result`, and the archived-state count in
+`archived_periodic_report_state`), `retention_sweep.group_skipped` when a
+missing group or member policy forces the group to be skipped (details
+carry `error_message` — `missing_group_retention_policy` or
+`missing_retention_policy`), and `retention_sweep.group_failed` when the
+group data DB cannot be reached, the result delete fails, or the state
+archive fails.
 
 ## Missing-policy invariant
 

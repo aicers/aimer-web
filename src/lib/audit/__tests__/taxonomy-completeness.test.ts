@@ -172,6 +172,9 @@ const PRODUCED: Record<string, string> = {
   "retention_sweep.tick_started": "src/lib/retention/sweeper.ts",
   "retention_sweep.tick_completed": "src/lib/retention/sweeper.ts",
   "retention_sweep.tick_failed": "src/lib/retention/sweeper.ts",
+  "retention_sweep.group_reaped": "src/lib/retention/sweeper.ts",
+  "retention_sweep.group_skipped": "src/lib/retention/sweeper.ts",
+  "retention_sweep.group_failed": "src/lib/retention/sweeper.ts",
   // Audit (internal) — emitted via raw SQL in anonymize.ts
   "audit.anonymize": "src/lib/audit/anonymize.ts",
   // Per-customer / global default analysis model (#473)

@@ -156,5 +156,9 @@ export type AuditAction =
   | "retention_sweep.tick_started"
   | "retention_sweep.tick_completed"
   | "retention_sweep.tick_failed"
+  // Group-report retention reaper (#509)
+  | "retention_sweep.group_reaped"
+  | "retention_sweep.group_skipped"
+  | "retention_sweep.group_failed"
   // Audit (internal)
   | "audit.anonymize";
