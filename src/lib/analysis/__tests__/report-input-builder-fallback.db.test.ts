@@ -352,12 +352,15 @@ describe.skipIf(!hasPostgres)("#465 never-drop + hybrid scoring (db)", () => {
     });
     expect(pinned.complete).toBe(true);
     if (!pinned.complete) return;
+    // Rebuilt refs now carry the member `customer_id` (#523); on this
+    // single-customer pinned path it is the report's own subject.
     expect(pinned.built.storyRefs).toEqual([
       {
         story_id: "8001",
         generation: 1,
         model_name: "openai",
         model: "gpt-4o",
+        customer_id: CUSTOMER_ID,
       },
     ]);
     expect(pinned.built.eventRefs).toEqual([
@@ -367,6 +370,7 @@ describe.skipIf(!hasPostgres)("#465 never-drop + hybrid scoring (db)", () => {
         generation: 1,
         model_name: "openai",
         model: "gpt-4o",
+        customer_id: CUSTOMER_ID,
       },
     ]);
   });

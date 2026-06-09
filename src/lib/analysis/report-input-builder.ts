@@ -103,6 +103,16 @@ export interface StoryRef {
    */
   model_name?: string;
   model?: string;
+  /**
+   * The member subject id of the customer DB this leaf lives in (#523). A
+   * group report cites analyzed leaves from MEMBER customer DBs, and the same
+   * `story_id` can exist in more than one member DB, so the de-redaction map
+   * cannot be routed without it. Optional for backward-compatible reads: a
+   * legacy ref lacking it resolves as the report's own `subject_id` (the
+   * single-customer case), the same degrade rule as `model_name`/`model`
+   * (see {@link refCustomerId}). Persisted refs always carry it.
+   */
+  customer_id?: string;
 }
 
 export interface EventRef {
@@ -112,6 +122,8 @@ export interface EventRef {
   /** Per-leaf model, same backward-compatible contract as `StoryRef` (#465). */
   model_name?: string;
   model?: string;
+  /** Member subject id, same backward-compatible contract as `StoryRef` (#523). */
+  customer_id?: string;
 }
 
 /**
@@ -130,6 +142,29 @@ export interface ExemplarRef {
   generation: number;
   model_name: string;
   model: string;
+  /**
+   * Member subject id of the leaf's customer DB (#523). Optional on all three
+   * ref types — unlike `model_name`/`model` (required here) — so the read-path
+   * degrade rule ({@link refCustomerId}) applies uniformly to legacy persisted
+   * refs that predate member identity. Persisted refs always carry it.
+   */
+  customer_id?: string;
+}
+
+/**
+ * Resolve a ref's member customer id (#523), degrading a legacy ref that
+ * lacks `customer_id` to the report's own `subject_id` — the single-customer
+ * case, where every cited leaf lives in the subject's own customer DB. This
+ * mirrors the optional `model_name`/`model` degrade and is symmetric with the
+ * `computeInputHash` "omit `customer_id` when it equals the subject"
+ * canonicalization: a single-customer ref and a legacy ref both normalize to
+ * the subject, and only a true cross-member ref carries a distinct id.
+ */
+export function refCustomerId(
+  ref: { customer_id?: string },
+  subjectId: string,
+): string {
+  return ref.customer_id ?? subjectId;
 }
 
 export interface PeriodicReportBuildResult {
@@ -1083,6 +1118,15 @@ function stableStringify(value: unknown): string {
  * the payload term is what additionally captures code/builder drift.)
  */
 function computeInputHash(args: {
+  /**
+   * The report's own subject id (#523). A ref whose `customer_id` equals it is
+   * the single-customer default and is STRIPPED from the hashed bundle below,
+   * so adding `customer_id` to every ref leaves `input_hash` byte-identical for
+   * a single-customer report — only a true cross-member ref (`customer_id` !=
+   * subject, which does not occur until #524) contributes it to the hash. This
+   * mirrors the existing "omit `exemplar_refs` when empty" canonicalization.
+   */
+  subjectId: string;
   period: string;
   bucketDate: string;
   variant: ReportVariant;
@@ -1091,16 +1135,30 @@ function computeInputHash(args: {
   exemplarRefs: ExemplarRef[];
   aimerInputs: PeriodicReportInputs;
 }): string {
-  const storyRefs = [...args.storyRefs].sort(
-    (a, b) =>
-      a.story_id.localeCompare(b.story_id) || a.generation - b.generation,
-  );
-  const eventRefs = [...args.eventRefs].sort(
-    (a, b) =>
-      a.aice_id.localeCompare(b.aice_id) ||
-      a.event_key.localeCompare(b.event_key) ||
-      a.generation - b.generation,
-  );
+  // Strip the default `customer_id` (== the report's subject) from a hash-only
+  // copy of each ref — NEVER mutate the persisted refs, which always carry it.
+  // `stableStringify` drops the resulting `undefined`, so a single-customer
+  // ref hashes exactly as a pre-#523 ref did.
+  const omitDefaultCustomer = <T extends { customer_id?: string }>(
+    ref: T,
+  ): T =>
+    ref.customer_id === undefined || ref.customer_id === args.subjectId
+      ? { ...ref, customer_id: undefined }
+      : ref;
+  const storyRefs = [...args.storyRefs]
+    .map(omitDefaultCustomer)
+    .sort(
+      (a, b) =>
+        a.story_id.localeCompare(b.story_id) || a.generation - b.generation,
+    );
+  const eventRefs = [...args.eventRefs]
+    .map(omitDefaultCustomer)
+    .sort(
+      (a, b) =>
+        a.aice_id.localeCompare(b.aice_id) ||
+        a.event_key.localeCompare(b.event_key) ||
+        a.generation - b.generation,
+    );
   // Exemplar refs are generation-pinned provenance with the SAME restoration
   // semantics as cited refs: they decide which event redaction map turns a
   // long-tail `R{j}` token back into plaintext. Because exemplar `factor`
@@ -1109,14 +1167,16 @@ function computeInputHash(args: {
   // different plaintext — so hashing the payload alone would miss the change
   // and keep serving stale `input_exemplar_refs`. Hash them like story/event
   // refs (#495 review round 1, item 1).
-  const exemplarRefs = [...args.exemplarRefs].sort(
-    (a, b) =>
-      a.aice_id.localeCompare(b.aice_id) ||
-      a.event_key.localeCompare(b.event_key) ||
-      a.generation - b.generation ||
-      a.model_name.localeCompare(b.model_name) ||
-      a.model.localeCompare(b.model),
-  );
+  const exemplarRefs = [...args.exemplarRefs]
+    .map(omitDefaultCustomer)
+    .sort(
+      (a, b) =>
+        a.aice_id.localeCompare(b.aice_id) ||
+        a.event_key.localeCompare(b.event_key) ||
+        a.generation - b.generation ||
+        a.model_name.localeCompare(b.model_name) ||
+        a.model.localeCompare(b.model),
+    );
   const canonical = {
     period: args.period,
     bucket_date: args.bucketDate,
@@ -1205,6 +1265,7 @@ export async function buildPeriodicReportInput(
   return assembleReportInput(
     {
       customerPool: args.customerPool,
+      customerId: args.customerId,
       period: args.period,
       bucketDate: args.bucketDate,
       variant: args.variant,
@@ -1228,6 +1289,13 @@ export async function buildPeriodicReportInput(
 async function assembleReportInput(
   ctx: {
     customerPool: Pool;
+    /**
+     * The report's subject id (#523). Stamped as the member `customer_id` on
+     * every persisted ref — for the single-customer path this is the subject's
+     * own customer DB, so it equals `subject_id` and is stripped from the hash;
+     * it is also the `subjectId` threaded into `computeInputHash`.
+     */
+    customerId: string;
     period: PeriodicPeriod;
     bucketDate: string;
     variant: ReportVariant;
@@ -1433,11 +1501,18 @@ async function assembleReportInput(
   // Each ref records the leaf's OWN model (#465 Scope 3) so the read/restore
   // path can pin a fallback-model leaf by its real model instead of the report
   // row's. Persisted additively into the `input_*_refs` JSONB — no migration.
+  // Each ref also carries the member `customer_id` of the leaf's customer DB
+  // (#523); on this single-customer path every leaf came from `ctx.customerId`
+  // (== the subject), so all refs are stamped with it. Exemplar refs from a
+  // canonical row already carry their `customer_id`, so degrade to the subject
+  // only when absent (the freshly-planned native case) — never overwrite a
+  // ref that already names a member.
   const storyRefs: StoryRef[] = stories.map((s) => ({
     story_id: s.story_id,
     generation: s.generation,
     model_name: s.model_name,
     model: s.model,
+    customer_id: ctx.customerId,
   }));
   const eventRefs: EventRef[] = events.map((e) => ({
     aice_id: e.aice_id,
@@ -1445,15 +1520,21 @@ async function assembleReportInput(
     generation: e.generation,
     model_name: e.model_name,
     model: e.model,
+    customer_id: ctx.customerId,
+  }));
+  const exemplarRefs: ExemplarRef[] = aggregatesPlan.exemplarRefs.map((r) => ({
+    ...r,
+    customer_id: r.customer_id ?? ctx.customerId,
   }));
 
   const inputHash = computeInputHash({
+    subjectId: ctx.customerId,
     period: ctx.period,
     bucketDate: ctx.bucketDate,
     variant: ctx.variant,
     storyRefs,
     eventRefs,
-    exemplarRefs: aggregatesPlan.exemplarRefs,
+    exemplarRefs,
     aimerInputs,
   });
 
@@ -1468,7 +1549,7 @@ async function assembleReportInput(
     aimerInputs,
     storyRefs,
     eventRefs,
-    exemplarRefs: aggregatesPlan.exemplarRefs,
+    exemplarRefs,
     analyzedEventAggregates,
     tokenRefs: refs,
     inputHash,
@@ -1597,6 +1678,7 @@ export async function buildCanonicalPinnedReportInput(
   const built = await assembleReportInput(
     {
       customerPool: args.customerPool,
+      customerId: args.customerId,
       period: args.period,
       bucketDate: args.bucketDate,
       variant: args.variant,

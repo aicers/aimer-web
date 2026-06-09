@@ -32,7 +32,10 @@ import type { Pool, PoolClient } from "pg";
 import { appLocaleToReportLanguage, isSupportedLocale } from "@/i18n/locale";
 import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
-import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import {
+  resolveSubjectPools,
+  type SubjectPools,
+} from "@/lib/db/subject-runtime-pool";
 import {
   type AnalyzedEventAggregatesInput,
   PeriodicReportDocument,
@@ -473,7 +476,14 @@ interface ProcessOptions {
   authPool: Pool;
   callGenerateReport?: typeof callGenerateReport;
   callTranslateReport?: typeof callTranslateReport;
+  /**
+   * Test/override seam for the per-customer pool. Now passed through to the
+   * subject resolver as its `getCustomerPool` factory, so the resolver still
+   * opens the injected pool for a customer subject.
+   */
   resolveCustomerPool?: (customerId: string) => Pool;
+  /** Override the subject→pools resolver (#523), for tests. */
+  resolveSubjectPools?: typeof resolveSubjectPools;
   loadRanges?: typeof loadCustomerRanges;
   loadOwnedDomains?: typeof loadCustomerOwnedDomains;
 }
@@ -483,12 +493,21 @@ export async function processReportJob(
   opts: ProcessOptions,
 ): Promise<void> {
   const callLlm = opts.callGenerateReport ?? callGenerateReport;
-  // Resolve the customer pool up front (mirrors story-worker): in an
-  // environment with no customer DB this throws before the claim, so the
-  // job is left `queued` for the next tick rather than stranded.
-  const customerPool = (opts.resolveCustomerPool ?? getCustomerRuntimePool)(
-    job.subject_id,
-  );
+  // Resolve the subject's pools up front through the #523 resolver (mirrors
+  // story-worker resolving the pool before the claim): a missing/unknown
+  // subject or absent DB throws here, before the claim, so the job is left
+  // `queued` for the next tick rather than stranded. For a `customer` subject
+  // the resolver returns `getCustomerRuntimePool(subject_id)` as the result
+  // pool — behavior-identical to the prior direct call — and the existing
+  // single-customer logic below runs against it unchanged. Group end-to-end
+  // generation is NOT opened here (that is #524); no group report jobs are
+  // dispatched yet, so the customer path is the only one that runs.
+  const subjectPools: SubjectPools = await (
+    opts.resolveSubjectPools ?? resolveSubjectPools
+  )(opts.authPool, job.subject_id, {
+    getCustomerPool: opts.resolveCustomerPool,
+  });
+  const customerPool = subjectPools.resultPool;
 
   const claim = await opts.authPool.query<{ processing_started_at: string }>(
     `UPDATE periodic_report_job

@@ -61,8 +61,21 @@ describe.skipIf(!hasPostgres)("Schema verification (group_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    // 0000_extensions, 0001_periodic_report_result
-    expect(rows.map((r) => r.version)).toEqual(["0000", "0001"]);
+    // 0000_extensions, 0001_periodic_report_result,
+    // 0002_periodic_report_long_tail
+    expect(rows.map((r) => r.version)).toEqual(["0000", "0001", "0002"]);
+  });
+
+  it("brings the long-tail columns to parity with the customer schema (#523)", async () => {
+    const { rows } = await pool.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'periodic_report_result'`,
+    );
+    const names = rows.map((r) => r.column_name);
+    // 0002 mirrors customer 0016: both long-tail provenance columns present,
+    // so a group result write naming them unconditionally succeeds.
+    expect(names).toContain("input_exemplar_refs");
+    expect(names).toContain("input_analyzed_event_aggregates");
   });
 
   it("creates periodic_report_result keyed by subject_id (not customer_id)", async () => {
