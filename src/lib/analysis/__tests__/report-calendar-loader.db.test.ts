@@ -314,6 +314,50 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       bucketDate: "2026-06-15",
       status: "ready",
     });
+
+    // A long drift run of non-navigable result dates before an eligible
+    // neighbor (#505 Round 4). MONTHLY is used because it has no other neighbor
+    // tests and the 2024–2025 dates fall outside every calendar viewport
+    // asserted above (which only enumerate 2026). 18 consecutive result-only
+    // months (no state row) sit between an open bucket at 2025-08-01 and the
+    // single navigable target at 2024-01-01. Set-based neighbor resolution must
+    // reach the target by range, not give up after a fixed drift count — a
+    // pre-fix 16-probe cap returned null here even though a valid nearest
+    // has-report bucket exists within retention/today.
+    const DRIFT_MONTHS = [
+      "2024-02-01",
+      "2024-03-01",
+      "2024-04-01",
+      "2024-05-01",
+      "2024-06-01",
+      "2024-07-01",
+      "2024-08-01",
+      "2024-09-01",
+      "2024-10-01",
+      "2024-11-01",
+      "2024-12-01",
+      "2025-01-01",
+      "2025-02-01",
+      "2025-03-01",
+      "2025-04-01",
+      "2025-05-01",
+      "2025-06-01",
+      "2025-07-01",
+    ];
+    for (const d of DRIFT_MONTHS) {
+      await seedResult({ period: "MONTHLY", bucketDate: d, generation: 1 });
+    }
+    // The eligible target older than the whole drift run.
+    await seedResult({
+      period: "MONTHLY",
+      bucketDate: "2024-01-01",
+      generation: 1,
+    });
+    await seedState({
+      period: "MONTHLY",
+      bucketDate: "2024-01-01",
+      status: "ready",
+    });
   }, 30_000);
 
   afterAll(async () => {
@@ -573,6 +617,24 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       provider: stubProvider(null, "2026-06-30"),
     });
     expect(afterFuture.next?.bucketDate).toBe("2026-06-15");
+  });
+
+  it("steps past more than 16 non-navigable result dates to the nearest report", async () => {
+    // 18 consecutive MONTHLY result-only (no state) buckets sit between the open
+    // 2025-08-01 and the single navigable 2024-01-01 target. The older step must
+    // reach the target across the whole drift run — a fixed 16-probe cap would
+    // have given up and returned null even though a valid nearest has-report
+    // bucket exists within retention/today (#505 Round 4).
+    const n = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "MONTHLY",
+      bucketDate: "2025-08-01",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(n.prev?.bucketDate).toBe("2024-01-01");
+    expect(n.olderStop).toBe(false);
   });
 
   it("does not claim retention at the first report (olderStop false)", async () => {

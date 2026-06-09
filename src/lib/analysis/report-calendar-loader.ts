@@ -326,29 +326,32 @@ export interface ReportNeighbors {
   olderStop: boolean;
 }
 
-// Cap on how many drifted (result-without-live-state) buckets the neighbor
-// probe will skip before giving up, so a long run of stale customer-DB rows
-// can't loop unbounded. Consistent state/result is the norm, so the first
-// probe almost always resolves; this is a safety backstop, not a budget.
-const NEIGHBOR_PROBE_LIMIT = 16;
-
 /**
  * Step from `from` to the nearest navigable bucket in one direction. A bucket
  * is navigable only when a non-superseded default-variant result AND a
  * `ready`/`dirty` state row coexist at the same (bucket_date, tz) — the issue's
- * navigable predicate. The nearest candidate DATE is probed first (auth/customer
- * pools are separate, so this can't be one JOIN), and ALL of that date's result
- * tzs are intersected against its eligible state tzs — the same per-date
- * intersection the calendar does, so a stale/old-tz row can't mask an eligible
- * sibling tz on the same date (a real case: a timezone change archives the old
- * tz's state while its result survives and a new-tz result/state pair lands on
- * the same bucket date — see `0030_periodic_state_event_count_and_tz_archive`).
- * When no tz on a date is navigable the probe advances past that date until an
- * eligible one is found, the direction is exhausted, or the cap hits.
+ * navigable predicate.
  *
- * `upperBound` (inclusive) excludes future-dated buckets on the newer side: the
- * issue makes a bucket whose start is after the subject-tz `today` non-navigable
- * (the calendar classifies it `future`), so prev/next must never step onto one.
+ * Set-based, bounded by the REAL retention/today range — not a fixed drift
+ * count. Every navigable-candidate result row in the direction within
+ * [`lowerBound`, `upperBound`] is read, then intersected in JS with the eligible
+ * `ready`/`dirty` state rows over the same range (the auth and customer pools
+ * are separate and cannot be JOINed). The nearest date with a navigable
+ * (result tz that also has a live state) row wins; within that date the
+ * highest-generation tz wins — the same per-date intersection the calendar
+ * does, so a stale/old-tz row can't mask an eligible sibling tz on the same
+ * date (a real case: a timezone change archives the old tz's state while its
+ * result survives and a new-tz result/state pair lands on the same bucket date
+ * — see `0030_periodic_state_event_count_and_tz_archive`).
+ *
+ * Bounding by the range rather than a probe budget guarantees the nearest
+ * has-report bucket is always reached no matter how many non-navigable result
+ * dates (stale/pending/archived/missing-state) precede it. The older direction
+ * is bounded by `lowerBound` (the retention floor; under unbounded retention it
+ * still reads only the subject's own history); the newer direction is bounded by
+ * `upperBound` (subject-tz `today`), which excludes future-dated buckets — the
+ * issue makes a bucket whose start is after `today` non-navigable (the calendar
+ * classifies it `future`), so prev/next must never step onto one.
  */
 async function findNeighbor(args: {
   authPool: Pool;
@@ -365,70 +368,76 @@ async function findNeighbor(args: {
   upperBound: string | null;
 }): Promise<NeighborBucket | null> {
   const { authPool, customerPool, subjectId, period, def, lowerBound } = args;
-  const { upperBound } = args;
+  const { upperBound, from } = args;
   const older = args.direction === "older";
-  let cursor = args.from;
-  for (let probe = 0; probe < NEIGHBOR_PROBE_LIMIT; probe++) {
-    // All non-superseded result rows for the NEAREST candidate date in this
-    // direction (not just the highest-generation one), bounded to a single date
-    // by the correlated subquery so this never scans the whole history.
-    const res = await customerPool.query<{ bucket_date: string; tz: string }>(
-      `SELECT bucket_date::text AS bucket_date, tz
-         FROM periodic_report_result
-        WHERE subject_id = $1
-          AND period = $2
-          AND model_name = $3 AND model = $4
-          AND superseded_at IS NULL
-          AND bucket_date ${older ? "<" : ">"} $5::date
-          AND ($6::date IS NULL OR bucket_date >= $6::date)
-          AND ($7::date IS NULL OR bucket_date <= $7::date)
-          AND bucket_date = (
-            SELECT bucket_date
-              FROM periodic_report_result
-             WHERE subject_id = $1
-               AND period = $2
-               AND model_name = $3 AND model = $4
-               AND superseded_at IS NULL
-               AND bucket_date ${older ? "<" : ">"} $5::date
-               AND ($6::date IS NULL OR bucket_date >= $6::date)
-               AND ($7::date IS NULL OR bucket_date <= $7::date)
-             ORDER BY bucket_date ${older ? "DESC" : "ASC"}
-             LIMIT 1
-          )
-        ORDER BY generation DESC`,
-      [
-        subjectId,
-        period,
-        def.modelName,
-        def.model,
-        cursor,
-        lowerBound,
-        upperBound,
-      ],
-    );
-    if (res.rows.length === 0) return null;
-    const candidateDate = res.rows[0].bucket_date;
-    // Eligible (`ready`/`dirty`) state tzs for that single date.
-    const stateRes = await authPool.query<{ tz: string }>(
-      `SELECT tz FROM periodic_report_state
-        WHERE subject_id = $1 AND period = $2
-          AND bucket_date = $3::date
-          AND status IN ('ready', 'dirty')`,
-      [subjectId, period, candidateDate],
-    );
-    const eligibleTz = new Set(stateRes.rows.map((r) => r.tz));
-    // Results arrive highest-generation first; the first whose tz also has a
-    // live state row wins — the same per-bucket tie-break the calendar uses.
-    for (const row of res.rows) {
-      if (eligibleTz.has(row.tz)) {
-        return { bucketDate: row.bucket_date, tz: row.tz };
-      }
+
+  // Every non-superseded default-variant result in the direction within the
+  // retention/today range (customer DB). The range bounds keep the older
+  // lookup to the subject's history and the newer lookup at/below `today`.
+  const resultRes = await customerPool.query<{
+    bucket_date: string;
+    tz: string;
+    generation: number;
+  }>(
+    `SELECT bucket_date::text AS bucket_date, tz, generation
+       FROM periodic_report_result
+      WHERE subject_id = $1
+        AND period = $2
+        AND model_name = $3 AND model = $4
+        AND superseded_at IS NULL
+        AND bucket_date ${older ? "<" : ">"} $5::date
+        AND ($6::date IS NULL OR bucket_date >= $6::date)
+        AND ($7::date IS NULL OR bucket_date <= $7::date)`,
+    [subjectId, period, def.modelName, def.model, from, lowerBound, upperBound],
+  );
+  if (resultRes.rows.length === 0) return null;
+
+  // Eligible (`ready`/`dirty`) state (date, tz) over the same range (auth DB).
+  const stateRes = await authPool.query<{ bucket_date: string; tz: string }>(
+    `SELECT bucket_date::text AS bucket_date, tz
+       FROM periodic_report_state
+      WHERE subject_id = $1
+        AND period = $2
+        AND status IN ('ready', 'dirty')
+        AND bucket_date ${older ? "<" : ">"} $3::date
+        AND ($4::date IS NULL OR bucket_date >= $4::date)
+        AND ($5::date IS NULL OR bucket_date <= $5::date)`,
+    [subjectId, period, from, lowerBound, upperBound],
+  );
+  const eligible = new Set(
+    stateRes.rows.map((r) => `${r.bucket_date}|${r.tz}`),
+  );
+
+  // Intersect: keep only navigable rows (a result tz with a live state at the
+  // same date). The nearest date wins; within a date the highest generation
+  // wins — so a stale higher-generation row in a drifted tz never masks an
+  // eligible sibling tz on the same date.
+  let best: { bucketDate: string; tz: string; generation: number } | null =
+    null;
+  for (const row of resultRes.rows) {
+    if (!eligible.has(`${row.bucket_date}|${row.tz}`)) continue;
+    if (best === null) {
+      best = {
+        bucketDate: row.bucket_date,
+        tz: row.tz,
+        generation: row.generation,
+      };
+      continue;
     }
-    // No tz on this date is navigable (every result drifted from its state).
-    // Skip the date and keep probing in the same direction.
-    cursor = candidateDate;
+    const nearer = older
+      ? row.bucket_date > best.bucketDate
+      : row.bucket_date < best.bucketDate;
+    const sameDateNewerGen =
+      row.bucket_date === best.bucketDate && row.generation > best.generation;
+    if (nearer || sameDateNewerGen) {
+      best = {
+        bucketDate: row.bucket_date,
+        tz: row.tz,
+        generation: row.generation,
+      };
+    }
   }
-  return null;
+  return best === null ? null : { bucketDate: best.bucketDate, tz: best.tz };
 }
 
 /**
