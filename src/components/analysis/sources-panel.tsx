@@ -17,6 +17,7 @@ import type {
   CitedLeafVariant,
   CitedStorySource,
 } from "@/lib/analysis/report-result-page-loader";
+import { subjectPages } from "@/lib/navigation/routes";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
 // caller and passed in so this presentational component stays synchronous.
@@ -108,8 +109,10 @@ function StorySourceCard({
   source: CitedStorySource;
   t: AnalysisTranslations;
 }) {
-  const href = `/${locale}/customers/${customerId}/analysis/story/${encodeURIComponent(
-    source.storyId,
+  const href = `${subjectPages.story(
+    locale,
+    customerId,
+    encodeURIComponent(source.storyId),
   )}?${pinQuery(source.variant)}`;
   return (
     <li>
@@ -163,11 +166,12 @@ function EventSourceCard({
   source: CitedEventSource;
   t: AnalysisTranslations;
 }) {
-  const href = `/${locale}/customers/${customerId}/aice/${encodeURIComponent(
-    source.aiceId,
-  )}/events/${encodeURIComponent(source.eventKey)}/analysis?${pinQuery(
-    source.variant,
-  )}`;
+  const href = `${subjectPages.eventAnalysis(
+    locale,
+    customerId,
+    encodeURIComponent(source.aiceId),
+    encodeURIComponent(source.eventKey),
+  )}?${pinQuery(source.variant)}`;
   return (
     <li>
       <Link

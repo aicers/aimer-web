@@ -447,13 +447,13 @@ export async function recordBaselineActivity(
           AND t <  NOW()
      )
      INSERT INTO periodic_report_state
-       (customer_id, period, bucket_date, tz, status,
+       (subject_id, period, bucket_date, tz, status,
         last_event_at, last_event_received_at)
      SELECT $1, 'LIVE', $2::date, $3, 'ready',
             in_window.max_t, in_window.max_rcv
        FROM in_window
       WHERE in_window.max_t IS NOT NULL
-     ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
+     ON CONFLICT (subject_id, period, bucket_date, tz) DO UPDATE
        SET last_event_at = GREATEST(
              periodic_report_state.last_event_at, EXCLUDED.last_event_at
            ),
@@ -465,7 +465,7 @@ export async function recordBaselineActivity(
              WHEN periodic_report_state.status = 'ready'
                AND EXISTS (
                  SELECT 1 FROM periodic_report_job j
-                  WHERE j.customer_id  = periodic_report_state.customer_id
+                  WHERE j.subject_id  = periodic_report_state.subject_id
                     AND j.period       = periodic_report_state.period
                     AND j.bucket_date  = periodic_report_state.bucket_date
                     AND j.tz           = periodic_report_state.tz
@@ -523,7 +523,7 @@ export async function recordBaselineActivity(
               WHEN s.status = 'ready'
                 AND EXISTS (
                   SELECT 1 FROM periodic_report_job j
-                   WHERE j.customer_id = s.customer_id
+                   WHERE j.subject_id = s.subject_id
                      AND j.period      = s.period
                      AND j.bucket_date = s.bucket_date
                      AND j.tz          = s.tz
@@ -534,7 +534,7 @@ export async function recordBaselineActivity(
             END,
             updated_at = NOW()
        FROM buckets b
-      WHERE s.customer_id = $1
+      WHERE s.subject_id = $1
         AND s.tz          = $2
         AND s.period      = b.period
         AND s.bucket_date = b.bucket_date
@@ -720,7 +720,7 @@ export async function dirtyPeriodicStatesOverlapping(
               WHEN s.status IN ('ready', 'dirty')
                 AND EXISTS (
                   SELECT 1 FROM periodic_report_job j
-                   WHERE j.customer_id  = s.customer_id
+                   WHERE j.subject_id  = s.subject_id
                      AND j.period       = s.period
                      AND j.bucket_date  = s.bucket_date
                      AND j.tz           = s.tz
@@ -770,7 +770,7 @@ export async function dirtyPeriodicStatesOverlapping(
               s.story_count
             ),
             updated_at = NOW()
-      WHERE s.customer_id = $1
+      WHERE s.subject_id = $1
         AND s.status IN ('pending', 'ready', 'dirty')
         AND (
           -- LIVE: source-time-aligned post-commit booleans supplied
@@ -801,7 +801,7 @@ export async function dirtyPeriodicStatesOverlapping(
           s.status = 'pending'
           OR EXISTS (
             SELECT 1 FROM periodic_report_job j
-             WHERE j.customer_id  = s.customer_id
+             WHERE j.subject_id  = s.subject_id
                AND j.period       = s.period
                AND j.bucket_date  = s.bucket_date
                AND j.tz           = s.tz
@@ -888,7 +888,7 @@ export async function recordCursorWatermark(
               THEN 'strict'
               ELSE cursor_watermark_quality
             END
-      WHERE customer_id = $1`,
+      WHERE subject_id = $1`,
     [customerId, cursorEventTime.toISOString(), cursorQuality],
   );
 }

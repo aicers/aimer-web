@@ -44,7 +44,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0011_enrichment_facts (RFC 0003 C1, #440),
     // 0012_event_provenance_not_null (aimer#480, #474),
     // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492),
-    // 0014_event_analysis_result_origin (RFC 0002 amendment, #493)
+    // 0014_event_analysis_result_origin (RFC 0002 amendment, #493),
+    // 0015_periodic_report_result_subject_rekey (RFC 0004, #503)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -61,6 +62,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0012",
       "0013",
       "0014",
+      "0015",
     ]);
   });
 
@@ -293,7 +295,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await expect(
         pool.query(
           `INSERT INTO periodic_report_result
-             (customer_id, period, bucket_date, tz, lang, model_name, model,
+             (subject_id, period, bucket_date, tz, lang, model_name, model,
               model_actual_version, prompt_version, generation,
               aggregate_severity_score, aggregate_likelihood_score,
               priority_tier,
@@ -1349,7 +1351,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
 
       await rolePool.query(
         `INSERT INTO periodic_report_result
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model,
             model_actual_version, prompt_version, generation,
             aggregate_severity_score, aggregate_likelihood_score,
@@ -1366,14 +1368,14 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       );
       await rolePool.query(
         `UPDATE periodic_report_result SET priority_tier = 'MEDIUM'
-          WHERE customer_id = $1 AND period = 'DAILY'
+          WHERE subject_id = $1 AND period = 'DAILY'
             AND bucket_date = DATE '2026-01-01' AND tz = 'Asia/Seoul'
             AND lang = 'ENGLISH' AND model_name = 'openai'
             AND model = 'gpt-4o' AND generation = 1`,
         [customerId],
       );
       await rolePool.query(
-        `DELETE FROM periodic_report_result WHERE customer_id = $1`,
+        `DELETE FROM periodic_report_result WHERE subject_id = $1`,
         [customerId],
       );
     });

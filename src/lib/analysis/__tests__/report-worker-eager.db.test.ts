@@ -43,9 +43,9 @@ async function seedState(
   status: string,
 ): Promise<void> {
   await authPool.query(
-    `INSERT INTO periodic_report_state (customer_id, period, bucket_date, tz, status)
+    `INSERT INTO periodic_report_state (subject_id, period, bucket_date, tz, status)
      VALUES ($1, $2, $3::date, $4, $5)
-     ON CONFLICT (customer_id, period, bucket_date, tz)
+     ON CONFLICT (subject_id, period, bucket_date, tz)
      DO UPDATE SET status = EXCLUDED.status`,
     [CUSTOMER_ID, period, bucketDate, TZ, status],
   );
@@ -70,7 +70,7 @@ async function jobsForBucket(
     dry_run: boolean;
   }>(
     `SELECT lang, status, generation, dry_run FROM periodic_report_job
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
       ORDER BY lang`,
     [CUSTOMER_ID, period, bucketDate, TZ],
@@ -138,7 +138,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     // English variant already present (e.g. seeded on an earlier tick).
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', '2026-05-27'::date, $2, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 1, FALSE)`,
@@ -183,7 +183,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     // earlier); the default-locale Korean variant is missing.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', '2026-05-29'::date, $2, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 2, FALSE)`,
@@ -212,7 +212,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     // The state returns to `ready` once its variant jobs are (re)seeded.
     const { rows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-29'::date AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -238,7 +238,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     await seedState(authPool, "DAILY", "2026-06-11", "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', '2026-06-11'::date, $2, 'KOREAN', 'openai', 'gpt-4o',
                'queued', 3, FALSE)`,
@@ -261,7 +261,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     await seedState(authPool, "DAILY", "2026-06-12", "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', '2026-06-12'::date, $2, 'KOREAN', 'openai', 'gpt-4o',
                'done', 2, FALSE)`,
@@ -280,7 +280,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     await seedState(authPool, "DAILY", "2026-06-13", "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, attempts, last_error)
        VALUES ($1, 'DAILY', '2026-06-13'::date, $2, 'KOREAN', 'openai', 'gpt-4o',
                'failed', 4, FALSE, 5, 'aimer_4xx')`,
@@ -304,7 +304,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
       last_error: string | null;
     }>(
       `SELECT status, generation, attempts, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-13'::date AND tz = $2 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, TZ],
     );
@@ -320,7 +320,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     await seedState(authPool, "DAILY", "2026-06-14", "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', '2026-06-14'::date, $2, 'KOREAN', 'openai', 'gpt-4o',
                'queued', 1, TRUE)`,
@@ -335,7 +335,7 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
     expect(res.action).toBe("requeued");
     const { rows } = await authPool.query<{ dry_run: boolean; status: string }>(
       `SELECT dry_run, status FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-14'::date AND tz = $2 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, TZ],
     );

@@ -654,13 +654,13 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     const bucket = "2026-06-04"; // NOW (12:00Z) is 21:00 KST on 06-04
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, last_event_at)
+         (subject_id, period, bucket_date, tz, status, last_event_at)
        VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', 'ready', $3::timestamptz)`,
       [CUSTOMER_ID, bucket, NOW],
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status)
        VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', $3, $4, $5, 'done')`,
       [CUSTOMER_ID, bucket, LANG, MODEL_NAME, MODEL],
@@ -673,7 +673,7 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
 
     const { rows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = 'Asia/Seoul'`,
       [CUSTOMER_ID, bucket],
     );

@@ -293,7 +293,7 @@ async function tickPeriodicStates(
                   + ($4 || ' hours')::interval <= $6::timestamptz)
         )
       RETURNING
-        customer_id::text  AS customer_id,
+        subject_id::text  AS customer_id,
         period,
         bucket_date::text  AS bucket_date,
         tz,

@@ -7,7 +7,7 @@
 // both drive ONE implementation. These handlers are parameterized by
 // `authContext` so the admin route
 // (`/api/admin/customers/[id]/report-refresh`) and the analyst route
-// (`/api/customers/[id]/analysis/report-refresh`) share one set of handlers
+// (`/api/subjects/[id]/analysis/report-refresh`) share one set of handlers
 // and differ only in their `withAuth` / CSRF context.
 //
 // Authorization reuses the `customer-default-model:read|write` keys: the
@@ -59,7 +59,8 @@ const PERIOD_SET = new Set<PeriodicPeriod>(ALL_PERIODS);
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
-  const idx = segments.indexOf("customers");
+  let idx = segments.indexOf("subjects");
+  if (idx === -1) idx = segments.indexOf("customers");
   if (idx === -1 || idx + 1 >= segments.length) return null;
   const id = segments[idx + 1];
   return UUID_RE.test(id) ? id : null;

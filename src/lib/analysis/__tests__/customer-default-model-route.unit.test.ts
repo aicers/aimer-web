@@ -88,7 +88,7 @@ describe("customer-default-model route handlers", () => {
       source: "env",
     });
     const res = await handleGetCustomerDefaultModel(
-      req(`/api/customers/${CUSTOMER_ID}/analysis/default-model`),
+      req(`/api/subjects/${CUSTOMER_ID}/analysis/default-model`),
       auth,
       "general",
     );
@@ -126,7 +126,7 @@ describe("customer-default-model route handlers", () => {
   it("DELETE returns { cleared } from the service", async () => {
     mockClear.mockResolvedValue({ cleared: true });
     const res = await handleDeleteCustomerDefaultModel(
-      req(`/api/customers/${CUSTOMER_ID}/analysis/default-model`, "DELETE"),
+      req(`/api/subjects/${CUSTOMER_ID}/analysis/default-model`, "DELETE"),
       auth,
       "general",
     );

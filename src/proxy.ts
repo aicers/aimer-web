@@ -17,6 +17,26 @@ export default async function proxy(
 ): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
 
+  // RFC 0004 (#503) — `/customers` → `/subjects` inbound-compatibility
+  // alias. The analysis surface moved from `/[locale]/customers/[id]/...`
+  // to `/[locale]/subjects/[id]/...`; a customer's subject id IS its
+  // customer id (a `kind='customer'` subject sharing the PK), so this is a
+  // pure path swap that preserves the RFC 0002 deep-link contract
+  // (`/customers/{customer_id}/analysis/...`). Freshly generated links
+  // already emit `/subjects/...` (see `src/lib/navigation/routes.ts`);
+  // this only catches inbound legacy / aice-web-next deep links. The
+  // matcher already excludes `/api`, so the API has no alias (and must
+  // not — all internal callers were moved to `/api/subjects/...`).
+  const aliasMatch = pathname.match(/^\/([^/]+)\/customers(\/.*)?$/);
+  if (
+    aliasMatch &&
+    (routing.locales as readonly string[]).includes(aliasMatch[1])
+  ) {
+    const url = request.nextUrl.clone();
+    url.pathname = `/${aliasMatch[1]}/subjects${aliasMatch[2] ?? ""}`;
+    return NextResponse.redirect(url);
+  }
+
   // Let public paths through without auth check
   if (isPublicPath(pathname)) {
     return intlMiddleware(request);

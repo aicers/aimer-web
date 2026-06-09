@@ -132,7 +132,7 @@ describe("handleBackfillPreview", () => {
 describe("handleBackfillRun", () => {
   it("refuses to run without explicit confirmation", async () => {
     const res = await handleBackfillRun(
-      req(`/api/customers/${CUSTOMER_ID}/analysis/reanalyze`, {
+      req(`/api/subjects/${CUSTOMER_ID}/analysis/reanalyze`, {
         method: "POST",
         body: JSON.stringify({ windowDays: 7 }),
       }),
@@ -163,7 +163,7 @@ describe("handleBackfillRun", () => {
       },
     });
     const res = await handleBackfillRun(
-      req(`/api/customers/${CUSTOMER_ID}/analysis/reanalyze`, {
+      req(`/api/subjects/${CUSTOMER_ID}/analysis/reanalyze`, {
         method: "POST",
         body: JSON.stringify({ confirm: true, windowDays: 7 }),
       }),

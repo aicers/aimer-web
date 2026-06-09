@@ -1,5 +1,5 @@
 // Server-side loader for the periodic report detail page
-// (`/[locale]/customers/{customerId}/analysis/reports/{period}/{bucketDate}`).
+// (`/[locale]/subjects/{customerId}/analysis/reports/{period}/{bucketDate}`).
 //
 // Mirrors `story-result-page-loader.ts` but operates on
 // `periodic_report_result` and the customer's default
@@ -482,7 +482,7 @@ export async function loadReportResultPage(
 
   const stateRows = await authPool.query<{ status: string }>(
     `SELECT status FROM periodic_report_state
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4`,
     [input.customerId, input.period, input.bucketDate, tz],
   );
@@ -496,7 +496,7 @@ export async function loadReportResultPage(
   // non-superseded rows so it matches what the result query below can fetch.
   const availLangRows = await customerPool.query<{ lang: string }>(
     `SELECT DISTINCT lang FROM periodic_report_result
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND model_name = $5 AND model = $6
         AND superseded_at IS NULL`,
@@ -566,7 +566,7 @@ export async function loadReportResultPage(
     pinnedGeneration === null
       ? `SELECT ${REPORT_RESULT_COLUMNS}
            FROM periodic_report_result
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND lang = $5 AND model_name = $6 AND model = $7
             AND superseded_at IS NULL
@@ -574,7 +574,7 @@ export async function loadReportResultPage(
           LIMIT 1`
       : `SELECT ${REPORT_RESULT_COLUMNS}
            FROM periodic_report_result
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND lang = $5 AND model_name = $6 AND model = $7
             AND generation = $8
@@ -962,7 +962,7 @@ async function resolveReportCompareColumn(
   const resultRow = await customerPool.query(
     `SELECT ${REPORT_RESULT_COLUMNS}
        FROM periodic_report_result
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND superseded_at IS NULL

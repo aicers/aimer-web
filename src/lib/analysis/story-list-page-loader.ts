@@ -1,5 +1,5 @@
 // Server-side loader for the customer-scoped Threat Stories list page
-// (`/[locale]/customers/{customerId}/analysis/story`) — WS3 (#392).
+// (`/[locale]/subjects/{customerId}/analysis/story`) — WS3 (#392).
 //
 // Sibling of the existing `story/{storyId}` detail page. Lists the
 // customer's threat stories priority-first with server-side keyset

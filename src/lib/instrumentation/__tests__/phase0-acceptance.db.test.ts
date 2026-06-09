@@ -222,7 +222,7 @@ async function seedPeriodicState(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO periodic_report_state
-       (customer_id, period, bucket_date, tz, status,
+       (subject_id, period, bucket_date, tz, status,
         last_event_at, last_event_received_at, last_ready_at,
         cursor_watermark, cursor_watermark_quality,
         created_at, updated_at)
@@ -253,7 +253,7 @@ async function seedPeriodicJob(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO periodic_report_job
-       (customer_id, period, bucket_date, tz,
+       (subject_id, period, bucket_date, tz,
         lang, model_name, model,
         status, generation, dry_run,
         processing_started_at, last_generated_at)
@@ -320,7 +320,7 @@ async function getPeriodicState(
   }>(
     `SELECT status, last_ready_at
        FROM periodic_report_state
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4`,
     [customerId, period, bucketDate, tz],
   );
@@ -341,7 +341,7 @@ async function getPeriodicJob(
   }>(
     `SELECT status, generation, dry_run
        FROM periodic_report_job
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7`,
     [
@@ -882,7 +882,7 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
     // next_due_at is 1 minute in the past.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run,
           last_generated_at, next_due_at)
        VALUES ($1, 'LIVE', $2::date, $3, $4, $5, $6,

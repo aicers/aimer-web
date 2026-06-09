@@ -13,6 +13,7 @@ import { Timestamp } from "@/components/timestamp";
 import type { CitedByReport } from "@/lib/analysis/cited-by-loader";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import { LIVE_BUCKET_DATE } from "@/lib/analysis/report-bucket-date";
+import { subjectPages } from "@/lib/navigation/routes";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
 // caller and passed in so this presentational component stays synchronous.
@@ -42,7 +43,12 @@ function reportHref(
     model: report.model,
     generation: String(report.generation),
   }).toString();
-  return `/${locale}/customers/${customerId}/analysis/reports/${report.period}/${report.bucketDate}?${query}`;
+  return `${subjectPages.report(
+    locale,
+    customerId,
+    report.period,
+    report.bucketDate,
+  )}?${query}`;
 }
 
 export function CitedByTrail({

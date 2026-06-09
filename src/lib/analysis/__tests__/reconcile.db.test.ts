@@ -296,7 +296,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows: live } = await authPool.query(
       `SELECT status, last_event_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period = 'LIVE'
           AND bucket_date = $2::date
           AND tz = 'Asia/Seoul'`,
@@ -308,7 +308,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows: periods } = await authPool.query<{ period: string }>(
       `SELECT DISTINCT period
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period`,
       [CUSTOMER_ID],
     );
@@ -373,7 +373,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT period, bucket_date::text AS bucket_date
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period, bucket_date`,
       [historicalCustomer],
     );
@@ -470,7 +470,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // Bucket 2026-05-20 KST = 2026-05-19 15:00 .. 2026-05-20 15:00 UTC.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           status, last_event_at, last_ready_at)
        VALUES ($1, 'DAILY', '2026-05-20'::date, 'Asia/Seoul',
                'ready',
@@ -479,7 +479,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -509,7 +509,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows } = await authPool.query(
       `SELECT status, last_event_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2026-05-20'::date
           AND tz          = 'Asia/Seoul'`,
@@ -564,7 +564,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           status, last_event_at, last_event_received_at, last_ready_at)
        VALUES ($1, 'DAILY', '2025-03-15'::date, 'Asia/Seoul',
                'ready',
@@ -575,7 +575,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -602,7 +602,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows } = await authPool.query(
       `SELECT status, last_event_at, last_event_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-03-15'::date
           AND tz          = 'Asia/Seoul'`,
@@ -737,7 +737,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // forward-patch path does not fire on event_time advance.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count, last_ready_at)
        VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul', 'ready',
                '2025-04-10T05:00:00Z'::timestamptz,
@@ -747,7 +747,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -791,7 +791,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, event_count::text AS event_count
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-04-10'::date
           AND tz          = 'Asia/Seoul'`,
@@ -856,7 +856,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // steady state after a prior successful envelope-hook cycle.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
@@ -866,7 +866,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -908,7 +908,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
       `SELECT status, story_count::text AS story_count,
               last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-06-10'::date
           AND tz          = 'Asia/Seoul'`,
@@ -937,7 +937,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await authPool.query(
       `UPDATE periodic_report_state
           SET status = 'ready', updated_at = NOW()
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period = 'DAILY'
           AND bucket_date = '2025-06-10'::date
           AND tz = 'Asia/Seoul'`,
@@ -958,7 +958,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, story_count::text AS story_count
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-06-10'::date
           AND tz          = 'Asia/Seoul'`,
@@ -1007,7 +1007,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // failed.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'DAILY', '2025-04-10'::date, 'Asia/Seoul', 'ready',
@@ -1018,7 +1018,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1042,7 +1042,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, event_count::text AS event_count
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-04-10'::date
           AND tz          = 'Asia/Seoul'`,
@@ -1085,7 +1085,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // a delete-only story refresh-window whose auth hook failed.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
@@ -1095,7 +1095,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1119,7 +1119,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, story_count::text AS story_count
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = '2025-06-10'::date
           AND tz          = 'Asia/Seoul'`,
@@ -1185,7 +1185,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     //   - 2025-06-11 KST: story_count=0, last_story_received_at=NULL
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'DAILY', '2025-06-10'::date, 'Asia/Seoul', 'ready',
@@ -1199,7 +1199,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     for (const bucketDate of ["2025-06-10", "2025-06-11"]) {
       await authPool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model,
             status, generation, dry_run,
             processing_started_at, last_generated_at)
@@ -1228,7 +1228,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
               story_count::text AS story_count,
               last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND tz          = 'Asia/Seoul'
         ORDER BY bucket_date`,
@@ -1274,7 +1274,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows } = await authPool.query<{ period: string }>(
       `SELECT DISTINCT period
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period`,
       [customer],
     );
@@ -1320,7 +1320,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT period, last_event_at, last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period`,
       [customer],
     );
@@ -1378,11 +1378,11 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
@@ -1402,7 +1402,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // `EXISTS (processing|done job)` gate is satisfied.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1439,7 +1439,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'LIVE'
           AND bucket_date = DATE '1970-01-01'
           AND tz          = 'Asia/Seoul'`,
@@ -1488,11 +1488,11 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
@@ -1515,7 +1515,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // anyway and the assertion would not distinguish round-18.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1565,7 +1565,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
       `SELECT status, last_event_at, last_event_received_at,
               last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'LIVE'
           AND bucket_date = DATE '1970-01-01'
           AND tz          = 'Asia/Seoul'`,
@@ -1621,11 +1621,11 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
@@ -1633,7 +1633,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // gate requires both `ready` status and a processing/done job.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
@@ -1643,7 +1643,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1668,7 +1668,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
 
     const { rows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [customer],
     );
     expect(rows[0]?.status).toBe("dirty");
@@ -1691,17 +1691,17 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, event_count,
           last_story_received_at, story_count, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
@@ -1711,7 +1711,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1733,7 +1733,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
 
     const { rows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [customer],
     );
     expect(rows[0]?.status).toBe("dirty");
@@ -1765,7 +1765,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
 
@@ -1800,7 +1800,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows } = await authPool.query<{ bucket_date: string }>(
       `SELECT bucket_date::text AS bucket_date
          FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
         ORDER BY bucket_date`,
       [customer],
     );
@@ -1833,11 +1833,11 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
@@ -1859,7 +1859,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows: afterSeed } = await authPool.query<{ period: string }>(
       `SELECT period
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period`,
       [customer],
     );
@@ -1890,7 +1890,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // guard.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1925,7 +1925,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, last_event_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'LIVE'
           AND bucket_date = DATE '1970-01-01'
           AND tz          = 'Asia/Seoul'`,
@@ -1975,11 +1975,11 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     await customerPool.query(`TRUNCATE TABLE baseline_event CASCADE`);
     await customerPool.query(`TRUNCATE TABLE story CASCADE`);
     await authPool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [customer],
     );
     await authPool.query(
-      `DELETE FROM periodic_report_job WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
       [customer],
     );
 
@@ -2015,7 +2015,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT status, last_event_at, last_story_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'LIVE'
           AND bucket_date = DATE '1970-01-01'
           AND tz          = 'Asia/Seoul'`,
@@ -2062,7 +2062,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // can verify the trigger archives all of them.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES
          ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'ready'),
          ($1, 'DAILY',   DATE '2026-05-20', 'Asia/Seoul', 'ready'),
@@ -2079,7 +2079,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     const { rows } = await authPool.query<{ period: string; status: string }>(
       `SELECT period, status
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period, bucket_date`,
       [customer],
     );
@@ -2099,7 +2099,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     expect(newTzOutcome.status).toBe("completed");
     const { rows: stillArchived } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+        WHERE subject_id = $1 AND tz = 'Asia/Seoul'`,
       [customer],
     );
     for (const r of stillArchived) expect(r.status).toBe("archived");
@@ -2195,9 +2195,9 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // the pre-fix ordering bug.
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES ($1, 'DAILY', '2026-05-27'::date, 'Asia/Seoul', 'pending')
-       ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
+       ON CONFLICT (subject_id, period, bucket_date, tz) DO UPDATE
          SET cursor_watermark = NULL,
              cursor_watermark_quality = NULL,
              status = 'pending'`,
@@ -2249,7 +2249,7 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     }>(
       `SELECT cursor_watermark, cursor_watermark_quality
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period = 'DAILY'
           AND bucket_date = '2026-05-27'::date
           AND tz = 'Asia/Seoul'`,

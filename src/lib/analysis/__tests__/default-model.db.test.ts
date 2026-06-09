@@ -652,9 +652,9 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
     ): Promise<void> {
       await pool.query(
         `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
+           (subject_id, period, bucket_date, tz, status)
          VALUES ($1, $2, $3::date, $4, 'ready')
-         ON CONFLICT (customer_id, period, bucket_date, tz)
+         ON CONFLICT (subject_id, period, bucket_date, tz)
          DO UPDATE SET status = 'ready'`,
         [cid, PERIOD, bucketDate, TZ],
       );
@@ -665,7 +665,7 @@ describe.skipIf(!hasPostgres)("resolveDefaultModel + services (DB)", () => {
     ): Promise<{ model_name: string; model: string } | null> {
       const res = await pool.query<{ model_name: string; model: string }>(
         `SELECT DISTINCT model_name, model FROM periodic_report_job
-          WHERE customer_id = $1 AND period = $2 AND bucket_date = $3::date`,
+          WHERE subject_id = $1 AND period = $2 AND bucket_date = $3::date`,
         [cid, PERIOD, bucketDate],
       );
       return res.rows[0] ?? null;

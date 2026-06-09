@@ -232,7 +232,7 @@ export async function loadCitedByReports(
       `SELECT period, bucket_date::text AS bucket_date, tz, lang,
               model_name, model, generation, priority_tier, requested_at
          FROM periodic_report_result
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND superseded_at IS NULL
           AND (
             ${column} @> $2::jsonb

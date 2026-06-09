@@ -10,6 +10,7 @@ import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { AnalyzeEventDocument } from "@/lib/graphql/__generated__/analyze-event";
 import { graphqlRequest } from "@/lib/graphql/client";
+import { subjectPages } from "@/lib/navigation/routes";
 import {
   ENGINE_VERSION,
   loadCustomerOwnedDomains,
@@ -349,12 +350,12 @@ function buildViewUrl(
     model_name: modelName,
     model,
   });
-  return (
-    `${origin}/${locale}/customers/${encodeURIComponent(customerId)}` +
-    `/aice/${encodeURIComponent(aiceId)}` +
-    `/events/${encodeURIComponent(eventKey)}` +
-    `/analysis?${params.toString()}`
-  );
+  return `${origin}${subjectPages.eventAnalysis(
+    locale,
+    encodeURIComponent(customerId),
+    encodeURIComponent(aiceId),
+    encodeURIComponent(eventKey),
+  )}?${params.toString()}`;
 }
 
 export interface AuditEmissionBase {

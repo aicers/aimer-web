@@ -14,6 +14,7 @@ import Link from "next/link";
 import type { useTranslations } from "next-intl";
 import { AnalysisMarkdown } from "@/components/analysis-body";
 import type { CitationUnit } from "@/lib/analysis/report-result-page-loader";
+import { subjectPages } from "@/lib/navigation/routes";
 import { pinQuery } from "./sources-panel";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
@@ -110,12 +111,17 @@ function CitationLink({
   const query = pinQuery(source.variant);
   const href =
     source.sourceType === "story"
-      ? `/${locale}/customers/${customerId}/analysis/story/${encodeURIComponent(
-          source.storyId,
+      ? `${subjectPages.story(
+          locale,
+          customerId,
+          encodeURIComponent(source.storyId),
         )}?${query}`
-      : `/${locale}/customers/${customerId}/aice/${encodeURIComponent(
-          source.aiceId,
-        )}/events/${encodeURIComponent(source.eventKey)}/analysis?${query}`;
+      : `${subjectPages.eventAnalysis(
+          locale,
+          customerId,
+          encodeURIComponent(source.aiceId),
+          encodeURIComponent(source.eventKey),
+        )}?${query}`;
   const label =
     source.sourceType === "story"
       ? t("citations.storyLink", { storyId: source.storyId })

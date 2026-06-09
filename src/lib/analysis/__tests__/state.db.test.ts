@@ -325,7 +325,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           event_count, last_ready_at)
        VALUES ($1, 'DAILY', DATE '2026-05-20', 'Asia/Seoul', 'ready',
                10, NOW())
@@ -334,7 +334,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -365,7 +365,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT status, event_count::text AS event_count
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = DATE '2026-05-20'
           AND tz          = 'Asia/Seoul'`,
@@ -446,7 +446,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // `updated_at` back-dated past the quiet window threshold.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           event_count, updated_at)
        VALUES ($1, 'DAILY', DATE '2026-05-21', 'Asia/Seoul', 'pending',
                7, NOW() - INTERVAL '2 hours')
@@ -455,7 +455,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     const { rows: beforeRows } = await pool.query<{ updated_at: Date }>(
       `SELECT updated_at FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = DATE '2026-05-21' AND tz = 'Asia/Seoul'`,
       [customer],
     );
@@ -481,7 +481,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT status, event_count::text AS event_count, updated_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = DATE '2026-05-21'
           AND tz          = 'Asia/Seoul'`,
@@ -566,7 +566,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       last_event_at: Date | null;
     }>(
       `SELECT status, last_event_at FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [CUSTOMER_B],
     );
     expect(rows[0]?.status).toBe("ready");
@@ -580,7 +580,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     await runAnalysisJobTickOnce(pool);
     const { rows } = await pool.query<{ status: string; dry_run: boolean }>(
       `SELECT status, dry_run FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [CUSTOMER_B],
     );
     expect(rows[0]?.status).toBe("queued");
@@ -920,7 +920,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // (round-7 review item 1) does not hold these rows in `pending`.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, updated_at)
+         (subject_id, period, bucket_date, tz, status, updated_at)
        VALUES
          ($1, 'DAILY',   DATE '2024-01-15', 'Asia/Seoul', 'pending',
           NOW() - INTERVAL '2 hours'),
@@ -942,7 +942,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT period, bucket_date::text AS bucket_date, status
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period, bucket_date`,
       [customer],
     );
@@ -967,7 +967,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT period, status, dry_run
          FROM periodic_report_job
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
         ORDER BY period`,
       [customer],
@@ -999,7 +999,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // updated_at = NOW() (simulating a backfill that just touched it).
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, updated_at)
+         (subject_id, period, bucket_date, tz, status, updated_at)
        VALUES ($1, 'DAILY', DATE '2024-01-15', 'Asia/Seoul', 'pending',
                NOW())`,
       [customer],
@@ -1009,7 +1009,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const { rows } = await pool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = DATE '2024-01-15'`,
       [customer],
     );
@@ -1021,14 +1021,14 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     await pool.query(
       `UPDATE periodic_report_state
           SET updated_at = NOW() - INTERVAL '2 hours'
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = DATE '2024-01-15'`,
       [customer],
     );
     await runAnalysisJobTickOnce(pool);
     const { rows: after } = await pool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = DATE '2024-01-15'`,
       [customer],
     );
@@ -1052,13 +1052,13 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // 2024-03-10 03:00Z = 2024-03-10 12:00 KST → DAILY 2024-03-10.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, last_ready_at)
+         (subject_id, period, bucket_date, tz, status, last_ready_at)
        VALUES ($1, 'DAILY', DATE '2024-03-10', 'Asia/Seoul', 'ready', NOW())`,
       [customer],
     );
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1092,7 +1092,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       last_event_at: Date | null;
     }>(
       `SELECT status, last_event_at FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period = 'DAILY'
           AND bucket_date = DATE '2024-03-10'`,
       [customer],
@@ -1120,7 +1120,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // Two ready DAILY buckets, each with a done dry-run job.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, last_ready_at)
+         (subject_id, period, bucket_date, tz, status, last_ready_at)
        VALUES
          ($1, 'DAILY', DATE '2024-03-10', 'Asia/Seoul', 'ready', NOW()),
          ($1, 'DAILY', DATE '2024-03-12', 'Asia/Seoul', 'ready', NOW())`,
@@ -1129,7 +1129,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     for (const bucketDate of ["2024-03-10", "2024-03-12"]) {
       await pool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model,
             status, generation, dry_run,
             processing_started_at, last_generated_at)
@@ -1171,7 +1171,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT bucket_date::text AS bucket_date, status, last_event_at
          FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
         ORDER BY bucket_date`,
       [customer],
     );
@@ -1208,7 +1208,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // the dispatch tick from an earlier test in the file.
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1217,7 +1217,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
                COALESCE($3, 'openai'),
                COALESCE($4, 'gpt-4o'),
                'done', 1, FALSE, NOW(), NOW())
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done'`,
       [
         CUSTOMER_B,
@@ -1248,7 +1248,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }
     const { rows } = await pool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [CUSTOMER_B],
     );
     expect(rows[0]?.status).toBe("dirty");
@@ -1274,7 +1274,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_story_received_at, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
                NULL, $2::timestamptz, NOW())
@@ -1283,7 +1283,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1326,7 +1326,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       last_story_received_at: Date | null;
     }>(
       `SELECT status, last_story_received_at FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [customer],
     );
     expect(rows[0]?.status).toBe("dirty");
@@ -1354,7 +1354,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at,
           last_story_received_at, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
@@ -1364,7 +1364,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1406,7 +1406,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }
     const { rows } = await pool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [customer],
     );
     expect(rows[0]?.status).toBe("ready");
@@ -1433,7 +1433,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // remain ready.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, last_ready_at)
+         (subject_id, period, bucket_date, tz, status, last_ready_at)
        VALUES
          ($1, 'DAILY',   DATE '2026-05-15', 'Asia/Seoul', 'ready', NOW()),
          ($1, 'WEEKLY',  DATE '2026-05-11', 'Asia/Seoul', 'ready', NOW()),
@@ -1451,7 +1451,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     ] as const) {
       await pool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model,
             status, generation, dry_run,
             processing_started_at, last_generated_at)
@@ -1495,7 +1495,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT period, bucket_date::text AS bucket_date, status
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period, bucket_date`,
       [customer],
     );
@@ -1538,7 +1538,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const { rows } = await pool.query(
       `SELECT period FROM periodic_report_state
-        WHERE customer_id = $1`,
+        WHERE subject_id = $1`,
       [customer],
     );
     expect(rows.length).toBe(0);
@@ -1559,7 +1559,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES
          ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'ready'),
          ($1, 'DAILY',   DATE '2026-05-20', 'Asia/Seoul', 'ready'),
@@ -1575,7 +1575,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
 
     const { rows } = await pool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+        WHERE subject_id = $1 AND tz = 'Asia/Seoul'`,
       [customer],
     );
     expect(rows.length).toBe(4);
@@ -1608,7 +1608,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // older `last_event_at` so we can detect forward-patching.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, last_event_at)
+         (subject_id, period, bucket_date, tz, status, last_event_at)
        VALUES
          ($1, 'LIVE',    DATE '1970-01-01', 'Asia/Seoul', 'archived', $2),
          ($1, 'DAILY',   DATE '2024-06-01', 'Asia/Seoul', 'archived', $2),
@@ -1624,7 +1624,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     ] as const) {
       await pool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model,
             status, generation, dry_run,
             processing_started_at, last_generated_at)
@@ -1667,7 +1667,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT period, bucket_date::text AS bucket_date, status, last_event_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
         ORDER BY period, bucket_date`,
       [customer],
     );
@@ -1708,7 +1708,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES ($1, 'DAILY', $2::date, 'Asia/Seoul', 'pending')`,
       [customer, bucketDate.rows[0].d],
     );
@@ -1728,7 +1728,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     }>(
       `SELECT last_event_at, last_event_received_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period      = 'DAILY'
           AND bucket_date = $2::date
           AND tz          = 'Asia/Seoul'`,
@@ -1796,7 +1796,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // job is recovered-queued.
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           last_event_at, last_event_received_at, last_ready_at)
        VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
                NOW(), NOW(), NOW() - INTERVAL '30 minutes')`,
@@ -1804,7 +1804,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     );
     await pool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz,
+         (subject_id, period, bucket_date, tz,
           lang, model_name, model,
           status, generation, dry_run,
           processing_started_at, last_generated_at)
@@ -1840,7 +1840,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       last_generated_at: Date | null;
     }>(
       `SELECT status, last_generated_at FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'`,
+        WHERE subject_id = $1 AND period = 'LIVE'`,
       [customer],
     );
     expect(periodicJob[0]?.status).toBe("done");
@@ -1866,10 +1866,10 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     const updatedAt = (opts.updatedAt ?? new Date()).toISOString();
     await pool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status,
+         (subject_id, period, bucket_date, tz, status,
           cursor_watermark, cursor_watermark_quality, updated_at)
        VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8)
-       ON CONFLICT (customer_id, period, bucket_date, tz) DO UPDATE
+       ON CONFLICT (subject_id, period, bucket_date, tz) DO UPDATE
          SET status = EXCLUDED.status,
              cursor_watermark = EXCLUDED.cursor_watermark,
              cursor_watermark_quality = EXCLUDED.cursor_watermark_quality,
@@ -1903,7 +1903,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     }>(
       `SELECT cursor_watermark, cursor_watermark_quality, status
          FROM periodic_report_state
-        WHERE customer_id = $1 AND period = $2
+        WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4`,
       [CUSTOMER, period, bucketDate, tz],
     );
@@ -2099,7 +2099,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     setShortSettleEnv();
     const { bucketDate, bucketEndAt } = pickPastBucket();
     await pool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [CUSTOMER],
     );
     await seedRow({
@@ -2124,7 +2124,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     setShortSettleEnv();
     const { bucketDate, bucketEndAt } = pickPastBucket();
     await pool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [CUSTOMER],
     );
     await seedRow({
@@ -2149,7 +2149,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     setShortSettleEnv();
     const { bucketDate } = pickPastBucket();
     await pool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [CUSTOMER],
     );
     await seedRow({
@@ -2181,7 +2181,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     // though no source data for those buckets changed. The cursor
     // write must therefore leave `updated_at` alone.
     await pool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [CUSTOMER],
     );
     const oldUpdatedAt = new Date(Date.now() - 6 * 3_600_000);
@@ -2212,7 +2212,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     }>(
       `SELECT cursor_watermark, cursor_watermark_quality, updated_at
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND period = 'DAILY'
           AND bucket_date = '2026-05-26'::date
           AND tz = 'UTC'`,
@@ -2234,7 +2234,7 @@ describe.skipIf(!hasPostgres)("cursor watermark (issue #295)", () => {
     setShortSettleEnv();
     const { bucketDate, bucketEndAt } = pickPastBucket();
     await pool.query(
-      `DELETE FROM periodic_report_state WHERE customer_id = $1`,
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
       [CUSTOMER],
     );
     await seedRow({

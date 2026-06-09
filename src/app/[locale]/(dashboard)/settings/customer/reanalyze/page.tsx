@@ -12,6 +12,7 @@ import { usePermissions } from "@/hooks/use-permissions";
 import { Link } from "@/i18n/navigation";
 import { apiFetch } from "@/lib/api/client";
 import { manualUrl } from "@/lib/manual-url";
+import { subjectApi } from "@/lib/navigation/routes";
 
 interface ModelPair {
   modelName: string;
@@ -47,7 +48,7 @@ export default function CustomerReanalyzePage() {
     if (!singleCustomerId) return;
     try {
       const data = await apiFetch<DefaultModelView>(
-        `/api/customers/${singleCustomerId}/analysis/default-model`,
+        subjectApi.defaultModel(singleCustomerId),
       );
       setEffective(data.effective);
     } catch {
@@ -105,19 +106,19 @@ export default function CustomerReanalyzePage() {
       <p className="text-sm text-muted-foreground">{t("guaranteeNote")}</p>
 
       <ReanalyzeBackfillPanel
-        apiBase={`/api/customers/${singleCustomerId}/analysis/reanalyze`}
+        apiBase={subjectApi.reanalyze(singleCustomerId)}
         fetcher={apiFetch}
       />
 
       <EventLeafBackfillPanel
         customerId={singleCustomerId}
-        apiBase={`/api/customers/${singleCustomerId}/analysis/event-backfill`}
+        apiBase={subjectApi.eventBackfill(singleCustomerId)}
         fetcher={apiFetch}
       />
 
       <ReportVariantRefreshPanel
         customerId={singleCustomerId}
-        apiBase={`/api/customers/${singleCustomerId}/analysis/report-refresh`}
+        apiBase={subjectApi.reportRefresh(singleCustomerId)}
         fetcher={apiFetch}
       />
 

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Link } from "@/i18n/navigation";
 import { apiFetch } from "@/lib/api/client";
+import { subjectApi } from "@/lib/navigation/routes";
 
 interface ModelPair {
   modelName: string;
@@ -61,7 +62,7 @@ export function DefaultModelSection({ customerId, canWrite }: Props) {
     setLoading(true);
     try {
       const data = await apiFetch<DefaultModelView>(
-        `/api/customers/${customerId}/analysis/default-model`,
+        subjectApi.defaultModel(customerId),
       );
       setView(data);
       setSelected(pairKey(data.effective));
@@ -95,7 +96,7 @@ export function DefaultModelSection({ customerId, canWrite }: Props) {
       setSubmitError(null);
       try {
         const res = await apiFetch<{ changed: boolean }>(
-          `/api/customers/${customerId}/analysis/default-model`,
+          subjectApi.defaultModel(customerId),
           { method: "PUT", body: JSON.stringify(pair) },
         );
         await reload();
@@ -121,7 +122,7 @@ export function DefaultModelSection({ customerId, canWrite }: Props) {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await apiFetch(`/api/customers/${customerId}/analysis/default-model`, {
+      await apiFetch(subjectApi.defaultModel(customerId), {
         method: "DELETE",
       });
       await reload();

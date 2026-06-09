@@ -1,5 +1,5 @@
 // Server-side data loader for the analysis result page
-// (`/[locale]/customers/.../analysis`).
+// (`/[locale]/subjects/.../analysis`).
 //
 // The page is a server component that calls this loader once per
 // request:
@@ -251,7 +251,7 @@ export async function loadAnalysisResultPage(
   // API routes apply the same scope via `withAuth`; the server-rendered
   // page reaches the loader without `withAuth`, so the bridge fields have
   // to be pulled from `validateSession` explicitly. Without this gate, a
-  // bridge session for customer A could deep-link into `/customers/B/...`
+  // bridge session for customer A could deep-link into `/subjects/B/...`
   // if the underlying account also has normal access to B. This brings the
   // event loader up to the story/report loaders' bridge handling (#463).
   let bridgeAiceId: string | null = null;

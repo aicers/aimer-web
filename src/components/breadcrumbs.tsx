@@ -99,14 +99,16 @@ const ROOT: RouteNode = {
         customer: { kind: "link", label: navLabel("customerSettings") },
       },
     },
-    customers: {
+    subjects: {
       kind: "text",
       label: navLabel("customers"),
       param: {
-        // [customerId] — customer hub. Name resolved from the ambient
-        // `useCustomerContext` set (no refetch); falls back to the id.
+        // [subjectId] — subject (customer) hub. A customer is a
+        // `kind='customer'` subject sharing its UUID (RFC 0004 / #503), so
+        // the name still resolves from the ambient `useCustomerContext`
+        // set (no refetch); falls back to the id.
         kind: "link",
-        paramName: "customerId",
+        paramName: "subjectId",
         label: (value, _params, ctx) => ctx.customerName(value) ?? value,
         children: {
           analysis: {

@@ -1,7 +1,7 @@
 // Admin surface for the story-leaf re-analysis backfill (#466). System
 // Administrator only (admin context), any customer. POST enqueues the
 // coalescing backfill (confirm-gated). The Analyst-facing counterpart lives
-// at `/api/customers/[customerId]/analysis/reanalyze`; both delegate to the
+// at `/api/subjects/[subjectId]/analysis/reanalyze`; both delegate to the
 // same shared handlers / service guard.
 
 import type { NextRequest } from "next/server";

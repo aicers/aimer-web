@@ -78,6 +78,13 @@ export async function deleteCustomer(
       throw new HttpError("Customer not found", 404);
     }
 
+    // Step 4: Delete the `subject` supertype row (RFC 0004 / #503). The
+    // customer shares its UUID, so the same id removes the subject.
+    // `periodic_report_state` / `periodic_report_job` now cascade from
+    // `subjects` (not `customers`), so this delete is what cleans up the
+    // periodic-report state for the removed customer.
+    await client.query("DELETE FROM subjects WHERE id = $1", [customerId]);
+
     await client.query("COMMIT");
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

@@ -60,7 +60,7 @@ describe.skipIf(!hasPostgres)("report-variant refresh (db)", () => {
   async function addState(bucketDate: string, status: string) {
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES ($1, 'DAILY', $2::date, 'UTC', $3)`,
       [CUSTOMER_ID, bucketDate, status],
     );
@@ -73,7 +73,7 @@ describe.skipIf(!hasPostgres)("report-variant refresh (db)", () => {
   ) {
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation)
        VALUES ($1, 'DAILY', $2::date, 'UTC', $3, $4, $5, $6, $7)`,
       [
@@ -262,7 +262,7 @@ describe.skipIf(!hasPostgres)("report-variant refresh (db)", () => {
 
     const job = await authPool.query<{ status: string; generation: number }>(
       `SELECT status, generation FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-05'::date AND tz = 'UTC'
           AND lang = $2 AND model_name = $3 AND model = $4`,
       [CUSTOMER_ID, TARGET.lang, TARGET.modelName, TARGET.model],
@@ -289,7 +289,7 @@ describe.skipIf(!hasPostgres)("report-variant refresh (db)", () => {
     }
     const job2 = await authPool.query<{ generation: number }>(
       `SELECT generation FROM periodic_report_job
-        WHERE customer_id = $1 AND bucket_date = '2026-06-05'::date
+        WHERE subject_id = $1 AND bucket_date = '2026-06-05'::date
           AND period = 'DAILY' AND tz = 'UTC'
           AND lang = $2 AND model_name = $3 AND model = $4`,
       [CUSTOMER_ID, TARGET.lang, TARGET.modelName, TARGET.model],
@@ -388,7 +388,7 @@ describe.skipIf(!hasPostgres)(
     ) {
       await authPool.query(
         `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
+           (subject_id, period, bucket_date, tz, status)
          VALUES ($1, $2, $3::date, $4, $5)`,
         [CID2, period, bucketDate, tz, status],
       );
@@ -403,7 +403,7 @@ describe.skipIf(!hasPostgres)(
     ) {
       await authPool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz, lang, model_name, model,
+           (subject_id, period, bucket_date, tz, lang, model_name, model,
             status, generation)
          VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)`,
         [
@@ -610,7 +610,7 @@ describe.skipIf(!hasPostgres)(
         generation: number;
       }>(
         `SELECT status, generation FROM periodic_report_job
-          WHERE customer_id = $1 AND period = 'WEEKLY'
+          WHERE subject_id = $1 AND period = 'WEEKLY'
             AND bucket_date = '2026-03-26'::date AND tz = 'UTC'
             AND lang = $2 AND model_name = $3 AND model = $4`,
         [CID2, TARGET.lang, TARGET.modelName, TARGET.model],
@@ -623,7 +623,7 @@ describe.skipIf(!hasPostgres)(
       // The gated WEEKLY was never seeded — gating prevents any job write.
       const gatedJob = await authPool.query(
         `SELECT 1 FROM periodic_report_job
-          WHERE customer_id = $1 AND period = 'WEEKLY'
+          WHERE subject_id = $1 AND period = 'WEEKLY'
             AND bucket_date = '2026-03-14'::date AND tz = 'UTC'
             AND lang = $2 AND model_name = $3 AND model = $4`,
         [CID2, TARGET.lang, TARGET.modelName, TARGET.model],

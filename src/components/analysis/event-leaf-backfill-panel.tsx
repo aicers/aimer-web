@@ -6,7 +6,7 @@
 // pages (admin + analyst). Drives the preview → required-confirm → launch →
 // progress → cancel flow against the event-backfill API. Shared by both
 // surfaces: the admin page passes `adminFetch` + the `/api/admin/...` base;
-// the analyst page passes `apiFetch` + the `/api/customers/.../analysis/...`
+// the analyst page passes `apiFetch` + the `/api/subjects/.../analysis/...`
 // base. The cost preview shows counts/scope only — never a monetary figure.
 
 import { useLocale, useTranslations } from "next-intl";

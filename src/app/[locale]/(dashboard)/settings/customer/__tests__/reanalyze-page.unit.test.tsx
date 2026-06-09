@@ -137,13 +137,13 @@ describe("CustomerReanalyzePage", () => {
     expect(screen.getByText("backfill-panel")).toBeDefined();
     expect(mockPanel).toHaveBeenCalledWith(
       expect.objectContaining({
-        apiBase: "/api/customers/c1/analysis/reanalyze",
+        apiBase: "/api/subjects/c1/analysis/reanalyze",
       }),
     );
     expect(screen.getByText("report-refresh-panel")).toBeDefined();
     expect(mockReportPanel).toHaveBeenCalledWith(
       expect.objectContaining({
-        apiBase: "/api/customers/c1/analysis/report-refresh",
+        apiBase: "/api/subjects/c1/analysis/report-refresh",
       }),
     );
     // The current default model is shown once the lookup resolves.
@@ -153,7 +153,7 @@ describe("CustomerReanalyzePage", () => {
       ).toBeDefined(),
     );
     expect(mockApiFetch).toHaveBeenCalledWith(
-      "/api/customers/c1/analysis/default-model",
+      "/api/subjects/c1/analysis/default-model",
     );
   });
 });

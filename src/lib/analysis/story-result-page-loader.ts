@@ -1,5 +1,5 @@
 // Server-side loader for the story analysis result page
-// (`/[locale]/customers/{customerId}/analysis/story/{storyId}`).
+// (`/[locale]/subjects/{customerId}/analysis/story/{storyId}`).
 //
 // Mirrors `result-page-loader.ts` (event scope) but operates on the
 // `story_analysis_result` table and resolves the customer's default
@@ -219,7 +219,7 @@ export async function loadStoryResultPage(
   // `withAuth`; the server-rendered page reaches the loader without
   // `withAuth`, so the bridge fields have to be pulled from
   // `validateSession` explicitly. Without this gate, a bridge session
-  // for customer A could deep-link into `/customers/B/...` if the
+  // for customer A could deep-link into `/subjects/B/...` if the
   // underlying account also has normal access to B.
   let bridgeAiceId: string | null = null;
   let bridgeCustomerIds: string[] | null = null;

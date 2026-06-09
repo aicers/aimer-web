@@ -77,7 +77,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
