@@ -61,10 +61,17 @@ export async function computeCombinedRecentEventVolume(
 async function recentEventCount(customerId: string): Promise<number> {
   const pool = getCustomerRuntimePool(customerId);
   const { rows } = await pool.query<{ count: number }>(
+    // Bound BOTH ends of the trailing window — `[now - N days, now)` — exactly
+    // as the canonical report/reconcile windows do (report-input-builder uses
+    // `event_time >= start AND event_time < end`; reconcile excludes future
+    // `event_time` for rolling LIVE). Without the `< NOW()` upper bound a
+    // future-dated canonical baseline row would inflate the count and diverge
+    // from the report-feeding event volume the figure is meant to mirror.
     `${LATEST_BASELINE_CTE}
      SELECT COUNT(*)::int AS count
        FROM latest_baseline lb
-      WHERE lb.event_time >= NOW() - ($1 || ' days')::interval`,
+      WHERE lb.event_time >= NOW() - ($1 || ' days')::interval
+        AND lb.event_time < NOW()`,
     [String(RECENT_EVENT_WINDOW_DAYS)],
   );
   return rows[0]?.count ?? 0;

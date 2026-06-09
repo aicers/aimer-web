@@ -48,6 +48,13 @@ export const POST = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let released = false;
+    const releaseClient = () => {
+      if (!released) {
+        released = true;
+        client.release();
+      }
+    };
     try {
       const validation = await validateGroupMembers(
         client,
@@ -63,6 +70,16 @@ export const POST = withAuth(
         overMemberCap,
         recommendedTz,
       } = validation.value;
+
+      // Release the auth-pool client BEFORE the cross-DB preview computation.
+      // The auth client is no longer needed once validation returns, and this
+      // endpoint is called interactively as users edit membership. Holding an
+      // idle auth-pool connection across up to GROUP_MAX_MEMBERS customer-DB
+      // reads would let preview traffic starve unrelated auth-backed requests
+      // under pool saturation — the same reason the create route releases
+      // before its slow provisioning phase. releaseClient() is idempotent, so
+      // the finally below is a no-op once we have released.
+      releaseClient();
 
       // The three computed figures are nullable: when the group is over-cap it
       // cannot be created, so there is no point paying the cross-DB reads —
@@ -103,7 +120,7 @@ export const POST = withAuth(
       }
       throw err;
     } finally {
-      client.release();
+      releaseClient();
     }
   },
   { ctx: "general" },
