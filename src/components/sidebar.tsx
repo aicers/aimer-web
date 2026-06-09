@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Building2,
   FileText,
   LayoutDashboard,
   Lock,
@@ -26,6 +27,7 @@ import {
 import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePermissions } from "@/hooks/use-permissions";
 import { mergeQuery } from "@/lib/navigation/query";
+import { subjectPages } from "@/lib/navigation/routes";
 import { SCOPE_PARAM } from "@/lib/navigation/scope";
 import { cn } from "@/lib/utils";
 
@@ -216,6 +218,108 @@ function ScopeSelector({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/**
+ * Persistent links to each accessible customer's analysis hub
+ * (`subjectPages.hub` → `/subjects/[subjectId]`). This is the summary-subjects
+ * navigation introduced by RFC 0004 (#504): it closes the orphaned-hub gap so
+ * a customer's hub is reachable directly from the sidebar instead of only via
+ * a detail-page breadcrumb.
+ *
+ * Deliberately separate from {@link useNavItems}: those cross-customer browse
+ * items append the active scope query (`?scope=`), whereas subject links must
+ * NOT — clicking a subject opens its own hub and never mutates the ephemeral
+ * scope filter driven by {@link ScopeSelector}. The two customer lists stay
+ * visibly distinct controls with different jobs.
+ *
+ * Bridge sessions need no special branching: `useCustomerContext().customers`
+ * is already filtered to the bridge scope server-side
+ * (`/api/auth/customers`), so the rendered hub links expose nothing the
+ * session cannot read.
+ */
+function SummarySubjects({
+  collapsed,
+  onNavigate,
+}: {
+  collapsed: boolean;
+  onNavigate?: (() => void) | null;
+}) {
+  const tSidebar = useTranslations("sidebar");
+  const locale = useLocale();
+  const pathname = usePathname();
+  const { customers } = useCustomerContext();
+
+  if (customers.length === 0) return null;
+
+  const label = tSidebar("summarySubjectsLabel");
+
+  const items = customers.map((c) => {
+    const href = subjectPages.hub(locale, c.id);
+    // Match the hub path or anything nested under it (reports / story /
+    // events), but not a sibling whose id is a prefix of this one.
+    const isActive = pathname === href || pathname.startsWith(`${href}/`);
+    return { id: c.id, name: c.name, href, isActive };
+  });
+
+  const linkClass = (isActive: boolean) =>
+    cn(
+      "flex items-center rounded-md font-medium transition-colors",
+      collapsed
+        ? "flex-col justify-center gap-0.5 px-1 py-2 text-[10px]"
+        : "gap-2 px-2 py-1.5 text-sm",
+      isActive
+        ? "bg-[var(--sidebar-active)] text-white"
+        : "text-[var(--sidebar-fg)] hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]",
+    );
+
+  return (
+    <nav
+      aria-label={label}
+      className="max-h-56 shrink-0 overflow-y-auto border-t border-[var(--sidebar-border)] p-2"
+    >
+      {!collapsed && (
+        <div
+          id="summary-subjects-label"
+          className="mb-2 px-1 text-xs font-medium text-[var(--sidebar-muted)]"
+        >
+          {label}
+        </div>
+      )}
+      <ul className="space-y-1">
+        {items.map((item) => {
+          const link = (
+            <Link
+              href={item.href}
+              onClick={onNavigate ?? undefined}
+              aria-current={item.isActive ? "page" : undefined}
+              className={linkClass(item.isActive)}
+            >
+              <Building2 className="h-4 w-4 shrink-0" />
+              {collapsed ? (
+                <span className="w-full truncate text-center">{item.name}</span>
+              ) : (
+                <span className="truncate">{item.name}</span>
+              )}
+            </Link>
+          );
+
+          if (collapsed) {
+            return (
+              <li key={item.id}>
+                <Tooltip>
+                  <TooltipTrigger asChild>{link}</TooltipTrigger>
+                  <TooltipContent side="right">{item.name}</TooltipContent>
+                </Tooltip>
+              </li>
+            );
+          }
+
+          return <li key={item.id}>{link}</li>;
+        })}
+      </ul>
+    </nav>
+  );
+}
+
 export function NavList({
   items,
   collapsed,
@@ -302,6 +406,7 @@ function SidebarContent({
     <>
       <ScopeSelector collapsed={collapsed} />
       <NavList items={navItems} collapsed={collapsed} onNavigate={onNavigate} />
+      <SummarySubjects collapsed={collapsed} onNavigate={onNavigate} />
     </>
   );
 }

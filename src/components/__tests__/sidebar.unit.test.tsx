@@ -36,6 +36,7 @@ vi.mock("next-intl", () => {
   };
   const sidebarMap: Record<string, string> = {
     scopeLabel: "Customer scope",
+    summarySubjectsLabel: "Customers",
     scopeAll: "All customers",
     bridgeLocked: "Locked to bridge session",
     expandSidebar: "Expand sidebar",
@@ -381,6 +382,107 @@ describe("Sidebar", () => {
   });
 });
 
+describe("Sidebar summary subjects", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockedUsePathname.mockReturnValue("/en");
+    setup();
+  });
+
+  function subjectsNav(container: HTMLElement) {
+    return container.querySelector('nav[aria-label="Customers"]');
+  }
+
+  it("renders a hub link per accessible customer", () => {
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+    const links = nav.querySelectorAll("a");
+
+    expect(links.length).toBe(2);
+    const text = nav.textContent ?? "";
+    expect(text).toContain("Acme Corp");
+    expect(text).toContain("Beta Inc");
+  });
+
+  it("targets the locale-prefixed /subjects hub via subjectPages.hub", () => {
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+    const href = (name: string) =>
+      [...nav.querySelectorAll("a")]
+        .find((a) => a.textContent?.includes(name))
+        ?.getAttribute("href");
+
+    expect(href("Acme Corp")).toBe("/en/subjects/c1");
+    expect(href("Beta Inc")).toBe("/en/subjects/c2");
+  });
+
+  it("carries no ?scope= query on subject links", () => {
+    // Narrow the scope so the cross-customer nav items carry `?scope=c1`;
+    // subject hub links must remain unscoped regardless.
+    mockDefaults({
+      scope: { isAll: false, customerIds: ["c1"], canonical: "c1" },
+      singleCustomerId: "c1",
+    });
+
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+
+    for (const a of nav.querySelectorAll("a")) {
+      expect(a.getAttribute("href")).not.toContain("scope=");
+    }
+  });
+
+  it("marks the active subject when the route is under its hub", () => {
+    mockedUsePathname.mockReturnValue("/en/subjects/c2/analysis/reports");
+
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+    const active = nav.querySelector('a[aria-current="page"]');
+    assertDefined(active);
+    expect(active.getAttribute("href")).toBe("/en/subjects/c2");
+  });
+
+  it("renders only the bridge-filtered customers in a bridge session", () => {
+    mockDefaults({
+      customers: [CUSTOMERS[0]],
+      isBridgeSession: true,
+      me: {
+        accountId: "acc-1",
+        sessionId: "sess-1",
+        authContext: "general",
+        username: "tester",
+        displayName: "Test User",
+        email: "test@example.com",
+        locale: null,
+        timezone: null,
+        analystEligible: false,
+        bridge: { active: true, aiceId: "env-1", customerIds: ["c1"] },
+        memberships: [],
+      },
+    });
+
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+    const links = nav.querySelectorAll("a");
+
+    expect(links.length).toBe(1);
+    expect(links[0].getAttribute("href")).toBe("/en/subjects/c1");
+    expect(nav.textContent).not.toContain("Beta Inc");
+  });
+
+  it("renders subject links when collapsed", () => {
+    const { container } = render(<Sidebar collapsed={true} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+    expect(nav.querySelectorAll("a").length).toBe(2);
+  });
+});
+
 describe("MobileSidebarTrigger", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -434,6 +536,26 @@ describe("MobileSidebarTrigger", () => {
     const navLink = sheetContent.querySelector('nav[aria-label="Main"] a');
     assertDefined(navLink);
     fireEvent.click(navLink);
+
+    assertDefined(lastOnOpenChange);
+    expect(typeof lastOnOpenChange).toBe("function");
+  });
+
+  it("closes sheet when a subject hub link is clicked", () => {
+    const { container } = render(<MobileSidebarTrigger />);
+
+    const sheetContent = container.querySelector(
+      '[data-testid="sheet-content"]',
+    );
+    assertDefined(sheetContent);
+
+    const subjectLink = sheetContent.querySelector(
+      'nav[aria-label="Customers"] a',
+    );
+    assertDefined(subjectLink);
+    // Subject links carry the same `onNavigate` close handler the nav links
+    // use, so a click invokes it (the mocked Sheet records onOpenChange).
+    fireEvent.click(subjectLink);
 
     assertDefined(lastOnOpenChange);
     expect(typeof lastOnOpenChange).toBe("function");

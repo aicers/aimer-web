@@ -53,6 +53,34 @@ These pages render against one customer, so under an "all customers" or
 multi-customer scope their links are hidden and visiting them directly
 shows a "select a single customer" notice.
 
+### Customers (summary subjects)
+
+Below the navigation items, a **Customers** section lists every
+customer you can access. Each entry is a direct link to that customer's
+[analysis hub](analysis/customer-hub.md) (`/subjects/<id>`), which
+gathers the customer's reports, threat stories, and suspicious-event
+summaries in one place.
+
+- This is the **fastest path** to a customer's hub: open it straight
+    from the sidebar rather than drilling into a detail page and
+    backtracking through the breadcrumb.
+- Clicking a customer **opens its hub**. It does **not** change the
+    customer scope — these links carry no `?scope=` parameter and leave
+    the cross-customer views untouched.
+- The section is **distinct** from the customer-scope selector below:
+    the scope selector is an ephemeral filter for the cross-customer
+    views, while this section is a set of persistent links into each
+    customer's own analysis surface.
+- The current customer's link is highlighted while you are anywhere
+    under its hub, and the list scrolls on its own when you can access
+    many customers. In collapsed mode each entry shows an icon with the
+    customer name; hover for a tooltip.
+
+In a bridge session the list shows only the customers the bridge is
+pinned to, matching that session's fixed scope.
+
+![The sidebar Customers section listing each accessible customer as a direct link to its analysis hub](../assets/navigation-summary-subjects.en.png)
+
 ### Collapsed mode
 
 Click the hamburger button in the header bar to switch between

@@ -119,6 +119,7 @@
   },
   "sidebar": {
     "scopeLabel": "Customer scope",
+    "summarySubjectsLabel": "Customers",
     "scopeAll": "All customers",
     "scopeSelected": "{count} of {total} customers",
     "bridgeLocked": "Locked to bridge session",

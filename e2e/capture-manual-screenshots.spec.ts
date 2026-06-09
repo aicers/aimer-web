@@ -374,6 +374,33 @@ base.describe.serial("Manual screenshots", () => {
   // multiple customers loaded, which is not available. Tracked in #403
   // (see docs/{en,ko}/navigation.md "Screenshot pending").
 
+  for (const locale of ["en", "ko"] as const) {
+    base(`navigation-summary-subjects.${locale}.png`, async () => {
+      await mgrPage.goto(`/${locale}`);
+      await settle(mgrPage);
+
+      // Ensure the sidebar is expanded so the Customers section is visible.
+      const collapseLabel =
+        locale === "ko" ? "사이드바 접기" : "Collapse sidebar";
+      const expandLabel =
+        locale === "ko" ? "사이드바 펼치기" : "Expand sidebar";
+      const collapseBtn = mgrPage.getByRole("button", { name: collapseLabel });
+      if (!(await collapseBtn.isVisible())) {
+        await mgrPage.getByRole("button", { name: expandLabel }).click();
+        await mgrPage.waitForTimeout(300);
+      }
+
+      // The seeded manager account belongs to one customer, so the Customers
+      // (summary-subjects) section lists that customer as a direct hub link.
+      await mgrPage
+        .locator("aside")
+        .first()
+        .screenshot({
+          path: resolve(ASSETS, `navigation-summary-subjects.${locale}.png`),
+        });
+    });
+  }
+
   base("mobile-menu.png", async () => {
     // Exception: 375×667 viewport — the mobile menu is only visible at
     // narrow widths so it cannot be captured at the standard 1280×720.
