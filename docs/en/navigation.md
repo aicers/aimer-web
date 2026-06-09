@@ -93,7 +93,7 @@ a subject's analysis hub (the hub returns `403` under a bridge), and the
 group list is empty under a bridge, so there are no reachable hubs to
 list.
 
-![The sidebar Customers section listing each accessible customer as a direct link to its analysis hub](../assets/navigation-summary-subjects.en.png)
+![Placeholder for the sidebar Subjects section — the Customers and Groups sub-sections, each linking to its analysis hub — pending a real-data recapture (the Groups sub-section requires a stack with accessible customer groups loaded, which the fixture stack cannot reproduce)](../assets/navigation-summary-subjects.en.png)
 
 ### Collapsed mode
 
