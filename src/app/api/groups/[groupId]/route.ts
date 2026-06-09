@@ -64,7 +64,14 @@ export const DELETE = withAuth(
         return Response.json({ error: "Group not found" }, { status: 404 });
       }
 
-      void auditLog({
+      // Awaited (not fire-and-forget) so the PII-bearing delete row is
+      // committed BEFORE teardown's anonymizeGroupAuditLogs() runs its
+      // `UPDATE audit_logs ... WHERE target_id = $1`. A `void auditLog(...)`
+      // here races that update: if anonymization wins, the delete row lands
+      // afterward with the raw memberIds list still present, defeating the
+      // crypto-shred. auditLog() still swallows audit-DB errors, so awaiting
+      // keeps the write best-effort while giving anonymization a row to scrub.
+      await auditLog({
         actorId: auth.accountId,
         authContext: "general",
         action: "customer_group.deleted",
