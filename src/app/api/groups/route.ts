@@ -6,6 +6,7 @@ import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { DEFAULT_ANALYSIS_RETENTION_DAYS } from "@/lib/auth/retention-defaults";
 import { getAuthPool } from "@/lib/db/client";
+import { provisionGroupDb } from "@/lib/db/provision-group";
 import { createGroup, fetchMemberStates } from "@/lib/groups/groups";
 import { isValidTimeZone, resolveGroupTimezone } from "@/lib/groups/timezone";
 
@@ -98,6 +99,13 @@ export const POST = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let released = false;
+    const releaseClient = () => {
+      if (!released) {
+        released = true;
+        client.release();
+      }
+    };
     try {
       // Binding gate: Manager/Analyst on every member. A non-existent
       // member yields no grant and is rejected here as 403 (no existence
@@ -153,7 +161,18 @@ export const POST = withAuth(
         throw err;
       }
 
-      void auditLog({
+      // Awaited (not fire-and-forget) so the PII-bearing create row —
+      // details.name and details.memberIds — is committed BEFORE the 201
+      // returns, establishing a happens-before edge over any subsequent
+      // delete. teardownGroupDb()'s anonymizeGroupAuditLogs() scrubs by
+      // `WHERE target_id = $1` at a point in time; a `void auditLog(...)`
+      // here races that scrub: if the client deletes the just-created group
+      // and the floating insert lands after anonymization, the create row
+      // survives with the raw group name and membership list intact,
+      // defeating the crypto-shred (the same class of race the delete row
+      // fix closed). auditLog() still swallows audit-DB errors, so awaiting
+      // keeps the write best-effort while denying a late raw row an escape.
+      await auditLog({
         actorId: auth.accountId,
         authContext: "general",
         action: "customer_group.created",
@@ -162,6 +181,30 @@ export const POST = withAuth(
         ipAddress: auth.meta.ipAddress,
         sid: auth.sessionId,
         details: { name: created.name, memberIds: created.memberIds, tz },
+      });
+
+      // Release the auth-pool client BEFORE the slow provisioning phase.
+      // provisionGroupDb() reads/updates customer_groups via the same auth
+      // pool, so holding this idle client across that work risks
+      // self-starvation under pool saturation (every concurrent create
+      // pins one client, then all wait for another to store the DEK / flip
+      // status). The customer create path likewise exits its
+      // transaction/client scope before provisioning. releaseClient() is
+      // idempotent — the finally below is a no-op once we have released.
+      releaseClient();
+
+      // Provision the group's dedicated data DB after the auth-DB
+      // transaction commits, and AWAIT it before responding (mirroring the
+      // customer create path — not fire-and-forget). The 201 body carries
+      // the resulting databaseStatus so the client sees active/failed
+      // without a second round-trip.
+      const databaseStatus = await provisionGroupDb(pool, created.id, {
+        actorContext: {
+          actorId: auth.accountId,
+          authContext: "general",
+          ipAddress: auth.meta.ipAddress,
+          sid: auth.sessionId,
+        },
       });
 
       return Response.json(
@@ -174,6 +217,7 @@ export const POST = withAuth(
           createdAt: created.createdAt,
           tz: created.tz,
           memberIds: created.memberIds,
+          databaseStatus,
         },
         { status: 201 },
       );
@@ -186,7 +230,7 @@ export const POST = withAuth(
       }
       throw err;
     } finally {
-      client.release();
+      releaseClient();
     }
   },
   { ctx: "general" },

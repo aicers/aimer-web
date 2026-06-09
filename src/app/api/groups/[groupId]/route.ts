@@ -3,7 +3,8 @@ import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
-import { getAuthPool } from "@/lib/db/client";
+import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
+import { teardownGroupDb } from "@/lib/db/teardown-group";
 import { deleteGroup, getGroupWithMembers } from "@/lib/groups/groups";
 
 const UUID_RE =
@@ -42,6 +43,13 @@ export const DELETE = withAuth(
 
     const pool = getAuthPool();
     const client = await pool.connect();
+    let released = false;
+    const releaseClient = () => {
+      if (!released) {
+        released = true;
+        client.release();
+      }
+    };
     try {
       const loaded = await getGroupWithMembers(client, groupId);
       if (!loaded) {
@@ -56,7 +64,14 @@ export const DELETE = withAuth(
         return Response.json({ error: "Group not found" }, { status: 404 });
       }
 
-      void auditLog({
+      // Awaited (not fire-and-forget) so the PII-bearing delete row is
+      // committed BEFORE teardown's anonymizeGroupAuditLogs() runs its
+      // `UPDATE audit_logs ... WHERE target_id = $1`. A `void auditLog(...)`
+      // here races that update: if anonymization wins, the delete row lands
+      // afterward with the raw memberIds list still present, defeating the
+      // crypto-shred. auditLog() still swallows audit-DB errors, so awaiting
+      // keeps the write best-effort while giving anonymization a row to scrub.
+      await auditLog({
         actorId: auth.accountId,
         authContext: "general",
         action: "customer_group.deleted",
@@ -65,6 +80,27 @@ export const DELETE = withAuth(
         ipAddress: auth.meta.ipAddress,
         sid: auth.sessionId,
         details: { memberIds: loaded.memberIds },
+      });
+
+      // Release the auth-pool client BEFORE the slow teardown phase. The
+      // DROP DATABASE / anonymize / Transit-destroy sequence is post-commit
+      // infra work that does not need the auth client; holding it across
+      // teardown can exhaust auth-pool connections under load. The customer
+      // delete path likewise releases before its Phase 2. releaseClient()
+      // is idempotent — the finally below is a no-op once we have released.
+      releaseClient();
+
+      // Tear down the group's dedicated data DB AFTER the auth-DB delete
+      // commits, as a best-effort post-commit step (mirroring
+      // delete-customer Phase 2, same order: terminate connections → DROP
+      // DATABASE → anonymize audit logs → destroy Transit key). A teardown
+      // failure is swallowed internally and never blocks the entity delete
+      // — the group's auth-DB rows are already gone via ON DELETE CASCADE.
+      await teardownGroupDb(getMigrationAuditPool(), groupId, {
+        actorId: auth.accountId,
+        authContext: "general",
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
       });
 
       return new Response(null, { status: 204 });
@@ -77,7 +113,7 @@ export const DELETE = withAuth(
       }
       throw err;
     } finally {
-      client.release();
+      releaseClient();
     }
   },
   { ctx: "general" },

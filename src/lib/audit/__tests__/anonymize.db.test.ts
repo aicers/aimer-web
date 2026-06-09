@@ -8,7 +8,10 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
-import { anonymizeCustomerAuditLogs } from "../anonymize";
+import {
+  anonymizeCustomerAuditLogs,
+  anonymizeGroupAuditLogs,
+} from "../anonymize";
 
 const describeDb = hasPostgres ? describe : describe.skip;
 
@@ -147,5 +150,109 @@ describeDb("anonymizeCustomerAuditLogs", () => {
     // expected — the function is honest about how many rows it touched.
     // The key invariant: the function completes without error.
     expect(after.rows[0].cnt).toBeGreaterThanOrEqual(before.rows[0].cnt);
+  });
+});
+
+describeDb("anonymizeGroupAuditLogs", () => {
+  let pool: Pool;
+  let dbName: string;
+
+  const groupId = "33333333-3333-3333-3333-333333333333";
+  const otherGroupId = "44444444-4444-4444-4444-444444444444";
+  const memberA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const memberB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+  beforeAll(async () => {
+    const db = await createTestDatabase("anon_group", "audit");
+    dbName = db.dbName;
+    pool = db.pool;
+
+    const migrationsDir = join(process.cwd(), "migrations", "audit");
+    await runMigrations(pool, migrationsDir, 9998);
+
+    // Group audit rows are keyed by target_id (the group id), not
+    // customer_id. The created row carries the group name + member ids.
+    await pool.query(
+      `INSERT INTO audit_logs
+         (actor_id, auth_context, action, target_type, target_id, details, ip_address)
+       VALUES
+         ('actor-a', 'general', 'customer_group.created', 'customer_group', $1,
+          $3::jsonb, '10.0.0.1'),
+         ('actor-b', 'general', 'customer_group.deleted', 'customer_group', $1,
+          $4::jsonb, '10.0.0.2'),
+         ('actor-c', 'general', 'customer_group.created', 'customer_group', $2,
+          $5::jsonb, '10.0.0.3')`,
+      [
+        groupId,
+        otherGroupId,
+        JSON.stringify({ name: "Acme Group", memberIds: [memberA, memberB] }),
+        JSON.stringify({ memberIds: [memberA, memberB] }),
+        JSON.stringify({ name: "Other Group", memberIds: [memberA] }),
+      ],
+    );
+  });
+
+  afterAll(async () => {
+    await dropTestDatabase(dbName, pool, "audit");
+    await closeAdminPool();
+  });
+
+  it("redacts the group name, member ids, and ip_address", async () => {
+    await anonymizeGroupAuditLogs(pool, groupId);
+
+    const result = await pool.query(
+      "SELECT actor_id, details, ip_address FROM audit_logs WHERE target_id = $1 AND action != 'audit.anonymize' ORDER BY id",
+      [groupId],
+    );
+    expect(result.rows).toHaveLength(2);
+
+    // created row: name AND the membership list are redacted — the
+    // who-was-grouped-with-whom relationship is the sensitive fact the
+    // crypto-shred erases.
+    expect(result.rows[0].details).toEqual({
+      name: "[redacted]",
+      memberIds: "[redacted]",
+    });
+    expect(result.rows[0].ip_address).toBeNull();
+    expect(result.rows[0].actor_id).toBe("actor-a");
+
+    // deleted row: no name key → membership list redacted, ip nulled.
+    expect(result.rows[1].details).toEqual({ memberIds: "[redacted]" });
+    expect(result.rows[1].ip_address).toBeNull();
+  });
+
+  it("does not touch rows for other groups", async () => {
+    const result = await pool.query(
+      "SELECT details, ip_address FROM audit_logs WHERE target_id = $1",
+      [otherGroupId],
+    );
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].details).toEqual({
+      name: "Other Group",
+      memberIds: [memberA],
+    });
+    expect(result.rows[0].ip_address).toBe("10.0.0.3");
+  });
+
+  it("records a self-audit entry targeting the group", async () => {
+    const result = await pool.query(
+      "SELECT * FROM audit_logs WHERE action = 'audit.anonymize' AND target_id = $1",
+      [groupId],
+    );
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].actor_id).toBe("system");
+    expect(result.rows[0].target_type).toBe("customer_group");
+    expect(result.rows[0].details.rows_anonymized).toBe(2);
+  });
+
+  it("skips the self-audit entry when the group has no audit logs", async () => {
+    const nonExistentGroupId = "55555555-5555-5555-5555-555555555555";
+    await anonymizeGroupAuditLogs(pool, nonExistentGroupId);
+
+    const result = await pool.query(
+      "SELECT * FROM audit_logs WHERE action = 'audit.anonymize' AND target_id = $1",
+      [nonExistentGroupId],
+    );
+    expect(result.rows).toHaveLength(0);
   });
 });

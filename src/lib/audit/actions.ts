@@ -112,6 +112,11 @@ export type AuditAction =
   | "customer_db.provision_failed"
   | "customer_db.provision_retried"
   | "customer_db.dropped"
+  // Group DB (#507)
+  | "group_db.provisioned"
+  | "group_db.provision_failed"
+  | "group_db.provision_retried"
+  | "group_db.dropped"
   // OpenBao Transit
   | "openbao.kek_rotated"
   | "openbao.dek_destroyed"

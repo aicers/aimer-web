@@ -219,6 +219,10 @@ export async function runStartupMigrations(): Promise<void> {
   // Failed customers are skipped — use `pnpm migrate:customers --customer-id=<id>` to retry.
   await runStartupCustomerMigrations(getMigrationAuthPool(), migrationsRoot);
 
+  // Run pending group_db migrations for all active groups (#507). Failed
+  // groups are skipped — use `pnpm migrate:groups --group-id=<id>` to retry.
+  await runStartupGroupMigrations(getMigrationAuthPool(), migrationsRoot);
+
   console.log("Startup migrations complete.");
 }
 
@@ -315,6 +319,104 @@ async function runStartupCustomerMigrations(
         });
     } finally {
       await customerPool.end();
+    }
+  }
+}
+
+async function runStartupGroupMigrations(
+  authPool: Pool,
+  migrationsRoot: string,
+): Promise<void> {
+  const { groupDbName, groupDbUrl, groupLockId, groupTransitKeyName } =
+    await import("./group-db");
+  const { decryptDataKey, getTransitConfig } = await import(
+    "../crypto/transit"
+  );
+
+  // Group DBs reuse the shared subject-DB owner template (see group-db.ts).
+  const ownerTemplateUrl = process.env.CUSTOMER_DATABASE_OWNER_URL;
+  if (!ownerTemplateUrl) {
+    console.log(
+      "CUSTOMER_DATABASE_OWNER_URL not set, skipping group migrations.",
+    );
+    return;
+  }
+
+  const result = await authPool.query<{
+    id: string;
+    wrapped_dek: string | null;
+  }>(
+    "SELECT id, wrapped_dek FROM customer_groups WHERE database_status = 'active'",
+  );
+
+  if (result.rows.length === 0) {
+    console.log("No active groups to migrate.");
+    return;
+  }
+
+  const groupMigrationsDir = join(migrationsRoot, "group");
+
+  for (const group of result.rows) {
+    // Verify the database exists before attempting to connect. An active
+    // group whose DB was externally dropped should be marked failed
+    // rather than crashing the migration loop.
+    const dbName = groupDbName(group.id);
+    const dbExists = await authPool.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [dbName],
+    );
+    if (dbExists.rows.length === 0) {
+      console.error(
+        `Group ${group.id}: database ${dbName} does not exist, marking as failed.`,
+      );
+      await authPool
+        .query(
+          "UPDATE customer_groups SET database_status = 'failed' WHERE id = $1",
+          [group.id],
+        )
+        .catch(() => {});
+      continue;
+    }
+
+    console.log(`Running group_db migrations for ${group.id}...`);
+    const ownerUrl = groupDbUrl(ownerTemplateUrl, group.id);
+    const groupPool = new Pool({ connectionString: ownerUrl });
+
+    try {
+      let context: MigrationContext | undefined;
+      if (group.wrapped_dek) {
+        const transitConfig = getTransitConfig();
+        const keyName = groupTransitKeyName(group.id);
+        const wrappedDek = group.wrapped_dek;
+        context = {
+          decryptDek: () => decryptDataKey(transitConfig, keyName, wrappedDek),
+        };
+      }
+
+      await runMigrations(
+        groupPool,
+        groupMigrationsDir,
+        groupLockId(group.id),
+        context,
+      );
+    } catch (err) {
+      console.error(
+        `Group ${group.id}: migration failed:`,
+        (err as Error).message,
+      );
+      await authPool
+        .query(
+          "UPDATE customer_groups SET database_status = 'failed' WHERE id = $1",
+          [group.id],
+        )
+        .catch((updateErr) => {
+          console.error(
+            "Failed to update database_status:",
+            (updateErr as Error).message,
+          );
+        });
+    } finally {
+      await groupPool.end();
     }
   }
 }

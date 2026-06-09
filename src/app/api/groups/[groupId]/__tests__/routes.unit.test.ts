@@ -27,9 +27,21 @@ vi.mock("@/lib/auth/guards", () => ({
 
 const fakeClient = { query: vi.fn(), release: vi.fn() };
 const fakePool = { connect: vi.fn().mockResolvedValue(fakeClient) };
-vi.mock("@/lib/db/client", () => ({ getAuthPool: () => fakePool }));
+const fakeAuditPool = {};
+vi.mock("@/lib/db/client", () => ({
+  getAuthPool: () => fakePool,
+  getMigrationAuditPool: () => fakeAuditPool,
+}));
 
-vi.mock("@/lib/audit", () => ({ auditLog: vi.fn() }));
+const mockAuditLog = vi.fn();
+vi.mock("@/lib/audit", () => ({
+  auditLog: (...a: unknown[]) => mockAuditLog(...a),
+}));
+
+const mockTeardownGroupDb = vi.fn();
+vi.mock("@/lib/db/teardown-group", () => ({
+  teardownGroupDb: (...a: unknown[]) => mockTeardownGroupDb(...a),
+}));
 
 const mockAssertManagement = vi.fn();
 vi.mock("@/lib/auth/group-authorization", () => ({
@@ -87,6 +99,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAssertManagement.mockResolvedValue(undefined);
   mockGetGroupWithMembers.mockResolvedValue(loaded);
+  mockTeardownGroupDb.mockResolvedValue(undefined);
+  mockAuditLog.mockResolvedValue(undefined);
 });
 
 describe("DELETE /api/groups/[groupId]", () => {
@@ -110,17 +124,56 @@ describe("DELETE /api/groups/[groupId]", () => {
     expect(mockDeleteGroup).not.toHaveBeenCalled();
   });
 
-  it("returns 204 on a successful delete", async () => {
+  it("returns 204 on a successful delete and tears down the group DB", async () => {
     mockDeleteGroup.mockResolvedValue(true);
     const res = await DELETE(req(`/api/groups/${GID}`));
     expect(res.status).toBe(204);
     expect(mockDeleteGroup).toHaveBeenCalledWith(fakeClient, GID);
+    // Best-effort post-commit teardown of the group's dedicated data DB.
+    expect(mockTeardownGroupDb).toHaveBeenCalledWith(
+      fakeAuditPool,
+      GID,
+      expect.objectContaining({ actorId: "acct-1" }),
+    );
   });
 
   it("returns 404 when a concurrent delete won the race", async () => {
     mockDeleteGroup.mockResolvedValue(false);
     const res = await DELETE(req(`/api/groups/${GID}`));
     expect(res.status).toBe(404);
+    expect(mockTeardownGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("awaits the PII delete audit before tearing down (no anonymize race)", async () => {
+    mockDeleteGroup.mockResolvedValue(true);
+
+    // Gate the customer_group.deleted write so we can observe the
+    // happens-before edge: teardown (which runs anonymizeGroupAuditLogs)
+    // must not start until that PII-bearing audit row is written.
+    let resolveAudit!: () => void;
+    mockAuditLog.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveAudit = resolve;
+      }),
+    );
+
+    const pending = DELETE(req(`/api/groups/${GID}`));
+    // Drain pending microtasks past the awaited auth-DB mocks; the handler
+    // should now be parked on the (gated) audit write, with teardown blocked.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "customer_group.deleted",
+        targetId: GID,
+        details: { memberIds: [M1, M2] },
+      }),
+    );
+    expect(mockTeardownGroupDb).not.toHaveBeenCalled();
+
+    resolveAudit();
+    const res = await pending;
+    expect(res.status).toBe(204);
+    expect(mockTeardownGroupDb).toHaveBeenCalled();
   });
 });
 
