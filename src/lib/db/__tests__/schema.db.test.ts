@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(51);
+    expect(rows).toHaveLength(52);
   });
 
   // -- Built-in roles --
@@ -1046,6 +1046,166 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       expect(rows[0]?.status).toBe("archived");
 
       await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+    });
+
+    // -----------------------------------------------------------------
+    // Customer groups (#506)
+    // -----------------------------------------------------------------
+
+    async function mkGroupAccount(): Promise<string> {
+      const sub = `grp-acct-${Math.random().toString(36).slice(2)}`;
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', $1, $1, $1) RETURNING id`,
+        [sub],
+      );
+      return rows[0].id;
+    }
+
+    async function mkActiveCustomer(key: string): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO customers (external_key, name, status, database_status)
+         VALUES ($1, $1, 'active', 'active') RETURNING id`,
+        [key],
+      );
+      return rows[0].id;
+    }
+
+    it("subjects has a UNIQUE (id, kind) constraint (composite-FK target)", async () => {
+      const { rows } = await pool.query<{ conname: string }>(
+        `SELECT con.conname
+           FROM pg_constraint con
+           JOIN pg_class rel ON rel.oid = con.conrelid
+          WHERE rel.relname = 'subjects'
+            AND con.contype = 'u'
+            AND con.conname = 'subjects_id_kind_key'`,
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it("customer_groups composite FK rejects attaching to a non-group subject", async () => {
+      const acct = await mkGroupAccount();
+      // A customer-kind subject (via a customer insert).
+      const cid = await mkActiveCustomer(`cg-fk-${Date.now()}`);
+      // Attaching a group subtype row onto that customer subject must fail:
+      // subjects(cid) is kind='customer', so (cid, 'group') is not present.
+      await expect(
+        pool.query(
+          `INSERT INTO customer_groups (id, name, created_by, owner_id, tz)
+           VALUES ($1, 'G', $2, $2, 'UTC')`,
+          [cid, acct],
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("customer_group_members is immutable to UPDATE but allows DELETE", async () => {
+      const acct = await mkGroupAccount();
+      const c1 = await mkActiveCustomer(`cgm-a-${Date.now()}`);
+      const c2 = await mkActiveCustomer(`cgm-b-${Date.now()}`);
+      const { rows: g } = await pool.query<{ id: string }>(
+        `INSERT INTO subjects (kind) VALUES ('group') RETURNING id`,
+      );
+      const gid = g[0].id;
+      await pool.query(
+        `INSERT INTO customer_groups (id, name, created_by, owner_id, tz)
+         VALUES ($1, 'G', $2, $2, 'UTC')`,
+        [gid, acct],
+      );
+      await pool.query(
+        `INSERT INTO customer_group_members (group_id, customer_id)
+         VALUES ($1, $2), ($1, $3)`,
+        [gid, c1, c2],
+      );
+
+      // UPDATE is blocked by the immutability trigger.
+      await expect(
+        pool.query(
+          `UPDATE customer_group_members SET customer_id = $3
+            WHERE group_id = $1 AND customer_id = $2`,
+          [gid, c1, c2],
+        ),
+      ).rejects.toThrow(/immutable/);
+
+      // DELETE remains allowed (the cascade depends on it).
+      const del = await pool.query(
+        `DELETE FROM customer_group_members WHERE group_id = $1 AND customer_id = $2`,
+        [gid, c1],
+      );
+      expect(del.rowCount).toBe(1);
+
+      await pool.query("DELETE FROM subjects WHERE id = $1", [gid]);
+    });
+
+    it("customer_groups.created_by is immutable but owner_id is mutable", async () => {
+      const acct = await mkGroupAccount();
+      const acct2 = await mkGroupAccount();
+      const { rows: g } = await pool.query<{ id: string }>(
+        `INSERT INTO subjects (kind) VALUES ('group') RETURNING id`,
+      );
+      const gid = g[0].id;
+      await pool.query(
+        `INSERT INTO customer_groups (id, name, created_by, owner_id, tz)
+         VALUES ($1, 'G', $2, $2, 'UTC')`,
+        [gid, acct],
+      );
+
+      // created_by cannot change.
+      await expect(
+        pool.query(`UPDATE customer_groups SET created_by = $2 WHERE id = $1`, [
+          gid,
+          acct2,
+        ]),
+      ).rejects.toThrow(/immutable/);
+
+      // owner_id is updatable (transfer lands in #510).
+      await pool.query(
+        `UPDATE customer_groups SET owner_id = $2 WHERE id = $1`,
+        [gid, acct2],
+      );
+      const { rows } = await pool.query<{ owner_id: string }>(
+        `SELECT owner_id FROM customer_groups WHERE id = $1`,
+        [gid],
+      );
+      expect(rows[0].owner_id).toBe(acct2);
+
+      await pool.query("DELETE FROM subjects WHERE id = $1", [gid]);
+    });
+
+    it("deleting the group subject cascades group, members, and retention policy", async () => {
+      const acct = await mkGroupAccount();
+      const c1 = await mkActiveCustomer(`cgc-a-${Date.now()}`);
+      const c2 = await mkActiveCustomer(`cgc-b-${Date.now()}`);
+      const { rows: g } = await pool.query<{ id: string }>(
+        `INSERT INTO subjects (kind) VALUES ('group') RETURNING id`,
+      );
+      const gid = g[0].id;
+      await pool.query(
+        `INSERT INTO customer_groups (id, name, created_by, owner_id, tz)
+         VALUES ($1, 'G', $2, $2, 'UTC')`,
+        [gid, acct],
+      );
+      await pool.query(
+        `INSERT INTO customer_group_members (group_id, customer_id)
+         VALUES ($1, $2), ($1, $3)`,
+        [gid, c1, c2],
+      );
+      await pool.query(
+        `INSERT INTO group_retention_policy (subject_id, analysis_days, updated_by)
+         VALUES ($1, 1095, $2)`,
+        [gid, acct],
+      );
+
+      await pool.query("DELETE FROM subjects WHERE id = $1", [gid]);
+
+      const { rows: leftover } = await pool.query<{ c: number }>(
+        `SELECT
+           (SELECT COUNT(*)::int FROM customer_groups WHERE id = $1)
+         + (SELECT COUNT(*)::int FROM customer_group_members WHERE group_id = $1)
+         + (SELECT COUNT(*)::int FROM group_retention_policy WHERE subject_id = $1)
+         AS c`,
+        [gid],
+      );
+      expect(leftover[0].c).toBe(0);
     });
 
     it("has pending-friendly partial indexes on the analysis state tables (round-15 review item 1)", async () => {
