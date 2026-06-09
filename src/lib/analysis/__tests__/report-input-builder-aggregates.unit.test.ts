@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { __testables } from "../report-input-builder";
+import { __testables, refCustomerId } from "../report-input-builder";
 
 const {
   planAnalyzedAggregates,
@@ -123,6 +123,7 @@ describe("tierDistribution", () => {
 
 describe("computeInputHash exemplar refs (#495 review r1, item 1)", () => {
   const base = {
+    subjectId: "sub",
     period: "DAILY",
     bucketDate: "2026-06-01",
     variant: {
@@ -179,6 +180,99 @@ describe("computeInputHash exemplar refs (#495 review r1, item 1)", () => {
     const r2 = ref({ aice_id: "b", event_key: "2" });
     expect(computeInputHash({ ...base, exemplarRefs: [r1, r2] })).toBe(
       computeInputHash({ ...base, exemplarRefs: [r2, r1] }),
+    );
+  });
+});
+
+describe("computeInputHash member customer_id canonicalization (#523)", () => {
+  // The single-customer story/event/exemplar ref shapes, mirroring what
+  // `assembleReportInput` now stamps. `subjectId` is the report's own subject.
+  const SUBJECT = "subject-1";
+  const baseSingle = {
+    subjectId: SUBJECT,
+    period: "DAILY",
+    bucketDate: "2026-06-01",
+    variant: {
+      tz: "UTC",
+      lang: "ENGLISH",
+      modelName: "openai",
+      model: "gpt",
+      // biome-ignore lint/suspicious/noExplicitAny: minimal variant
+    } as any,
+    // biome-ignore lint/suspicious/noExplicitAny: payload is opaque to the hash
+    aimerInputs: { storyAnalyses: [], eventAnalyses: [] } as any,
+  };
+  const storyRef = (customerId?: string) => ({
+    story_id: "7001",
+    generation: 1,
+    model_name: "openai",
+    model: "gpt",
+    ...(customerId !== undefined ? { customer_id: customerId } : {}),
+  });
+  const eventRef = (customerId?: string) => ({
+    aice_id: "aice-1",
+    event_key: "1",
+    generation: 1,
+    model_name: "openai",
+    model: "gpt",
+    ...(customerId !== undefined ? { customer_id: customerId } : {}),
+  });
+  const exemplarRef = (customerId?: string) => ({
+    aice_id: "aice-2",
+    event_key: "2",
+    generation: 1,
+    model_name: "openai",
+    model: "gpt",
+    ...(customerId !== undefined ? { customer_id: customerId } : {}),
+  });
+
+  it("is byte-identical whether a single-customer ref carries customer_id == subject or omits it", () => {
+    // The acceptance gate: a new single-customer report stamps customer_id ==
+    // subject_id on every ref, and that MUST hash exactly as a legacy ref that
+    // never carried customer_id — otherwise every single-customer row would be
+    // marked dirty by the #523 schema change alone.
+    const withDefault = computeInputHash({
+      ...baseSingle,
+      storyRefs: [storyRef(SUBJECT)],
+      eventRefs: [eventRef(SUBJECT)],
+      exemplarRefs: [exemplarRef(SUBJECT)],
+    });
+    const withoutCustomerId = computeInputHash({
+      ...baseSingle,
+      storyRefs: [storyRef()],
+      eventRefs: [eventRef()],
+      exemplarRefs: [exemplarRef()],
+    });
+    expect(withDefault).toBe(withoutCustomerId);
+  });
+
+  it("a cross-member ref (customer_id != subject) changes the hash", () => {
+    // Only a true cross-member ref (which does not occur until #524)
+    // contributes customer_id to the hash.
+    const single = computeInputHash({
+      ...baseSingle,
+      storyRefs: [],
+      eventRefs: [eventRef(SUBJECT)],
+      exemplarRefs: [],
+    });
+    const crossMember = computeInputHash({
+      ...baseSingle,
+      storyRefs: [],
+      eventRefs: [eventRef("other-member")],
+      exemplarRefs: [],
+    });
+    expect(single).not.toBe(crossMember);
+  });
+});
+
+describe("refCustomerId degrade helper (#523)", () => {
+  it("degrades a legacy ref without customer_id to the report's own subject", () => {
+    expect(refCustomerId({}, "subject-1")).toBe("subject-1");
+  });
+
+  it("returns the ref's own customer_id when present", () => {
+    expect(refCustomerId({ customer_id: "member-9" }, "subject-1")).toBe(
+      "member-9",
     );
   });
 });
