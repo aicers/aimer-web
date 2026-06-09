@@ -88,7 +88,7 @@ const EMPTY_RANGES = {
 
 function makeJob(overrides: Record<string, unknown> = {}) {
   return {
-    customer_id: CUSTOMER_ID,
+    subject_id: CUSTOMER_ID,
     period: "DAILY" as const,
     bucket_date: "2026-05-26",
     tz: TZ,
@@ -113,9 +113,9 @@ async function seedState(
   status: string,
 ): Promise<void> {
   await authPool.query(
-    `INSERT INTO periodic_report_state (customer_id, period, bucket_date, tz, status)
+    `INSERT INTO periodic_report_state (subject_id, period, bucket_date, tz, status)
      VALUES ($1, $2, $3::date, $4, $5)
-     ON CONFLICT (customer_id, period, bucket_date, tz)
+     ON CONFLICT (subject_id, period, bucket_date, tz)
      DO UPDATE SET status = EXCLUDED.status`,
     [CUSTOMER_ID, period, bucketDate, TZ, status],
   );
@@ -128,11 +128,11 @@ async function seedQueuedJob(
 ): Promise<void> {
   await authPool.query(
     `INSERT INTO periodic_report_job
-       (customer_id, period, bucket_date, tz, lang, model_name, model,
+       (subject_id, period, bucket_date, tz, lang, model_name, model,
         status, generation, dry_run)
      VALUES ($1, $2, $3::date, $4, 'ENGLISH', 'openai', 'gpt-4o',
              'queued', 1, FALSE)
-     ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+     ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
      DO UPDATE SET status = 'queued', generation = 1, attempts = 0`,
     [CUSTOMER_ID, period, bucketDate, TZ],
   );
@@ -186,11 +186,11 @@ async function seedQueuedJobLang(
 ): Promise<void> {
   await authPool.query(
     `INSERT INTO periodic_report_job
-       (customer_id, period, bucket_date, tz, lang, model_name, model,
+       (subject_id, period, bucket_date, tz, lang, model_name, model,
         status, generation, dry_run)
      VALUES ($1, $2, $3::date, $4, $5, 'openai', 'gpt-4o',
              'queued', 1, FALSE)
-     ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+     ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
      DO UPDATE SET status = 'queued', generation = 1, attempts = 0,
                    next_due_at = NULL`,
     [CUSTOMER_ID, period, bucketDate, TZ, lang],
@@ -235,7 +235,7 @@ async function seedCanonicalResult(
   ]);
   await customerPool.query(
     `INSERT INTO periodic_report_result
-       (customer_id, period, bucket_date, tz, lang, restoration_lang,
+       (subject_id, period, bucket_date, tz, lang, restoration_lang,
         model_name, model, model_actual_version, prompt_version, generation,
         aggregate_severity_score, aggregate_likelihood_score,
         priority_tier, sections_jsonb, input_event_refs, input_story_refs,
@@ -294,7 +294,7 @@ async function seedCanonicalResultWithStory(
   const storyRefs = JSON.stringify([{ story_id: storyId, generation: 1 }]);
   await customerPool.query(
     `INSERT INTO periodic_report_result
-       (customer_id, period, bucket_date, tz, lang, restoration_lang,
+       (subject_id, period, bucket_date, tz, lang, restoration_lang,
         model_name, model, model_actual_version, prompt_version, generation,
         aggregate_severity_score, aggregate_likelihood_score,
         priority_tier, sections_jsonb, input_event_refs, input_story_refs,
@@ -388,7 +388,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT redaction_policy_version, priority_tier,
               input_story_refs, input_event_refs
          FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-26' AND tz = $2 AND generation = 1`,
       [CUSTOMER_ID, TZ],
     );
@@ -399,7 +399,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     const { rows: job } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-26' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -414,7 +414,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedQueuedJob(authPool, "DAILY", "2026-05-27");
     await customerPool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
@@ -438,7 +438,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       translation_model_name: string | null;
     }>(
       `SELECT status, translation_model_name FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-27' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -463,7 +463,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "DAILY", bucket, "ready");
     await customerPool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, restoration_lang,
+         (subject_id, period, bucket_date, tz, lang, restoration_lang,
           model_name, model, model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
@@ -479,7 +479,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     );
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run,
           translation_model_name, translation_model, translation_prompt_version)
        VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
@@ -516,7 +516,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, translation_model_name, translation_model,
               translation_prompt_version
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -544,7 +544,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, attempts, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-28' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -553,7 +553,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].last_error).toBe("aimer_5xx");
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-28' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -578,7 +578,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, attempts, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-29' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -609,7 +609,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-30' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -617,7 +617,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].last_error).toBe("hallucination_detected");
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-30' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -652,7 +652,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-31' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -660,7 +660,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].last_error).toBe("citation_source_invalid");
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-31' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -683,7 +683,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-01' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -709,7 +709,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-02' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -733,7 +733,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
           `UPDATE periodic_report_job
               SET generation = 2, status = 'queued', attempts = 0,
                   force_requested_at = NOW(), updated_at = NOW()
-            WHERE customer_id = $1 AND period = 'DAILY'
+            WHERE subject_id = $1 AND period = 'DAILY'
               AND bucket_date = '2026-06-03' AND tz = $2`,
           [CUSTOMER_ID, TZ],
         );
@@ -744,7 +744,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // The result row at the captured generation 1 still landed.
     const { rows: result } = await customerPool.query<{ generation: number }>(
       `SELECT generation FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-03' AND tz = $2
         ORDER BY generation`,
       [CUSTOMER_ID, TZ],
@@ -759,7 +759,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       generation: number;
     }>(
       `SELECT status, generation FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-03' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -787,7 +787,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
         await authPool.query(
           `UPDATE periodic_report_job
               SET processing_started_at = TIMESTAMPTZ '2020-01-01 00:00:00+00'
-            WHERE customer_id = $1 AND period = 'DAILY'
+            WHERE subject_id = $1 AND period = 'DAILY'
               AND bucket_date = '2026-06-04' AND tz = $2`,
           [CUSTOMER_ID, TZ],
         );
@@ -804,7 +804,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     }>(
       `SELECT status, last_error, processing_started_at::text AS processing_started_at
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-04' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -834,7 +834,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-05' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -842,7 +842,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     const { rows: job } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-05' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -872,7 +872,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-04' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -881,7 +881,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // The job is left untouched (still queued) — not finalized.
     const { rows: job } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-06-04' AND tz = $2`,
       [CUSTOMER_ID, TZ],
     );
@@ -918,7 +918,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       redaction_policy_version: string;
     }>(
       `SELECT redaction_policy_version FROM periodic_report_result
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4 AND generation = 1`,
       [CUSTOMER_ID, period, bucket, TZ],
     );
@@ -926,7 +926,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
 
     const { rows: job } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_job
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4`,
       [CUSTOMER_ID, period, bucket, TZ],
     );
@@ -938,12 +938,12 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "LIVE", LIVE_BUCKET, "archived");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, last_generated_at, next_due_at)
        VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 3, FALSE,
                NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done', generation = 3,
                      next_due_at = NOW() - INTERVAL '1 hour'`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
@@ -961,7 +961,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       generation: number;
     }>(
       `SELECT status, generation FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'
+        WHERE subject_id = $1 AND period = 'LIVE'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
@@ -979,12 +979,12 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "LIVE", LIVE_BUCKET, "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, last_generated_at, next_due_at)
        VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', $4, FALSE,
                NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done', generation = $4,
                      next_due_at = NOW() - INTERVAL '1 hour'`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ, MAX_GENERATION],
@@ -1002,7 +1002,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       generation: number;
     }>(
       `SELECT status, generation FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'
+        WHERE subject_id = $1 AND period = 'LIVE'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
@@ -1020,14 +1020,14 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "LIVE", LIVE_BUCKET, "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, last_generated_at, next_due_at,
           force_requested_at, force_requested_by)
        VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 2, FALSE,
                NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour',
                NOW() - INTERVAL '2 hours', $4::uuid)
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done', generation = 2,
                      next_due_at = NOW() - INTERVAL '1 hour',
                      force_requested_at = NOW() - INTERVAL '2 hours',
@@ -1051,7 +1051,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, generation, force_requested_at,
               force_requested_by::text AS force_requested_by
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'
+        WHERE subject_id = $1 AND period = 'LIVE'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
@@ -1073,13 +1073,13 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "DAILY", DIRTY_BUCKET, "dirty");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run,
           force_requested_at, force_requested_by)
        VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 2, FALSE,
                NOW() - INTERVAL '2 hours', $4::uuid)
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done', generation = 2,
                      force_requested_at = NOW() - INTERVAL '2 hours',
                      force_requested_by = $4::uuid`,
@@ -1102,7 +1102,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, generation, force_requested_at,
               force_requested_by::text AS force_requested_by
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, DIRTY_BUCKET, TZ],
     );
@@ -1123,7 +1123,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // Default English job in `done` (created by the normal worker path).
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 1, FALSE)`,
@@ -1132,7 +1132,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // Operator-forced Korean variant in `done`, carrying force metadata.
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run,
           force_requested_at, force_requested_by)
        VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
@@ -1158,7 +1158,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT lang, status, generation, force_requested_at,
               force_requested_by::text AS force_requested_by
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3
         ORDER BY lang`,
       [CUSTOMER_ID, DIRTY_BUCKET, TZ],
@@ -1181,7 +1181,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // The parent state returns to `ready`.
     const { rows: stateRows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, DIRTY_BUCKET, TZ],
     );
@@ -1199,12 +1199,12 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "LIVE", LIVE_BUCKET, "dirty");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, last_generated_at, next_due_at)
        VALUES ($1, 'LIVE', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 3, FALSE,
                NOW() - INTERVAL '2 hours', NOW() - INTERVAL '1 hour')
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'done', generation = 3,
                      next_due_at = NOW() - INTERVAL '1 hour'`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
@@ -1225,7 +1225,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       generation: number;
     }>(
       `SELECT status, generation FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'LIVE'
+        WHERE subject_id = $1 AND period = 'LIVE'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
@@ -1236,7 +1236,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // The dirty state is settled back to ready by the seed step.
     const { rows: stateRows } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = 'LIVE'
+        WHERE subject_id = $1 AND period = 'LIVE'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, LIVE_BUCKET, TZ],
     );
@@ -1281,7 +1281,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, attempts, last_error,
               (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1293,7 +1293,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // No result row was written for the deferred variant.
     const { rows: res } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1325,11 +1325,11 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // Korean job bumped to generation 2 (as a dirty/force requeue would).
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run)
        VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
                'queued', 2, FALSE)
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO UPDATE SET status = 'queued', generation = 2, attempts = 0,
                      next_due_at = NULL`,
       [CUSTOMER_ID, bucket, TZ],
@@ -1365,7 +1365,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, attempts, last_error,
               (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1377,7 +1377,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // No Korean result row was written at the bumped generation.
     const { rows: res } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1389,7 +1389,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "DAILY", bucket, "ready");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, next_due_at)
        VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'queued', 1, FALSE, NOW() + INTERVAL '1 hour')`,
@@ -1405,7 +1405,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       (
         await authPool.query<{ status: string }>(
           `SELECT status FROM periodic_report_job
-            WHERE customer_id = $1 AND period = 'DAILY'
+            WHERE subject_id = $1 AND period = 'DAILY'
               AND bucket_date = $2::date AND tz = $3`,
           [CUSTOMER_ID, bucket, TZ],
         )
@@ -1419,7 +1419,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // Clear next_due_at → the same row is now picked and processed to done.
     await authPool.query(
       `UPDATE periodic_report_job SET next_due_at = NULL
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1452,7 +1452,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // increments attempts).
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, attempts, dry_run, next_due_at, last_error)
        VALUES ($1, 'DAILY', $2::date, $3, 'KOREAN', 'openai', 'gpt-4o',
                'queued', 1, 0, FALSE, NOW() + INTERVAL '1 hour',
@@ -1491,7 +1491,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
               (next_due_at IS NOT NULL AND next_due_at > NOW()) AS future,
               processing_started_at::text AS processing_started_at
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1503,7 +1503,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // No Korean result row was written.
     const { rows: res } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1563,7 +1563,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT restoration_lang, model_actual_version, prompt_version,
               input_event_refs
          FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1583,7 +1583,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, translation_model_name, translation_model,
               translation_prompt_version
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1648,7 +1648,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1657,7 +1657,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // No translated row was persisted.
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1712,7 +1712,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1720,7 +1720,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].last_error).toBe("citation_structure_mismatch");
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1747,7 +1747,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await customerPool.query(
       `UPDATE periodic_report_result
           SET sections_jsonb = $4::jsonb
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'`,
       [
         CUSTOMER_ID,
@@ -1797,7 +1797,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1805,7 +1805,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(job[0].last_error).toBe("citation_structure_mismatch");
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1860,7 +1860,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
           `UPDATE periodic_report_job
               SET status = 'queued', processing_started_at = NULL,
                   next_due_at = NULL, updated_at = NOW()
-            WHERE customer_id = $1 AND period = 'DAILY'
+            WHERE subject_id = $1 AND period = 'DAILY'
               AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
           [CUSTOMER_ID, bucket, TZ],
         );
@@ -1875,7 +1875,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // authoritative pre-write audit check.
     const { rows: result } = await customerPool.query(
       `SELECT 1 FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1892,7 +1892,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       `SELECT status, translation_model_name, translation_model,
               translation_prompt_version
          FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1935,7 +1935,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     // gen-1 job still depends on.
     await customerPool.query(
       `UPDATE periodic_report_result SET superseded_at = NOW()
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'
           AND generation = 1`,
       [CUSTOMER_ID, bucket, TZ],
@@ -1965,7 +1965,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       last_error: string | null;
     }>(
       `SELECT status, last_error FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -1976,7 +1976,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       restoration_lang: string | null;
     }>(
       `SELECT restoration_lang FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -2021,7 +2021,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       restoration_lang: string | null;
     }>(
       `SELECT restoration_lang FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -2086,7 +2086,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       restoration_lang: string | null;
     }>(
       `SELECT restoration_lang FROM periodic_report_result
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'KOREAN'`,
       [CUSTOMER_ID, bucket, TZ],
     );
@@ -2099,7 +2099,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     await seedState(authPool, "DAILY", bucket, "dirty");
     await authPool.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, last_generated_at, next_due_at)
        VALUES ($1, 'DAILY', $2::date, $3, 'ENGLISH', 'openai', 'gpt-4o',
                'done', 2, FALSE,
@@ -2124,7 +2124,7 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       next_due_at: Date | null;
     }>(
       `SELECT status, generation, next_due_at FROM periodic_report_job
-        WHERE customer_id = $1 AND period = 'DAILY'
+        WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = $2::date AND tz = $3 AND lang = 'ENGLISH'`,
       [CUSTOMER_ID, bucket, TZ],
     );

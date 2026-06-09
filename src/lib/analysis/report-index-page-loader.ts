@@ -1,5 +1,5 @@
 // Server-side loader for the periodic report index/landing page
-// (`/[locale]/customers/{customerId}/analysis/reports`).
+// (`/[locale]/subjects/{customerId}/analysis/reports`).
 //
 // The detail loader (`report-result-page-loader.ts`) resolves ONE
 // `(period, bucket_date, tz)` bucket; this loader answers "which report
@@ -222,7 +222,7 @@ export async function discoverReportBuckets(
                 ORDER BY bucket_date DESC, updated_at DESC, tz ASC
               ) AS rn
          FROM periodic_report_state
-        WHERE customer_id = $1
+        WHERE subject_id = $1
           AND status IN ('pending', 'ready', 'dirty')
      )
      SELECT period, bucket_date, tz, status
@@ -291,7 +291,7 @@ export async function discoverReportBuckets(
              ON w.period = r.period
             AND w.bucket_date = r.bucket_date
             AND w.tz = r.tz
-          WHERE r.customer_id = $4
+          WHERE r.subject_id = $4
             AND r.model_name = $5 AND r.model = $6
             AND r.superseded_at IS NULL
           ORDER BY r.period, r.bucket_date, r.tz, r.lang, r.generation DESC`,

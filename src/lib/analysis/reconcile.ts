@@ -168,7 +168,7 @@ async function listActiveCustomers(
           )
           OR EXISTS (
             SELECT 1 FROM periodic_report_state p
-             WHERE p.customer_id = c.id
+             WHERE p.subject_id = c.id
                AND p.status <> 'archived'
                AND p.updated_at >= NOW() - INTERVAL '24 hours'
           )
@@ -1022,7 +1022,7 @@ async function loadExistingNonArchivedPeriodicBuckets(
   const { rows } = await authClient.query<BucketRow>(
     `SELECT period, bucket_date::text AS bucket_date
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND tz          = $2
         AND status IN ('pending', 'ready', 'dirty')
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,
@@ -1047,7 +1047,7 @@ async function loadExistingPeriodicStatesForBuckets(
             last_story_received_at,
             story_count::text AS story_count
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND tz          = $2
         AND (period, bucket_date) IN (
           SELECT p, d FROM unnest($3::text[], $4::date[]) AS u(p, d)
@@ -1163,12 +1163,12 @@ async function reconcilePeriodicStates(
           // fire and the LIVE row would stay `ready` forever.
           await authClient.query(
             `INSERT INTO periodic_report_state
-               (customer_id, period, bucket_date, tz,
+               (subject_id, period, bucket_date, tz,
                 status, last_event_at, last_event_received_at,
                 last_story_received_at, last_ready_at)
              VALUES ($1, 'LIVE', $2::date, $3,
                      'ready', $4, $5, $6, NOW())
-             ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
+             ON CONFLICT (subject_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
               LIVE_BUCKET_DATE,
@@ -1196,12 +1196,12 @@ async function reconcilePeriodicStates(
           const storyAgg = bucketStoryAgg.get(key);
           await authClient.query(
             `INSERT INTO periodic_report_state
-               (customer_id, period, bucket_date, tz, status,
+               (subject_id, period, bucket_date, tz, status,
                 last_event_at, last_event_received_at, event_count,
                 last_story_received_at, story_count)
              VALUES ($1, $2, $3::date, $4, 'pending',
                      $5, $6, $7, $8, $9)
-             ON CONFLICT (customer_id, period, bucket_date, tz) DO NOTHING`,
+             ON CONFLICT (subject_id, period, bucket_date, tz) DO NOTHING`,
             [
               customerId,
               b.period,
@@ -1413,7 +1413,7 @@ async function reconcilePeriodicStates(
                     )
                     AND EXISTS (
                       SELECT 1 FROM periodic_report_job j
-                       WHERE j.customer_id = s.customer_id
+                       WHERE j.subject_id = s.subject_id
                          AND j.period      = s.period
                          AND j.bucket_date = s.bucket_date
                          AND j.tz          = s.tz
@@ -1423,7 +1423,7 @@ async function reconcilePeriodicStates(
                   ELSE s.status
                 END,
                 updated_at = NOW()
-          WHERE s.customer_id = $1
+          WHERE s.subject_id = $1
             AND s.period      = $2
             AND s.bucket_date = $3::date
             AND s.tz          = $4
@@ -1607,7 +1607,7 @@ async function patchCursorWatermark(
               THEN 'strict'
               ELSE cursor_watermark_quality
             END
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND (
           cursor_watermark IS NULL
           OR $2::timestamptz > cursor_watermark

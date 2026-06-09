@@ -283,7 +283,7 @@ async function enumerateStateRows(
             tz,
             status
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND period = ANY($2::text[])
         AND (period = 'LIVE' OR bucket_date >= $3::date)
         AND ($4::text IS NULL OR tz = $4)
@@ -316,7 +316,7 @@ async function lookupJob(
   }>(
     `SELECT status, generation
        FROM periodic_report_job
-      WHERE customer_id = $1 AND period = $2 AND bucket_date = $3::date
+      WHERE subject_id = $1 AND period = $2 AND bucket_date = $3::date
         AND tz = $4 AND lang = $5 AND model_name = $6 AND model = $7`,
     [
       customerId,
@@ -567,7 +567,7 @@ async function refreshVariant(
 ): Promise<number | null> {
   const { rows } = await authClient.query<{ generation: number }>(
     `INSERT INTO periodic_report_job
-       (customer_id, period, bucket_date, tz, lang, model_name, model,
+       (subject_id, period, bucket_date, tz, lang, model_name, model,
         status, generation, dry_run,
         force_requested_at, force_requested_by,
         attempts, last_error)
@@ -575,7 +575,7 @@ async function refreshVariant(
              'queued', 1, FALSE,
              NOW(), $8::uuid,
              0, NULL)
-     ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+     ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
      DO UPDATE SET
        generation         = periodic_report_job.generation + 1,
        status             = 'queued',

@@ -137,7 +137,7 @@ describe("Breadcrumbs", () => {
   it("renders the customer hub trail with a non-link `Customers` prefix", () => {
     // `/customers` has no index page, so the prefix is plain text; the
     // customer name resolves from context and links to the hub.
-    mockedUsePathname.mockReturnValue("/en/customers/c1");
+    mockedUsePathname.mockReturnValue("/en/subjects/c1");
 
     const { container } = render(<Breadcrumbs />);
 
@@ -147,11 +147,11 @@ describe("Breadcrumbs", () => {
     const hub = Array.from(container.querySelectorAll("a")).find(
       (a) => a.textContent === "Acme Corp",
     );
-    expect(hub?.getAttribute("href")).toBe("/en/customers/c1");
+    expect(hub?.getAttribute("href")).toBe("/en/subjects/c1");
   });
 
   it("falls back to the raw id for an unknown customer", () => {
-    mockedUsePathname.mockReturnValue("/en/customers/unknown");
+    mockedUsePathname.mockReturnValue("/en/subjects/unknown");
 
     const { container } = render(<Breadcrumbs />);
 
@@ -162,7 +162,7 @@ describe("Breadcrumbs", () => {
     // Home › Customers(text) › Acme Corp › Reports › Daily(text) › date.
     // The customer-scoped `analysis` segment is collapsed (no page).
     mockedUsePathname.mockReturnValue(
-      "/en/customers/c1/analysis/reports/DAILY/2026-06-01",
+      "/en/subjects/c1/analysis/reports/DAILY/2026-06-01",
     );
 
     const { container } = render(<Breadcrumbs />);
@@ -186,7 +186,7 @@ describe("Breadcrumbs", () => {
       (a) => a.textContent === "Reports",
     );
     expect(reports?.getAttribute("href")).toBe(
-      "/en/customers/c1/analysis/reports",
+      "/en/subjects/c1/analysis/reports",
     );
   });
 
@@ -196,7 +196,7 @@ describe("Breadcrumbs", () => {
     // stands in with the same localized word instead of the meaningless date
     // or a hardcoded English string.
     mockedUsePathname.mockReturnValue(
-      "/en/customers/c1/analysis/reports/LIVE/1970-01-01",
+      "/en/subjects/c1/analysis/reports/LIVE/1970-01-01",
     );
 
     const { container } = render(<Breadcrumbs />);
@@ -215,7 +215,7 @@ describe("Breadcrumbs", () => {
 
   it("renders a threat story leaf with a terminology + short-id label", () => {
     mockedUsePathname.mockReturnValue(
-      "/en/customers/c1/analysis/story/s1abcdef0123",
+      "/en/subjects/c1/analysis/story/s1abcdef0123",
     );
 
     const { container } = render(<Breadcrumbs />);
@@ -233,7 +233,7 @@ describe("Breadcrumbs", () => {
     // (keyed by the leaf path) overrides the terminology + short-id
     // fallback the route map would otherwise compute.
     mockedUsePathname.mockReturnValue(
-      "/en/customers/c1/analysis/story/s1abcdef0123",
+      "/en/subjects/c1/analysis/story/s1abcdef0123",
     );
 
     const { container } = render(
@@ -256,7 +256,7 @@ describe("Breadcrumbs", () => {
     // The `aice/<id>/events/<key>` prefix carries no crumbs; only the
     // `Event · <short-key>` leaf and the customer hub remain.
     mockedUsePathname.mockReturnValue(
-      "/en/customers/c1/aice/a1/events/evkey123456/analysis",
+      "/en/subjects/c1/aice/a1/events/evkey123456/analysis",
     );
 
     const { container } = render(<Breadcrumbs />);

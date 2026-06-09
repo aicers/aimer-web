@@ -1,7 +1,7 @@
 // Admin surface for a customer's per-customer default analysis model
 // (#473). System Administrator only (admin context), any customer. The
 // Analyst-facing counterpart lives at
-// `/api/customers/[customerId]/analysis/default-model` (general context).
+// `/api/subjects/[subjectId]/analysis/default-model` (general context).
 // Both delegate to the same shared handlers / service guard.
 
 import type { NextRequest } from "next/server";

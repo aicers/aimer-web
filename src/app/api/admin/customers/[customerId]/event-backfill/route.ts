@@ -1,7 +1,7 @@
 // Admin surface for the operator-triggered event-leaf re-analysis backfill
 // (#470). System Administrator only (admin context), any customer. The
 // Analyst-facing counterpart lives at
-// `/api/customers/[customerId]/analysis/event-backfill` (general context).
+// `/api/subjects/[subjectId]/analysis/event-backfill` (general context).
 // Both delegate to the same shared handlers.
 //
 //   GET  — list recent runs for the customer

@@ -1,5 +1,5 @@
 // Server-side loader for the customer hub page
-// (`/[locale]/customers/{customerId}`) — WS3 (#392).
+// (`/[locale]/subjects/{customerId}`) — WS3 (#392).
 //
 // The hub is the entry point that gives every customer-scoped leaf a
 // navigable home: it links to that customer's reports, threat stories, and

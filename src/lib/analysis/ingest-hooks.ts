@@ -497,7 +497,7 @@ async function computeOverlappingBucketCounts(
   }>(
     `SELECT period, bucket_date::text AS bucket_date
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND tz          = $2
         AND status IN ('pending', 'ready', 'dirty')
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')
@@ -571,7 +571,7 @@ async function computeOverlappingBucketStoryAggregates(
   }>(
     `SELECT period, bucket_date::text AS bucket_date
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND tz          = $2
         AND status IN ('pending', 'ready', 'dirty')
         AND period IN ('DAILY', 'WEEKLY', 'MONTHLY')`,

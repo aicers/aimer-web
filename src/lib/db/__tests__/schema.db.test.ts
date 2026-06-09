@@ -35,7 +35,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(50);
+    expect(rows).toHaveLength(51);
   });
 
   // -- Built-in roles --
@@ -895,10 +895,15 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       expect(left[0].c).toBe(0);
     });
 
-    it("analysis tables CASCADE from customers and the job tables CASCADE from their state tables", async () => {
-      // FK shape verification — a customer DELETE must cascade through
-      // state and through state → job. Otherwise a deleted customer
-      // would leave orphaned analysis rows.
+    it("analysis tables CASCADE from the subject and the job tables CASCADE from their state tables", async () => {
+      // FK shape verification — deleting the identity root (the
+      // `subjects` row) must cascade through story state (via
+      // `customers`, still customer_id-keyed) AND through the
+      // subject-keyed periodic state, and through state → job.
+      // Otherwise a deleted subject would leave orphaned analysis rows.
+      // (RFC 0004 / #503: periodic_report_* re-keyed onto subject_id, so
+      // they cascade from `subjects`; `delete-customer.ts` deletes the
+      // subject row for exactly this reason.)
       const { rows: cRows } = await pool.query(
         "INSERT INTO customers (external_key, name) VALUES ('rfc0002-cascade', 'CC') RETURNING id",
       );
@@ -917,13 +922,13 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       );
       await pool.query(
         `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
+           (subject_id, period, bucket_date, tz, status)
          VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'pending')`,
         [cid],
       );
       await pool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model, status)
          VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
                  'ENGLISH', 'openai', 'gpt-4o', 'queued')`,
@@ -944,7 +949,9 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       );
       expect(jOrphan[0].c).toBe(0);
 
-      // Re-seed and then delete the customer; everything cascades.
+      // Re-seed and then delete the subject; everything cascades
+      // (subject → customers → story_analysis_*, and subject →
+      // periodic_report_*).
       await pool.query(
         `INSERT INTO story_analysis_state (customer_id, story_id, status)
          VALUES ($1, 5002, 'pending')`,
@@ -957,18 +964,60 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         [cid],
       );
 
-      await pool.query("DELETE FROM customers WHERE id = $1", [cid]);
+      await pool.query("DELETE FROM subjects WHERE id = $1", [cid]);
 
       const { rows: leftover } = await pool.query<{ c: number }>(
         `SELECT
            (SELECT COUNT(*)::int FROM story_analysis_state WHERE customer_id = $1)
          + (SELECT COUNT(*)::int FROM story_analysis_job   WHERE customer_id = $1)
-         + (SELECT COUNT(*)::int FROM periodic_report_state WHERE customer_id = $1)
-         + (SELECT COUNT(*)::int FROM periodic_report_job   WHERE customer_id = $1)
+         + (SELECT COUNT(*)::int FROM periodic_report_state WHERE subject_id = $1)
+         + (SELECT COUNT(*)::int FROM periodic_report_job   WHERE subject_id = $1)
          AS c`,
         [cid],
       );
       expect(leftover[0].c).toBe(0);
+    });
+
+    it("customer insert materializes a kind='customer' subject and rejects a non-customer subject (insert or update)", async () => {
+      // RFC 0004 / #503: the `customers_ensure_subject` trigger backs
+      // every customer with a `kind='customer'` subject sharing its UUID.
+      // A plain insert must auto-create that subject row.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('subj-trg', 'SC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      const { rows: sRows } = await pool.query<{ kind: string }>(
+        "SELECT kind FROM subjects WHERE id = $1",
+        [cid],
+      );
+      expect(sRows).toHaveLength(1);
+      expect(sRows[0].kind).toBe("customer");
+
+      // The invariant must hold even when the subject id already exists
+      // as a different kind: inserting a customer onto a pre-existing
+      // `kind='group'` subject must be rejected, not silently accepted.
+      const { rows: gRows } = await pool.query<{ id: string }>(
+        "INSERT INTO subjects (kind) VALUES ('group') RETURNING id",
+      );
+      const gid = gRows[0].id;
+      await expect(
+        pool.query(
+          "INSERT INTO customers (id, external_key, name) VALUES ($1, 'subj-grp', 'GC')",
+          [gid],
+        ),
+      ).rejects.toThrow(/non-customer subject/);
+
+      // The invariant must also hold after creation: a subject backing a
+      // customer cannot later be flipped to a non-customer kind, which
+      // would orphan the existing customer onto a `kind='group'` subject.
+      await expect(
+        pool.query("UPDATE subjects SET kind = 'group' WHERE id = $1", [cid]),
+      ).rejects.toThrow(/cannot change kind/);
+      const { rows: stillCustomer } = await pool.query<{ kind: string }>(
+        "SELECT kind FROM subjects WHERE id = $1",
+        [cid],
+      );
+      expect(stillCustomer[0].kind).toBe("customer");
     });
 
     it("customer-timezone-change trigger archives mismatched periodic_report_state rows", async () => {
@@ -980,7 +1029,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       const cid = cRows[0].id;
       await pool.query(
         `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
+           (subject_id, period, bucket_date, tz, status)
          VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready')`,
         [cid],
       );
@@ -991,7 +1040,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
 
       const { rows } = await pool.query<{ status: string }>(
         `SELECT status FROM periodic_report_state
-          WHERE customer_id = $1 AND tz = 'Asia/Seoul'`,
+          WHERE subject_id = $1 AND tz = 'Asia/Seoul'`,
         [cid],
       );
       expect(rows[0]?.status).toBe("archived");
@@ -1029,7 +1078,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         (r) => r.indexname === "periodic_report_state_pending_idx",
       );
       expect(periodic?.indexdef).toContain(
-        "(customer_id, period, bucket_date, tz)",
+        "(subject_id, period, bucket_date, tz)",
       );
       const story = rows.find(
         (r) => r.indexname === "story_analysis_state_pending_idx",
@@ -1142,13 +1191,13 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       );
       await rolePool.query(
         `INSERT INTO periodic_report_state
-           (customer_id, period, bucket_date, tz, status)
+           (subject_id, period, bucket_date, tz, status)
          VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'pending')`,
         [cid],
       );
       await rolePool.query(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz,
+           (subject_id, period, bucket_date, tz,
             lang, model_name, model, status)
          VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
                  'ENGLISH', 'openai', 'gpt-4o', 'queued')`,

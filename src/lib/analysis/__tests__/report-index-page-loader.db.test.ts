@@ -60,9 +60,9 @@ describe.skipIf(!hasPostgres)("report index loader (cross-DB)", () => {
   ): Promise<void> {
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status, updated_at)
+         (subject_id, period, bucket_date, tz, status, updated_at)
        VALUES ($1, $2, $3::date, $4, $5, COALESCE($6::timestamptz, NOW()))
-       ON CONFLICT (customer_id, period, bucket_date, tz)
+       ON CONFLICT (subject_id, period, bucket_date, tz)
        DO UPDATE SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`,
       [CUSTOMER_ID, period, bucketDate, tz, status, updatedAt ?? null],
     );
@@ -82,7 +82,7 @@ describe.skipIf(!hasPostgres)("report index loader (cross-DB)", () => {
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,

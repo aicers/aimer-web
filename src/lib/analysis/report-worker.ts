@@ -9,7 +9,7 @@
 // to `periodic_report_result` followed by the auth-DB job finalize.
 //
 // Mirrors `story-worker.ts`:
-//   - per-job advisory lock on `(customer_id, period, bucket_date, tz)`,
+//   - per-job advisory lock on `(subject_id, period, bucket_date, tz)`,
 //   - captured-generation rule so a concurrent force-regenerate cannot
 //     trample an in-flight finalize,
 //   - pickup-time result-row probe for crash-idempotent commit ordering
@@ -183,7 +183,7 @@ const BACKOFF_MAX_EXPONENT = Math.max(
 // ---------------------------------------------------------------------------
 
 interface JobPickup {
-  customer_id: string;
+  subject_id: string;
   period: PeriodicPeriod;
   bucket_date: string;
   tz: string;
@@ -418,7 +418,7 @@ async function pickQueuedReportJobs(
   limit: number,
 ): Promise<JobPickup[]> {
   const { rows } = await client.query<JobPickup>(
-    `SELECT j.customer_id::text AS customer_id,
+    `SELECT j.subject_id::text AS subject_id,
             j.period,
             j.bucket_date::text  AS bucket_date,
             j.tz,
@@ -430,7 +430,7 @@ async function pickQueuedReportJobs(
             s.cursor_watermark_quality
        FROM periodic_report_job j
        JOIN periodic_report_state s
-         ON s.customer_id = j.customer_id AND s.period = j.period
+         ON s.subject_id = j.subject_id AND s.period = j.period
         AND s.bucket_date = j.bucket_date AND s.tz = j.tz
       WHERE j.status = 'queued'
         AND j.dry_run = FALSE
@@ -455,7 +455,7 @@ async function pickQueuedReportJobs(
              + ($2::bigint * (2 ^ LEAST(j.attempts - 1, $3::int))) * interval '1 millisecond'
              <= NOW()
         )
-      ORDER BY j.customer_id, j.period, j.bucket_date, j.tz
+      ORDER BY j.subject_id, j.period, j.bucket_date, j.tz
       LIMIT $1
       FOR UPDATE OF j SKIP LOCKED`,
     [limit, RETRY_BACKOFF_BASE_MS, BACKOFF_MAX_EXPONENT],
@@ -485,7 +485,7 @@ export async function processReportJob(
   // environment with no customer DB this throws before the claim, so the
   // job is left `queued` for the next tick rather than stranded.
   const customerPool = (opts.resolveCustomerPool ?? getCustomerRuntimePool)(
-    job.customer_id,
+    job.subject_id,
   );
 
   const claim = await opts.authPool.query<{ processing_started_at: string }>(
@@ -493,7 +493,7 @@ export async function processReportJob(
         SET status = 'processing',
             processing_started_at = NOW(),
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
@@ -514,7 +514,7 @@ export async function processReportJob(
         AND (next_due_at IS NULL OR next_due_at <= NOW())
         AND EXISTS (
           SELECT 1 FROM periodic_report_state s
-           WHERE s.customer_id = periodic_report_job.customer_id
+           WHERE s.subject_id = periodic_report_job.subject_id
              AND s.period      = periodic_report_job.period
              AND s.bucket_date = periodic_report_job.bucket_date
              AND s.tz          = periodic_report_job.tz
@@ -522,7 +522,7 @@ export async function processReportJob(
         )
       RETURNING processing_started_at::text AS processing_started_at`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -538,7 +538,7 @@ export async function processReportJob(
       JSON.stringify({
         level: "warn",
         event: "analysis.report_pickup_race_lost",
-        customer_id: job.customer_id,
+        subject_id: job.subject_id,
         period: job.period,
         bucket_date: job.bucket_date,
         tz: job.tz,
@@ -568,12 +568,12 @@ export async function processReportJob(
     restoration_lang: string | null;
   }>(
     `SELECT restoration_lang FROM periodic_report_result
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -606,7 +606,7 @@ export async function processReportJob(
     actorId: WORKER_ACCOUNT_ID,
     authContext: "general",
     targetType: "periodic_report_result",
-    customerId: job.customer_id,
+    customerId: job.subject_id,
     aiceId: PERIODIC_WORKER_AICE_ID,
   };
 
@@ -621,7 +621,7 @@ export async function processReportJob(
     const built = await buildPeriodicReportInput({
       authPool: opts.authPool,
       customerPool,
-      customerId: job.customer_id,
+      customerId: job.subject_id,
       period: job.period,
       bucketDate: job.bucket_date,
       variant,
@@ -657,7 +657,7 @@ export async function processReportJob(
       JSON.stringify({
         level: "warn",
         event: "analysis.report_canonical_defer",
-        customer_id: job.customer_id,
+        subject_id: job.subject_id,
         period: job.period,
         bucket_date: job.bucket_date,
         tz: job.tz,
@@ -676,7 +676,7 @@ export async function processReportJob(
   // natively (same `R{j}` numbering as English); otherwise translate.
   const pinned = await buildCanonicalPinnedReportInput({
     customerPool,
-    customerId: job.customer_id,
+    customerId: job.subject_id,
     period: job.period,
     bucketDate: job.bucket_date,
     variant,
@@ -770,7 +770,7 @@ async function runNativeGeneration(args: {
     action: "ai_analysis.request_issued",
     targetId: reportTargetId(job),
     details: {
-      customer_id: job.customer_id,
+      subject_id: job.subject_id,
       period: job.period,
       bucket_date: job.bucket_date,
       tz: job.tz,
@@ -786,7 +786,7 @@ async function runNativeGeneration(args: {
   let aimerResponse: ReportAimerResponse;
   try {
     aimerResponse = await callLlm({
-      customerId: job.customer_id,
+      customerId: job.subject_id,
       period: job.period,
       date: built.reportDate,
       timezone: job.tz,
@@ -856,11 +856,11 @@ async function runNativeGeneration(args: {
   // than a fixed field list.
   const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
     opts.authPool,
-    job.customer_id,
+    job.subject_id,
   );
   const ownedDomains = await (
     opts.loadOwnedDomains ?? loadCustomerOwnedDomains
-  )(opts.authPool, job.customer_id);
+  )(opts.authPool, job.subject_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,
@@ -1018,7 +1018,7 @@ async function runTranslation(args: {
   };
   const tokenRefs: ReportTokenRef[] | null = await buildPinnedTokenRefs(
     customerPool,
-    job.customer_id,
+    job.subject_id,
     englishVariant,
     canonical.storyRefs,
     canonical.eventRefs,
@@ -1043,7 +1043,7 @@ async function runTranslation(args: {
     action: "ai_analysis.request_issued",
     targetId: reportTargetId(job),
     details: {
-      customer_id: job.customer_id,
+      subject_id: job.subject_id,
       period: job.period,
       bucket_date: job.bucket_date,
       tz: job.tz,
@@ -1062,7 +1062,7 @@ async function runTranslation(args: {
   let aimerResponse: ReportAimerResponse;
   try {
     aimerResponse = await callTranslate({
-      customerId: job.customer_id,
+      customerId: job.subject_id,
       sections: canonical.sectionsString,
       targetLang: job.lang,
       modelName: TRANSLATION_MODEL_NAME,
@@ -1129,11 +1129,11 @@ async function runTranslation(args: {
   // item 7).
   const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
     opts.authPool,
-    job.customer_id,
+    job.subject_id,
   );
   const ownedDomains = await (
     opts.loadOwnedDomains ?? loadCustomerOwnedDomains
-  )(opts.authPool, job.customer_id);
+  )(opts.authPool, job.subject_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,
@@ -1258,7 +1258,7 @@ async function runTranslation(args: {
       JSON.stringify({
         level: "warn",
         event: "analysis.report_translation_claim_lost",
-        customer_id: job.customer_id,
+        subject_id: job.subject_id,
         period: job.period,
         bucket_date: job.bucket_date,
         tz: job.tz,
@@ -1407,13 +1407,13 @@ async function loadEnglishCanonical(
             aggregate_ttp_tags, priority_tier,
             input_hash, input_watermark, redaction_policy_version
        FROM periodic_report_result
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
       LIMIT 1`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1447,7 +1447,7 @@ async function loadEnglishCanonical(
 }
 
 function reportTargetId(job: JobPickup): string {
-  return `${job.customer_id}/${job.period}/${job.bucket_date}/${job.tz}`;
+  return `${job.subject_id}/${job.period}/${job.bucket_date}/${job.tz}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1558,7 +1558,7 @@ async function writeResultRow(
     await client.query("BEGIN");
     await client.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, restoration_lang,
+         (subject_id, period, bucket_date, tz, lang, restoration_lang,
           model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
@@ -1573,7 +1573,7 @@ async function writeResultRow(
                $17::jsonb, $18::jsonb, $19, $20,
                $21, $22::uuid)`,
       [
-        job.customer_id,
+        job.subject_id,
         job.period,
         job.bucket_date,
         job.tz,
@@ -1600,13 +1600,13 @@ async function writeResultRow(
     await client.query(
       `UPDATE periodic_report_result
           SET superseded_at = NOW()
-        WHERE customer_id = $1 AND period = $2
+        WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4
           AND lang = $5 AND model_name = $6 AND model = $7
           AND generation < $8
           AND superseded_at IS NULL`,
       [
-        job.customer_id,
+        job.subject_id,
         job.period,
         job.bucket_date,
         job.tz,
@@ -1640,9 +1640,9 @@ async function parentStateArchived(
   const { rows } = await authPool.query<{ archived: boolean }>(
     `SELECT (status = 'archived') AS archived
        FROM periodic_report_state
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4`,
-    [job.customer_id, job.period, job.bucket_date, job.tz],
+    [job.subject_id, job.period, job.bucket_date, job.tz],
   );
   return rows.length === 0 || rows[0].archived === true;
 }
@@ -1662,14 +1662,14 @@ async function releaseArchivedJob(
             processing_started_at = NULL,
             next_due_at = NULL,
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $8
         AND status = 'processing'
         AND processing_started_at::text = $9`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1700,14 +1700,14 @@ async function deferJobForCanonical(
             next_due_at = NOW() + ($8::bigint * interval '1 millisecond'),
             last_error = 'english_canonical_not_ready',
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $9
         AND status = 'processing'
         AND processing_started_at::text = $10`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1764,7 +1764,7 @@ async function finalizeJob(
             translation_model = $12,
             translation_prompt_version = $13,`;
   const params: unknown[] = [
-    job.customer_id,
+    job.subject_id,
     job.period,
     job.bucket_date,
     job.tz,
@@ -1792,7 +1792,7 @@ async function finalizeJob(
             last_error = NULL,
             dry_run = FALSE,${auditAssignment}
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $9
@@ -1826,14 +1826,14 @@ async function recordTranslationAudit(
             translation_model = $9,
             translation_prompt_version = $10,
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $11
         AND status = 'processing'
         AND processing_started_at::text = $12`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1864,14 +1864,14 @@ async function failJob(
             attempts = $8,
             last_error = $9,
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $10
         AND status = 'processing'
         AND processing_started_at::text = $11`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1906,14 +1906,14 @@ async function requeueWithBackoff(
             processing_started_at = ${terminal ? "processing_started_at" : "NULL"},
             next_due_at = ${terminal ? "next_due_at" : "NULL"},
             updated_at = NOW()
-      WHERE customer_id = $1 AND period = $2
+      WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND lang = $5 AND model_name = $6 AND model = $7
         AND generation = $10
         AND status = 'processing'
         AND processing_started_at::text = $11`,
     [
-      job.customer_id,
+      job.subject_id,
       job.period,
       job.bucket_date,
       job.tz,
@@ -1951,7 +1951,7 @@ export async function tickReportJobsOnce(
   }
 
   for (const job of picks) {
-    const lockId = customerLockId(job.customer_id);
+    const lockId = customerLockId(job.subject_id);
     const lockId2 = jobReportLockId2(job);
     const lockClient = await authPool.connect();
     try {
@@ -2030,7 +2030,7 @@ export async function seedRealReportJobs(
   nowIso: string = getCurrentTimestamp().toISOString(),
 ): Promise<void> {
   const { rows: actionable } = await authClient.query<{
-    customer_id: string;
+    subject_id: string;
     period: string;
     bucket_date: string;
     tz: string;
@@ -2077,7 +2077,7 @@ export async function seedRealReportJobs(
              WHERE c.model_name = g.model_name AND c.model = g.model
           )
      )
-     SELECT s.customer_id::text AS customer_id,
+     SELECT s.subject_id::text AS subject_id,
             s.period,
             s.bucket_date::text AS bucket_date,
             s.tz,
@@ -2086,7 +2086,7 @@ export async function seedRealReportJobs(
             COALESCE(cdm.model,      gd.model,      $4) AS model
        FROM periodic_report_state s
        LEFT JOIN customer_default_model cdm
-         ON cdm.customer_id = s.customer_id
+         ON cdm.customer_id = s.subject_id
         AND EXISTS (
           SELECT 1 FROM catalog c
            WHERE c.model_name = cdm.model_name AND c.model = cdm.model
@@ -2099,7 +2099,7 @@ export async function seedRealReportJobs(
                    SELECT 1 FROM unnest($2::text[]) AS el(lang)
                     WHERE NOT EXISTS (
                       SELECT 1 FROM periodic_report_job j
-                       WHERE j.customer_id = s.customer_id
+                       WHERE j.subject_id = s.subject_id
                          AND j.period = s.period
                          AND j.bucket_date = s.bucket_date
                          AND j.tz = s.tz
@@ -2108,7 +2108,7 @@ export async function seedRealReportJobs(
                          AND j.model = COALESCE(cdm.model, gd.model, $4)
                     )
                  )))
-      ORDER BY s.customer_id, s.period, s.bucket_date, s.tz
+      ORDER BY s.subject_id, s.period, s.bucket_date, s.tz
       LIMIT $1
       FOR UPDATE OF s SKIP LOCKED`,
     [
@@ -2127,7 +2127,7 @@ export async function seedRealReportJobs(
 
   for (const row of actionable) {
     if (row.status === "dirty") {
-      const stateKey = [row.customer_id, row.period, row.bucket_date, row.tz];
+      const stateKey = [row.subject_id, row.period, row.bucket_date, row.tz];
       // Surface every existing variant already at the cap (parity with the
       // LIVE cadence path's pre-bump warn). An at-cap variant cannot
       // auto-bump on a dirty signal; only an operator force may push past
@@ -2138,7 +2138,7 @@ export async function seedRealReportJobs(
         model: string;
       }>(
         `SELECT lang, model_name, model FROM periodic_report_job
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND generation >= $5`,
         [...stateKey, MAX_GENERATION],
@@ -2148,7 +2148,7 @@ export async function seedRealReportJobs(
           JSON.stringify({
             level: "warn",
             event: "analysis.report_max_generation_reached",
-            customer_id: row.customer_id,
+            subject_id: row.subject_id,
             period: row.period,
             bucket_date: row.bucket_date,
             tz: row.tz,
@@ -2185,7 +2185,7 @@ export async function seedRealReportJobs(
                 force_requested_at = NULL,
                 force_requested_by = NULL,
                 updated_at = $5::timestamptz
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND generation < $6`,
         [...stateKey, nowIso, MAX_GENERATION],
@@ -2201,7 +2201,7 @@ export async function seedRealReportJobs(
             SET status = 'ready',
                 last_ready_at = $5::timestamptz,
                 updated_at = $5::timestamptz
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND status = 'dirty'`,
         [...stateKey, nowIso],
@@ -2223,7 +2223,7 @@ export async function seedRealReportJobs(
 async function seedEagerLangJobs(
   authClient: PoolClient,
   row: {
-    customer_id: string;
+    subject_id: string;
     period: string;
     bucket_date: string;
     tz: string;
@@ -2237,14 +2237,14 @@ async function seedEagerLangJobs(
   for (const lang of EAGER_LANGS) {
     await authClient.query(
       `INSERT INTO periodic_report_job
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           status, generation, dry_run, created_at, updated_at)
        VALUES ($1, $2, $3::date, $4, $5, $6, $7,
                'queued', 1, FALSE, $8::timestamptz, $8::timestamptz)
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model)
        DO NOTHING`,
       [
-        row.customer_id,
+        row.subject_id,
         row.period,
         row.bucket_date,
         row.tz,
@@ -2343,7 +2343,7 @@ export async function enqueueOnDemandReportJob(
     // concurrent tz-change archive cannot slip in before the job INSERT).
     const state = await client.query<{ status: string }>(
       `SELECT status FROM periodic_report_state
-        WHERE customer_id = $1 AND period = $2
+        WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4
         FOR UPDATE`,
       [variant.customerId, variant.period, variant.bucketDate, variant.tz],
@@ -2372,7 +2372,7 @@ export async function enqueueOnDemandReportJob(
       dry_run: boolean;
     }>(
       `SELECT status, generation, dry_run FROM periodic_report_job
-        WHERE customer_id = $1 AND period = $2
+        WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4
           AND lang = $5 AND model_name = $6 AND model = $7
         FOR UPDATE`,
@@ -2384,7 +2384,7 @@ export async function enqueueOnDemandReportJob(
       // metadata: this is explicitly NOT the Regenerate force path.
       const ins = await client.query<{ generation: number }>(
         `INSERT INTO periodic_report_job
-           (customer_id, period, bucket_date, tz, lang, model_name, model,
+           (subject_id, period, bucket_date, tz, lang, model_name, model,
             status, generation, dry_run, attempts, last_error,
             created_at, updated_at)
          VALUES ($1, $2, $3::date, $4, $5, $6, $7,
@@ -2418,7 +2418,7 @@ export async function enqueueOnDemandReportJob(
                 processing_started_at = NULL,
                 next_due_at = NULL,
                 updated_at = $8::timestamptz
-          WHERE customer_id = $1 AND period = $2
+          WHERE subject_id = $1 AND period = $2
             AND bucket_date = $3::date AND tz = $4
             AND lang = $5 AND model_name = $6 AND model = $7`,
         [...variantKey, nowIso],
@@ -2476,16 +2476,16 @@ export async function requeueLiveReportJobs(
   // mirroring the `analysis.report_max_generation_reached` signal that the
   // dirty auto-requeue path emits.
   const { rows: capped } = await authClient.query<{
-    customer_id: string;
+    subject_id: string;
     period: string;
     bucket_date: string;
     tz: string;
   }>(
-    `SELECT j.customer_id::text AS customer_id, j.period,
+    `SELECT j.subject_id::text AS subject_id, j.period,
             j.bucket_date::text AS bucket_date, j.tz
        FROM periodic_report_job j
        JOIN periodic_report_state s
-         ON j.customer_id = s.customer_id AND j.period = s.period
+         ON j.subject_id = s.subject_id AND j.period = s.period
         AND j.bucket_date = s.bucket_date AND j.tz = s.tz
       WHERE j.period = 'LIVE'
         AND j.status = 'done'
@@ -2501,7 +2501,7 @@ export async function requeueLiveReportJobs(
       JSON.stringify({
         level: "warn",
         event: "analysis.report_max_generation_reached",
-        customer_id: row.customer_id,
+        subject_id: row.subject_id,
         period: row.period,
         bucket_date: row.bucket_date,
         tz: row.tz,
@@ -2529,7 +2529,7 @@ export async function requeueLiveReportJobs(
             force_requested_by = NULL,
             updated_at = $1::timestamptz
        FROM periodic_report_state s
-      WHERE j.customer_id = s.customer_id AND j.period = s.period
+      WHERE j.subject_id = s.subject_id AND j.period = s.period
         AND j.bucket_date = s.bucket_date AND j.tz = s.tz
         AND j.period = 'LIVE'
         AND j.status = 'done'

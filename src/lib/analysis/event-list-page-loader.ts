@@ -1,5 +1,5 @@
 // Server-side loader for the customer-scoped Suspicious Events list page
-// (`/[locale]/customers/{customerId}/analysis/events`) — WS3 (#392).
+// (`/[locale]/subjects/{customerId}/analysis/events`) — WS3 (#392).
 //
 // This is a NEW customer-level segment: the event detail route is
 // per-`aice_id` (`aice/{aiceId}/events/{eventKey}/analysis`), but a

@@ -333,7 +333,7 @@ export async function fetchCustomerReports(
   }>(
     `SELECT period, bucket_date::text AS bucket_date, tz
        FROM periodic_report_state
-      WHERE customer_id = $1
+      WHERE subject_id = $1
         AND status IN ('ready', 'dirty')`,
     [customerId],
   );
@@ -376,7 +376,7 @@ export async function fetchCustomerReports(
            ON w.period = r.period
           AND w.bucket_date = r.bucket_date
           AND w.tz = r.tz
-        WHERE r.customer_id = $1
+        WHERE r.subject_id = $1
           AND r.lang = $2 AND r.model_name = $3 AND r.model = $4
           AND r.superseded_at IS NULL
         ORDER BY r.period, r.bucket_date, r.tz, r.generation DESC

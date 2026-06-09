@@ -14,7 +14,7 @@
 // Drives the preview → required-confirm → run → outcome flow against the
 // report-refresh API. Shared by both surfaces: the admin page passes
 // `adminFetch` + `/api/admin/...`; the analyst page passes `apiFetch` +
-// `/api/customers/.../analysis/...`. The cost preview shows counts/scope
+// `/api/subjects/.../analysis/...`. The cost preview shows counts/scope
 // only — never a monetary figure. A run is synchronous (no background
 // worker), so its outcome is shown immediately on completion.
 

@@ -15,6 +15,7 @@ import type {
   StoryOverviewRow,
 } from "@/lib/analysis/cross-customer-overview";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
+import { subjectPages } from "@/lib/navigation/routes";
 
 type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
@@ -58,7 +59,12 @@ export function ReportRow({
   // "pinned ?tz → customer current-timezone snapshot → UTC"; without the pin
   // an old-tz bucket re-resolves to the customer's current tz and 404s after
   // a timezone change (same reason the single-customer index pins it).
-  const href = `/${locale}/customers/${row.customerId}/analysis/reports/${row.period}/${row.bucketDate}?tz=${encodeURIComponent(row.tz)}`;
+  const href = `${subjectPages.report(
+    locale,
+    row.customerId,
+    row.period,
+    row.bucketDate,
+  )}?tz=${encodeURIComponent(row.tz)}`;
   return (
     <Link
       href={href}
@@ -94,7 +100,7 @@ export function StoryRow({
   scoreLabel: string;
 }) {
   // Story detail takes no variant params (it defaults from env).
-  const href = `/${locale}/customers/${row.customerId}/analysis/story/${row.storyId}`;
+  const href = subjectPages.story(locale, row.customerId, row.storyId);
   return (
     <Link
       href={href}
@@ -142,7 +148,12 @@ export function EventRow({
   // segment (matching `run-analyze-flow`'s URL builder).
   const aiceId = encodeURIComponent(row.aiceId);
   const eventKey = encodeURIComponent(row.eventKey);
-  const href = `/${locale}/customers/${row.customerId}/aice/${aiceId}/events/${eventKey}/analysis?${params.toString()}`;
+  const href = `${subjectPages.eventAnalysis(
+    locale,
+    row.customerId,
+    aiceId,
+    eventKey,
+  )}?${params.toString()}`;
   return (
     <Link
       href={href}

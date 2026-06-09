@@ -6,7 +6,7 @@
 // customer), Analyst in the GENERAL context (assigned customers only) —
 // but both drive ONE implementation. These handlers are parameterized by
 // `authContext` so the admin route (`/api/admin/customers/[id]/event-backfill`)
-// and the customer route (`/api/customers/[id]/analysis/event-backfill`)
+// and the customer route (`/api/subjects/[id]/analysis/event-backfill`)
 // share one set of handlers and differ only in their `withAuth` / CSRF
 // context.
 //
@@ -56,7 +56,8 @@ const MAX_WINDOW_DAYS = 365;
 
 function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
-  const idx = segments.indexOf("customers");
+  let idx = segments.indexOf("subjects");
+  if (idx === -1) idx = segments.indexOf("customers");
   if (idx === -1 || idx + 1 >= segments.length) return null;
   const id = segments[idx + 1];
   return UUID_RE.test(id) ? id : null;

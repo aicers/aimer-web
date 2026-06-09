@@ -1,6 +1,6 @@
 // Admin surface for the operator-triggered report-variant refresh (#469).
 // System Administrator only (admin context), any customer. The Analyst-facing
-// counterpart lives at `/api/customers/[customerId]/analysis/report-refresh`.
+// counterpart lives at `/api/subjects/[subjectId]/analysis/report-refresh`.
 // Both delegate to the same shared handlers.
 //
 //   GET  — list recent refresh runs for the customer

@@ -8,7 +8,7 @@
 // reuse the SAME `customer-default-model:*` permission keys and the same
 // cross-context guard shape, parameterized by `authContext` so the admin
 // route (`/api/admin/customers/[id]/reanalyze/*`) and the customer route
-// (`/api/customers/[id]/analysis/reanalyze/*`) share one implementation.
+// (`/api/subjects/[id]/analysis/reanalyze/*`) share one implementation.
 //
 // Endpoints:
 //   - GET  …/reanalyze/preview  — cost preview (counts/scope, no writes)
@@ -53,7 +53,8 @@ const PERM_WRITE = "customer-default-model:write";
 /** Extract the `[customerId]` path segment (the segment after `customers`). */
 export function extractCustomerId(req: NextRequest): string | null {
   const segments = req.nextUrl.pathname.split("/");
-  const idx = segments.indexOf("customers");
+  let idx = segments.indexOf("subjects");
+  if (idx === -1) idx = segments.indexOf("customers");
   if (idx === -1 || idx + 1 >= segments.length) return null;
   const id = segments[idx + 1];
   return UUID_RE.test(id) ? id : null;

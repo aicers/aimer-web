@@ -1269,7 +1269,7 @@ base.describe.serial("Manual screenshots", () => {
       await seedAnalysisRow(testData.customer.id);
 
       const url =
-        `/${locale}/customers/${testData.customer.id}` +
+        `/${locale}/subjects/${testData.customer.id}` +
         `/aice/${testData.aiceEnvironment.aiceId}` +
         `/events/${ANALYSIS_EVENT_KEY}/analysis` +
         `?lang=ENGLISH&model_name=${ANALYSIS_MODEL_NAME}` +
@@ -1321,7 +1321,7 @@ base.describe.serial("Manual screenshots", () => {
 
   function storyUrl(locale: Locale, storyId: string): string {
     return (
-      `/${locale}/customers/${testData.customer.id}` +
+      `/${locale}/subjects/${testData.customer.id}` +
       `/analysis/story/${storyId}`
     );
   }
@@ -1452,7 +1452,7 @@ base.describe.serial("Manual screenshots", () => {
 
   function reportUrl(locale: Locale): string {
     return (
-      `/${locale}/customers/${testData.customer.id}` +
+      `/${locale}/subjects/${testData.customer.id}` +
       `/analysis/reports/${REPORT_PERIOD}/${REPORT_BUCKET_DATE}`
     );
   }
@@ -1504,7 +1504,7 @@ base.describe.serial("Manual screenshots", () => {
       await ensureReportFixtures();
       await mgrPage.setViewportSize({ width: 1280, height: 900 });
       await mgrPage.goto(
-        `/${locale}/customers/${testData.customer.id}/analysis/reports`,
+        `/${locale}/subjects/${testData.customer.id}/analysis/reports`,
       );
       await settle(mgrPage);
       await expect(
@@ -1551,7 +1551,7 @@ base.describe.serial("Manual screenshots", () => {
   for (const locale of LOCALES) {
     base(`customer-hub.${locale}.png`, async () => {
       await mgrPage.setViewportSize(VIEWPORT);
-      await mgrPage.goto(`/${locale}/customers/${testData.customer.id}`);
+      await mgrPage.goto(`/${locale}/subjects/${testData.customer.id}`);
       await settle(mgrPage);
       await expect(mgrPage.locator('[data-testid="hub"]')).toBeVisible();
       await mgrPage.screenshot({

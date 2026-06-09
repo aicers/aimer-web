@@ -281,15 +281,24 @@ export async function createCustomer(
   // Insert customer
   let customerId: string;
   try {
+    // A customer is a subtype of `subject` sharing its UUID (RFC 0004
+    // / #503). Insert the supertype row first — in the same
+    // transaction — so the `customers.id → subjects.id` FK is
+    // satisfied, then reuse the generated id for the customer row.
+    const subjResult = await client.query<{ id: string }>(
+      `INSERT INTO subjects (kind) VALUES ('customer') RETURNING id`,
+    );
+    customerId = subjResult.rows[0].id;
+
     const custResult = await client.query<{
       id: string;
       status: string;
       database_status: string;
     }>(
-      `INSERT INTO customers (external_key, name, description)
-       VALUES ($1, $2, $3)
+      `INSERT INTO customers (id, external_key, name, description)
+       VALUES ($1, $2, $3, $4)
        RETURNING id, status, database_status`,
-      [params.externalKey, params.name, params.description ?? null],
+      [customerId, params.externalKey, params.name, params.description ?? null],
     );
     customerId = custResult.rows[0].id;
 

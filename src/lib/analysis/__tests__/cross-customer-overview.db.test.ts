@@ -173,7 +173,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
   }): Promise<void> {
     await authPool.query(
       `INSERT INTO periodic_report_state
-         (customer_id, period, bucket_date, tz, status)
+         (subject_id, period, bucket_date, tz, status)
        VALUES ($1, $2, $3::date, $4, $5)`,
       [
         args.customerId ?? CUSTOMER_ID,
@@ -198,7 +198,7 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
