@@ -37,6 +37,24 @@ vi.mock("@/lib/db/customer-runtime-pool", () => ({
   getCustomerRuntimePool: () => ({}),
 }));
 
+// The page resolves the subject kind (#513) to branch customer vs group. Most
+// fixtures are single-customer reports, so the mock defaults to `"customer"`;
+// the group-path test overrides it to `"group"`. The group pool + retention
+// provider are only touched on the group path, so stub them just so importing
+// the page in jsdom does not pull `server-only`.
+const mockSubjectKind = vi.fn<() => Promise<"customer" | "group">>();
+vi.mock("@/lib/db/subject-runtime-pool", () => ({
+  getSubjectKind: () => mockSubjectKind(),
+}));
+vi.mock("@/lib/db/group-runtime-pool", () => ({
+  getGroupRuntimePool: () => ({}),
+}));
+vi.mock("@/lib/analysis/subject-retention-provider", () => ({
+  createGroupRetentionProvider: () => ({
+    resolveBoundary: async () => ({ oldestNavigableDate: null, today: "" }),
+  }),
+}));
+
 // The model catalog (#458) is a `server-only` module; stub it so importing
 // the page in jsdom does not pull `server-only`. An empty catalog keeps the
 // analyst-only compare controls out of these (non-compare) render assertions.
@@ -149,6 +167,7 @@ function okFixture(): ReportResultPageOutcome {
         stories: [
           {
             storyId: "555",
+            customerId: CUSTOMER_ID,
             variant: {
               generation: 2,
               lang: "ENGLISH",
@@ -167,6 +186,7 @@ function okFixture(): ReportResultPageOutcome {
           {
             aiceId: "aice-9",
             eventKey: "777",
+            customerId: CUSTOMER_ID,
             variant: {
               generation: 2,
               lang: "ENGLISH",
@@ -212,6 +232,7 @@ describe("report detail page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockLoad.mockResolvedValue(okFixture());
+    mockSubjectKind.mockResolvedValue("customer");
   });
   afterEach(() => cleanup());
 
@@ -316,6 +337,26 @@ describe("report detail page", () => {
     expect(screen.queryByTestId("regenerate-button")).toBeNull();
   });
 
+  it("hides the Regenerate button for a group subject even when the viewer is an analyst (#513)", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    // An analyst viewer would normally see Regenerate; for a `group` subject
+    // it must stay hidden — there is no group regenerate backend in v1, so the
+    // action is not rendered rather than wired to a new group API.
+    mockSubjectKind.mockResolvedValue("group");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, isViewerAnalyst: true },
+    });
+    await renderPage("DAILY", "2026-05-26");
+
+    // The report body still renders for the group subject…
+    expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
+    expect(screen.getByTestId("section-executive_summary")).toBeTruthy();
+    // …but the analyst-only Regenerate action is not offered for a group.
+    expect(screen.queryByTestId("regenerate-button")).toBeNull();
+  });
+
   it("renders a Sources panel with cited story/event cards and N stories · M events", async () => {
     await renderPage("DAILY", "2026-05-26");
     expect(screen.getByTestId("sources-panel")).toBeTruthy();
@@ -374,6 +415,7 @@ describe("report detail page", () => {
           stories: [
             {
               storyId: "555",
+              customerId: CUSTOMER_ID,
               variant: {
                 generation: 1,
                 lang: "ENGLISH",
@@ -412,6 +454,7 @@ describe("report detail page", () => {
               source: {
                 sourceType: "story",
                 storyId: "555",
+                customerId: CUSTOMER_ID,
                 variant: {
                   generation: 2,
                   lang: "ENGLISH",
@@ -429,6 +472,7 @@ describe("report detail page", () => {
                 sourceType: "event",
                 aiceId: "aice-9",
                 eventKey: "777",
+                customerId: CUSTOMER_ID,
                 variant: {
                   generation: 4,
                   lang: "ENGLISH",

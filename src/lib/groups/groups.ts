@@ -188,6 +188,74 @@ export async function getGroupWithMembers(
 }
 
 // ---------------------------------------------------------------------------
+// List groups + members (for the account-accessible group listing, #513)
+// ---------------------------------------------------------------------------
+
+/** A group row paired with its ordered member customer ids. */
+export interface GroupWithMembers {
+  group: GroupRow;
+  memberIds: string[];
+}
+
+/**
+ * Load EVERY group with its member customer ids, in a single pair of queries
+ * (groups, then all memberships) rather than per-group fan-out. The caller
+ * (`listAccessibleGroups`, #513) filters this universe down to the groups the
+ * viewer may read; membership is needed to evaluate the all-member
+ * `reports:read` predicate, so it is loaded here alongside the group row.
+ * Member ids are ordered by `customer_id` (the same order
+ * `getGroupWithMembers` returns) for deterministic results.
+ */
+export async function listGroupsWithMembers(
+  client: PoolClient,
+): Promise<GroupWithMembers[]> {
+  const { rows } = await client.query<{
+    id: string;
+    name: string;
+    description: string | null;
+    owner_id: string;
+    created_by: string;
+    created_at: string;
+    tz: string;
+  }>(
+    `SELECT id, name, description, owner_id, created_by, created_at, tz
+       FROM customer_groups
+      ORDER BY name, id`,
+  );
+  if (rows.length === 0) return [];
+
+  const memberRows = await client.query<{
+    group_id: string;
+    customer_id: string;
+  }>(
+    `SELECT group_id, customer_id FROM customer_group_members
+      ORDER BY group_id, customer_id`,
+  );
+  const membersByGroup = new Map<string, string[]>();
+  for (const m of memberRows.rows) {
+    let list = membersByGroup.get(m.group_id);
+    if (!list) {
+      list = [];
+      membersByGroup.set(m.group_id, list);
+    }
+    list.push(m.customer_id);
+  }
+
+  return rows.map((r) => ({
+    group: {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      ownerId: r.owner_id,
+      createdBy: r.created_by,
+      createdAt: r.created_at,
+      tz: r.tz,
+    },
+    memberIds: membersByGroup.get(r.id) ?? [],
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Delete (entity-level)
 // ---------------------------------------------------------------------------
 

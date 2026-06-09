@@ -119,7 +119,12 @@
   },
   "sidebar": {
     "scopeLabel": "고객 범위",
-    "summarySubjectsLabel": "고객",
+    "summarySubjectsLabel": "분석 대상",
+    "subjectsCustomersLabel": "고객",
+    "subjectsGroupsLabel": "그룹",
+    "scopePresetsLabel": "그룹 프리셋",
+    "scopePresetsHint": "그룹을 선택하면 위 고객 범위가 해당 구성원으로 채워집니다.",
+    "scopePresetApply": "{name} 구성원을 범위에 적용",
     "scopeAll": "전체 고객",
     "scopeSelected": "고객 {total}명 중 {count}명",
     "bridgeLocked": "브릿지 세션으로 제한됨",
@@ -925,6 +930,11 @@
       "reportsDescription": "이 고객의 정기 보고서 버킷입니다.",
       "storiesDescription": "의심 이벤트의 사전 큐레이션된 상관관계입니다.",
       "eventsDescription": "이 고객에 대해 전달된 분석된 탐지 결과입니다."
+    },
+    "groupHub": {
+      "title": "고객 그룹",
+      "subtitle": "이 그룹 구성원을 아우르는 통합 정기 보고서입니다.",
+      "reportsDescription": "이 그룹에 대해 생성된 정기 보고서 버킷입니다."
     },
     "boundaries": {
       "reportsForbidden": "이 고객의 보고서를 볼 권한이 없습니다 (403). 고객 관리자에게 <code>reports:read</code> 권한 부여를 요청하세요.",

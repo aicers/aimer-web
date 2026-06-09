@@ -18,6 +18,14 @@ vi.mock("@/lib/analysis/report-index-page-loader", () => ({
   loadReportIndexPage: () => mockLoad(),
 }));
 
+// The index resolves the subject kind (#513) before loading; stub it to
+// `"customer"` and the auth pool so importing the page in jsdom does not pull
+// `server-only` / `pg`.
+vi.mock("@/lib/db/client", () => ({ getAuthPool: () => ({}) }));
+vi.mock("@/lib/db/subject-runtime-pool", () => ({
+  getSubjectKind: async () => "customer",
+}));
+
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");

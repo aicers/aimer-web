@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import { listGroupsWithMembers } from "@/lib/groups/groups";
 import { computeMemberAccess } from "./authorization";
 import { HttpError } from "./errors";
 
@@ -149,4 +150,70 @@ export async function resolveGroupReadOutcome(
     return "forbidden";
   }
   return "authorized";
+}
+
+// ---------------------------------------------------------------------------
+// Account-accessible group listing (#513)
+// ---------------------------------------------------------------------------
+
+/**
+ * One group the account may surface as a summary subject: the entity fields
+ * plus its ordered member customer ids and bucket timezone. Drives the sidebar
+ * group navigation and the scope-filter presets (#513). `memberIds` is carried
+ * so a scope preset can expand the group into its members client-side without a
+ * second round-trip.
+ */
+export interface AccessibleGroup {
+  id: string;
+  name: string;
+  description: string | null;
+  memberIds: string[];
+  tz: string;
+}
+
+/**
+ * List the groups `accountId` may VIEW: in v1 (reports-only) "can view" means
+ * the account holds `reports:read` on EVERY member customer — the same
+ * all-member union `resolveGroupReadOutcome` enforces, lifted to a list. A
+ * group inaccessible on even one member is dropped (existence-hiding), so a
+ * non-member never learns the group exists.
+ *
+ * Computed in two steps without per-group fan-out: load every group with its
+ * members, then resolve the viewer's per-customer access over the UNION of all
+ * member ids in a single `computeMemberAccess` call, and keep the groups whose
+ * every member carries `reports:read`. A member-less group never qualifies (an
+ * empty `every` would be vacuously true, but a group with no members reveals
+ * nothing — mirrors `resolveGroupReadOutcome`'s empty → not_found).
+ *
+ * Bridge handling is the caller's: the `GET /api/auth/groups` route
+ * short-circuits a bridge session to `{ groups: [] }` BEFORE calling this, the
+ * same short-circuit the other surfaces apply — this function adds no
+ * bridge-specific logic.
+ */
+export async function listAccessibleGroups(
+  client: PoolClient,
+  accountId: string,
+): Promise<AccessibleGroup[]> {
+  const groups = await listGroupsWithMembers(client);
+  if (groups.length === 0) return [];
+
+  const allMemberIds = [...new Set(groups.flatMap((g) => g.memberIds))];
+  const access = await computeMemberAccess(client, accountId, allMemberIds);
+
+  const visible: AccessibleGroup[] = [];
+  for (const { group, memberIds } of groups) {
+    if (memberIds.length === 0) continue;
+    const readable = memberIds.every(
+      (id) => access.get(id)?.permissions.has("reports:read") ?? false,
+    );
+    if (!readable) continue;
+    visible.push({
+      id: group.id,
+      name: group.name,
+      description: group.description,
+      memberIds,
+      tz: group.tz,
+    });
+  }
+  return visible;
 }

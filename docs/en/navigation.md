@@ -53,32 +53,45 @@ These pages render against one customer, so under an "all customers" or
 multi-customer scope their links are hidden and visiting them directly
 shows a "select a single customer" notice.
 
-### Customers (summary subjects)
+### Subjects (customers and groups)
 
-Below the navigation items, a **Customers** section lists every
-customer you can access. Each entry is a direct link to that customer's
-[analysis hub](analysis/customer-hub.md) (`/subjects/<id>`), which
-gathers the customer's reports, threat stories, and suspicious-event
-summaries in one place.
+Below the navigation items, a **Subjects** section lists the analysis
+subjects you can access, split into two visually-distinct sub-sections:
 
-- This is the **fastest path** to a customer's hub: open it straight
+- **Customers** — every customer you can access. Each entry links to
+    that customer's [analysis hub](analysis/customer-hub.md)
+    (`/subjects/<id>`), which gathers the customer's reports, threat
+    stories, and suspicious-event summaries in one place.
+- **Groups** — every customer group you can access, marked with a group
+    icon. Each entry links to that group's [analysis
+    hub](analysis/group-hub.md). A group appears here only when you hold
+    `reports:read` on **every** member; a group inaccessible on even one
+    member is omitted.
+
+The two sub-sections behave the same way:
+
+- This is the **fastest path** to a subject's hub: open it straight
     from the sidebar rather than drilling into a detail page and
     backtracking through the breadcrumb.
-- Clicking a customer **opens its hub**. It does **not** change the
+- Clicking a subject **opens its hub**. It does **not** change the
     customer scope — these links carry no `?scope=` parameter and leave
-    the cross-customer views untouched.
+    the cross-customer views untouched. (A group hub link is therefore
+    different from a group **scope preset**, described under the scope
+    selector below: the link opens the group hub, the preset fills the
+    scope filter.)
 - The section is **distinct** from the customer-scope selector below:
     the scope selector is an ephemeral filter for the cross-customer
     views, while this section is a set of persistent links into each
-    customer's own analysis surface.
-- The current customer's link is highlighted while you are anywhere
+    subject's own analysis surface.
+- The current subject's link is highlighted while you are anywhere
     under its hub, and the list scrolls on its own when you can access
-    many customers. In collapsed mode each entry shows an icon with the
-    customer name; hover for a tooltip.
+    many subjects. In collapsed mode each entry shows an icon with the
+    subject name; hover for a tooltip.
 
 In a bridge session this section is hidden. Bridge sessions cannot read
-a customer's analysis hub (the hub returns `403` under a bridge), so
-there are no reachable hubs to list.
+a subject's analysis hub (the hub returns `403` under a bridge), and the
+group list is empty under a bridge, so there are no reachable hubs to
+list.
 
 ![The sidebar Customers section listing each accessible customer as a direct link to its analysis hub](../assets/navigation-summary-subjects.en.png)
 
@@ -118,6 +131,25 @@ single customer by checking the customers you want.
 The selector is **customer-only**. There is no global AICE environment
 selector: an environment (`aiceId`) is chosen only inside a specific
 customer's deep routes, never as an app-wide control.
+
+### Group presets
+
+When you can access one or more customer groups, the scope selector also
+lists each group as a **preset** below the customer checkboxes. Selecting
+a preset **expands the group into its member customer ids** and applies
+them to the scope filter above — a convenient way to browse the
+cross-customer views over exactly a group's members.
+
+A group preset is a **pure view filter**, and is deliberately distinct
+from opening the group's hub (under **Subjects**):
+
+- A preset **fills the customer multi-select** with the group's members
+    and never navigates anywhere or produces any artifact.
+- Opening the group hub **navigates** to the group's own analysis
+    surface and never changes the scope filter.
+
+Presets are hidden in a bridge session (no groups are listed under a
+bridge).
 
 ![The sidebar customer-scope selector with every accessible customer checked — the default "all customers" state](../assets/navigation-scope-all.en.png)
 

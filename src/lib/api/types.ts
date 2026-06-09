@@ -38,6 +38,23 @@ export interface CustomerEntry {
   permissions: string[];
 }
 
+/**
+ * A customer group the account can surface as a summary subject (#513).
+ * Returned by `GET /api/auth/groups` — only groups where the viewer holds
+ * `reports:read` on EVERY member appear, and a bridge session gets none. Drives
+ * the sidebar group navigation (a hub link, no `?scope=`) and the scope-filter
+ * presets (which expand `memberIds` into the customer multi-select).
+ */
+export interface GroupEntry {
+  id: string;
+  name: string;
+  description: string | null;
+  /** Ordered member customer ids — a scope preset expands the group to these. */
+  memberIds: string[];
+  /** The group's bucket timezone (`customer_groups.tz`). */
+  tz: string;
+}
+
 export interface EnvironmentEntry {
   aiceId: string;
   name: string;

@@ -6,6 +6,8 @@ import {
   type CalendarViewport,
   loadReportCalendarPage,
 } from "@/lib/analysis/report-calendar-loader";
+import { getAuthPool } from "@/lib/db/client";
+import { getSubjectKind } from "@/lib/db/subject-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { subjectPages } from "@/lib/navigation/routes";
 import { ReportCalendar } from "./report-calendar";
@@ -105,10 +107,16 @@ export default async function ReportCalendarPage({
   const viewport = resolveViewport(calendarPeriod, sp, getCurrentTimestamp());
   if (viewport === null) notFound();
 
+  // Resolve the subject kind so a group's calendar uses group auth, the group
+  // result DB, and the group retention boundary (#513); an unknown subject 404s.
+  const kind = await getSubjectKind(getAuthPool(), subjectId);
+  if (kind === null) notFound();
+
   const outcome = await loadReportCalendarPage({
     subjectId,
     period: calendarPeriod,
     viewport,
+    subjectKind: kind,
   });
 
   // Same status mapping as the detail/index pages.

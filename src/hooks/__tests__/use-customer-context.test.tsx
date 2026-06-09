@@ -66,6 +66,18 @@ const mockCustomers = {
   ],
 };
 
+const mockGroups = {
+  groups: [
+    {
+      id: "g1",
+      name: "Group 1",
+      description: null,
+      memberIds: ["c1", "c2"],
+      tz: "UTC",
+    },
+  ],
+};
+
 function wrapper({ children }: { children: ReactNode }) {
   return <CustomerContextProvider>{children}</CustomerContextProvider>;
 }
@@ -78,6 +90,7 @@ describe("useCustomerContext", () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url === "/api/auth/me") return Promise.resolve(mockMe);
       if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
+      if (url === "/api/auth/groups") return Promise.resolve(mockGroups);
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
     Object.defineProperty(window, "location", {
@@ -86,7 +99,7 @@ describe("useCustomerContext", () => {
     });
   });
 
-  it("fetches /api/auth/me and /api/auth/customers in parallel on mount", async () => {
+  it("fetches /api/auth/me, /api/auth/customers, and /api/auth/groups in parallel on mount", async () => {
     const { result } = renderHook(() => useCustomerContext(), { wrapper });
 
     await waitFor(() => {
@@ -95,6 +108,8 @@ describe("useCustomerContext", () => {
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/me");
     expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/customers");
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/auth/groups");
+    expect(result.current.groups).toEqual(mockGroups.groups);
   });
 
   it("defaults to the all-scope (full accessible set) when no scope param", async () => {
@@ -129,6 +144,7 @@ describe("useCustomerContext", () => {
       if (url === "/api/auth/me") return Promise.resolve(mockMe);
       if (url === "/api/auth/customers")
         return Promise.resolve({ customers: [mockCustomers.customers[0]] });
+      if (url === "/api/auth/groups") return Promise.resolve(mockGroups);
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
 
@@ -186,6 +202,7 @@ describe("useCustomerContext", () => {
     mockApiFetch.mockImplementation((url: string) => {
       if (url === "/api/auth/me") return Promise.resolve(bridgeMe);
       if (url === "/api/auth/customers") return Promise.resolve(mockCustomers);
+      if (url === "/api/auth/groups") return Promise.resolve({ groups: [] });
       return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
 

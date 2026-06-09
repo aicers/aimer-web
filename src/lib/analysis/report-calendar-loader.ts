@@ -47,11 +47,15 @@ import "server-only";
 import type { Pool } from "pg";
 import { authorize } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
+import { resolveGroupReadOutcome } from "@/lib/auth/group-authorization";
 import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getSessionPolicy } from "@/lib/auth/session-policy";
 import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { getGroupRuntimePool } from "@/lib/db/group-runtime-pool";
+import type { SubjectKind } from "@/lib/db/subject-runtime-pool";
+import { getGroupWithMembers } from "@/lib/groups/groups";
 import { resolveDefaultModel } from "./default-model";
 import {
   enumerateMonthDays,
@@ -61,6 +65,7 @@ import {
 } from "./report-bucket-date";
 import {
   createCustomerRetentionProvider,
+  createGroupRetentionProvider,
   type SubjectRetentionProvider,
 } from "./subject-retention-provider";
 
@@ -109,6 +114,13 @@ export interface CalendarPageInput {
   subjectId: string;
   period: CalendarPeriod;
   viewport: CalendarViewport;
+  /**
+   * The subject kind (#513). A `group` authorizes via the all-member
+   * `reports:read` predicate, reads buckets from the group result DB, and uses
+   * the GROUP retention boundary. Defaults to `customer` (the single-customer
+   * behavior) when omitted.
+   */
+  subjectKind?: SubjectKind;
 }
 
 // --- Viewport helpers ------------------------------------------------------
@@ -270,33 +282,61 @@ export async function loadReportCalendarPage(
     return { kind: "unauthorized" };
   }
 
-  const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "reports:read", {
-      customerId: input.subjectId,
-      operationKind: "read",
-      // Bridge sessions cannot read these surfaces (round-15 S3), matching
-      // the detail and index loaders.
-      allowInBridge: false,
-      bridgeScope: bridgeCustomerIds
-        ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
-        : null,
-    }),
-  );
-  if (!auth.authorized) {
-    // Same mapping as the detail/index loaders: bridge denial and
-    // member-without-permission → 403; non-membership / non-existent → 404.
-    if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
-    if (auth.permissions !== undefined) return { kind: "forbidden" };
-    return { kind: "unauthorized" };
+  const subjectKind: SubjectKind = input.subjectKind ?? "customer";
+
+  let customerPool: Pool;
+  let provider: SubjectRetentionProvider;
+  if (subjectKind === "customer") {
+    const auth = await withTransaction(authPool, (client) =>
+      authorize(client, "general", claims.sub, "reports:read", {
+        customerId: input.subjectId,
+        operationKind: "read",
+        // Bridge sessions cannot read these surfaces (round-15 S3), matching
+        // the detail and index loaders.
+        allowInBridge: false,
+        bridgeScope: bridgeCustomerIds
+          ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
+          : null,
+      }),
+    );
+    if (!auth.authorized) {
+      // Same mapping as the detail/index loaders: bridge denial and
+      // member-without-permission → 403; non-membership / non-existent → 404.
+      if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
+      if (auth.permissions !== undefined) return { kind: "forbidden" };
+      return { kind: "unauthorized" };
+    }
+    customerPool = getCustomerRuntimePool(input.subjectId);
+    provider = createCustomerRetentionProvider(input.subjectId, authPool);
+  } else {
+    // Group: all-member `reports:read`, same existence-hiding mapping; a bridge
+    // session is denied outright (`allowInBridge: false` is not loosened).
+    if (bridgeCustomerIds !== null) return { kind: "forbidden" };
+    const outcome = await withTransaction(authPool, async (client) => {
+      const group = await getGroupWithMembers(client, input.subjectId);
+      if (group === null) return "not_found" as const;
+      return resolveGroupReadOutcome(
+        client,
+        claims.sub,
+        group.memberIds,
+        "reports:read",
+      );
+    });
+    if (outcome === "not_found") return { kind: "unauthorized" };
+    if (outcome === "forbidden") return { kind: "forbidden" };
+    customerPool = getGroupRuntimePool(input.subjectId);
+    // The GROUP retention boundary (B4): min(group_policy_days,
+    // min_over_members(H_c)), read in the group timezone.
+    provider = createGroupRetentionProvider(input.subjectId, authPool);
   }
 
   const data = await discoverCalendarBuckets({
     authPool,
-    customerPool: getCustomerRuntimePool(input.subjectId),
+    customerPool,
     subjectId: input.subjectId,
     period: input.period,
     viewport: input.viewport,
-    provider: createCustomerRetentionProvider(input.subjectId, authPool),
+    provider,
   });
   return { kind: "ok", data };
 }

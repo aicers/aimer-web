@@ -30,6 +30,25 @@ import { getGroupRuntimePool } from "./group-runtime-pool";
 
 export type SubjectKind = "customer" | "group";
 
+/**
+ * Read a subject's `kind` from the auth DB `subjects` table, or `null` when no
+ * subject with that id exists. A lightweight lookup for surfaces that must
+ * branch by kind WITHOUT resolving the (heavier) member pools — e.g. the hub
+ * page dispatching a customer vs group loader (#513). Every customer is a
+ * `kind='customer'` subject sharing its UUID (#503), so a customer id resolves
+ * to `"customer"` here.
+ */
+export async function getSubjectKind(
+  authPool: Pool,
+  subjectId: string,
+): Promise<SubjectKind | null> {
+  const { rows } = await authPool.query<{ kind: SubjectKind }>(
+    `SELECT kind FROM subjects WHERE id = $1`,
+    [subjectId],
+  );
+  return rows[0]?.kind ?? null;
+}
+
 /** One resolved member customer pool, in `customer_group_members` order. */
 export interface MemberPool {
   /** The member subject id (the customer id). */

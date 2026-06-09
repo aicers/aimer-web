@@ -15,6 +15,17 @@ vi.mock("@/lib/analysis/customer-hub-page-loader", () => ({
   loadCustomerHubPage: () => mockLoad(),
 }));
 
+// The hub dispatches by subject kind (#513); these fixtures are all customer
+// hubs, so stub the kind lookup to `"customer"` and the auth pool / group hub
+// loader so importing the page in jsdom does not pull `server-only` / `pg`.
+vi.mock("@/lib/db/client", () => ({ getAuthPool: () => ({}) }));
+vi.mock("@/lib/db/subject-runtime-pool", () => ({
+  getSubjectKind: async () => "customer",
+}));
+vi.mock("@/lib/analysis/group-hub-page-loader", () => ({
+  loadGroupHubPage: async () => ({ kind: "ok", sections: { reports: true } }),
+}));
+
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");

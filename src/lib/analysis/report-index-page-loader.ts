@@ -31,12 +31,20 @@ import {
 } from "@/i18n/locale";
 import { authorize } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
+import { resolveGroupReadOutcome } from "@/lib/auth/group-authorization";
 import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getSessionPolicy } from "@/lib/auth/session-policy";
 import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
-import { resolveDefaultModel } from "./default-model";
+import { getGroupRuntimePool } from "@/lib/db/group-runtime-pool";
+import type { SubjectKind } from "@/lib/db/subject-runtime-pool";
+import { getGroupWithMembers } from "@/lib/groups/groups";
+import {
+  type ModelPair,
+  resolveDefaultModel,
+  resolveGlobalDefaultModel,
+} from "./default-model";
 import type { PriorityTier } from "./priority-tier";
 import type { PeriodKind } from "./report-bucket-date";
 
@@ -117,6 +125,15 @@ export type ReportIndexPageOutcome =
 export interface ReportIndexPageInput {
   customerId: string;
   /**
+   * The report subject (#513). A `customer` subject keeps the single-customer
+   * behavior; a `group` subject authorizes via the all-member `reports:read`
+   * predicate and discovers buckets over the group result DB. Optional for
+   * backward compatibility: when omitted the subject is `customerId` as a
+   * `customer`. For a `group`, `id` is the group subject id and `customerId`
+   * is ignored by the group path.
+   */
+  subject?: { kind: SubjectKind; id: string };
+  /**
    * The viewer's resolved app locale (the page's `[locale]` route param).
    * Drives the per-bucket viewer-language fallback. Defaults to the English
    * baseline when absent / unrecognized.
@@ -156,28 +173,64 @@ export async function loadReportIndexPage(
     return { kind: "unauthorized" };
   }
 
-  const auth = await withTransaction(authPool, (client) =>
-    authorize(client, "general", claims.sub, "reports:read", {
-      customerId: input.customerId,
-      operationKind: "read",
-      // Bridge sessions cannot read these surfaces (round-15 S3): an
-      // in-scope bridge → 403, mirroring the detail page and the
-      // regenerate/summary endpoints.
-      allowInBridge: false,
-      bridgeScope: bridgeCustomerIds
-        ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
-        : null,
-    }),
-  );
-  if (!auth.authorized) {
-    // Same mapping as the detail loader: bridge denial and member-without-
-    // permission → 403; non-membership / non-existent customer → 404
-    // (existence-hiding). `authorizeGeneral` returns a `permissions` set
-    // for members (even without the required permission) and leaves it
-    // undefined for non-members; a `reason` is only set for bridge denials.
-    if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
-    if (auth.permissions !== undefined) return { kind: "forbidden" };
-    return { kind: "unauthorized" };
+  // The report subject (#513): a `customer` subject keeps the single-customer
+  // path; a `group` subject authorizes via the all-member `reports:read`
+  // predicate and reads buckets from the group result DB. When `subject` is
+  // omitted the subject is `customerId` as a customer.
+  const subjectKind: SubjectKind = input.subject?.kind ?? "customer";
+  const subjectId = input.subject?.id ?? input.customerId;
+
+  let resultPool: Pool;
+  let defaultPair: ModelPair | undefined;
+  if (subjectKind === "customer") {
+    const auth = await withTransaction(authPool, (client) =>
+      authorize(client, "general", claims.sub, "reports:read", {
+        customerId: subjectId,
+        operationKind: "read",
+        // Bridge sessions cannot read these surfaces (round-15 S3): an
+        // in-scope bridge → 403, mirroring the detail page and the
+        // regenerate/summary endpoints.
+        allowInBridge: false,
+        bridgeScope: bridgeCustomerIds
+          ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
+          : null,
+      }),
+    );
+    if (!auth.authorized) {
+      // Same mapping as the detail loader: bridge denial and member-without-
+      // permission → 403; non-membership / non-existent customer → 404
+      // (existence-hiding). `authorizeGeneral` returns a `permissions` set
+      // for members (even without the required permission) and leaves it
+      // undefined for non-members; a `reason` is only set for bridge denials.
+      if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
+      if (auth.permissions !== undefined) return { kind: "forbidden" };
+      return { kind: "unauthorized" };
+    }
+    resultPool = getCustomerRuntimePool(subjectId);
+    // Customer enrichment uses the three-tier default (resolved inside
+    // `discoverReportBuckets` from the subject id).
+  } else {
+    // Group: require `reports:read` on EVERY member, with the same existence-
+    // hiding mapping (non-member of any → 404, member-without-permission →
+    // 403). A bridge session is denied outright — `allowInBridge: false` is
+    // NOT loosened for groups.
+    if (bridgeCustomerIds !== null) return { kind: "forbidden" };
+    const outcome = await withTransaction(authPool, async (client) => {
+      const group = await getGroupWithMembers(client, subjectId);
+      if (group === null) return "not_found" as const;
+      return resolveGroupReadOutcome(
+        client,
+        claims.sub,
+        group.memberIds,
+        "reports:read",
+      );
+    });
+    if (outcome === "not_found") return { kind: "unauthorized" };
+    if (outcome === "forbidden") return { kind: "forbidden" };
+    resultPool = getGroupRuntimePool(subjectId);
+    // Group reports use the global/env default (the per-customer override join
+    // does not match a group subject), so display agrees with #524 generation.
+    defaultPair = await resolveGlobalDefaultModel(authPool, subjectId);
   }
 
   const viewerLanguage = isSupportedLocale(input.locale)
@@ -185,9 +238,10 @@ export async function loadReportIndexPage(
     : ENGLISH_BASELINE;
   const groups = await discoverReportBuckets(
     authPool,
-    getCustomerRuntimePool(input.customerId),
-    input.customerId,
+    resultPool,
+    subjectId,
     viewerLanguage,
+    defaultPair,
   );
   return { kind: "ok", groups };
 }
@@ -208,6 +262,14 @@ export async function discoverReportBuckets(
   customerPool: Pool,
   customerId: string,
   viewerLanguage: ReportLanguage = ENGLISH_BASELINE,
+  /**
+   * The default `(model_name, model)` variant enrichment matches against.
+   * Supplied by a group caller (the global/env default, since the per-customer
+   * override does not apply to a group subject, #513); when omitted (the
+   * customer path / db test) it is resolved from `customerId` via the
+   * three-tier `resolveDefaultModel`.
+   */
+  defaultPairOverride?: ModelPair,
 ): Promise<ReportPeriodGroup[]> {
   // --- Discovery (auth DB): non-archived state rows, capped per period --
   // The cap is applied in SQL (ROW_NUMBER per period) so the index never
@@ -264,7 +326,9 @@ export async function discoverReportBuckets(
   // customer DB unavailable) degrades to links-only rather than failing.
   if (items.length > 0) {
     try {
-      const defaultPair = await resolveDefaultModel(customerId, authPool);
+      const defaultPair =
+        defaultPairOverride ??
+        (await resolveDefaultModel(customerId, authPool));
       const periods = items.map((i) => i.period);
       const bucketDates = items.map((i) => i.bucketDate);
       const tzs = items.map((i) => i.tz);
