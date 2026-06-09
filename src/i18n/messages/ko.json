@@ -777,7 +777,12 @@
       "sectionSuspiciousEventTrends": "의심 이벤트 동향",
       "sectionPeriodOutlook": "기간 전망",
       "periodNavLabel": "보고서 기간",
-      "languageNavLabel": "보고서 언어"
+      "languageNavLabel": "보고서 언어",
+      "temporalNavLabel": "보고서 기록",
+      "prevReport": "이전 보고서",
+      "nextReport": "다음 보고서",
+      "noOlderRetained": "보관된 이전 보고서가 없습니다",
+      "openCalendar": "달력 열기"
     },
     "reportIndex": {
       "subtitle": "이 고객의 사용 가능한 보고서 버킷입니다. 버킷을 열어 보고서를 확인하세요.",
@@ -786,7 +791,28 @@
       "weekOf": "{start} – {end} 주",
       "statusUpdating": "업데이트 중",
       "statusReady": "준비됨",
-      "statusBeingGenerated": "생성 중"
+      "statusBeingGenerated": "생성 중",
+      "viewCalendar": "달력에서 모두 보기"
+    },
+    "reportCalendar": {
+      "title": "보고서 달력",
+      "subtitle": "보관된 보고서로 이동합니다. 강조된 버킷에는 보고서가 있으며, 회색 버킷은 보관 기간이 지났거나 보고서가 없습니다.",
+      "navLabel": "달력 기간 탐색",
+      "gridLabel": "보고서 달력",
+      "yearHeading": "{year}",
+      "prevMonth": "이전 달",
+      "nextMonth": "다음 달",
+      "prevYear": "이전 해",
+      "nextYear": "다음 해",
+      "backToReports": "보고서로 돌아가기",
+      "legendHasReport": "보고서 있음",
+      "legendNone": "보고서 없음",
+      "legendOutOfRetention": "보관 기간 지남",
+      "legendFuture": "미래",
+      "cellHasReport": "{label} — 보고서 열기",
+      "cellNone": "{label} — 보고서 없음",
+      "cellOutOfRetention": "{label} — 보관 기간 지남",
+      "cellFuture": "{label} — 미래"
     },
     "storyDetail": {
       "title": "스토리 분석",

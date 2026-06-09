@@ -22,6 +22,13 @@ export const subjectPages = {
     bucketDate: string,
   ) =>
     `/${locale}/subjects/${subjectId}/analysis/reports/${period}/${bucketDate}`,
+  /**
+   * Per-period calendar / date-jump (#505). Range-bounded by a viewport
+   * search param the caller appends (`?month=YYYY-MM` for DAILY,
+   * `?year=YYYY` for WEEKLY/MONTHLY). No calendar route for LIVE.
+   */
+  reportCalendar: (locale: string, subjectId: string, period: string) =>
+    `/${locale}/subjects/${subjectId}/analysis/reports/${period}/calendar`,
   storyIndex: (locale: string, subjectId: string) =>
     `/${locale}/subjects/${subjectId}/analysis/story`,
   story: (locale: string, subjectId: string, storyId: string) =>

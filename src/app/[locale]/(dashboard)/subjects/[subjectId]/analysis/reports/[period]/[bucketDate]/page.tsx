@@ -15,13 +15,18 @@ import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
+  calendarViewportQuery,
   isValidBucketDate,
   LIVE_BUCKET_DATE,
+  type PeriodKind,
 } from "@/lib/analysis/report-bucket-date";
+import { loadReportNeighbors } from "@/lib/analysis/report-calendar-loader";
 import {
   loadReportResultPage,
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
+import { getAuthPool } from "@/lib/db/client";
+import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import {
   mergeQuery,
@@ -32,6 +37,7 @@ import { ReportRegenerateButton } from "./regenerate-button";
 import { ReportLanguageStatus } from "./report-language-status";
 import { ReportLanguageSwitcher } from "./report-language-switcher";
 import { ReportPeriodTabs } from "./report-period-tabs";
+import { ReportTemporalNav } from "./report-temporal-nav";
 
 // The app locales offered by the language switcher, in display order.
 const SWITCHER_LOCALES: readonly AppLocale[] = ["en", "ko"];
@@ -242,6 +248,43 @@ export default async function ReportDetailPage({
     />
   );
 
+  // Within-period prev/next (#505): step to the nearest has-report bucket in
+  // the same period, bounded by retention (older) and the newest report
+  // (newer). N/A for LIVE — the rolling bucket has no temporal neighbors. The
+  // neighbor read is best-effort (own try/catch), so it never fails the page.
+  let temporalNav: React.ReactNode = null;
+  if (period !== "LIVE") {
+    const neighbors = await loadReportNeighbors({
+      authPool: getAuthPool(),
+      customerPool: getCustomerRuntimePool(customerId),
+      subjectId: customerId,
+      period: period as PeriodKind,
+      bucketDate,
+    });
+    temporalNav = (
+      <ReportTemporalNav
+        locale={locale}
+        subjectId={customerId}
+        period={period}
+        prev={neighbors.prev}
+        next={neighbors.next}
+        olderStop={neighbors.olderStop}
+        calendarHref={`${subjectPages.reportCalendar(
+          locale,
+          customerId,
+          period,
+        )}${calendarViewportQuery(period as PeriodKind, bucketDate)}`}
+        labels={{
+          navLabel: tA("reportDetail.temporalNavLabel"),
+          prev: tA("reportDetail.prevReport"),
+          next: tA("reportDetail.nextReport"),
+          noOlderRetained: tA("reportDetail.noOlderRetained"),
+          openCalendar: tA("reportDetail.openCalendar"),
+        }}
+      />
+    );
+  }
+
   if (outcome.kind === "pending") {
     return (
       <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -256,7 +299,8 @@ export default async function ReportDetailPage({
             })}
           </p>
         </header>
-        <div className="mb-6">{tabs}</div>
+        <div className="mb-2">{tabs}</div>
+        {temporalNav ? <div className="mb-6">{temporalNav}</div> : null}
         <div
           role="status"
           data-testid="pending-banner"
@@ -384,6 +428,7 @@ export default async function ReportDetailPage({
       </header>
 
       <div className="mb-2">{tabs}</div>
+      {temporalNav ? <div className="mb-4">{temporalNav}</div> : null}
       <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
         {/* Analyst-only compare control (#458): pick a second model to render
             side by side. Needs at least one other catalog model to offer. */}

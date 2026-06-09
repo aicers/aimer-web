@@ -65,6 +65,86 @@ non-member or non-existent customer returns `404`, while a member
 without `reports:read` or a rejected bridge session returns a real
 `403`.
 
+The recent list is a **preview**, not the full history: each period
+section (except Live) carries a **View all in calendar** link into the
+per-period calendar below, which reaches every retained bucket. The link
+opens the calendar already scrolled to the viewport (month for daily, year
+for weekly/monthly) that holds that period's most recent report, rather
+than the current month/year.
+
+## Report calendar
+
+The recent list on the index is intentionally short. To reach older
+reports, open the **calendar** for a period (the **View all in calendar**
+link on the index, or **Open calendar** beside the prev/next controls on a
+report). The calendar is the opt-in path to history; the default landing
+for a subject is always the most recent report.
+
+The calendar's granularity matches the period:
+
+- **Daily** → a month/day grid (`?month=YYYY-MM`).
+- **Weekly** → a list of weeks for a year (`?year=YYYY`).
+- **Monthly** → a year/month grid (`?year=YYYY`).
+
+**Live** has no calendar — it is a single rolling bucket. Previous/next
+controls at the top of the calendar step the viewport one month or one
+year at a time.
+
+![Placeholder for the per-period report calendar, pending a real-data recapture — the calendar's bucket states depend on generated reports, which the fixture stack cannot reproduce](../../assets/report-calendar.en.png)
+
+Each bucket renders in one of four states, visually distinct and only one
+of them navigable:
+
+- **Has report** — highlighted and clickable. A bucket is "has report"
+  when it has a real, non-superseded result for the default model that
+  resolves through the same language fallback the detail page uses
+  (your language → English → any) **and** a tracking state of `ready` or
+  `dirty` — the two states that mark a bucket as a finished (or refreshing)
+  report. A bucket that is still only being produced (`pending`, even if a
+  stale result has drifted into the report store), whose `ready`/`dirty`
+  state has no viewable result, or whose result lingers in the report store
+  while the tracking state is missing or archived, is **not** "has report".
+  This is the same rule the prev/next stepping uses, so a cell never looks
+  ready in the calendar but steps to a bucket that would not render.
+- **No report** — within retention but with no result; greyed and
+  non-navigable.
+- **Out of retention** — older than the subject's retention boundary
+  (below); greyed and non-navigable.
+- **Future** — a bucket whose start is after today in the subject's
+  timezone; greyed and non-navigable.
+
+Calendar discovery is bounded **two** ways: it reads only the requested
+viewport (one month or one year at a time, never the whole history) and it
+greys anything past the retention boundary. The per-period recent caps
+(`ANALYSIS_REPORT_INDEX_CAP_*`) do **not** limit the calendar — they only
+bound the index preview.
+
+### Retention boundary
+
+How far back the calendar and prev/next will navigate is governed by the
+subject's **retention policy**, not by a fixed count. The navigable range
+is never wider than the retained range. For a customer the boundary comes
+from `customer_retention_policy.analysis_days`:
+
+- `boundary = today (in the subject's timezone) − analysis_days`.
+- A bucket is navigable when its **start date is on or after** the
+  boundary; a bucket that starts earlier is out of retention, even if its
+  window straddles the boundary.
+- `analysis_days = NULL` means **unbounded** retention — no lower bound,
+  so every past bucket in the requested viewport stays navigable.
+
+For example, with `analysis_days = 30` and today `2026-06-09` the boundary
+is `2026-05-10`: a daily bucket for `2026-05-10` is navigable, `2026-05-09`
+is out of retention; a weekly bucket whose Monday is `2026-05-04` is out
+(its start precedes the boundary) while the week starting `2026-05-11` is
+in; the `2026-05` monthly bucket is out (it starts `2026-05-01`) while
+`2026-06` is in.
+
+> The retention boundary here is a **navigation** boundary derived from
+> policy. The retention sweeper does not currently delete report rows, so
+> an out-of-retention bucket may still exist in storage; the calendar
+> simply does not navigate to it.
+
 ## Report periods
 
 Four report periods are produced, each over a different window in the
@@ -123,6 +203,32 @@ you can move between cadences freely. Any pinned variant
 (`?tz=&lang=&model_name=&model=`) carries across the tabs.
 
 ![The Live / Daily / Weekly / Monthly period tab bar shown above the report body, with the Weekly tab active and the other three linking to the report for the same stretch of time at their own cadence](../../assets/report-period-tabs.en.png)
+
+## Within-period navigation (prev/next)
+
+Below the period tabs, a **◀ previous / next ▶** control moves through
+time **within the same period** — yesterday's daily, last week's weekly,
+last month's monthly — complementing the tabs, which switch *period* but
+not *time*. Each step lands on the **nearest bucket that has a report**,
+skipping gaps and not-yet-generated buckets, so you never land on an empty
+page.
+
+Both ends are explicit states, never a dead link or a `404`:
+
+- **Older end** — when an older report exists but has aged out past the
+  retention boundary, the previous control shows a disabled **No older
+  reports retained** state instead of a link. At the very first report —
+  nothing older exists at all, or retention is unbounded — there is simply
+  no previous control; the boundary message appears only when retention is
+  actually the reason there is nowhere older to go.
+- **Newer end** — at the most recent report there is simply no next
+  control.
+
+An **Open calendar** link sits beside the controls for jumping straight to
+a date; it opens the calendar at the viewport (month or year) containing the
+report you are currently reading, not the current month/year. **Live** has
+no prev/next (it is a single rolling bucket), so the control is not shown
+there.
 
 ## Report language
 

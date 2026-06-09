@@ -3,7 +3,10 @@ import { forbidden, notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
-import type { PeriodKind } from "@/lib/analysis/report-bucket-date";
+import {
+  calendarViewportQuery,
+  type PeriodKind,
+} from "@/lib/analysis/report-bucket-date";
 import {
   loadReportIndexPage,
   type ReportBucketItem,
@@ -105,12 +108,30 @@ function PeriodSection({
       aria-labelledby={`period-heading-${group.period}`}
       data-testid={`period-section-${group.period}`}
     >
-      <h2
-        id={`period-heading-${group.period}`}
-        className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground"
-      >
-        {periodLabels[group.period]}
-      </h2>
+      <div className="mb-2 flex items-baseline justify-between gap-3">
+        <h2
+          id={`period-heading-${group.period}`}
+          className="text-sm font-semibold uppercase tracking-wide text-muted-foreground"
+        >
+          {periodLabels[group.period]}
+        </h2>
+        {/* The hub keeps its capped "recent" preview (#369); the calendar is
+            the "view all / go back" affordance into history (#505). LIVE is a
+            single rolling bucket — no calendar. */}
+        {group.period !== "LIVE" && (
+          <Link
+            href={`${subjectPages.reportCalendar(
+              locale,
+              subjectId,
+              group.period,
+            )}${calendarViewportQuery(group.period, latest.bucketDate)}`}
+            data-testid={`period-calendar-link-${group.period}`}
+            className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {t("reportIndex.viewCalendar")}
+          </Link>
+        )}
+      </div>
       <BucketCard
         item={latest}
         locale={locale}

@@ -83,3 +83,110 @@ export function periodBucketDate(
   d.setUTCDate(d.getUTCDate() - offset);
   return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
 }
+
+// ---------------------------------------------------------------------------
+// Calendar-day helpers shared by the temporal-navigation surfaces (#505):
+// the retention provider (today-in-tz, boundary subtraction) and the
+// calendar/neighbor loaders (viewport enumeration). Kept here next to the
+// existing bucket-date math so every surface derives bucket starts the same
+// way the worker truncates them (UTC calendar days).
+// ---------------------------------------------------------------------------
+
+function fmtDay(d: Date): string {
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+}
+
+/**
+ * Format `at` as a `YYYY-MM-DD` calendar day in `tz`. A malformed tz makes
+ * `Intl.DateTimeFormat` throw `RangeError`; swallow it and fall back to UTC
+ * so a bad stored timezone cannot crash a navigation surface. `en-CA` yields
+ * the ISO `YYYY-MM-DD` ordering directly.
+ */
+export function formatDayInTz(at: Date, tz: string | undefined): string {
+  const opts: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || "UTC",
+      ...opts,
+    }).format(at);
+  } catch {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "UTC",
+      ...opts,
+    }).format(at);
+  }
+}
+
+/**
+ * `YYYY-MM-DD` shifted by `days` (negative allowed), pure UTC calendar math.
+ * Returns the input unchanged when it is not a valid calendar date.
+ */
+export function addCalendarDays(date: string, days: number): string {
+  if (!isValidBucketDate(date)) return date;
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  return fmtDay(dt);
+}
+
+/**
+ * Calendar-viewport query string (`#505`) for the viewport that CONTAINS
+ * `bucketDate`, matching the calendar route's granularity-bound params:
+ * DAILY → `?month=YYYY-MM`, WEEKLY/MONTHLY → `?year=YYYY`. Returns `""` for
+ * LIVE (no calendar) or a malformed date, so callers can append it
+ * unconditionally and a generated "open calendar" link always lands on the
+ * canonical, range-bound viewport that holds the bucket the operator was
+ * reading — never the bare `/calendar` path that silently defaults to the
+ * current month/year.
+ */
+export function calendarViewportQuery(
+  period: PeriodKind,
+  bucketDate: string,
+): string {
+  if (period === "LIVE" || !isValidBucketDate(bucketDate)) return "";
+  if (period === "DAILY") return `?month=${bucketDate.slice(0, 7)}`;
+  return `?year=${bucketDate.slice(0, 4)}`;
+}
+
+/** Every `YYYY-MM-DD` day in the given month (`month` is 1-based). */
+export function enumerateMonthDays(year: number, month: number): string[] {
+  const days: string[] = [];
+  const count = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  for (let day = 1; day <= count; day += 1) {
+    days.push(`${year}-${pad2(month)}-${pad2(day)}`);
+  }
+  return days;
+}
+
+/** The twelve `YYYY-MM-01` month-start bucket dates of `year`. */
+export function enumerateYearMonths(year: number): string[] {
+  const months: string[] = [];
+  for (let m = 1; m <= 12; m += 1) months.push(`${year}-${pad2(m)}-01`);
+  return months;
+}
+
+/**
+ * Every ISO-Monday week-start `YYYY-MM-DD` whose Monday falls within `year`,
+ * matching the WEEKLY bucket key (`date_trunc('week')`). A week is listed
+ * under the calendar year of its Monday, so a week straddling the New Year
+ * appears once, under the year that contains its start.
+ */
+export function enumerateYearWeeks(year: number): string[] {
+  // Start from the Monday of the week containing Jan 1, then step weekly,
+  // keeping only Mondays whose own year is `year`.
+  const jan1 = new Date(Date.UTC(year, 0, 1));
+  const dow = jan1.getUTCDay();
+  const offset = dow === 0 ? 6 : dow - 1;
+  const cursor = new Date(jan1);
+  cursor.setUTCDate(cursor.getUTCDate() - offset);
+  const weeks: string[] = [];
+  while (cursor.getUTCFullYear() <= year) {
+    if (cursor.getUTCFullYear() === year) weeks.push(fmtDay(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() + 7);
+  }
+  return weeks;
+}
