@@ -13,6 +13,7 @@ import {
   assertAllMemberManagement,
   hasAllMemberManagement,
   hasAllMemberReadPermission,
+  resolveGroupReadOutcome,
 } from "../group-authorization";
 
 const MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
@@ -251,6 +252,77 @@ describe.skipIf(!hasPostgres)("group all-member predicates (DB)", () => {
         ),
       );
       expect(ok).toBe(false);
+    });
+  });
+
+  describe("resolveGroupReadOutcome (#525 existence-hiding)", () => {
+    it("authorizes when the account holds the permission on every member", async () => {
+      const outcome = await withClient((c) =>
+        resolveGroupReadOutcome(c, userAcct, [c1, c2], "reports:read"),
+      );
+      expect(outcome).toBe("authorized");
+    });
+
+    it("forbids a member that lacks the permission on one member (403, not 404)", async () => {
+      // `mixedAcct` is a Manager on c1 (has customer-settings:write) and a
+      // plain User on c2 (does not) — a MEMBER of both, missing the permission
+      // on one: the member-without-permission → 403 case, distinct from a
+      // non-member.
+      const outcome = await withClient((c) =>
+        resolveGroupReadOutcome(
+          c,
+          mixedAcct,
+          [c1, c2],
+          "customer-settings:write",
+        ),
+      );
+      expect(outcome).toBe("forbidden");
+    });
+
+    it("hides the group (404) from a non-member of any single member", async () => {
+      const stranger = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', 'gro-stranger', 'gro-stranger', 'gro-stranger') RETURNING id`,
+      );
+      const outcome = await withClient((c) =>
+        resolveGroupReadOutcome(
+          c,
+          stranger.rows[0].id,
+          [c1, c2],
+          "reports:read",
+        ),
+      );
+      expect(outcome).toBe("not_found");
+    });
+
+    it("hides the group (404) when the account is a member of only some members", async () => {
+      // Member of c1 only (via the User membership added in setup is on both;
+      // build a fresh single-member account to isolate the partial case).
+      const partial = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', 'gro-partial', 'gro-partial', 'gro-partial') RETURNING id`,
+      );
+      await pool.query(
+        `INSERT INTO account_customer_memberships (account_id, customer_id, role_id)
+         VALUES ($1, $2, $3)`,
+        [partial.rows[0].id, c1, userRoleId],
+      );
+      const outcome = await withClient((c) =>
+        resolveGroupReadOutcome(
+          c,
+          partial.rows[0].id,
+          [c1, c2],
+          "reports:read",
+        ),
+      );
+      expect(outcome).toBe("not_found");
+    });
+
+    it("hides the group (404) for an empty member list (no vacuous grant)", async () => {
+      const outcome = await withClient((c) =>
+        resolveGroupReadOutcome(c, managerAcct, [], "reports:read"),
+      );
+      expect(outcome).toBe("not_found");
     });
   });
 });

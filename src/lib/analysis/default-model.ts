@@ -132,6 +132,28 @@ export async function resolveDefaultModel(
     });
   }
 
+  // Tiers 2 + 3: admin global → env.
+  return resolveGlobalDefaultModel(db, customerId);
+}
+
+/**
+ * Resolve the default `(modelName, model)` from the global/env tiers ONLY —
+ * the admin-set `system_settings` default → the env fallback — skipping the
+ * per-customer tier. This is the default-model resolution for a `group`
+ * subject (#524/#525): a group has no `customer_default_model` row (that join
+ * is per-customer and does not match a group subject), so display and
+ * generation agree on "the default" by reading the global/env tiers the same
+ * way `resolveDefaultModel`'s second half does. Always returns a pair — the
+ * env default is the guaranteed floor.
+ *
+ * @param db optional Pool/PoolClient to run on (defaults to the auth pool).
+ * @param logSubject identity stamped on the resolver's diagnostic log lines
+ *   (the customer id for a customer subject, the group id for a group).
+ */
+export async function resolveGlobalDefaultModel(
+  db: Queryable = getAuthPool(),
+  logSubject = "global",
+): Promise<ModelPair> {
   // Tier 2: admin-set global default.
   try {
     const res = await db.query<{ value: unknown }>(
@@ -141,13 +163,13 @@ export async function resolveDefaultModel(
     if (res.rows.length > 0) {
       const pair = coercePair(res.rows[0].value);
       if (pair && isModelAllowed(pair.modelName, pair.model)) return pair;
-      logResolverEvent("stale_global_default", customerId, {
+      logResolverEvent("stale_global_default", logSubject, {
         stored: res.rows[0].value,
         action: "fell back to env",
       });
     }
   } catch (err) {
-    logResolverEvent("global_lookup_failed", customerId, {
+    logResolverEvent("global_lookup_failed", logSubject, {
       error: err instanceof Error ? err.message : String(err),
     });
   }

@@ -104,3 +104,49 @@ export async function hasAllMemberReadPermission(
     (id) => access.get(id)?.permissions.has(permission) ?? false,
   );
 }
+
+/**
+ * Three-way authorization outcome for a group read surface, preserving the
+ * single-customer loaders' existence-hiding contract (#525):
+ *
+ *   - `"authorized"` — the account holds `permission` on EVERY member;
+ *   - `"forbidden"` — the account is a member of (has a membership/eligible-
+ *     analyst relationship with) every member customer but is MISSING
+ *     `permission` on at least one → 403;
+ *   - `"not_found"` — the account has NO relationship with at least one member
+ *     customer → 404, so a non-member cannot even learn the group (or its
+ *     member list) exists.
+ *
+ * Mirrors the per-customer mapping `authorizeGeneral` drives (member-without-
+ * permission → 403, non-member → 404), lifted to "every member". Built on the
+ * same `computeMemberAccess` grant union as {@link hasAllMemberReadPermission}
+ * (membership ∪ `analyst_eligible`-gated analyst), computed once. An empty
+ * member list is `"not_found"` (a group with no members reveals nothing).
+ */
+export type GroupReadOutcome = "authorized" | "forbidden" | "not_found";
+
+export async function resolveGroupReadOutcome(
+  client: PoolClient,
+  accountId: string,
+  memberCustomerIds: string[],
+  permission: string,
+): Promise<GroupReadOutcome> {
+  if (memberCustomerIds.length === 0) return "not_found";
+  const access = await computeMemberAccess(
+    client,
+    accountId,
+    memberCustomerIds,
+  );
+  // Non-member of any single customer hides the whole group (existence-
+  // hiding): the account is absent from the access map for that customer.
+  if (!memberCustomerIds.every((id) => access.has(id))) return "not_found";
+  // Member of every customer, but missing the read permission on one → 403.
+  if (
+    !memberCustomerIds.every(
+      (id) => access.get(id)?.permissions.has(permission) ?? false,
+    )
+  ) {
+    return "forbidden";
+  }
+  return "authorized";
+}
