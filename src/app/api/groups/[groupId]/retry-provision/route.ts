@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { HttpError } from "@/lib/auth/errors";
-import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
+import { assertGroupOwner } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { provisionGroupDb } from "@/lib/db/provision-group";
@@ -11,8 +11,8 @@ const UUID_RE =
 
 // POST /api/groups/[groupId]/retry-provision — re-run provisioning for a
 // group whose data DB is in `failed` state. The operator recovery trigger
-// peer of the customer `retry-provision` endpoint. Auth (interim): the
-// all-member management predicate (#510 later narrows to owner-only).
+// peer of the customer `retry-provision` endpoint. Auth: owner-only (#510
+// narrows the interim all-member management gate).
 //
 // provisionGroupDb is idempotent / retry-safe: CREATE DATABASE and the DEK
 // generation skip when already present, and migrations resume from the
@@ -43,7 +43,8 @@ export const POST = withAuth(
         return Response.json({ error: "Group not found" }, { status: 404 });
       }
 
-      await assertAllMemberManagement(client, auth.accountId, loaded.memberIds);
+      // Owner-only (#510 narrows the interim all-member management gate).
+      assertGroupOwner(loaded.group.ownerId, auth.accountId);
 
       const { rows } = await client.query<{ database_status: string }>(
         "SELECT database_status FROM customer_groups WHERE id = $1",

@@ -9,6 +9,9 @@ import {
   customerTransitKeyName,
   getAdminUrl,
 } from "../db/customer-db";
+import { teardownGroupDb } from "../db/teardown-group";
+import { deleteGroup } from "../groups/groups";
+import { groupIdsContainingCustomer } from "../groups/lifecycle";
 import { HttpError } from "./errors";
 
 // ---------------------------------------------------------------------------
@@ -44,9 +47,27 @@ export async function deleteCustomer(
   // -----------------------------------------------------------------------
   // Phase 1: Auth DB cleanup (transactional)
   // -----------------------------------------------------------------------
+  // Group ids the customer belonged to — collected in-transaction (below)
+  // so their dedicated databases can be torn down after commit.
+  let orphanedGroupIds: string[] = [];
+
   const client = await authPool.connect();
   try {
     await client.query("BEGIN");
+
+    // Step 0: Group lifecycle (#510). Deleting a member customer auto-deletes
+    // every group it belongs to: a group's member set is immutable, so a
+    // group can never lose a member and keep generating. `deleteCustomer`
+    // removes the `customers` row at Step 3, whose ON DELETE CASCADE on
+    // `customer_group_members` erases the membership rows needed to find the
+    // groups — so collect the group ids and delete the group ENTITIES here,
+    // BEFORE that cascade. The dedicated databases are torn down post-commit
+    // (Step 7), mirroring the group DELETE path; FK cascade alone would
+    // orphan a still-provisioned database.
+    orphanedGroupIds = await groupIdsContainingCustomer(client, customerId);
+    for (const groupId of orphanedGroupIds) {
+      await deleteGroup(client, groupId);
+    }
 
     // Step 1: Delete staged_event_customers for this customer (no CASCADE)
     await client.query(
@@ -100,6 +121,22 @@ export async function deleteCustomer(
   // that PII is cleaned while the data is still readable. After
   // crypto-shredding, backup artifacts become unreadable.
   // -----------------------------------------------------------------------
+
+  // Step 7: Tear down the dedicated database of every group auto-deleted
+  // above (best-effort, mirroring the group DELETE path). A teardown failure
+  // is swallowed internally and never blocks the customer delete — the
+  // groups' auth-DB rows are already gone, and the lifecycle sweep converges
+  // any leftover database.
+  for (const groupId of orphanedGroupIds) {
+    try {
+      await teardownGroupDb(auditOwnerPool, groupId, actorContext);
+    } catch (err) {
+      console.error(
+        `Failed to tear down auto-deleted group ${groupId} after deleting customer ${customerId}:`,
+        (err as Error).message,
+      );
+    }
+  }
 
   // Step 4: DROP DATABASE
   const dbName = customerDbName(customerId);

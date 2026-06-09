@@ -43,10 +43,17 @@ vi.mock("@/lib/db/teardown-group", () => ({
   teardownGroupDb: (...a: unknown[]) => mockTeardownGroupDb(...a),
 }));
 
+// Keep the REAL `assertGroupOwner` (a pure owner-id check used by DELETE)
+// while stubbing the async all-member predicate that retention/timezone use.
 const mockAssertManagement = vi.fn();
-vi.mock("@/lib/auth/group-authorization", () => ({
-  assertAllMemberManagement: (...a: unknown[]) => mockAssertManagement(...a),
-}));
+vi.mock("@/lib/auth/group-authorization", async (importActual) => {
+  const actual =
+    await importActual<typeof import("@/lib/auth/group-authorization")>();
+  return {
+    ...actual,
+    assertAllMemberManagement: (...a: unknown[]) => mockAssertManagement(...a),
+  };
+});
 
 const mockGetGroupWithMembers = vi.fn();
 const mockDeleteGroup = vi.fn();
@@ -61,11 +68,17 @@ vi.mock("@/lib/groups/groups", () => ({
   updateGroupTimezone: (...a: unknown[]) => mockUpdateGroupTimezone(...a),
 }));
 
+const mockProvisionGroupDb = vi.fn();
+vi.mock("@/lib/db/provision-group", () => ({
+  provisionGroupDb: (...a: unknown[]) => mockProvisionGroupDb(...a),
+}));
+
 const { DELETE } = await import("../route");
 const { GET: RETENTION_GET, PUT: RETENTION_PUT } = await import(
   "../retention/route"
 );
 const { PUT: TIMEZONE_PUT } = await import("../timezone/route");
+const { POST: RETRY_PROVISION } = await import("../retry-provision/route");
 const { HttpError } = await import("@/lib/auth/errors");
 
 const GID = "33333333-3333-3333-3333-333333333333";
@@ -101,6 +114,7 @@ beforeEach(() => {
   mockGetGroupWithMembers.mockResolvedValue(loaded);
   mockTeardownGroupDb.mockResolvedValue(undefined);
   mockAuditLog.mockResolvedValue(undefined);
+  mockProvisionGroupDb.mockResolvedValue("active");
 });
 
 describe("DELETE /api/groups/[groupId]", () => {
@@ -117,8 +131,11 @@ describe("DELETE /api/groups/[groupId]", () => {
     expect(mockAssertManagement).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when the management predicate fails", async () => {
-    mockAssertManagement.mockRejectedValue(new HttpError("Forbidden", 403));
+  it("returns 403 when the requester is not the group owner (#510)", async () => {
+    mockGetGroupWithMembers.mockResolvedValue({
+      ...loaded,
+      group: { ...loaded.group, ownerId: "someone-else" },
+    });
     const res = await DELETE(req(`/api/groups/${GID}`));
     expect(res.status).toBe(403);
     expect(mockDeleteGroup).not.toHaveBeenCalled();
@@ -174,6 +191,51 @@ describe("DELETE /api/groups/[groupId]", () => {
     const res = await pending;
     expect(res.status).toBe(204);
     expect(mockTeardownGroupDb).toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/groups/[groupId]/retry-provision", () => {
+  const path = `/api/groups/${GID}/retry-provision`;
+
+  it("returns 403 when the requester is not the group owner (#510)", async () => {
+    mockGetGroupWithMembers.mockResolvedValue({
+      ...loaded,
+      group: { ...loaded.group, ownerId: "someone-else" },
+    });
+    const res = await RETRY_PROVISION(req(path));
+    expect(res.status).toBe(403);
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    mockGetGroupWithMembers.mockResolvedValue(null);
+    const res = await RETRY_PROVISION(req(path));
+    expect(res.status).toBe(404);
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when database_status is not 'failed'", async () => {
+    fakeClient.query.mockResolvedValue({
+      rows: [{ database_status: "active" }],
+    });
+    const res = await RETRY_PROVISION(req(path));
+    expect(res.status).toBe(409);
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("re-provisions for the owner when database_status is 'failed'", async () => {
+    fakeClient.query.mockResolvedValue({
+      rows: [{ database_status: "failed" }],
+    });
+    mockProvisionGroupDb.mockResolvedValue("provisioning");
+    const res = await RETRY_PROVISION(req(path));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ databaseStatus: "provisioning" });
+    expect(mockProvisionGroupDb).toHaveBeenCalledWith(
+      fakePool,
+      GID,
+      expect.objectContaining({ isRetry: true }),
+    );
   });
 });
 

@@ -32,6 +32,28 @@ export interface ProvisionOptions {
   isRetry?: boolean;
 }
 
+/**
+ * Re-evaluate the lifecycle of every group this customer belongs to after a
+ * `database_status` write (#510). A member DB going `failed` suspends its
+ * groups; a member DB returning to `active` can resume them. Best-effort —
+ * a reconcile hiccup never fails provisioning, and the sweep converges.
+ */
+async function reconcileGroupsBestEffort(
+  authPool: Pool,
+  customerId: string,
+  actorContext?: ActorContext,
+): Promise<void> {
+  try {
+    const { reconcileGroupsForCustomer } = await import("../groups/lifecycle");
+    await reconcileGroupsForCustomer(authPool, customerId, { actorContext });
+  } catch (err) {
+    console.error(
+      `Group lifecycle reconcile after provisioning customer ${customerId} failed:`,
+      (err as Error).message,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -156,6 +178,7 @@ export async function provisionCustomerDb(
       });
     }
 
+    await reconcileGroupsBestEffort(authPool, customerId, actorContext);
     return "active";
   } catch (err) {
     console.error(
@@ -193,6 +216,7 @@ export async function provisionCustomerDb(
       });
     }
 
+    await reconcileGroupsBestEffort(authPool, customerId, actorContext);
     return "failed";
   }
 }

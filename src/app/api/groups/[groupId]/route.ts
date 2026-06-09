@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
-import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
+import { assertGroupOwner } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
 import { teardownGroupDb } from "@/lib/db/teardown-group";
@@ -20,10 +20,11 @@ function extractGroupId(req: NextRequest): string | null {
 
 // DELETE /api/groups/[groupId] — entity-level delete.
 //
-// Auth (interim): the all-member management predicate (#510 later narrows
-// to owner-only). Removes the group / member / subject rows and the
-// group's auth-DB retention-policy row via ON DELETE CASCADE from the
-// subject row — no orphan policy survives.
+// Auth: owner-only (#510). Only the group's current `owner_id` may manually
+// delete it; the lifecycle evaluator keeps that owner a qualifying manager.
+// Removes the group / member / subject rows and the group's auth-DB
+// retention-policy row via ON DELETE CASCADE from the subject row — no
+// orphan policy survives.
 export const DELETE = withAuth(
   async (req: NextRequest, auth) => {
     const originErr = verifyOrigin(req);
@@ -56,7 +57,8 @@ export const DELETE = withAuth(
         return Response.json({ error: "Group not found" }, { status: 404 });
       }
 
-      await assertAllMemberManagement(client, auth.accountId, loaded.memberIds);
+      // Owner-only (#510 narrows the interim all-member management gate).
+      assertGroupOwner(loaded.group.ownerId, auth.accountId);
 
       const deleted = await deleteGroup(client, groupId);
       if (!deleted) {

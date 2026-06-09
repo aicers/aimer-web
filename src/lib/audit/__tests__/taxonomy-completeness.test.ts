@@ -72,6 +72,11 @@ const PRODUCED: Record<string, string> = {
     "src/app/api/groups/[groupId]/timezone/route.ts",
   "group_retention_policy.updated":
     "src/app/api/groups/[groupId]/retention/route.ts",
+  // Customer-group lifecycle enforcement (#510)
+  "customer_group.owner_transferred": "src/lib/groups/lifecycle.ts",
+  "customer_group.auto_deleted": "src/lib/groups/lifecycle.ts",
+  "customer_group.suspended": "src/lib/groups/lifecycle.ts",
+  "customer_group.resumed": "src/lib/groups/lifecycle.ts",
   "customer_redaction_ranges.retroactive_started":
     "src/lib/instrumentation/redaction-job-worker.ts",
   "customer_redaction_ranges.retroactive_completed":

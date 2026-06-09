@@ -4,6 +4,7 @@ import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
+import { reconcileGroupsForAccount } from "@/lib/groups/lifecycle";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -191,6 +192,26 @@ export const PATCH = withAuth(
           ipAddress: auth.meta.ipAddress,
           sid: auth.sessionId,
         });
+
+        // Group lifecycle (#510): revoking `analyst_eligible` disqualifies
+        // every group this account managed only via analyst assignments, so
+        // re-evaluate them (owner transfer / auto-delete). Best-effort — the
+        // sweep converges if this hiccups.
+        try {
+          await reconcileGroupsForAccount(pool, accountId, {
+            actorContext: {
+              actorId: auth.accountId,
+              authContext: "admin",
+              ipAddress: auth.meta.ipAddress,
+              sid: auth.sessionId,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `Group lifecycle reconcile after analyst-eligibility revoke for ${accountId} failed:`,
+            (err as Error).message,
+          );
+        }
       }
 
       return Response.json({ accountId, analystEligible });

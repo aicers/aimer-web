@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Pool } from "pg";
 import { decryptDataKey, getTransitConfig } from "../crypto/transit";
+import { reconcileGroupsForCustomer } from "../groups/lifecycle";
 import {
   customerDbUrl,
   customerLockId,
@@ -9,6 +10,15 @@ import {
 } from "./customer-db";
 import type { MigrationContext } from "./migrate";
 import { runMigrations } from "./migrate";
+
+// Group lifecycle (#510): a `database_status` write here can flip a member
+// customer between operable and non-operable, so the groups it belongs to are
+// re-evaluated (suspend / resume / auto-delete). System-initiated, so the
+// audit actor is `system`. NOTE: pulling in `lifecycle.ts` transitively loads
+// the `server-only`-tagged audit module, so this CLI must run via
+// `tsx --conditions=react-server` (wired in package.json) — that condition
+// resolves `server-only` to its no-op, as the Next.js server bundle does.
+const SYSTEM_ACTOR = { actorId: "system", authContext: "admin" } as const;
 
 async function main() {
   const args = process.argv.slice(2);
@@ -88,6 +98,9 @@ async function main() {
               "UPDATE customers SET database_status = 'active' WHERE id = $1",
               [customer.id],
             );
+            await reconcileGroupsForCustomer(authPool, customer.id, {
+              actorContext: SYSTEM_ACTOR,
+            });
           }
         }
         console.log(`Customer ${customer.id}: migrations complete`);
@@ -100,6 +113,9 @@ async function main() {
           "UPDATE customers SET database_status = 'failed' WHERE id = $1",
           [customer.id],
         );
+        await reconcileGroupsForCustomer(authPool, customer.id, {
+          actorContext: SYSTEM_ACTOR,
+        });
       } finally {
         await customerPool.end();
       }
