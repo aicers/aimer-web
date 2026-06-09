@@ -95,6 +95,26 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
     );
   }
 
+  // Seed the auth-side `periodic_report_state` row a bucket needs to be
+  // navigable: the calendar/neighbor predicate intersects results with a
+  // non-archived state row (the detail route's gate), so a result without a
+  // live state row is a drift bucket and stays non-navigable.
+  async function seedState(args: {
+    period: string;
+    bucketDate: string;
+    tz?: string;
+    status: "pending" | "ready" | "dirty" | "archived";
+  }): Promise<void> {
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (subject_id, period, bucket_date, tz, status)
+       VALUES ($1, $2, $3::date, $4, $5)
+       ON CONFLICT (subject_id, period, bucket_date, tz)
+         DO UPDATE SET status = EXCLUDED.status`,
+      [CUSTOMER_ID, args.period, args.bucketDate, args.tz ?? TZ, args.status],
+    );
+  }
+
   function cellState(
     cells: Array<{ bucketDate: string; state: string }>,
     bucketDate: string,
@@ -172,6 +192,70 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       bucketDate: "2026-06-01",
       generation: 1,
     });
+
+    // Live (non-archived) state rows backing each result above, so the
+    // result+state intersection marks them navigable. The 27th keeps a ready
+    // state too, proving its "none" comes from the superseded RESULT, not a
+    // missing state.
+    for (const d of ["2026-05-10", "2026-05-12", "2026-05-15", "2026-05-20"]) {
+      await seedState({ period: "DAILY", bucketDate: d, status: "ready" });
+    }
+    await seedState({
+      period: "DAILY",
+      bucketDate: "2026-05-27",
+      status: "ready",
+    });
+    await seedState({
+      period: "WEEKLY",
+      bucketDate: "2026-05-11",
+      status: "ready",
+    });
+    await seedState({
+      period: "MONTHLY",
+      bucketDate: "2026-05-01",
+      status: "ready",
+    });
+    await seedState({
+      period: "MONTHLY",
+      bucketDate: "2026-06-01",
+      status: "ready",
+    });
+
+    // Drift buckets — exercise the result+state intersection that keeps a
+    // green cell / prev-next link from opening to a 404. Dates are chosen to
+    // NOT sit between any asserted adjacent navigable pair, so the existing
+    // neighbor steps are unchanged:
+    //   11th: result + PENDING state  → has-report (detail renders it — a
+    //         pending state with a viewable result is NOT pending-only; sits
+    //         between out-of-retention 10 and anchor 12)
+    //   13th: result, NO state row    → none / skipped (between 12 and 15)
+    //   19th: result + ARCHIVED state → none / skipped (between 15 and 20;
+    //         the detail route 404s an archived state)
+    await seedResult({
+      period: "DAILY",
+      bucketDate: "2026-05-11",
+      generation: 1,
+    });
+    await seedState({
+      period: "DAILY",
+      bucketDate: "2026-05-11",
+      status: "pending",
+    });
+    await seedResult({
+      period: "DAILY",
+      bucketDate: "2026-05-13",
+      generation: 1,
+    });
+    await seedResult({
+      period: "DAILY",
+      bucketDate: "2026-05-19",
+      generation: 1,
+    });
+    await seedState({
+      period: "DAILY",
+      bucketDate: "2026-05-19",
+      status: "archived",
+    });
   }, 30_000);
 
   afterAll(async () => {
@@ -222,6 +306,30 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       provider: stubProvider(null, "2026-06-30"),
     });
     expect(cellState(data.cells, "2026-05-27")).toBe("none");
+  });
+
+  it("requires a live state row, not just a result (drift cases)", async () => {
+    // Wide-open retention + today so only the result/state intersection
+    // decides the state, matching what the detail route would actually render.
+    const data = await discoverCalendarBuckets({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      viewport: { kind: "month", year: 2026, month: 5 },
+      provider: stubProvider(null, "2026-06-30"),
+    });
+    // result + PENDING state → has-report: the detail route renders a bucket
+    // whose state is pending as long as a viewable result exists (it only
+    // 404s a missing/archived state), so the calendar must agree.
+    expect(cellState(data.cells, "2026-05-11")).toBe("has-report");
+    // result, NO state row → none: the detail route 404s a missing state even
+    // though the customer-DB result survives.
+    expect(cellState(data.cells, "2026-05-13")).toBe("none");
+    // result + ARCHIVED state → none: the detail route 404s an archived state.
+    expect(cellState(data.cells, "2026-05-19")).toBe("none");
+    // sanity: result + ready state is still has-report.
+    expect(cellState(data.cells, "2026-05-12")).toBe("has-report");
   });
 
   it("derives the boundary from the customer retention policy", async () => {
@@ -297,8 +405,9 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
   });
 
   it("resolves nearest prev/next has-report neighbors", async () => {
-    // Unbounded retention (analysis_days NULL set above). DAILY reports on
-    // 10/12/15/20. From the 15th → prev 12, next 20.
+    // Unbounded retention (analysis_days NULL set above). Navigable DAILY
+    // buckets are 10/11/12/15/20 (drift buckets 13/19 are skipped). From the
+    // 15th → prev 12, next 20.
     const mid = await loadReportNeighbors({
       authPool,
       customerPool,
@@ -338,6 +447,50 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
     expect(n.prev).toBeNull();
     expect(n.olderStop).toBe(true);
     expect(n.next?.bucketDate).toBe("2026-05-20");
+  });
+
+  it("skips drift buckets (result without live state) when stepping", async () => {
+    // 13th (result, no state) sits between 12 and 15; 19th (result + archived
+    // state) sits between 15 and 20. Neither is navigable, so prev/next must
+    // step past them rather than link to a bucket the detail route 404s.
+    const fromTwelve = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-12",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(fromTwelve.next?.bucketDate).toBe("2026-05-15"); // skips 13
+
+    const fromTwenty = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-20",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(fromTwenty.prev?.bucketDate).toBe("2026-05-15"); // skips 19
+  });
+
+  it("does not claim retention at the first report (olderStop false)", async () => {
+    // 10th is the oldest navigable DAILY bucket. Under unbounded retention
+    // there is simply no older report — this is NOT a retention stop, so
+    // olderStop must stay false (the UI shows no affordance rather than
+    // falsely claiming reports aged out). next steps to the 11th (pending +
+    // result is navigable).
+    const n = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-10",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(n.prev).toBeNull();
+    expect(n.olderStop).toBe(false);
+    expect(n.next?.bucketDate).toBe("2026-05-11");
   });
 
   it("returns no neighbors for LIVE", async () => {

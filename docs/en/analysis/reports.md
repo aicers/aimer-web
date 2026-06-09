@@ -95,11 +95,14 @@ of them navigable:
 - **Has report** — highlighted and clickable. A bucket is "has report"
   when it has a real, non-superseded result for the default model that
   resolves through the same language fallback the detail page uses
-  (your language → English → any). A bucket that is only tracked
-  (`pending`), or whose `ready`/`dirty` state has no viewable result yet,
-  is **not** "has report" — this is the same rule the prev/next stepping
-  uses, so a cell never looks ready in the calendar but opens to a
-  "being generated" page.
+  (your language → English → any) **and** a live (non-archived) tracking
+  state — exactly the pair the detail page itself requires before it
+  renders. A bucket that is only tracked (`pending` with no result yet),
+  whose `ready`/`dirty` state has no viewable result, or whose result
+  lingers in the report store while the tracking state is missing or
+  archived, is **not** "has report". This is the same rule the prev/next
+  stepping uses, so a cell never looks ready in the calendar but opens to a
+  "being generated" or not-found page.
 - **No report** — within retention but with no result; greyed and
   non-navigable.
 - **Out of retention** — older than the subject's retention boundary
@@ -209,9 +212,12 @@ page.
 
 Both ends are explicit states, never a dead link or a `404`:
 
-- **Older end** — when there is no older report within the retention
-  boundary, the previous control shows a disabled **No older reports
-  retained** state instead of a link.
+- **Older end** — when an older report exists but has aged out past the
+  retention boundary, the previous control shows a disabled **No older
+  reports retained** state instead of a link. At the very first report —
+  nothing older exists at all, or retention is unbounded — there is simply
+  no previous control; the boundary message appears only when retention is
+  actually the reason there is nowhere older to go.
 - **Newer end** — at the most recent report there is simply no next
   control.
 

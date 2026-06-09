@@ -11,6 +11,12 @@ interface Props {
   prev: NeighborBucket | null;
   /** Nearest newer has-report bucket, or null (at the newest report). */
   next: NeighborBucket | null;
+  /**
+   * True only when `prev` is null *because* the retention boundary was
+   * reached (older reports exist but aged out). When false and `prev` is null
+   * the open bucket is simply the first report, so no affordance is shown.
+   */
+  olderStop: boolean;
   /** Calendar entry for this period. */
   calendarHref: string;
   labels: {
@@ -41,10 +47,10 @@ function neighborHref(
  * Moves to the nearest has-report bucket in the SAME period (yesterday's
  * DAILY, last week's WEEKLY, …), complementing the period tabs (which switch
  * period, not time). Both stop conditions are explicit states, never dead
- * links: the older direction shows "no older reports retained" at the
- * retention boundary, and the newer direction simply has no affordance at the
- * most recent report. N/A for LIVE — the caller does not render this for the
- * rolling bucket.
+ * links: the older direction shows "no older reports retained" only when the
+ * retention boundary is what stops it, and otherwise (the first report, or the
+ * newest report on the newer side) simply has no affordance. N/A for LIVE —
+ * the caller does not render this for the rolling bucket.
  */
 export function ReportTemporalNav({
   locale,
@@ -52,6 +58,7 @@ export function ReportTemporalNav({
   period,
   prev,
   next,
+  olderStop,
   calendarHref,
   labels,
 }: Props) {
@@ -73,8 +80,9 @@ export function ReportTemporalNav({
           >
             ◀ {labels.prev}
           </Link>
-        ) : (
-          // Explicit retention-boundary / oldest stop — disabled, not a 404.
+        ) : olderStop ? (
+          // Explicit retention-boundary stop — disabled, not a 404. Shown only
+          // when older reports exist but aged out, never for the first report.
           <span
             data-testid="temporal-prev-stop"
             aria-disabled="true"
@@ -82,7 +90,7 @@ export function ReportTemporalNav({
           >
             {labels.noOlderRetained}
           </span>
-        )}
+        ) : null}
         {next ? (
           <Link
             href={neighborHref(locale, subjectId, period, next)}

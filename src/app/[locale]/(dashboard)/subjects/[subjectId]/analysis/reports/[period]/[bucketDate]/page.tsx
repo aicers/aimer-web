@@ -267,6 +267,7 @@ export default async function ReportDetailPage({
         period={period}
         prev={neighbors.prev}
         next={neighbors.next}
+        olderStop={neighbors.olderStop}
         calendarHref={subjectPages.reportCalendar(locale, customerId, period)}
         labels={{
           navLabel: tA("reportDetail.temporalNavLabel"),

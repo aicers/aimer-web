@@ -2,7 +2,10 @@
 //
 // #505 — within-period prev/next nav. Verifies:
 //   - prev/next render as detail links with `?tz` pinned
-//   - a missing prev renders the explicit retention-boundary stop, not a link
+//   - a missing prev renders the explicit retention-boundary stop ONLY when
+//     `olderStop` is set, not a link
+//   - a missing prev with `olderStop` false (the first report) renders no
+//     affordance, never a false "no older retained" claim
 //   - a missing next renders no "next" affordance
 //   - the calendar entry link is always present
 
@@ -46,6 +49,7 @@ describe("ReportTemporalNav", () => {
         period="DAILY"
         prev={{ bucketDate: "2026-05-12", tz: "Asia/Seoul" }}
         next={{ bucketDate: "2026-05-20", tz: "Asia/Seoul" }}
+        olderStop={false}
         calendarHref={`/en/subjects/${SUBJECT_ID}/analysis/reports/DAILY/calendar`}
         labels={LABELS}
       />,
@@ -59,7 +63,7 @@ describe("ReportTemporalNav", () => {
     expect(screen.getByTestId("temporal-calendar-link")).toBeTruthy();
   });
 
-  it("shows the retention-boundary stop when there is no older report", () => {
+  it("shows the retention-boundary stop only when olderStop is set", () => {
     render(
       <ReportTemporalNav
         locale="en"
@@ -67,6 +71,7 @@ describe("ReportTemporalNav", () => {
         period="WEEKLY"
         prev={null}
         next={{ bucketDate: "2026-05-25", tz: "UTC" }}
+        olderStop={true}
         calendarHref="/cal"
         labels={LABELS}
       />,
@@ -77,6 +82,27 @@ describe("ReportTemporalNav", () => {
     expect(stop.getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("renders no affordance for the first report (olderStop false)", () => {
+    // prev is null but NOT because of retention — the open bucket is the
+    // oldest report (or retention is unbounded). The component must not claim
+    // "no older reports retained"; it shows nothing on the older side.
+    render(
+      <ReportTemporalNav
+        locale="en"
+        subjectId={SUBJECT_ID}
+        period="DAILY"
+        prev={null}
+        next={{ bucketDate: "2026-05-25", tz: "UTC" }}
+        olderStop={false}
+        calendarHref="/cal"
+        labels={LABELS}
+      />,
+    );
+    expect(screen.queryByTestId("temporal-prev")).toBeNull();
+    expect(screen.queryByTestId("temporal-prev-stop")).toBeNull();
+    expect(screen.getByTestId("temporal-next")).toBeTruthy();
+  });
+
   it("renders no next affordance at the newest report", () => {
     render(
       <ReportTemporalNav
@@ -85,6 +111,7 @@ describe("ReportTemporalNav", () => {
         period="MONTHLY"
         prev={{ bucketDate: "2026-04-01", tz: "UTC" }}
         next={null}
+        olderStop={false}
         calendarHref="/cal"
         labels={LABELS}
       />,

@@ -14,17 +14,27 @@
 //   2. `loadReportNeighbors` — the nearest has-report bucket older / newer
 //      than the open one, for the detail page's within-period prev/next.
 //
-// "Has-report" is grounded on the RESULT row (a non-superseded
-// `periodic_report_result` at the default model variant, any language —
-// the detail page's viewer→English→any fallback always resolves when one
-// exists), NOT the `periodic_report_state` value. This is the same predicate
-// the detail loader effectively applies, so a bucket never looks navigable
-// in the calendar but returns `pending` on open: `pending`-only and
-// result-less `ready`/`dirty` buckets are non-navigable.
+// "Has-report" means the detail route would actually render a report at that
+// bucket: a non-superseded `periodic_report_result` at the default model
+// variant (any language — the detail page's viewer→English→any fallback always
+// resolves when one exists) that ALSO has a non-archived `periodic_report_state`
+// row at the same (bucket_date, tz). Grounding on the result row avoids the
+// "looked has-report but opens to `pending`" mismatch; intersecting with a
+// live state row avoids the reverse drift — a stale customer-DB result
+// surviving while the auth-side state is missing or archived, which the detail
+// route 404s (`report-result-page-loader.ts` rejects a missing/archived state
+// before it ever reads a result). `pending`-only, result-less `ready`/`dirty`,
+// gap, and result-without-live-state buckets are all non-navigable.
 //
-// Auth DB and the customer DB are separate pools and cannot be JOINed, so
-// discovery enumerates the viewport in JS and looks up results in the
-// customer DB in a second step (same constraint as the index loader).
+// The state row may be `pending` so long as a viewable result exists: the
+// detail route renders such a bucket (it only 404s on a missing/archived
+// state, never on `pending`), so the calendar must match. A `pending` row with
+// no result is the "pending-only" case and stays non-navigable via the result
+// half of the intersection.
+//
+// Auth DB (state) and the customer DB (results) are separate pools and cannot
+// be JOINed, so discovery reads both for the viewport range and intersects in
+// JS (same cross-pool constraint as the index loader).
 
 import "server-only";
 
@@ -144,19 +154,39 @@ export async function discoverCalendarBuckets(args: {
   const range = viewportRange(buckets);
   const { oldestNavigableDate, today } = await provider.resolveBoundary(period);
 
-  // has-report lookup: a non-superseded result at the default variant, any
-  // language. Viewport-range-bounded so unbounded retention never widens the
-  // query. Best-effort — leave the map empty on any failure.
+  // has-report lookup: a non-superseded result at the default variant (any
+  // language) that ALSO has a non-archived state row at the same
+  // (bucket_date, tz) — the detail route's gate, so a green cell never opens
+  // to a 404. Both reads are viewport-range-bounded so unbounded retention
+  // never widens the query. Best-effort — leave the map empty on any failure.
   const resultTz = new Map<string, string>();
   if (range) {
     try {
       const def = await resolveDefaultModel(subjectId, authPool);
+      // Non-archived state rows (auth DB) keyed on bucket/tz: the detail route
+      // 404s a missing/archived state even when a result row survives, and the
+      // two pools can drift. `pending` is allowed here — the result half below
+      // is what excludes the pending-only (result-less) case.
+      const stateRes = await authPool.query<{
+        bucket_date: string;
+        tz: string;
+      }>(
+        `SELECT bucket_date::text AS bucket_date, tz
+           FROM periodic_report_state
+          WHERE subject_id = $1
+            AND period = $2
+            AND status <> 'archived'
+            AND bucket_date BETWEEN $3::date AND $4::date`,
+        [subjectId, period, range.start, range.end],
+      );
+      const stateKeys = new Set(
+        stateRes.rows.map((r) => `${r.bucket_date}|${r.tz}`),
+      );
       const { rows } = await customerPool.query<{
         bucket_date: string;
         tz: string;
       }>(
-        `SELECT DISTINCT ON (bucket_date)
-                bucket_date::text AS bucket_date, tz
+        `SELECT bucket_date::text AS bucket_date, tz
            FROM periodic_report_result
           WHERE subject_id = $1
             AND period = $2
@@ -166,7 +196,15 @@ export async function discoverCalendarBuckets(args: {
           ORDER BY bucket_date, generation DESC`,
         [subjectId, period, def.modelName, def.model, range.start, range.end],
       );
-      for (const row of rows) resultTz.set(row.bucket_date, row.tz);
+      // Per bucket, the highest-generation result whose tz also has a live
+      // state row wins (rows arrive newest-generation first). A result-only
+      // (drifted) bucket never enters the map → stays "none".
+      for (const row of rows) {
+        if (resultTz.has(row.bucket_date)) continue;
+        if (stateKeys.has(`${row.bucket_date}|${row.tz}`)) {
+          resultTz.set(row.bucket_date, row.tz);
+        }
+      }
     } catch {
       // Degrade to "no results"; cells fall back to "none" within retention.
     }
@@ -260,20 +298,88 @@ export interface ReportNeighbors {
   /** Nearest has-report bucket newer than the open one (null = newest). */
   next: NeighborBucket | null;
   /**
-   * True when there is no navigable older bucket — the explicit
-   * retention-boundary / oldest stop the detail page renders instead of a
-   * dead link. Always false for LIVE (no temporal nav).
+   * True ONLY when the older step is blocked by the retention boundary — an
+   * older report exists but falls outside the retained range. This is the
+   * explicit "no older reports retained" state the detail page renders instead
+   * of a dead link. It is deliberately NOT set when `prev` is null for other
+   * reasons — the open bucket is simply the first report (no older bucket at
+   * all, or unbounded retention), or a best-effort lookup failed — since those
+   * are not retention stops and the UI shows no affordance rather than falsely
+   * blaming retention. Always false for LIVE (no temporal nav).
    */
   olderStop: boolean;
+}
+
+// Cap on how many drifted (result-without-live-state) buckets the neighbor
+// probe will skip before giving up, so a long run of stale customer-DB rows
+// can't loop unbounded. Consistent state/result is the norm, so the first
+// probe almost always resolves; this is a safety backstop, not a budget.
+const NEIGHBOR_PROBE_LIMIT = 16;
+
+/**
+ * Step from `from` to the nearest navigable bucket in one direction. A bucket
+ * is navigable only when a non-superseded default-variant result AND a
+ * non-archived state row coexist at the same (bucket_date, tz) — the detail
+ * route's gate. The result is probed nearest-first (auth/customer pools are
+ * separate, so this can't be one JOIN); a result-only or archived-state bucket
+ * is skipped and the probe advances past its date until a live one is found,
+ * the direction is exhausted, or the probe cap is hit.
+ */
+async function findNeighbor(args: {
+  authPool: Pool;
+  customerPool: Pool;
+  subjectId: string;
+  period: PeriodKind;
+  def: { modelName: string; model: string };
+  from: string;
+  direction: "older" | "newer";
+  /** Retention floor for the older direction (inclusive); null = unbounded. */
+  lowerBound: string | null;
+}): Promise<NeighborBucket | null> {
+  const { authPool, customerPool, subjectId, period, def, lowerBound } = args;
+  const older = args.direction === "older";
+  let cursor = args.from;
+  for (let probe = 0; probe < NEIGHBOR_PROBE_LIMIT; probe++) {
+    const res = await customerPool.query<{ bucket_date: string; tz: string }>(
+      `SELECT bucket_date::text AS bucket_date, tz
+         FROM periodic_report_result
+        WHERE subject_id = $1
+          AND period = $2
+          AND model_name = $3 AND model = $4
+          AND superseded_at IS NULL
+          AND bucket_date ${older ? "<" : ">"} $5::date
+          AND ($6::date IS NULL OR bucket_date >= $6::date)
+        ORDER BY bucket_date ${older ? "DESC" : "ASC"}, generation DESC
+        LIMIT 1`,
+      [subjectId, period, def.modelName, def.model, cursor, lowerBound],
+    );
+    if (res.rows.length === 0) return null;
+    const { bucket_date, tz } = res.rows[0];
+    const state = await authPool.query(
+      `SELECT 1 FROM periodic_report_state
+        WHERE subject_id = $1 AND period = $2
+          AND bucket_date = $3::date AND tz = $4
+          AND status <> 'archived'
+        LIMIT 1`,
+      [subjectId, period, bucket_date, tz],
+    );
+    if (state.rows.length > 0) return { bucketDate: bucket_date, tz };
+    // Drifted (result-only / archived-state) bucket — the detail route would
+    // 404 it. Skip its date and keep probing in the same direction.
+    cursor = bucket_date;
+  }
+  return null;
 }
 
 /**
  * Resolve the nearest has-report buckets on either side of `bucketDate`,
  * subject-generic via the injected `provider`. The caller (detail page) has
- * already authorized the read, so this performs no auth preamble. Older
- * neighbors are clamped to the retention boundary; the newer side is
- * unbounded (it stops naturally at the most recent report). Best-effort: a
- * customer-DB failure yields no neighbors rather than a thrown page.
+ * already authorized the read, so this performs no auth preamble. "Has-report"
+ * uses the same result+live-state intersection as the calendar, so prev/next
+ * never link to a bucket the detail page rejects. Older neighbors are clamped
+ * to the retention boundary; the newer side is unbounded (it stops naturally
+ * at the most recent report). Best-effort: a read failure yields no neighbors
+ * — and, critically, `olderStop: false`, never falsely blaming retention.
  */
 export async function loadReportNeighbors(args: {
   authPool: Pool;
@@ -294,54 +400,50 @@ export async function loadReportNeighbors(args: {
     // "no neighbors" rather than crashing the detail page.
     const { oldestNavigableDate } = await provider.resolveBoundary(period);
     const def = await resolveDefaultModel(subjectId, authPool);
-    const prevRes = await customerPool.query<{
-      bucket_date: string;
-      tz: string;
-    }>(
-      `SELECT bucket_date::text AS bucket_date, tz
-         FROM periodic_report_result
-        WHERE subject_id = $1
-          AND period = $2
-          AND model_name = $3 AND model = $4
-          AND superseded_at IS NULL
-          AND bucket_date < $5::date
-          AND ($6::date IS NULL OR bucket_date >= $6::date)
-        ORDER BY bucket_date DESC, generation DESC
-        LIMIT 1`,
-      [
-        subjectId,
-        period,
-        def.modelName,
-        def.model,
-        bucketDate,
-        oldestNavigableDate,
-      ],
-    );
-    const nextRes = await customerPool.query<{
-      bucket_date: string;
-      tz: string;
-    }>(
-      `SELECT bucket_date::text AS bucket_date, tz
-         FROM periodic_report_result
-        WHERE subject_id = $1
-          AND period = $2
-          AND model_name = $3 AND model = $4
-          AND superseded_at IS NULL
-          AND bucket_date > $5::date
-        ORDER BY bucket_date ASC, generation DESC
-        LIMIT 1`,
-      [subjectId, period, def.modelName, def.model, bucketDate],
-    );
-    const prev =
-      prevRes.rows.length > 0
-        ? { bucketDate: prevRes.rows[0].bucket_date, tz: prevRes.rows[0].tz }
-        : null;
-    const next =
-      nextRes.rows.length > 0
-        ? { bucketDate: nextRes.rows[0].bucket_date, tz: nextRes.rows[0].tz }
-        : null;
-    return { prev, next, olderStop: prev === null };
+    const prev = await findNeighbor({
+      authPool,
+      customerPool,
+      subjectId,
+      period,
+      def,
+      from: bucketDate,
+      direction: "older",
+      lowerBound: oldestNavigableDate,
+    });
+    const next = await findNeighbor({
+      authPool,
+      customerPool,
+      subjectId,
+      period,
+      def,
+      from: bucketDate,
+      direction: "newer",
+      lowerBound: null,
+    });
+
+    // Only claim the retention boundary when an older report actually exists
+    // beyond it. With no prev under unbounded retention (or simply no older
+    // report at all), this is the first report — show no affordance, not a
+    // "no older retained" stop. A bare result (no live-state requirement) is
+    // enough evidence that older reports were generated and then aged out.
+    let olderStop = false;
+    if (prev === null && oldestNavigableDate !== null) {
+      const olderBeyondBoundary = await customerPool.query(
+        `SELECT 1 FROM periodic_report_result
+          WHERE subject_id = $1 AND period = $2
+            AND model_name = $3 AND model = $4
+            AND superseded_at IS NULL
+            AND bucket_date < $5::date
+          LIMIT 1`,
+        [subjectId, period, def.modelName, def.model, oldestNavigableDate],
+      );
+      olderStop = olderBeyondBoundary.rows.length > 0;
+    }
+    return { prev, next, olderStop };
   } catch {
-    return { prev: null, next: null, olderStop: true };
+    // Lookup failed: surface no neighbors and — unlike a true boundary — no
+    // older stop, so the UI does not misattribute an unknown failure to
+    // retention.
+    return { prev: null, next: null, olderStop: false };
   }
 }
