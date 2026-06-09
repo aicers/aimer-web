@@ -10,7 +10,10 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
-import type { StoryResultPageOutcome } from "@/lib/analysis/story-result-page-loader";
+import type {
+  CoverageStatus,
+  StoryResultPageOutcome,
+} from "@/lib/analysis/story-result-page-loader";
 
 const mockLoad = vi.fn<() => Promise<StoryResultPageOutcome>>();
 
@@ -88,7 +91,11 @@ const STORY_ID = "12345";
 
 function fixture(
   tier: PriorityTier,
-  viewer: { isViewerAnalyst?: boolean; canRegenerate?: boolean } = {},
+  viewer: {
+    isViewerAnalyst?: boolean;
+    canRegenerate?: boolean;
+    coverageStatus?: CoverageStatus | null;
+  } = {},
 ): StoryResultPageOutcome {
   const isViewerAnalyst = viewer.isViewerAnalyst ?? true;
   return {
@@ -105,6 +112,7 @@ function fixture(
       severityScore: 0.5,
       likelihoodScore: 0.5,
       priorityTier: tier,
+      coverageStatus: viewer.coverageStatus ?? null,
       severityFactors: ["broad host coverage", "elevated identity reuse"],
       likelihoodFactors: ["repeated outbound C2 beacons"],
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
@@ -269,5 +277,35 @@ describe("StoryAnalysisPage — analyst gating (#457)", () => {
     expect(screen.getByText("Requested at")).toBeTruthy();
 
     expect(screen.queryByTestId("regenerate-button")).toBeNull();
+  });
+});
+
+describe("StoryAnalysisPage — IOC coverage status banner (#498)", () => {
+  it.each<CoverageStatus>([
+    "unknown",
+    "stale",
+    "partial",
+  ])("shows the incomplete-coverage banner for %s", async (status) => {
+    mockLoad.mockResolvedValueOnce(fixture("LOW", { coverageStatus: status }));
+    await renderPage();
+
+    const banner = screen.getByTestId("coverage-status-banner");
+    expect(banner).toBeTruthy();
+    expect(banner.getAttribute("data-coverage-status")).toBe(status);
+    expect(banner.textContent).toContain("Threat-intel coverage incomplete");
+  });
+
+  it("renders no banner for complete coverage (clean miss reads cleanly)", async () => {
+    mockLoad.mockResolvedValueOnce(
+      fixture("LOW", { coverageStatus: "complete" }),
+    );
+    await renderPage();
+    expect(screen.queryByTestId("coverage-status-banner")).toBeNull();
+  });
+
+  it("renders no banner when coverage is unknown-to-the-loader (null)", async () => {
+    mockLoad.mockResolvedValueOnce(fixture("LOW", { coverageStatus: null }));
+    await renderPage();
+    expect(screen.queryByTestId("coverage-status-banner")).toBeNull();
   });
 });
