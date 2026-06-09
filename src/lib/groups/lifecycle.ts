@@ -387,34 +387,38 @@ async function defaultTeardown(
 }
 
 /**
- * Reconcile each group in its own transaction, then tear down the dedicated
- * database of any group that auto-deleted (best-effort, post-commit —
- * mirroring the group DELETE path). A teardown failure never blocks the
- * reconcile; the sweep converges leftover state.
+ * Reconcile each group in its own transaction, tearing down the dedicated
+ * database of an auto-deleted group immediately after that group's delete
+ * commits (best-effort, post-commit — mirroring the group DELETE path).
+ *
+ * Teardown is coupled to each committed delete rather than batched after the
+ * whole loop: once a group's delete commits, its auth row is gone, so a
+ * failure on a LATER group must not exit before its database is reclaimed —
+ * `sweepGroupLifecycle` could no longer rediscover it to clean up, stranding
+ * an orphaned provisioned database. A teardown failure never blocks the
+ * reconcile; the sweep converges any leftover state.
  */
 export async function reconcileGroups(
   authPool: Pool,
   groupIds: string[],
   options: ReconcileGroupsOptions = {},
 ): Promise<ReconcileOutcome[]> {
+  const teardown = options.teardown ?? defaultTeardown;
   const outcomes: ReconcileOutcome[] = [];
   for (const groupId of groupIds) {
     const outcome = await withTransaction(authPool, (client) =>
       reconcileGroup(client, groupId, options.actorContext),
     );
     outcomes.push(outcome);
-  }
-
-  const teardown = options.teardown ?? defaultTeardown;
-  for (const outcome of outcomes) {
-    if (!outcome.deleted) continue;
-    try {
-      await teardown(outcome.groupId, options.actorContext);
-    } catch (err) {
-      console.error(
-        `Failed to tear down auto-deleted group ${outcome.groupId}:`,
-        (err as Error).message,
-      );
+    if (outcome.deleted) {
+      try {
+        await teardown(outcome.groupId, options.actorContext);
+      } catch (err) {
+        console.error(
+          `Failed to tear down auto-deleted group ${outcome.groupId}:`,
+          (err as Error).message,
+        );
+      }
     }
   }
   return outcomes;

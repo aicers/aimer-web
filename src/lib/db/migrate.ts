@@ -126,6 +126,36 @@ async function applyTsMigration(
   );
 }
 
+// Group lifecycle (#510): the startup customer migrations below flip a member
+// customer from operable to `database_status = 'failed'` — exactly the
+// member-operability transition that should suspend the groups it belongs to.
+// Reconcile those groups synchronously here so generation pauses immediately
+// rather than waiting for the periodic sweep, matching the other
+// `database_status` writers (`provision-customer.ts`, `migrate-customers-cli`).
+// System-initiated, so the audit actor is `system`.
+const STARTUP_ACTOR = { actorId: "system", authContext: "admin" } as const;
+
+async function reconcileCustomerGroupsAfterFailure(
+  authPool: Pool,
+  customerId: string,
+): Promise<void> {
+  // Dynamic import keeps this module usable from plain Node tooling without
+  // eagerly pulling the `server-only`-tagged audit chain, mirroring the
+  // other dynamic imports in the startup path. Best-effort: a reconcile
+  // failure must not abort the remaining startup migrations.
+  try {
+    const { reconcileGroupsForCustomer } = await import("../groups/lifecycle");
+    await reconcileGroupsForCustomer(authPool, customerId, {
+      actorContext: STARTUP_ACTOR,
+    });
+  } catch (err) {
+    console.error(
+      `Customer ${customerId}: group reconcile after failed status errored:`,
+      (err as Error).message,
+    );
+  }
+}
+
 export async function runMigrations(
   pool: Pool,
   migrationsDir: string,
@@ -277,6 +307,7 @@ async function runStartupCustomerMigrations(
           [customer.id],
         )
         .catch(() => {});
+      await reconcileCustomerGroupsAfterFailure(authPool, customer.id);
       continue;
     }
 
@@ -317,6 +348,7 @@ async function runStartupCustomerMigrations(
             (updateErr as Error).message,
           );
         });
+      await reconcileCustomerGroupsAfterFailure(authPool, customer.id);
     } finally {
       await customerPool.end();
     }

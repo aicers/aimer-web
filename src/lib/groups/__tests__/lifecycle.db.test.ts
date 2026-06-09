@@ -407,6 +407,29 @@ describe.skipIf(!hasPostgres)("group lifecycle enforcement (DB)", () => {
       expect(outcomes[0].deleted).toBe(true);
       expect(torndown).toEqual([gid]);
     });
+
+    it("tears down an already-deleted group even when a later reconcile throws", async () => {
+      // Regression: teardown is coupled to each committed delete, so a failure
+      // on a LATER group must not strand an earlier auto-deleted group's
+      // database. Once its auth row is gone the sweep could not rediscover it.
+      const c1 = await mkCustomer();
+      const owner = await mkAccount();
+      await addManager(owner, c1);
+      const gid = await makeGroup(owner, [c1]);
+      await suspendAccount(owner); // gid will auto-delete
+
+      const torndown: string[] = [];
+      // A malformed UUID makes `reconcileGroup` throw on its first query,
+      // standing in for any later-group reconcile failure.
+      await expect(
+        reconcileGroups(pool, [gid, "not-a-uuid"], {
+          teardown: async (groupId) => {
+            torndown.push(groupId);
+          },
+        }),
+      ).rejects.toThrow();
+      expect(torndown).toEqual([gid]);
+    });
   });
 
   // -----------------------------------------------------------------------
