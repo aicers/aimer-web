@@ -9,6 +9,12 @@
 // arrays (pinned by generation in `input_story_refs` / `input_event_refs`,
 // in the same field order the builder used), then resolving each leaf's
 // source token through the relevant event redaction map.
+//
+// SCOPE: single-customer (`kind = 'customer'`) subjects only. A group subject
+// is resolved as not-found here (see the guard in `loadReportResultPage`):
+// its citation keys are member-qualified and its leaves live in member DBs, so
+// group display needs the member-pool de-redaction fan-out of B3 step 3 (#524
+// builds the shared wire-key + persistence; the loader consumes it in step 3).
 
 import "server-only";
 
@@ -480,6 +486,26 @@ export async function loadReportResultPage(
     if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
     if (auth.permissions !== undefined) return { kind: "forbidden" };
     return { kind: "unauthorized" };
+  }
+
+  // Group subjects (#524) are NOT renderable through this single-customer
+  // loader yet. A group report's citation sources are member-qualified
+  // (`customer_id:story_id` / `customer_id:aice_id:event_key`, via
+  // `storyWireKey` / `eventWireKey`) and the cited leaves live in the MEMBER
+  // customer DBs — not in the group's own result DB this loader opens. The
+  // bare-key citation maps and single `getCustomerRuntimePool(subjectId)`
+  // replay below would therefore drop every group citation and leave member
+  // tokens unresolved. Restoring them needs the member-pool de-redaction
+  // fan-out that lands in B3 step 3 (with route #513). Until then, resolve a
+  // group subject as not-found (existence-hiding, same as a non-member) rather
+  // than render a silently degraded page. Single-customer reports are
+  // unaffected (`kind = 'customer'`, where bare and qualified keys coincide).
+  const subjectKindRows = await authPool.query<{ kind: string }>(
+    `SELECT kind FROM subjects WHERE id = $1`,
+    [input.customerId],
+  );
+  if (subjectKindRows.rows[0]?.kind === "group") {
+    return { kind: "not_found" };
   }
 
   // Variant resolution: each selector falls back to its default when the
