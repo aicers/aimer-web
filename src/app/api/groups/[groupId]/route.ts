@@ -3,7 +3,8 @@ import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
-import { getAuthPool } from "@/lib/db/client";
+import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
+import { teardownGroupDb } from "@/lib/db/teardown-group";
 import { deleteGroup, getGroupWithMembers } from "@/lib/groups/groups";
 
 const UUID_RE =
@@ -65,6 +66,19 @@ export const DELETE = withAuth(
         ipAddress: auth.meta.ipAddress,
         sid: auth.sessionId,
         details: { memberIds: loaded.memberIds },
+      });
+
+      // Tear down the group's dedicated data DB AFTER the auth-DB delete
+      // commits, as a best-effort post-commit step (mirroring
+      // delete-customer Phase 2, same order: terminate connections → DROP
+      // DATABASE → anonymize audit logs → destroy Transit key). A teardown
+      // failure is swallowed internally and never blocks the entity delete
+      // — the group's auth-DB rows are already gone via ON DELETE CASCADE.
+      await teardownGroupDb(getMigrationAuditPool(), groupId, {
+        actorId: auth.accountId,
+        authContext: "general",
+        ipAddress: auth.meta.ipAddress,
+        sid: auth.sessionId,
       });
 
       return new Response(null, { status: 204 });

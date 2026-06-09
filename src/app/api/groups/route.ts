@@ -6,6 +6,7 @@ import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { DEFAULT_ANALYSIS_RETENTION_DAYS } from "@/lib/auth/retention-defaults";
 import { getAuthPool } from "@/lib/db/client";
+import { provisionGroupDb } from "@/lib/db/provision-group";
 import { createGroup, fetchMemberStates } from "@/lib/groups/groups";
 import { isValidTimeZone, resolveGroupTimezone } from "@/lib/groups/timezone";
 
@@ -164,6 +165,20 @@ export const POST = withAuth(
         details: { name: created.name, memberIds: created.memberIds, tz },
       });
 
+      // Provision the group's dedicated data DB after the auth-DB
+      // transaction commits, and AWAIT it before responding (mirroring the
+      // customer create path — not fire-and-forget). The 201 body carries
+      // the resulting databaseStatus so the client sees active/failed
+      // without a second round-trip.
+      const databaseStatus = await provisionGroupDb(pool, created.id, {
+        actorContext: {
+          actorId: auth.accountId,
+          authContext: "general",
+          ipAddress: auth.meta.ipAddress,
+          sid: auth.sessionId,
+        },
+      });
+
       return Response.json(
         {
           id: created.id,
@@ -174,6 +189,7 @@ export const POST = withAuth(
           createdAt: created.createdAt,
           tz: created.tz,
           memberIds: created.memberIds,
+          databaseStatus,
         },
         { status: 201 },
       );

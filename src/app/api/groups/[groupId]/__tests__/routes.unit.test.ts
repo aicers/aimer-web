@@ -27,9 +27,18 @@ vi.mock("@/lib/auth/guards", () => ({
 
 const fakeClient = { query: vi.fn(), release: vi.fn() };
 const fakePool = { connect: vi.fn().mockResolvedValue(fakeClient) };
-vi.mock("@/lib/db/client", () => ({ getAuthPool: () => fakePool }));
+const fakeAuditPool = {};
+vi.mock("@/lib/db/client", () => ({
+  getAuthPool: () => fakePool,
+  getMigrationAuditPool: () => fakeAuditPool,
+}));
 
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn() }));
+
+const mockTeardownGroupDb = vi.fn();
+vi.mock("@/lib/db/teardown-group", () => ({
+  teardownGroupDb: (...a: unknown[]) => mockTeardownGroupDb(...a),
+}));
 
 const mockAssertManagement = vi.fn();
 vi.mock("@/lib/auth/group-authorization", () => ({
@@ -87,6 +96,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAssertManagement.mockResolvedValue(undefined);
   mockGetGroupWithMembers.mockResolvedValue(loaded);
+  mockTeardownGroupDb.mockResolvedValue(undefined);
 });
 
 describe("DELETE /api/groups/[groupId]", () => {
@@ -110,17 +120,24 @@ describe("DELETE /api/groups/[groupId]", () => {
     expect(mockDeleteGroup).not.toHaveBeenCalled();
   });
 
-  it("returns 204 on a successful delete", async () => {
+  it("returns 204 on a successful delete and tears down the group DB", async () => {
     mockDeleteGroup.mockResolvedValue(true);
     const res = await DELETE(req(`/api/groups/${GID}`));
     expect(res.status).toBe(204);
     expect(mockDeleteGroup).toHaveBeenCalledWith(fakeClient, GID);
+    // Best-effort post-commit teardown of the group's dedicated data DB.
+    expect(mockTeardownGroupDb).toHaveBeenCalledWith(
+      fakeAuditPool,
+      GID,
+      expect.objectContaining({ actorId: "acct-1" }),
+    );
   });
 
   it("returns 404 when a concurrent delete won the race", async () => {
     mockDeleteGroup.mockResolvedValue(false);
     const res = await DELETE(req(`/api/groups/${GID}`));
     expect(res.status).toBe(404);
+    expect(mockTeardownGroupDb).not.toHaveBeenCalled();
   });
 });
 

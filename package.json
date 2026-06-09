@@ -21,6 +21,7 @@
     "graphql:codegen": "tsx scripts/graphql-codegen.ts write",
     "graphql:check": "tsx scripts/graphql-codegen.ts check",
     "migrate:customers": "tsx src/lib/db/migrate-customers-cli.ts",
+    "migrate:groups": "tsx src/lib/db/migrate-groups-cli.ts",
     "backup": "tsx src/lib/backup/backup-cli.ts",
     "restore": "tsx src/lib/backup/restore-cli.ts",
     "backup:verify": "tsx src/lib/backup/verify-cli.ts"

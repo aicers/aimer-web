@@ -103,6 +103,11 @@ const PRODUCED: Record<string, string> = {
   "customer_db.provisioned": "src/lib/db/provision-customer.ts",
   "customer_db.provision_failed": "src/lib/db/provision-customer.ts",
   "customer_db.dropped": "src/lib/auth/delete-customer.ts",
+  // Group DB (#507)
+  "group_db.provisioned": "src/lib/db/provision-group.ts",
+  "group_db.provision_failed": "src/lib/db/provision-group.ts",
+  "group_db.provision_retried": "src/lib/db/provision-group.ts",
+  "group_db.dropped": "src/lib/db/teardown-group.ts",
   // OpenBao Transit (guard-level: kek_rotated)
   "openbao.kek_rotated": "src/app/api/admin/kek/rotate/route.ts",
   "openbao.dek_destroyed": "src/lib/auth/delete-customer.ts",

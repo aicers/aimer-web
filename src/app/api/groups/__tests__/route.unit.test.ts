@@ -44,6 +44,11 @@ vi.mock("@/lib/groups/groups", () => ({
   createGroup: (...a: unknown[]) => mockCreateGroup(...a),
 }));
 
+const mockProvisionGroupDb = vi.fn();
+vi.mock("@/lib/db/provision-group", () => ({
+  provisionGroupDb: (...a: unknown[]) => mockProvisionGroupDb(...a),
+}));
+
 const { POST } = await import("../route");
 const { HttpError } = await import("@/lib/auth/errors");
 
@@ -67,6 +72,7 @@ const operational = (id: string, timezone: string) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mockAssertManagement.mockResolvedValue(undefined);
+  mockProvisionGroupDb.mockResolvedValue("active");
 });
 
 describe("POST /api/groups — request validation", () => {
@@ -185,5 +191,36 @@ describe("POST /api/groups — authorization + eligibility + tz", () => {
       fakeClient,
       expect.objectContaining({ tz: "Asia/Seoul", creatorAccountId: "acct-1" }),
     );
+    // The group DB is provisioned after commit and awaited; its status is
+    // surfaced in the 201 body.
+    expect(mockProvisionGroupDb).toHaveBeenCalledWith(
+      fakePool,
+      "group-1",
+      expect.objectContaining({
+        actorContext: expect.objectContaining({ actorId: "acct-1" }),
+      }),
+    );
+    expect(body.databaseStatus).toBe("active");
+  });
+
+  it("surfaces a failed provision status in the 201 body", async () => {
+    mockFetchMemberStates.mockResolvedValue([
+      operational(A, "Asia/Seoul"),
+      operational(B, "Asia/Seoul"),
+    ]);
+    mockCreateGroup.mockResolvedValue({
+      id: "group-2",
+      name: "G",
+      description: null,
+      ownerId: "acct-1",
+      createdBy: "acct-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      tz: "Asia/Seoul",
+      memberIds: [A, B],
+    });
+    mockProvisionGroupDb.mockResolvedValue("failed");
+    const res = await POST(req({ name: "G", memberIds: [A, B] }));
+    expect(res.status).toBe(201);
+    expect((await res.json()).databaseStatus).toBe("failed");
   });
 });
