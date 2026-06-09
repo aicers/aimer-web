@@ -16,6 +16,7 @@ import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
+  type CoverageStatus,
   loadStoryResultPage,
   type StoryMemberEvent,
 } from "@/lib/analysis/story-result-page-loader";
@@ -235,6 +236,13 @@ export default async function StoryAnalysisPage({
         </p>
       </header>
 
+      {/* Threat-intel coverage transparency (#498): when the canonical
+          version's IOC enrichment ran under incomplete coverage
+          (`unknown`/`stale`/`partial`), a `known_ioc_hit = false` may reflect
+          an unavailable or stale Tier-1 source rather than a confirmed clean
+          miss. `complete` (and a not-yet-enriched `null`) show nothing. */}
+      <CoverageStatusNote status={data.coverageStatus} t={tA} />
+
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
@@ -388,6 +396,30 @@ export default async function StoryAnalysisPage({
           />
         </section>
       ) : null}
+    </div>
+  );
+}
+
+// Renders the threat-intel coverage banner only when the canonical version's
+// IOC enrichment was incomplete (#498). `complete` is the clean-coverage case
+// and `null` means enrichment has not completed — neither needs a warning.
+function CoverageStatusNote({
+  status,
+  t,
+}: {
+  status: CoverageStatus | null;
+  t: AnalysisTranslations;
+}) {
+  if (status === null || status === "complete") return null;
+  return (
+    <div
+      role="status"
+      data-testid="coverage-status-banner"
+      data-coverage-status={status}
+      className="mb-6 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+    >
+      <span className="font-semibold">{t("coverage.incompleteBadge")}</span>{" "}
+      {t("coverage.incompleteNote", { status })}
     </div>
   );
 }

@@ -824,6 +824,10 @@
       "memberUnavailable": "Event analysis not available at the default variant.",
       "memberEventLabel": "Event {aiceId} · {eventKey}"
     },
+    "coverage": {
+      "incompleteBadge": "Threat-intel coverage incomplete",
+      "incompleteNote": "The known-IOC check for this story ran under incomplete Tier-1 threat-intel coverage (status: {status}). A \"no known IOC\" result here may reflect an unavailable or stale source rather than a confirmed clean miss."
+    },
     "eventAnalysis": {
       "title": "AI Analysis",
       "subtitle": "Event {eventKey} • {aiceId}",

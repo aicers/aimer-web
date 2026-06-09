@@ -101,6 +101,43 @@ The header section shows three score-related fields:
 | 0.4 ≤ S < 0.6 | LOW    | LOW           | MEDIUM        | MEDIUM   |
 | S < 0.4      | LOW    | LOW           | LOW           | LOW      |
 
+## Threat-intel coverage
+
+The `known_ioc_hit` floor signal is only as trustworthy as the threat-
+intelligence coverage it was evaluated under. When the Tier-1 local feeds
+that produce the signal are unavailable or stale at the moment a story is
+enriched, the platform records that the check ran on **incomplete
+coverage** rather than silently treating the absence of a match as a
+clean result. Crucially, analysis still proceeds — a down or empty feed
+yields `known_ioc_hit = false` so the story is never blocked, but the
+coverage is flagged so the `false` is not mistaken for a confirmed miss.
+
+When the canonical version's enrichment ran under incomplete coverage,
+the page shows a **"Threat-intel coverage incomplete"** notice above the
+score fields. It distinguishes two outcomes that otherwise look
+identical:
+
+- **No notice (complete coverage)** — the indicators were fully checked
+  against the Tier-1 feeds and no known IOC matched. A genuine clean
+  miss.
+- **Notice shown (incomplete coverage)** — the check ran while a feed was
+  unavailable, stale, or only partially covered, so "no known IOC" here
+  may reflect a thin or degraded signal rather than a confirmed clean
+  result. Treat the IOC dimension of a `LOW`/`MEDIUM` story with caution
+  when this notice is present.
+
+The notice reflects the coverage status of the **current canonical
+version** of the story. The priority tier, scores, and factors are
+**unchanged** by coverage — the floor reads only the boolean signal, and
+this notice is a transparency surface layered on top, never an input to
+tier derivation.
+
+<!-- Screenshot placeholder: the story header with the "Threat-intel
+     coverage incomplete" notice shown above the score fields. Requires a
+     real-data capture from a stack where a Tier-1 feed was unavailable at
+     enrichment time (coverage data originates from aice-web-next-fed
+     enrichment), per docs/AUTHORING.md. -->
+
 ## Score factors
 
 Below each score, the page renders up to five short noun phrases (chips)

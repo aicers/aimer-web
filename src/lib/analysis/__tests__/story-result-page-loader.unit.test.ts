@@ -54,6 +54,11 @@ let eventDisplayRows: Array<Record<string, unknown>> = [];
 // Rows returned for the `enrichment_redaction_map` SELECT (the `F{k}`
 // render-demap two-hop). Empty unless a test exercises fact restoration.
 let factMapRows: Array<Record<string, unknown>> = [];
+// Row returned for the canonical-version coverage join (#498):
+// `SELECT ses.coverage_status FROM story LEFT JOIN story_enrichment_state`.
+// Defaults to a `complete`-coverage row; a test sets `[]` to model a story
+// with no row, or overrides `coverage_status` to model degraded coverage.
+let coverageRows: Array<Record<string, unknown>> = [];
 
 const authPool = {
   query: vi.fn(async (sql: string) => {
@@ -82,6 +87,9 @@ const customerPool = {
     }
     if (sql.includes("FROM enrichment_redaction_map")) {
       return { rows: factMapRows };
+    }
+    if (sql.includes("story_enrichment_state")) {
+      return { rows: coverageRows };
     }
     return { rows: [] };
   }),
@@ -146,6 +154,7 @@ beforeEach(() => {
   compareResultRows = [];
   eventDisplayRows = [];
   factMapRows = [];
+  coverageRows = [{ coverage_status: "complete" }];
   mockDecryptRedactionMap.mockReset();
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
   mockVerifyJwtFull
@@ -452,5 +461,85 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
       (c) => (c[1] as unknown[])?.[4] === COMPARE_MODEL,
     );
     expect(compareCall).toBeUndefined();
+  });
+});
+
+describe("loadStoryResultPage — IOC coverage status (#498)", () => {
+  it("surfaces complete coverage (fully-checked clean miss = false-complete)", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [{ coverage_status: "complete" }];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBe("complete");
+  });
+
+  it("surfaces unknown coverage (source down/stale = false-unknown)", async () => {
+    // The false-complete vs false-unknown distinction: a down/stale Tier-1
+    // source lands `unknown`, distinguishable end-to-end from `complete`.
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [{ coverage_status: "unknown" }];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBe("unknown");
+  });
+
+  it("surfaces stale coverage", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [{ coverage_status: "stale" }];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBe("stale");
+  });
+
+  it("returns null coverage when no enrichment-state row exists for the canonical version", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    // Canonical `story` row exists but no joined enrichment state yet.
+    coverageRows = [{ coverage_status: null }];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBeNull();
+  });
+
+  it("returns null coverage when the story row is absent", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.coverageStatus).toBeNull();
+  });
+
+  it("resolves the canonical (story_id, story_version) by the worker's rule", async () => {
+    // The join must pick the latest canonical version — `received_at DESC,
+    // story_version DESC` — matching `story-worker.ts` loadCanonicalMembers,
+    // then LEFT JOIN `story_enrichment_state` on that version.
+    resultRows = [resultRow({ generation: 3 })];
+    coverageRows = [{ coverage_status: "partial" }];
+    await callLoader();
+    const coverageCall = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("story_enrichment_state"),
+    );
+    expect(coverageCall).toBeDefined();
+    const sql = String(coverageCall?.[0]);
+    expect(sql).toContain("FROM story s");
+    expect(sql).toContain("LEFT JOIN story_enrichment_state");
+    expect(sql).toContain("ORDER BY s.received_at DESC, s.story_version DESC");
+    expect(coverageCall?.[1]).toEqual([STORY_ID]);
+  });
+
+  it("does not let coverage status alter the floored priority tier (floor unchanged)", async () => {
+    // The floor runs in the worker and reads only `known_ioc_hit`; the loader
+    // surfaces coverage additively. Proven here: the loaded `priorityTier` is
+    // exactly the stored tier regardless of coverage status.
+    resultRows = [resultRow({ generation: 3, priority_tier: "MEDIUM" })];
+    coverageRows = [{ coverage_status: "complete" }];
+    const complete = await callLoader();
+    coverageRows = [{ coverage_status: "unknown" }];
+    const unknown = await callLoader();
+    if (complete.kind !== "ok" || unknown.kind !== "ok") {
+      throw new Error("expected ok");
+    }
+    expect(complete.data.priorityTier).toBe("MEDIUM");
+    expect(unknown.data.priorityTier).toBe("MEDIUM");
+    expect(complete.data.priorityTier).toBe(unknown.data.priorityTier);
   });
 });

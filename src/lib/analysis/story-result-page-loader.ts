@@ -28,6 +28,20 @@ import { restoreStoryAnalysisTokens } from "./story-token-restore";
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 
 /**
+ * RFC 0003 §"Audit / evidence model" IOC-enrichment coverage status,
+ * persisted on `story_enrichment_state.coverage_status` for the canonical
+ * `(story_id, story_version)`. `complete` = the floor was evaluated on full
+ * Tier-1 coverage (a `known_ioc_hit = false` is a genuine clean miss);
+ * `unknown`/`stale`/`partial` = a source was down / feed stale / coverage
+ * partial, so a `false` reflects incomplete coverage rather than a confirmed
+ * miss. `null` when no enrichment-state row exists yet for the canonical
+ * version (enrichment has not completed). The loader surfaces this so an
+ * operator can distinguish false-complete from false-unknown; it never feeds
+ * the floor (the floor reads only the boolean, in the worker).
+ */
+export type CoverageStatus = "complete" | "partial" | "unknown" | "stale";
+
+/**
  * One compare column's rendered data for the side-by-side story view (#458):
  * the token-restored analysis text, scores, severity/likelihood factors, and
  * the analyst-only provenance. Built by a read-only EXACT lookup at the
@@ -84,6 +98,19 @@ export interface StoryResultPageData {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: Array<{ id: string; name: string | null }>;
+  /**
+   * IOC-enrichment coverage status for the story's *current canonical*
+   * `(story_id, story_version)` (RFC 0003 #498). Surfaces the transparency
+   * half of the evidence model so a `known_ioc_hit = false` decided under
+   * incomplete Tier-1 coverage (`unknown`/`stale`/`partial`) is
+   * distinguishable from a fully-checked clean miss (`complete`). `null`
+   * when no `story_enrichment_state` row exists for the canonical version.
+   * Purely additive — orthogonal to `priorityTier`, never feeds the floor.
+   * Because `story_analysis_result` carries no `story_version`, in a dirty
+   * state this reflects the latest canonical coverage, which may differ from
+   * the version the displayed result was analysed on (issue #498 scope).
+   */
+  coverageStatus: CoverageStatus | null;
   /** Token-restored analysis text. Story-scope
    * `<<REDACTED_*_E{i}_*>>` tokens are resolved back to plaintext via
    * `input_event_refs` + each referenced event's redaction map. Tokens
@@ -368,6 +395,16 @@ export async function loadStoryResultPage(
     defaultPair,
   );
 
+  // IOC-enrichment coverage for the *current canonical* version (#498).
+  // `story_analysis_result` carries no `story_version`, so resolve the
+  // canonical `(story_id, story_version)` by the worker's rule and join
+  // `story_enrichment_state` on it. Additive surfacing only — independent of
+  // the floored `priorityTier` already loaded above.
+  const coverageStatus = await loadCanonicalCoverageStatus(
+    customerPool,
+    input.storyId,
+  );
+
   // Analyst-only compare column (#458): a read-only EXACT, unpinned model-only
   // lookup of the compare model at the primary's language. Unlike the story
   // page's existing `pin` (which requires a generation), this resolves the
@@ -402,6 +439,7 @@ export async function loadStoryResultPage(
       severityFactors,
       likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      coverageStatus,
       analysisText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
@@ -646,6 +684,40 @@ async function resolveStoryCompareColumn(
       analysisText,
     },
   };
+}
+
+/**
+ * Resolve the IOC-enrichment coverage status for a story's *current
+ * canonical* version (#498). `story_analysis_result` is keyed on `story_id`
+ * only, whereas `story_enrichment_state` is keyed on `(story_id,
+ * story_version)`, so this follows the worker's canonical rule
+ * (`story-worker.ts` `loadCanonicalMembers`): pick the latest
+ * `(story_id, story_version)` from `story` by `received_at DESC,
+ * story_version DESC`, then LEFT JOIN `story_enrichment_state` on it. Both
+ * tables live in the same customer DB, so this is one in-DB join. Returns
+ * `null` when the story has no row (already ruled out upstream) or when no
+ * enrichment-state row exists for the canonical version (enrichment has not
+ * completed). Never throws the page — it is additive transparency.
+ */
+async function loadCanonicalCoverageStatus(
+  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
+  customerPool: any,
+  storyId: string,
+): Promise<CoverageStatus | null> {
+  const { rows } = await customerPool.query(
+    `SELECT ses.coverage_status
+       FROM story s
+       LEFT JOIN story_enrichment_state ses
+         ON ses.story_id = s.story_id
+        AND ses.story_version = s.story_version
+      WHERE s.story_id = $1::bigint
+      ORDER BY s.received_at DESC, s.story_version DESC
+      LIMIT 1`,
+    [storyId],
+  );
+  if (rows.length === 0) return null;
+  return (rows[0] as { coverage_status: CoverageStatus | null })
+    .coverage_status;
 }
 
 /**
