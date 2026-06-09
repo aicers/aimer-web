@@ -769,18 +769,22 @@ describe("processStoryJob — redaction-policy precondition", () => {
 describe("processStoryJob — enrichment precondition", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("requeues a hard enrichment failure without consuming an attempt and surfaces it", async () => {
+  it("consumes an attempt on a hard enrichment failure and re-queues with backoff (#531)", async () => {
+    // A persisted `failed` marker is a job failure, not an ordering wait, so
+    // it must be bounded: route through `requeueWithBackoff` so each requeue
+    // consumes one attempt instead of spinning forever. At attempts=0 the
+    // first failure re-queues with attempts=1 and last_error=enrichment_failed.
     const authPool = makePool({
       queryPlan: [
         { rows: [], rowCount: 1 }, // UPDATE → processing
-        { rows: [], rowCount: 1 }, // requeueForEnrichment UPDATE → queued
+        { rows: [], rowCount: 1 }, // requeueWithBackoff UPDATE → queued
       ],
     });
     const customerPool = makePool({
       queryPlan: [{ rows: [] }, ...goodMembersQuery()],
     });
     const callAnalyzeStory = vi.fn();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await processStoryJob(baseJob(), {
       authPool: authPool as never,
@@ -796,19 +800,76 @@ describe("processStoryJob — enrichment precondition", () => {
       loadOwnedDomains: emptyDomainsLoader as never,
     });
 
-    // Not ready → no LLM call, job requeued (not failed), attempts untouched.
+    // Not ready → no LLM call; re-queued (not yet failed) but an attempt is
+    // now consumed with a descriptive last_error.
     expect(callAnalyzeStory).not.toHaveBeenCalled();
-    expect(
-      sqlIncludes(authPool, "last_error = 'awaiting_enrichment'"),
-    ).toBeDefined();
+    const requeue = authPool.__calls.find((c) =>
+      c.sql.includes("SET status = 'queued'"),
+    );
+    expect(requeue).toBeDefined();
+    expect(requeue?.params?.[6]).toBe(1); // attempts = 0 + 1
+    expect(requeue?.params?.[7]).toBe("enrichment_failed");
     expect(sqlIncludes(authPool, "status = 'failed'")).toBeUndefined();
 
-    // The operational failure is logged distinctly, carrying last_error —
-    // so the requeue is diagnosable, not a silent spin.
-    const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    // The bounded retry is logged distinctly, carrying last_error — so it is
+    // diagnosable and not a silent spin.
+    const log = error.mock.calls.map((c) => String(c[0])).join("\n");
     expect(log).toContain("analysis.story_enrichment_failed_requeued");
+    expect(log).not.toContain("analysis.story_enrichment_failed_exhausted");
     expect(log).toContain("failed to load redaction policy");
-    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it("flips to terminal failed at the cap on a persistent enrichment failure (#531)", async () => {
+    // A persistently `failed` enrichment marker must not requeue forever: at
+    // MAX_ATTEMPTS the analysis job becomes terminal `failed` with a
+    // descriptive last_error, since it cannot floor without a completed
+    // marker (the stale-floor hazard #361 guards).
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // processing
+        { rows: [], rowCount: 1 }, // failed (cap)
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [{ rows: [] }, ...goodMembersQuery()],
+    });
+    const callAnalyzeStory = vi.fn();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Job already at attempts=4; next failure brings it to 5 (default MAX).
+    await processStoryJob(
+      { ...baseJob(), attempts: 4 },
+      {
+        authPool: authPool as never,
+        checkEnrichmentReady: async () => ({
+          ready: false,
+          knownIocHit: false,
+          status: "failed",
+          lastError: "enrichment: failed to load redaction policy",
+        }),
+        callAnalyzeStory: callAnalyzeStory as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+      },
+    );
+
+    expect(callAnalyzeStory).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall).toBeDefined();
+    expect(failCall?.params?.[6]).toBe(5); // attempts at the cap
+    expect(failCall?.params?.[7]).toBe("enrichment_failed");
+    // No re-queue was issued at the cap.
+    expect(sqlIncludes(authPool, "SET status = 'queued'")).toBeUndefined();
+
+    // The terminal failure switches to the `_exhausted` event, not requeued.
+    const log = error.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(log).toContain("analysis.story_enrichment_failed_exhausted");
+    expect(log).not.toContain("analysis.story_enrichment_failed_requeued");
+    error.mockRestore();
   });
 
   it("requeues a still-pending enrichment as the (non-error) incomplete state", async () => {
@@ -835,6 +896,17 @@ describe("processStoryJob — enrichment precondition", () => {
       loadRanges: emptyRangesLoader as never,
       loadOwnedDomains: emptyDomainsLoader as never,
     });
+
+    // The latency path is untouched: requeued WITHOUT consuming an attempt
+    // and still writing last_error = 'awaiting_enrichment' (regression #531).
+    expect(
+      sqlIncludes(authPool, "last_error = 'awaiting_enrichment'"),
+    ).toBeDefined();
+    expect(sqlIncludes(authPool, "status = 'failed'")).toBeUndefined();
+    // The requeue itself does not touch `attempts` (the only `attempts = $7`
+    // reference is the pickup guard, not the requeue UPDATE).
+    const incompleteRequeue = sqlIncludes(authPool, "SET status = 'queued'");
+    expect(incompleteRequeue?.sql.includes("attempts =")).toBe(false);
 
     const log = warn.mock.calls.map((c) => String(c[0])).join("\n");
     expect(log).toContain("analysis.story_enrichment_incomplete_requeued");
