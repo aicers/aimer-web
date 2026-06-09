@@ -58,6 +58,14 @@ const { HttpError } = await import("@/lib/auth/errors");
 const A = "11111111-1111-1111-1111-111111111111";
 const B = "22222222-2222-2222-2222-222222222222";
 
+// `n` distinct UUIDs (1..n), for exercising the member-count cap boundary.
+function uuids(n: number): string[] {
+  return Array.from({ length: n }, (_, i) => {
+    const h = (i + 1).toString(16).padStart(12, "0");
+    return `00000000-0000-0000-0000-${h}`;
+  });
+}
+
 function req(body: unknown): NextRequest {
   return {
     nextUrl: { pathname: "/api/groups" },
@@ -126,6 +134,36 @@ describe("POST /api/groups — request validation", () => {
     );
     expect(res.status).toBe(400);
     expect((await res.json()).error).toBe("invalid_timezone");
+  });
+
+  it("accepts exactly GROUP_MAX_MEMBERS (10) members", async () => {
+    const ten = uuids(10);
+    mockFetchMemberStates.mockResolvedValue(
+      ten.map((id) => operational(id, "UTC")),
+    );
+    mockCreateGroup.mockResolvedValue({
+      id: "group-10",
+      name: "G",
+      description: null,
+      ownerId: "acct-1",
+      createdBy: "acct-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      tz: "UTC",
+      memberIds: ten,
+    });
+    const res = await POST(req({ name: "G", memberIds: ten }));
+    expect(res.status).toBe(201);
+    expect(mockCreateGroup).toHaveBeenCalled();
+  });
+
+  it("rejects 11 members with too_many_members (over the cap)", async () => {
+    const eleven = uuids(11);
+    const res = await POST(req({ name: "G", memberIds: eleven }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("too_many_members");
+    // The cap is a request-shape check: it precedes the gate and any write.
+    expect(mockAssertManagement).not.toHaveBeenCalled();
+    expect(mockCreateGroup).not.toHaveBeenCalled();
   });
 });
 

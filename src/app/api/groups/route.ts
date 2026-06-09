@@ -2,24 +2,25 @@ import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { validateCustomerFields } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
-import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { DEFAULT_ANALYSIS_RETENTION_DAYS } from "@/lib/auth/retention-defaults";
 import { getAuthPool } from "@/lib/db/client";
 import { provisionGroupDb } from "@/lib/db/provision-group";
-import { createGroup, fetchMemberStates } from "@/lib/groups/groups";
-import { isValidTimeZone, resolveGroupTimezone } from "@/lib/groups/timezone";
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { createGroup } from "@/lib/groups/groups";
+import { validateGroupMembers } from "@/lib/groups/member-validation";
 
 // POST /api/groups — create a customer group.
 //
 // Auth: the all-member management predicate (Manager or Analyst on EVERY
-// member). Body: { name, description?, memberIds: string[] (>=2 unique),
-// tz? }. Requires every member to be operational; resolves the group tz
-// (auto-adopt when members agree, else creator-chosen with a deterministic
-// recommendation). Sets owner_id = created_by = creator.
+// member). Body: { name, description?, memberIds: string[] (>=2 unique,
+// <= GROUP_MAX_MEMBERS), tz? }. Requires every member to be operational;
+// resolves the group tz (auto-adopt when members agree, else creator-chosen
+// with a deterministic recommendation). Sets owner_id = created_by = creator.
+//
+// The member/tz/gate/operational front-door checks are shared with
+// `POST /api/groups/preview` via `validateGroupMembers` (capMode "reject":
+// over-cap → 400 too_many_members, tz divergence → 400 { recommendedTz }).
+// Create layers the write path (createGroup, audit, provisioning) on top.
 export const POST = withAuth(
   async (req: NextRequest, auth) => {
     const originErr = verifyOrigin(req);
@@ -67,36 +68,6 @@ export const POST = withAuth(
       throw err;
     }
 
-    // memberIds: array of UUID strings, >= 2 DISTINCT, duplicates rejected.
-    const memberIdsRaw = body.memberIds;
-    if (
-      !Array.isArray(memberIdsRaw) ||
-      !memberIdsRaw.every((x) => typeof x === "string")
-    ) {
-      return Response.json({ error: "memberIds_required" }, { status: 400 });
-    }
-    const memberIds = memberIdsRaw as string[];
-    if (!memberIds.every((id) => UUID_RE.test(id))) {
-      return Response.json({ error: "invalid_member_id" }, { status: 400 });
-    }
-    if (new Set(memberIds).size !== memberIds.length) {
-      // Duplicate ids must not satisfy the >= 2 check by repetition.
-      return Response.json({ error: "duplicate_members" }, { status: 400 });
-    }
-    if (memberIds.length < 2) {
-      return Response.json({ error: "too_few_members" }, { status: 400 });
-    }
-
-    // tz: validate IANA when supplied; otherwise resolved from members.
-    const tzRaw = body.tz;
-    let chosenTz: string | null = null;
-    if (tzRaw !== undefined && tzRaw !== null) {
-      if (typeof tzRaw !== "string" || !isValidTimeZone(tzRaw)) {
-        return Response.json({ error: "invalid_timezone" }, { status: 400 });
-      }
-      chosenTz = tzRaw;
-    }
-
     const pool = getAuthPool();
     const client = await pool.connect();
     let released = false;
@@ -107,41 +78,23 @@ export const POST = withAuth(
       }
     };
     try {
-      // Binding gate: Manager/Analyst on every member. A non-existent
-      // member yields no grant and is rejected here as 403 (no existence
-      // leak), so eligibility below only sees real customers.
-      await assertAllMemberManagement(client, auth.accountId, memberIds);
-
-      // Every member must exist and be operational
-      // (status='active' AND database_status='active').
-      const states = await fetchMemberStates(client, memberIds);
-      const stateById = new Map(states.map((s) => [s.id, s]));
-      for (const id of memberIds) {
-        const s = stateById.get(id);
-        if (!s) {
-          return Response.json({ error: "member_not_found" }, { status: 400 });
-        }
-        if (s.status !== "active" || s.databaseStatus !== "active") {
-          return Response.json(
-            { error: "member_not_operational" },
-            { status: 422 },
-          );
-        }
-      }
-
-      // Resolve the bucket tz. When members differ and no tz was chosen,
-      // return 400 { recommendedTz } so the client can prompt + resubmit.
-      const memberTzs = memberIds.map(
-        (id) => stateById.get(id)?.timezone ?? "UTC",
+      // Shared front-door validation: memberIds parse, UUID/duplicate/min/max,
+      // tz, all-member management gate (throws HttpError 403), operational
+      // check, and tz resolution. "reject" mode 400s an over-cap member count
+      // (too_many_members) and tz divergence ({ recommendedTz }).
+      const validation = await validateGroupMembers(
+        client,
+        auth.accountId,
+        body,
+        "reject",
       );
-      const resolution = resolveGroupTimezone(memberTzs, chosenTz);
-      if (!resolution.ok) {
-        return Response.json(
-          { recommendedTz: resolution.recommendedTz },
-          { status: 400 },
-        );
+      if (!validation.ok) return validation.response;
+      const { memberIds, tz } = validation.value;
+      if (tz === null) {
+        // Unreachable in "reject" mode (tz divergence already 400'd above);
+        // narrows the type without a non-null assertion.
+        throw new Error("group tz unresolved in reject mode");
       }
-      const tz = resolution.tz;
 
       // Write the group, membership, and retention policy atomically.
       let created: Awaited<ReturnType<typeof createGroup>>;

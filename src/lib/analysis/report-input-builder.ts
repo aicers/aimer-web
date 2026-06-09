@@ -40,6 +40,7 @@ import type {
   PeriodicReportInputs,
   StoryAnalysisInput,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
+import { LATEST_BASELINE_CTE } from "./baseline-dedup";
 import {
   type BaselineDrift,
   type CategoryCount,
@@ -284,18 +285,10 @@ const TOP_AGGREGATE_K = 10;
 // of the row's target `lang` (#495).
 const DEFAULT_LANG = "ENGLISH";
 
-// Dedupe `baseline_event` to one canonical row per (source_aice_id,
-// event_key) — latest received baseline wins — BEFORE any window
-// predicate. Shared verbatim by every window aggregate so the window test
-// always runs against the canonical row's `event_time` (RFC 0002 round-14
-// item 2): filtering inside the dedupe could pick an older in-window
-// duplicate even when the canonical latest row is out-of-window.
-const LATEST_BASELINE_CTE = `WITH latest_baseline AS (
-       SELECT DISTINCT ON (source_aice_id, event_key)
-              source_aice_id, event_key, event_time, category, primary_asset
-         FROM baseline_event
-        ORDER BY source_aice_id, event_key, received_at DESC, baseline_version DESC
-     )`;
+// The canonical `baseline_event` dedup CTE (latest received baseline wins,
+// deduped BEFORE any window predicate — RFC 0002 round-14 item 2). Extracted
+// to `baseline-dedup.ts` and imported so every window aggregate here, and the
+// group cost preview (#511), share the exact same dedup SQL.
 
 interface Windows {
   curStart: Date;
