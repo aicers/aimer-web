@@ -17,6 +17,26 @@ vi.mock("@/lib/analysis/report-result-page-loader", () => ({
   loadReportResultPage: () => mockLoad(),
 }));
 
+// Within-period prev/next (#505) reads neighbors via a `server-only` loader;
+// stub it (no neighbors) so importing the page in jsdom does not pull
+// `server-only`, and the detail render assertions stay focused on the report
+// body — the temporal nav has its own tests.
+vi.mock("@/lib/analysis/report-calendar-loader", () => ({
+  loadReportNeighbors: async () => ({
+    prev: null,
+    next: null,
+    olderStop: false,
+  }),
+}));
+
+// The page passes the auth + customer pools to the (mocked) neighbor loader.
+// Stub the pool getters so jsdom does not construct real `pg` pools (and the
+// customer pool's `server-only` env read) just to build those unused args.
+vi.mock("@/lib/db/client", () => ({ getAuthPool: () => ({}) }));
+vi.mock("@/lib/db/customer-runtime-pool", () => ({
+  getCustomerRuntimePool: () => ({}),
+}));
+
 // The model catalog (#458) is a `server-only` module; stub it so importing
 // the page in jsdom does not pull `server-only`. An empty catalog keeps the
 // analyst-only compare controls out of these (non-compare) render assertions.

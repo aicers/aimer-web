@@ -776,7 +776,12 @@
       "sectionSuspiciousEventTrends": "Suspicious-event trends",
       "sectionPeriodOutlook": "Period outlook",
       "periodNavLabel": "Report period",
-      "languageNavLabel": "Report language"
+      "languageNavLabel": "Report language",
+      "temporalNavLabel": "Report history",
+      "prevReport": "Previous report",
+      "nextReport": "Next report",
+      "noOlderRetained": "No older reports retained",
+      "openCalendar": "Open calendar"
     },
     "reportIndex": {
       "subtitle": "Available report buckets for this customer. Open a bucket to read its report.",
@@ -785,7 +790,28 @@
       "weekOf": "Week of {start} – {end}",
       "statusUpdating": "Updating",
       "statusReady": "Ready",
-      "statusBeingGenerated": "Being generated"
+      "statusBeingGenerated": "Being generated",
+      "viewCalendar": "View all in calendar"
+    },
+    "reportCalendar": {
+      "title": "Report calendar",
+      "subtitle": "Jump to any retained report. Highlighted buckets have a report; greyed buckets are out of retention or have no report.",
+      "navLabel": "Calendar period navigation",
+      "gridLabel": "Report calendar",
+      "yearHeading": "{year}",
+      "prevMonth": "Previous month",
+      "nextMonth": "Next month",
+      "prevYear": "Previous year",
+      "nextYear": "Next year",
+      "backToReports": "Back to reports",
+      "legendHasReport": "Has report",
+      "legendNone": "No report",
+      "legendOutOfRetention": "Out of retention",
+      "legendFuture": "Future",
+      "cellHasReport": "{label} — open report",
+      "cellNone": "{label} — no report",
+      "cellOutOfRetention": "{label} — out of retention",
+      "cellFuture": "{label} — future"
     },
     "storyDetail": {
       "title": "Story Analysis",
