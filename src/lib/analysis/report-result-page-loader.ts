@@ -1314,20 +1314,25 @@ interface ReportLeafData {
  * Member fan-out (#525): each cited story / event / exemplar ref names the
  * owning member `customer_id` (degrading to `subjectId` for a legacy / single-
  * customer ref via `refCustomerId`). The leaf and its `event_redaction_map`
- * live in that member's DB, so each ref's leaf SELECT runs on `poolFor(cid)`,
- * and the redaction maps are GROUPED by member and decrypted with ONE batched
- * query per member pool (`decryptMaps`) — never an open-and-query per ref. The
- * decrypted maps are keyed by `(customer_id, aice_id:event_key)` so the same
- * `(aice_id, event_key)` in two member DBs routes to the right member's
+ * live in that member's DB, so refs are GROUPED by owning member and BOTH the
+ * leaf reads AND the redaction-map decrypt run ONE batched query per member
+ * pool — the leaf reads via a row-value `IN (...)` over each member's pinned
+ * `(story_id|aice_id+event_key, generation, model_name, model)` tuples, the
+ * maps via `decryptMaps`. Never an open-and-query per ref: a group report with
+ * many refs in one member DB costs a single leaf round-trip there, not O(refs).
+ * The decrypted maps are keyed by `(customer_id, aice_id:event_key)` so the
+ * same `(aice_id, event_key)` in two member DBs routes to the right member's
  * plaintext. A story ref's member-event redaction lookups use the SAME member
  * DB as the story leaf (the story leaf and its member-event maps co-reside).
  * For a `customer` subject every ref degrades to `subjectId` and `poolFor`
- * returns the single result pool, so this collapses to the prior single-pool
- * behavior end to end.
+ * returns the single result pool, so this collapses to one batched leaf read
+ * plus one decrypt against that pool.
  *
- * The same per-leaf SELECTs also return the Sources-panel display fields
+ * The same batched leaf SELECTs also return the Sources-panel display fields
  * (tier / scores / TTP / `superseded_at`) at the pinned variant (T1), so
- * the cited-source display data costs no extra round-trips.
+ * the cited-source display data costs no extra round-trips. Each returned row
+ * is re-associated with its positional ref by `leafKey`, leaving
+ * `storyDisplays` / `eventDisplays` aligned with the input ref arrays.
  */
 async function buildReportTokenPlaintext(
   poolFor: (customerId: string) => Pool | undefined,
@@ -1338,8 +1343,8 @@ async function buildReportTokenPlaintext(
   variant: { lang: string; modelName: string; model: string },
 ): Promise<ReportLeafData> {
   const out = new Map<string, string>();
-  const storyDisplays: Array<LeafDisplayRow | null> = [];
-  const eventDisplays: Array<LeafDisplayRow | null> = [];
+  const storyDisplays: Array<LeafDisplayRow | null> = storyRefs.map(() => null);
+  const eventDisplays: Array<LeafDisplayRow | null> = eventRefs.map(() => null);
   if (
     storyRefs.length === 0 &&
     eventRefs.length === 0 &&
@@ -1356,6 +1361,28 @@ async function buildReportTokenPlaintext(
     refCustomerId(r, subjectId),
   );
 
+  // Group ref positions by owning member so each member pool's leaf rows are
+  // read with ONE batched query (#525) — the same per-member batching as the
+  // `event_redaction_map` decrypt below, so a group report with many refs in
+  // one member DB costs a single round-trip there, not O(refs). `poolFor`
+  // resolves each member pool once; a ref naming a non-member id (no pool) is
+  // skipped and degrades to an empty leaf, preserving positional alignment.
+  const groupByCustomer = (
+    ids: ReadonlyArray<string>,
+  ): Map<string, number[]> => {
+    const m = new Map<string, number[]>();
+    for (let i = 0; i < ids.length; i++) {
+      const list = m.get(ids[i]);
+      if (list) list.push(i);
+      else m.set(ids[i], [i]);
+    }
+    return m;
+  };
+  // Composite key re-associating a batched row with its positional ref. The
+  // leaf PKs (story_id|aice_id+event_key, generation, model_name, model) are
+  // unique within a (member, lang), so each ref tuple matches at most one row.
+  const leafKey = (...parts: Array<string | number>): string => parts.join(" ");
+
   // Fetch story leaf narratives + their member refs at the pinned
   // generation AND the report variant, from the OWNING member's DB.
   // `generation` is variant-scoped (the PK includes lang/model_name/model),
@@ -1367,53 +1394,76 @@ async function buildReportTokenPlaintext(
     analysis: string;
     severityFactors: string[];
     likelihoodFactors: string[];
-  }> = [];
+  }> = storyRefs.map(() => ({
+    analysis: "",
+    severityFactors: [],
+    likelihoodFactors: [],
+  }));
   const storyMemberRefs: Array<
     Array<{ index: number; aiceId: string; eventKey: string }>
-  > = [];
-  for (let i = 0; i < storyRefs.length; i++) {
-    const ref = storyRefs[i];
-    const cid = storyCustomerIds[i];
+  > = storyRefs.map(() => []);
+  for (const [cid, idxs] of groupByCustomer(storyCustomerIds)) {
     const pool = poolFor(cid);
+    // A ref naming a non-member id (no pool) degrades to an empty leaf,
+    // keeping `storyLeaves` / `storyDisplays` aligned with `storyRefs`.
+    if (!pool) continue;
     // Pin each leaf by ITS OWN ref model (#465 Scope 4): a fallback leaf lives
     // under a different model than the report row, so a row-model pin would
     // return no row and leave report tokens unrestored / visible. A pre-#465
-    // ref lacking a model falls back to the report variant's model. A ref
-    // naming a non-member id (no pool) degrades to an empty leaf.
-    const rows = pool
-      ? (
-          await pool.query(
-            `SELECT analysis_text, severity_factors, likelihood_factors,
-              input_event_refs, priority_tier, severity_score,
-              likelihood_score, ttp_tags, superseded_at
-         FROM story_analysis_result
-        WHERE customer_id = $1 AND story_id = $2::bigint AND generation = $3
-          AND lang = $4 AND model_name = $5 AND model = $6
-        LIMIT 1`,
-            [
-              cid,
-              ref.story_id,
-              ref.generation,
-              variant.lang,
-              ref.model_name ?? variant.modelName,
-              ref.model ?? variant.model,
-            ],
-          )
-        ).rows
-      : [];
-    storyLeaves.push({
-      analysis: rows[0]?.analysis_text ?? "",
-      severityFactors: Array.isArray(rows[0]?.severity_factors)
-        ? rows[0].severity_factors
-        : [],
-      likelihoodFactors: Array.isArray(rows[0]?.likelihood_factors)
-        ? rows[0].likelihood_factors
-        : [],
+    // ref lacking a model falls back to the report variant's model. All refs
+    // owned by this member are batched into ONE row-value `IN (...)` keyed by
+    // `(story_id, generation, model_name, model)` (`customer_id` / `lang` are
+    // constant per member query) — no per-ref round-trip.
+    const params: unknown[] = [cid, variant.lang];
+    const tuples = idxs.map((i) => {
+      const ref = storyRefs[i];
+      const base = params.length;
+      params.push(
+        ref.story_id,
+        ref.generation,
+        ref.model_name ?? variant.modelName,
+        ref.model ?? variant.model,
+      );
+      return `($${base + 1}::bigint, $${base + 2}::int, $${base + 3}::text, $${base + 4}::text)`;
     });
-    storyMemberRefs.push(
-      Array.isArray(rows[0]?.input_event_refs) ? rows[0].input_event_refs : [],
+    const { rows } = await pool.query(
+      `SELECT analysis_text, severity_factors, likelihood_factors,
+              input_event_refs, priority_tier, severity_score,
+              likelihood_score, ttp_tags, superseded_at,
+              story_id::text AS story_id, generation, model_name, model
+         FROM story_analysis_result
+        WHERE customer_id = $1 AND lang = $2
+          AND (story_id, generation, model_name, model) IN (${tuples.join(", ")})`,
+      params,
     );
-    storyDisplays.push(toLeafDisplay(rows[0]));
+    const byKey = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      byKey.set(leafKey(r.story_id, r.generation, r.model_name, r.model), r);
+    }
+    for (const i of idxs) {
+      const ref = storyRefs[i];
+      const row = byKey.get(
+        leafKey(
+          ref.story_id,
+          ref.generation,
+          ref.model_name ?? variant.modelName,
+          ref.model ?? variant.model,
+        ),
+      );
+      storyLeaves[i] = {
+        analysis: row?.analysis_text ?? "",
+        severityFactors: Array.isArray(row?.severity_factors)
+          ? row.severity_factors
+          : [],
+        likelihoodFactors: Array.isArray(row?.likelihood_factors)
+          ? row.likelihood_factors
+          : [],
+      };
+      storyMemberRefs[i] = Array.isArray(row?.input_event_refs)
+        ? row.input_event_refs
+        : [];
+      storyDisplays[i] = toLeafDisplay(row);
+    }
   }
 
   // Fetch event leaf narratives + factors at the pinned generation AND
@@ -1422,42 +1472,69 @@ async function buildReportTokenPlaintext(
     analysis: string;
     severityFactors: string[];
     likelihoodFactors: string[];
-  }> = [];
-  for (let i = 0; i < eventRefs.length; i++) {
-    const ref = eventRefs[i];
-    const pool = poolFor(eventCustomerIds[i]);
-    // Per-ref model pin (#465 Scope 4), same as the story leaves above.
-    const rows = pool
-      ? (
-          await pool.query(
-            `SELECT analysis_text, severity_factors, likelihood_factors,
-              priority_tier, severity_score, likelihood_score, ttp_tags,
-              superseded_at
-         FROM event_analysis_result
-        WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
-          AND lang = $4 AND model_name = $5 AND model = $6
-        LIMIT 1`,
-            [
-              ref.aice_id,
-              ref.event_key,
-              ref.generation,
-              variant.lang,
-              ref.model_name ?? variant.modelName,
-              ref.model ?? variant.model,
-            ],
-          )
-        ).rows
-      : [];
-    eventLeaves.push({
-      analysis: rows[0]?.analysis_text ?? "",
-      severityFactors: Array.isArray(rows[0]?.severity_factors)
-        ? rows[0].severity_factors
-        : [],
-      likelihoodFactors: Array.isArray(rows[0]?.likelihood_factors)
-        ? rows[0].likelihood_factors
-        : [],
+  }> = eventRefs.map(() => ({
+    analysis: "",
+    severityFactors: [],
+    likelihoodFactors: [],
+  }));
+  for (const [cid, idxs] of groupByCustomer(eventCustomerIds)) {
+    const pool = poolFor(cid);
+    if (!pool) continue;
+    // Per-ref model pin (#465 Scope 4), batched per member exactly like the
+    // story leaves above. `event_analysis_result` is keyed by `aice_id` (not
+    // `customer_id`), so the member identity is the pool; `lang` is constant.
+    const params: unknown[] = [variant.lang];
+    const tuples = idxs.map((i) => {
+      const ref = eventRefs[i];
+      const base = params.length;
+      params.push(
+        ref.aice_id,
+        ref.event_key,
+        ref.generation,
+        ref.model_name ?? variant.modelName,
+        ref.model ?? variant.model,
+      );
+      return `($${base + 1}::text, $${base + 2}::numeric, $${base + 3}::int, $${base + 4}::text, $${base + 5}::text)`;
     });
-    eventDisplays.push(toLeafDisplay(rows[0]));
+    const { rows } = await pool.query(
+      `SELECT analysis_text, severity_factors, likelihood_factors,
+              priority_tier, severity_score, likelihood_score, ttp_tags,
+              superseded_at, aice_id, event_key::text AS event_key,
+              generation, model_name, model
+         FROM event_analysis_result
+        WHERE lang = $1
+          AND (aice_id, event_key, generation, model_name, model) IN (${tuples.join(", ")})`,
+      params,
+    );
+    const byKey = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      byKey.set(
+        leafKey(r.aice_id, r.event_key, r.generation, r.model_name, r.model),
+        r,
+      );
+    }
+    for (const i of idxs) {
+      const ref = eventRefs[i];
+      const row = byKey.get(
+        leafKey(
+          ref.aice_id,
+          ref.event_key,
+          ref.generation,
+          ref.model_name ?? variant.modelName,
+          ref.model ?? variant.model,
+        ),
+      );
+      eventLeaves[i] = {
+        analysis: row?.analysis_text ?? "",
+        severityFactors: Array.isArray(row?.severity_factors)
+          ? row.severity_factors
+          : [],
+        likelihoodFactors: Array.isArray(row?.likelihood_factors)
+          ? row.likelihood_factors
+          : [],
+      };
+      eventDisplays[i] = toLeafDisplay(row);
+    }
   }
 
   // Fetch the long-tail exemplar leaves (#495), reduced to the single chosen
@@ -1467,30 +1544,57 @@ async function buildReportTokenPlaintext(
   // `R{j}` numbering, so even a Korean native-pinned row's exemplar tokens
   // were minted from the English leaves. `model_name` / `model` are required
   // on an exemplar ref (no pre-#465 legacy form).
-  const exemplarLeaves: Array<{ analysis: string }> = [];
-  for (let i = 0; i < exemplarRefs.length; i++) {
-    const ref = exemplarRefs[i];
-    const pool = poolFor(exemplarCustomerIds[i]);
-    const rows = pool
-      ? (
-          await pool.query(
-            `SELECT severity_factors, likelihood_factors
+  const exemplarLeaves: Array<{ analysis: string }> = exemplarRefs.map(() => ({
+    analysis: chooseExemplarFactor(undefined),
+  }));
+  for (const [cid, idxs] of groupByCustomer(exemplarCustomerIds)) {
+    const pool = poolFor(cid);
+    if (!pool) continue;
+    // Batched per member like the cited leaves, but always pinned to the
+    // English canonical `lang` (`ENGLISH_BASELINE`); `model_name` / `model`
+    // are required on an exemplar ref so there is no variant fallback.
+    const params: unknown[] = [ENGLISH_BASELINE];
+    const tuples = idxs.map((i) => {
+      const ref = exemplarRefs[i];
+      const base = params.length;
+      params.push(
+        ref.aice_id,
+        ref.event_key,
+        ref.generation,
+        ref.model_name,
+        ref.model,
+      );
+      return `($${base + 1}::text, $${base + 2}::numeric, $${base + 3}::int, $${base + 4}::text, $${base + 5}::text)`;
+    });
+    const { rows } = await pool.query(
+      `SELECT severity_factors, likelihood_factors,
+              aice_id, event_key::text AS event_key, generation,
+              model_name, model
          FROM event_analysis_result
-        WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
-          AND lang = $4 AND model_name = $5 AND model = $6
-        LIMIT 1`,
-            [
-              ref.aice_id,
-              ref.event_key,
-              ref.generation,
-              ENGLISH_BASELINE,
-              ref.model_name,
-              ref.model,
-            ],
-          )
-        ).rows
-      : [];
-    exemplarLeaves.push({ analysis: chooseExemplarFactor(rows[0]) });
+        WHERE lang = $1
+          AND (aice_id, event_key, generation, model_name, model) IN (${tuples.join(", ")})`,
+      params,
+    );
+    const byKey = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      byKey.set(
+        leafKey(r.aice_id, r.event_key, r.generation, r.model_name, r.model),
+        r,
+      );
+    }
+    for (const i of idxs) {
+      const ref = exemplarRefs[i];
+      const row = byKey.get(
+        leafKey(
+          ref.aice_id,
+          ref.event_key,
+          ref.generation,
+          ref.model_name,
+          ref.model,
+        ),
+      );
+      exemplarLeaves[i] = { analysis: chooseExemplarFactor(row) };
+    }
   }
 
   // Replay the rewrite to recover the report→source token map per leaf.

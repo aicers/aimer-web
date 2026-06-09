@@ -35,6 +35,9 @@ function makeMemberPool() {
   return {
     query: vi.fn(async (sql: string) => {
       if (sql.includes("FROM event_analysis_result")) {
+        // The batched leaf read keys rows back to refs by
+        // `(aice_id, event_key, generation, model_name, model)` (#525), so the
+        // stub row carries those columns; both members hold the SAME key.
         return {
           rows: [
             {
@@ -46,6 +49,11 @@ function makeMemberPool() {
               likelihood_score: 0.9,
               ttp_tags: [],
               superseded_at: null,
+              aice_id: "aice-1",
+              event_key: "9001",
+              generation: 1,
+              model_name: "openai",
+              model: "gpt-4o",
             },
           ],
         };
@@ -138,6 +146,12 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
                 likelihood_score: 0.8,
                 ttp_tags: [],
                 superseded_at: null,
+                // Batched-read key columns (#525): both members hold story 5001
+                // at the same pinned (generation, model_name, model).
+                story_id: "5001",
+                generation: 1,
+                model_name: "openai",
+                model: "gpt-4o",
               },
             ],
           };
@@ -207,5 +221,87 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
     // throws and never leaks another member's plaintext.
     expect(result.plaintextByReportToken.size).toBe(0);
     expect(poolA.query).not.toHaveBeenCalled();
+  });
+
+  it("batches the leaf reads per member (one query for many refs, no N+1)", async () => {
+    // Two cited events owned by the SAME member must cost ONE leaf read and
+    // ONE redaction decrypt — not one round-trip per ref. A per-ref leaf loop
+    // (the pre-fix behavior) would make `leaf` equal the ref count.
+    const calls = { leaf: 0, redaction: 0 };
+    const leafRow = (aiceId: string, eventKey: string) => ({
+      analysis_text: `Event ${aiceId} <<REDACTED_IP_001>>.`,
+      severity_factors: [],
+      likelihood_factors: [],
+      priority_tier: "HIGH",
+      severity_score: 0.9,
+      likelihood_score: 0.9,
+      ttp_tags: [],
+      superseded_at: null,
+      aice_id: aiceId,
+      event_key: eventKey,
+      generation: 1,
+      model_name: "openai",
+      model: "gpt-4o",
+    });
+    const pool = {
+      query: vi.fn(async (sql: string) => {
+        if (sql.includes("FROM event_analysis_result")) {
+          calls.leaf++;
+          return {
+            rows: [leafRow("aice-1", "9001"), leafRow("aice-2", "9002")],
+          };
+        }
+        if (sql.includes("FROM event_redaction_map")) {
+          calls.redaction++;
+          return {
+            rows: [
+              {
+                aice_id: "aice-1",
+                event_key: "9001",
+                ciphertext: Buffer.from("ct"),
+                wrapped_dek: "dek",
+              },
+              {
+                aice_id: "aice-2",
+                event_key: "9002",
+                ciphertext: Buffer.from("ct"),
+                wrapped_dek: "dek",
+              },
+            ],
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    const result = await buildReportTokenPlaintext(
+      // biome-ignore lint/suspicious/noExplicitAny: pool stub
+      () => pool as any,
+      "cust-A",
+      [],
+      [
+        {
+          aice_id: "aice-1",
+          event_key: "9001",
+          generation: 1,
+          customer_id: "cust-A",
+        },
+        {
+          aice_id: "aice-2",
+          event_key: "9002",
+          generation: 1,
+          customer_id: "cust-A",
+        },
+      ],
+      [],
+      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+    );
+
+    expect(calls.leaf).toBe(1);
+    expect(calls.redaction).toBe(1);
+    // Both refs still restore from the single batched read (positional R{j}).
+    const map = result.plaintextByReportToken;
+    expect(map.get("<<REDACTED_IP_R1_001>>")).toBe("10.0.0.1");
+    expect(map.get("<<REDACTED_IP_R2_001>>")).toBe("10.0.0.1");
   });
 });

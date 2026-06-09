@@ -304,6 +304,10 @@ describe("loadReportResultPage — L2 language resolution", () => {
 });
 
 describe("loadReportResultPage — cited sources (T1)", () => {
+  // The batched leaf read (#525) re-associates each row with its ref by
+  // `(story_id|aice_id+event_key, generation, model_name, model)`, so the
+  // stub rows carry those key columns matching the refs the tests cite
+  // (story 555 / event aice-9:777, generation 2 / 4, model openai/gpt-4o).
   function storyLeaf(extras: Record<string, unknown> = {}) {
     return {
       analysis_text: "",
@@ -315,6 +319,10 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       likelihood_score: 0.7,
       ttp_tags: ["T1078"],
       superseded_at: null,
+      story_id: "555",
+      generation: 2,
+      model_name: "openai",
+      model: "gpt-4o",
       ...extras,
     };
   }
@@ -328,6 +336,11 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       likelihood_score: 0.5,
       ttp_tags: [],
       superseded_at: null,
+      aice_id: "aice-9",
+      event_key: "777",
+      generation: 4,
+      model_name: "openai",
+      model: "gpt-4o",
       ...extras,
     };
   }
@@ -441,11 +454,12 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     if (outcome.kind !== "ok") throw new Error("expected ok");
     // The Sources link variant resolves to the canonical English leaf.
     expect(outcome.data.citedSources.stories[0].variant.lang).toBe("ENGLISH");
-    // And the leaf SELECT was actually issued with lang=ENGLISH (param $4).
+    // And the batched leaf SELECT was issued with lang=ENGLISH. The story read
+    // binds `[customer_id, lang, ...tuples]` (#525), so the language is $2.
     const leafCall = customerPool.query.mock.calls.find((c) =>
       String(c[0]).includes("FROM story_analysis_result"),
     );
-    expect(leafCall?.[1]?.[3]).toBe("ENGLISH");
+    expect(leafCall?.[1]?.[1]).toBe("ENGLISH");
   });
 });
 

@@ -41,7 +41,9 @@ function makePool(captured: {
         sql.includes("FROM event_analysis_result") &&
         sql.includes("ttp_tags")
       ) {
-        captured.citedEventLang = params?.[3];
+        // Batched event read (#525): params are `[lang, ...tuples]`, so the
+        // pinned language is the first bind, not `$4`.
+        captured.citedEventLang = params?.[0];
         return {
           rows: [
             {
@@ -53,6 +55,11 @@ function makePool(captured: {
               likelihood_score: 0.9,
               ttp_tags: ["T1"],
               superseded_at: null,
+              aice_id: "aice-c",
+              event_key: "6001",
+              generation: 1,
+              model_name: "openai",
+              model: "gpt-4o",
             },
           ],
         };
@@ -63,12 +70,19 @@ function makePool(captured: {
         sql.includes("severity_factors, likelihood_factors") &&
         !sql.includes("ttp_tags")
       ) {
-        captured.exemplarLang = params?.[3];
+        // Batched exemplar read (#525): the English-canonical `lang` is the
+        // first bind, not `$4`.
+        captured.exemplarLang = params?.[0];
         return {
           rows: [
             {
               severity_factors: ["long tail <<REDACTED_EMAIL_001>>"],
               likelihood_factors: [],
+              aice_id: "aice-x",
+              event_key: "6002",
+              generation: 1,
+              model_name: "openai",
+              model: "gpt-4o",
             },
           ],
         };
