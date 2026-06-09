@@ -13,6 +13,7 @@ export interface PeriodicReportInputs {
   eventAnalyses: Array<EventAnalysisInput>;
   baselineAggregates: BaselineAggregatesInput;
   aggregateTtpTags: Array<string>;
+  analyzedEventAggregates?: AnalyzedEventAggregatesInput | null;
 }
 
 export interface StoryAnalysisInput {
@@ -46,6 +47,17 @@ export interface BaselineAggregatesInput {
   topSensors: Array<BaselineCountInput>;
 }
 
+export interface AnalyzedEventAggregatesInput {
+  windowStart: string;
+  windowEnd: string;
+  analyzedCount: number;
+  citedCount: number;
+  topTechniques: Array<BaselineCountInput>;
+  tierDistribution: Array<BaselineCountInput>;
+  uncitedRollup: Array<BaselineCountInput>;
+  exemplars: Array<LongTailExemplarInput>;
+}
+
 export interface BaselineTotalsInput {
   events: number;
   stories: number;
@@ -55,6 +67,13 @@ export interface BaselineTotalsInput {
 export interface BaselineCountInput {
   key: string;
   count: number;
+}
+
+export interface LongTailExemplarInput {
+  technique: string;
+  tier: string;
+  count: number;
+  factor: string;
 }
 
 export interface PeriodicReportVariables {

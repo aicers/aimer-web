@@ -45,7 +45,8 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     // 0012_event_provenance_not_null (aimer#480, #474),
     // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492),
     // 0014_event_analysis_result_origin (RFC 0002 amendment, #493),
-    // 0015_periodic_report_result_subject_rekey (RFC 0004, #503)
+    // 0015_periodic_report_result_subject_rekey (RFC 0004, #503),
+    // 0016_periodic_report_long_tail (RFC 0002 amendment, #495)
     expect(rows.map((r) => r.version)).toEqual([
       "0000",
       "0001",
@@ -63,6 +64,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       "0013",
       "0014",
       "0015",
+      "0016",
     ]);
   });
 

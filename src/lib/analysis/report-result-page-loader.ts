@@ -56,6 +56,30 @@ export type LanguageJobStatus =
 const STORY_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_E(\d+)_(\d+)>>/;
 const EVENT_SOURCE_RE = /<<REDACTED_(IP|EMAIL|MAC|DOMAIN)_(\d+)>>/;
 
+// The factor sentinel the score-factor filter emits when nothing survives.
+// MUST match `report-input-builder.ts` so the loader's exemplar `factor`
+// replay folds to the identical report-scope token numbering (#495).
+const INSUFFICIENT_EVIDENCE_SENTINEL = "insufficient evidence";
+
+/** The single `factor` an exemplar leaf surfaced: `severity_factors[0]`,
+ *  falling back to `likelihood_factors[0]` on the "insufficient evidence"
+ *  sentinel (or absence). Mirrors the builder's `chooseExemplarFactor`. */
+function chooseExemplarFactor(
+  // biome-ignore lint/suspicious/noExplicitAny: pg row minimal surface
+  row: any,
+): string {
+  const sev: string[] = Array.isArray(row?.severity_factors)
+    ? row.severity_factors
+    : [];
+  const lik: string[] = Array.isArray(row?.likelihood_factors)
+    ? row.likelihood_factors
+    : [];
+  const s = sev[0];
+  if (s !== undefined && s !== INSUFFICIENT_EVIDENCE_SENTINEL) return s;
+  if (lik[0] !== undefined) return lik[0];
+  return s ?? "";
+}
+
 /**
  * Decoded citation source for one render unit (aimer-web-internal form, #449).
  *
@@ -354,6 +378,17 @@ interface EventRef {
   model_name?: string;
   model?: string;
 }
+// Long-tail exemplar leaf ref (#495). Unlike the cited refs, `model_name` /
+// `model` are REQUIRED (this is a new column with no pre-#465 legacy form),
+// and there is no `lang` — exemplar leaves are always replayed at the English
+// canonical language regardless of the row's `lang` / `restoration_lang`.
+interface ExemplarRef {
+  aice_id: string;
+  event_key: string;
+  generation: number;
+  model_name: string;
+  model: string;
+}
 
 // Wire form of a citation `source` as aimer emits it inside `sections_jsonb`
 // (#449): a discriminated union on `type` carrying an opaque leaf identifier.
@@ -623,6 +658,9 @@ export async function loadReportResultPage(
   const eventRefs = Array.isArray(row.input_event_refs)
     ? row.input_event_refs
     : [];
+  const exemplarRefs = Array.isArray(row.input_exemplar_refs)
+    ? row.input_exemplar_refs
+    : [];
 
   // `restoration_lang` pins the language whose cited leaves are replayed to
   // restore the report-scope tokens: NULL replays at the row's own `lang`
@@ -647,6 +685,7 @@ export async function loadReportResultPage(
       input.customerId,
       storyRefs,
       eventRefs,
+      exemplarRefs,
       leafVariant,
     );
 
@@ -808,6 +847,7 @@ interface ReportResultRow {
   sections_jsonb: RawReportSections;
   input_story_refs: StoryRef[];
   input_event_refs: EventRef[];
+  input_exemplar_refs: ExemplarRef[] | null;
   superseded_at: Date | null;
   requested_by: string | null;
   requested_at: Date;
@@ -819,7 +859,7 @@ const REPORT_RESULT_COLUMNS = `model_actual_version, prompt_version, generation,
         lang, restoration_lang, model_name, model,
         priority_tier, aggregate_severity_score,
         aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
-        input_story_refs, input_event_refs, superseded_at,
+        input_story_refs, input_event_refs, input_exemplar_refs, superseded_at,
         requested_by::text AS requested_by, requested_at`;
 
 /**
@@ -980,12 +1020,16 @@ async function resolveReportCompareColumn(
   const eventRefs = Array.isArray(row.input_event_refs)
     ? row.input_event_refs
     : [];
+  const exemplarRefs = Array.isArray(row.input_exemplar_refs)
+    ? row.input_exemplar_refs
+    : [];
   const replayLang = row.restoration_lang ?? row.lang;
   const { plaintextByReportToken } = await buildReportTokenPlaintext(
     customerPool,
     customerId,
     storyRefs,
     eventRefs,
+    exemplarRefs,
     { lang: replayLang, modelName: row.model_name, model: row.model },
   );
   const sections = restoreReportSectionsFromRow(
@@ -1103,12 +1147,17 @@ async function buildReportTokenPlaintext(
   customerId: string,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
+  exemplarRefs: ExemplarRef[],
   variant: { lang: string; modelName: string; model: string },
 ): Promise<ReportLeafData> {
   const out = new Map<string, string>();
   const storyDisplays: Array<LeafDisplayRow | null> = [];
   const eventDisplays: Array<LeafDisplayRow | null> = [];
-  if (storyRefs.length === 0 && eventRefs.length === 0) {
+  if (
+    storyRefs.length === 0 &&
+    eventRefs.length === 0 &&
+    exemplarRefs.length === 0
+  ) {
     return { plaintextByReportToken: out, storyDisplays, eventDisplays };
   }
 
@@ -1202,6 +1251,33 @@ async function buildReportTokenPlaintext(
     eventDisplays.push(toLeafDisplay(rows[0]));
   }
 
+  // Fetch the long-tail exemplar leaves (#495), reduced to the single chosen
+  // `factor` the builder fed to `buildReportTokenMap`. Exemplar refs are
+  // ALWAYS replayed at the English canonical language (`ENGLISH_BASELINE`),
+  // independent of `variant.lang` — the canonical owns the exemplar set + the
+  // `R{j}` numbering, so even a Korean native-pinned row's exemplar tokens
+  // were minted from the English leaves. `model_name` / `model` are required
+  // on an exemplar ref (no pre-#465 legacy form).
+  const exemplarLeaves: Array<{ analysis: string }> = [];
+  for (const ref of exemplarRefs) {
+    const { rows } = await customerPool.query(
+      `SELECT severity_factors, likelihood_factors
+         FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
+          AND lang = $4 AND model_name = $5 AND model = $6
+        LIMIT 1`,
+      [
+        ref.aice_id,
+        ref.event_key,
+        ref.generation,
+        ENGLISH_BASELINE,
+        ref.model_name,
+        ref.model,
+      ],
+    );
+    exemplarLeaves.push({ analysis: chooseExemplarFactor(rows[0]) });
+  }
+
   // Replay the rewrite to recover the report→source token map per leaf.
   // The analysis AND the factor arrays are replayed in the SAME order the
   // builder fed them (analysis first, then severity, then likelihood —
@@ -1210,16 +1286,23 @@ async function buildReportTokenPlaintext(
   // replayed too: aimer is allowed to quote a leaf factor verbatim, so a
   // factor-only report token can land in the stored sections and would be
   // left undecoded if only the narratives were replayed (#297 review
-  // round 2, item 1).
-  const { refs } = buildReportTokenMap(storyLeaves, eventLeaves);
+  // round 2, item 1). The exemplar leaves are appended last so their `R{j}`
+  // numbering matches the builder's combined leaf set, and the resulting
+  // exemplar token map is unioned into the cited one below.
+  const { refs } = buildReportTokenMap(
+    storyLeaves,
+    eventLeaves,
+    exemplarLeaves,
+  );
 
   // Decrypt every referenced event redaction map once, keyed by
-  // (aice_id, event_key).
+  // (aice_id, event_key) — cited events, story members, AND exemplar leaves.
   const wanted = new Set<string>();
   for (const memberRefs of storyMemberRefs) {
     for (const m of memberRefs) wanted.add(`${m.aiceId}:${m.eventKey}`);
   }
   for (const ref of eventRefs) wanted.add(`${ref.aice_id}:${ref.event_key}`);
+  for (const ref of exemplarRefs) wanted.add(`${ref.aice_id}:${ref.event_key}`);
   const mapByKey = await decryptMaps(customerPool, customerId, wanted);
 
   for (const leaf of refs) {
@@ -1228,6 +1311,12 @@ async function buildReportTokenPlaintext(
     const eventRef =
       leaf.kind === "event"
         ? eventRefs[leaf.index - storyRefs.length - 1]
+        : null;
+    // Exemplar leaves follow all cited story+event leaves in the combined
+    // order, so their 1-based `index` maps to `exemplarRefs` after both.
+    const exemplarRef =
+      leaf.kind === "exemplar"
+        ? exemplarRefs[leaf.index - storyRefs.length - eventRefs.length - 1]
         : null;
     for (const { reportToken, sourceToken } of leaf.tokens) {
       let plaintext: string | undefined;
@@ -1247,6 +1336,16 @@ async function buildReportTokenPlaintext(
         const m = EVENT_SOURCE_RE.exec(sourceToken);
         if (m) {
           const map = mapByKey.get(`${eventRef.aice_id}:${eventRef.event_key}`);
+          plaintext = map?.[sourceToken]?.value;
+        }
+      } else if (leaf.kind === "exemplar" && exemplarRef) {
+        // Exemplars are event leaves → event-scope source tokens, resolved
+        // through the exemplar leaf's own (aice_id, event_key) redaction map.
+        const m = EVENT_SOURCE_RE.exec(sourceToken);
+        if (m) {
+          const map = mapByKey.get(
+            `${exemplarRef.aice_id}:${exemplarRef.event_key}`,
+          );
           plaintext = map?.[sourceToken]?.value;
         }
       }
@@ -1275,6 +1374,11 @@ function toLeafDisplay(
     superseded: row.superseded_at != null,
   };
 }
+
+// Internal helpers surfaced for unit tests only (#495): the exemplar-token
+// display restoration is otherwise reachable only through the heavyweight
+// `loadReportResultPage` path.
+export const __testables = { buildReportTokenPlaintext };
 
 async function decryptMaps(
   // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface

@@ -44,6 +44,49 @@ type AnalysisResult {
 }
 
 """
+Aggregates over the auto-analyzed baseline events not individually cited in
+the report, feeding the prompt's long-tail narrative.
+
+`top_techniques`, `tier_distribution`, and `uncited_rollup` reuse
+`BaselineCountInput`; `exemplars` carry representative phrasing. All strings
+are pre-redacted by aimer-web and forwarded to the LLM verbatim.
+"""
+input AnalyzedEventAggregatesInput {
+	"""
+	Analyzed-window start (UTC, inclusive).
+	"""
+	windowStart: DateTime!
+	"""
+	Analyzed-window end (UTC, exclusive).
+	"""
+	windowEnd: DateTime!
+	"""
+	Total count of auto-analyzed events in the window.
+	"""
+	analyzedCount: Int!
+	"""
+	Count of analyzed events individually cited elsewhere in the report.
+	"""
+	citedCount: Int!
+	"""
+	Dominant techniques across the analyzed remainder (MITRE technique IDs).
+	"""
+	topTechniques: [BaselineCountInput!]!
+	"""
+	Severity-tier makeup of the analyzed remainder.
+	"""
+	tierDistribution: [BaselineCountInput!]!
+	"""
+	Technique rollup over the uncited analyzed remainder.
+	"""
+	uncitedRollup: [BaselineCountInput!]!
+	"""
+	Representative exemplars drawn from the uncited analyzed remainder.
+	"""
+	exemplars: [LongTailExemplarInput!]!
+}
+
+"""
 Period-level baseline aggregates supplied by aimer-web.
 """
 input BaselineAggregatesInput {
@@ -178,6 +221,34 @@ type GenerateResponse {
 enum Language {
 	KOREAN
 	ENGLISH
+}
+
+"""
+One representative phrasing drawn from the uncited analyzed remainder.
+
+Used by the long-tail narrative to ground its characterization in concrete
+examples without citing individual leaves. `factor` carries report-scope
+redacted token text (`<<REDACTED_*_R{j}_*>>`) already redacted by aimer-web
+and is forwarded to the LLM verbatim.
+"""
+input LongTailExemplarInput {
+	"""
+	MITRE ATT&CK technique ID this exemplar represents.
+	"""
+	technique: String!
+	"""
+	Severity tier label this exemplar represents.
+	"""
+	tier: String!
+	"""
+	Observation count this exemplar stands for.
+	"""
+	count: Int!
+	"""
+	Representative phrasing (report-scope redaction tokens applied
+	upstream); forwarded verbatim.
+	"""
+	factor: String!
 }
 
 type Mutation {
@@ -439,6 +510,13 @@ input PeriodicReportInputs {
 	aimer-web at write time; aimer forwards it verbatim.
 	"""
 	aggregateTtpTags: [String!]!
+	"""
+	Aggregates over the auto-analyzed baseline-event remainder, feeding the
+	long-tail narrative. Optional/nullable so existing aimer-web clients
+	keep working until their builder lands; when absent, the prompt omits
+	the narrative and the payload shape is byte-identical to before.
+	"""
+	analyzedEventAggregates: AnalyzedEventAggregatesInput
 }
 
 """

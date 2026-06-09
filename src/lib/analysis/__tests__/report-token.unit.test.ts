@@ -111,6 +111,58 @@ describe("buildReportTokenMap", () => {
     );
   });
 
+  it("appends exemplar leaves after cited story+event leaves (#495)", () => {
+    const out = buildReportTokenMap(
+      [{ analysis: "Story <<REDACTED_IP_E1_001>>." }],
+      [{ analysis: "Event <<REDACTED_IP_001>>." }],
+      // Exemplar leaves carry a single field (the chosen factor) with
+      // event-scope tokens.
+      [
+        { analysis: "exemplar factor <<REDACTED_IP_007>>" },
+        { analysis: "another <<REDACTED_EMAIL_002>>" },
+      ],
+    );
+    // Story j=1, event j=2, exemplars j=3 and j=4 (appended last).
+    expect(out.rewrittenStoryTexts[0]).toBe("Story <<REDACTED_IP_R1_001>>.");
+    expect(out.rewrittenEventTexts[0]).toBe("Event <<REDACTED_IP_R2_001>>.");
+    expect(out.rewrittenExemplarTexts).toEqual([
+      "exemplar factor <<REDACTED_IP_R3_001>>",
+      "another <<REDACTED_EMAIL_R4_001>>",
+    ]);
+    // Combined refs: story, event, then the two exemplars with kind "exemplar".
+    expect(out.refs).toHaveLength(4);
+    expect(out.refs[2]).toMatchObject({ index: 3, kind: "exemplar" });
+    expect(out.refs[3]).toMatchObject({ index: 4, kind: "exemplar" });
+    expect(out.allowedTokens).toEqual(
+      new Set([
+        "<<REDACTED_IP_R1_001>>",
+        "<<REDACTED_IP_R2_001>>",
+        "<<REDACTED_IP_R3_001>>",
+        "<<REDACTED_EMAIL_R4_001>>",
+      ]),
+    );
+  });
+
+  it("keeps cited R{j} numbering identical whether or not exemplars are appended (#495)", () => {
+    const cited = buildReportTokenMap(
+      [{ analysis: "Story <<REDACTED_IP_E1_001>>." }],
+      [{ analysis: "Event <<REDACTED_IP_001>>." }],
+    );
+    const withExemplars = buildReportTokenMap(
+      [{ analysis: "Story <<REDACTED_IP_E1_001>>." }],
+      [{ analysis: "Event <<REDACTED_IP_001>>." }],
+      [{ analysis: "exemplar <<REDACTED_IP_007>>" }],
+    );
+    // The cited leaves keep R1/R2 — appending exemplars never renumbers them,
+    // so a native-pinned non-English row's cited tokens still line up.
+    expect(withExemplars.rewrittenStoryTexts).toEqual(
+      cited.rewrittenStoryTexts,
+    );
+    expect(withExemplars.rewrittenEventTexts).toEqual(
+      cited.rewrittenEventTexts,
+    );
+  });
+
   it("folds DOMAIN tokens into the report namespace (RFC 0001 Amendment A.2)", () => {
     const out = buildReportTokenMap(
       [{ analysis: "Beacon to <<REDACTED_DOMAIN_E1_001>>." }],

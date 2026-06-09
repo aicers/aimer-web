@@ -33,8 +33,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import type {
+  AnalyzedEventAggregatesInput,
   BaselineCountInput,
   EventAnalysisInput,
+  LongTailExemplarInput,
   PeriodicReportInputs,
   StoryAnalysisInput,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
@@ -49,6 +51,7 @@ import {
   computePriorityTier,
   maxTier,
   type PriorityTier,
+  tierRank,
 } from "./priority-tier";
 import {
   buildReportTokenMap,
@@ -110,11 +113,43 @@ export interface EventRef {
   model?: string;
 }
 
+/**
+ * Provenance ref for one long-tail exemplar representative leaf (#495). Pins
+ * the exact immutable leaf the report-scope exemplar `R{j}` token was minted
+ * from, exactly like {@link EventRef} pins a cited event leaf. `generation` is
+ * REQUIRED (not optional as on the backward-compatible read refs): replay /
+ * restore must resolve the same leaf, and a later generation of the same
+ * `(aice_id, event_key, lang, model)` could otherwise re-resolve the exemplar
+ * token to different plaintext. Exemplar leaves are inherently English (the
+ * canonical owns the set + numbering), so the ref carries no `lang`.
+ */
+export interface ExemplarRef {
+  aice_id: string;
+  event_key: string;
+  generation: number;
+  model_name: string;
+  model: string;
+}
+
 export interface PeriodicReportBuildResult {
   /** Structured bundle passed verbatim to aimer. */
   aimerInputs: PeriodicReportInputs;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
+  /**
+   * Distinct representative leaves of the kept long-tail exemplars (#495),
+   * in the SAME order they were appended to the `buildReportTokenMap` leaf
+   * set — persisted as `input_exemplar_refs` so replay/restore re-mints the
+   * exemplar `R{j}` tokens identically. Empty when no long-tail exists.
+   */
+  exemplarRefs: ExemplarRef[];
+  /**
+   * The exact `analyzedEventAggregates` object sent to aimer for this build,
+   * or `null` when the universe was empty and the section was omitted (#495).
+   * Persisted as `input_analyzed_event_aggregates` so the native-pinned
+   * non-English path can reuse the canonical payload verbatim.
+   */
+  analyzedEventAggregates: AnalyzedEventAggregatesInput | null;
   /** Per-leaf report-scope token demap (persist-with-row, drives display). */
   tokenRefs: ReportTokenRef[];
   inputHash: string;
@@ -242,6 +277,12 @@ function leafPreferenceOrder(
 // to aimer. The prompt renders these as a leaderboard, so a small bound
 // keeps the payload compact and deterministic.
 const TOP_AGGREGATE_K = 10;
+
+// The English canonical language. Long-tail exemplar leaves are inherently
+// English — the canonical owns the exemplar set + `R{j}` numbering, so the
+// native-pinned non-English path re-fetches them at this language regardless
+// of the row's target `lang` (#495).
+const DEFAULT_LANG = "ENGLISH";
 
 // Dedupe `baseline_event` to one canonical row per (source_aice_id,
 // event_key) — latest received baseline wins — BEFORE any window
@@ -457,54 +498,25 @@ async function loadStoryMemberKeys(
   return rows;
 }
 
-async function selectTopEvents(
-  customerPool: Pool,
-  args: {
-    variant: ReportVariant;
-    defaultPair: ModelPair;
-    windows: Windows;
-    covered: Array<{ aice_id: string; event_key: string }>;
-    limit: number;
-  },
-): Promise<EventLeafRow[]> {
-  const coveredAice = args.covered.map((c) => c.aice_id);
-  const coveredKey = args.covered.map((c) => c.event_key);
-  const pref = leafPreferenceOrder(args.variant, args.defaultPair);
-  const prefModelNames = pref.map((p) => p.modelName);
-  const prefModels = pref.map((p) => p.model);
-  const { rows } = await customerPool.query<EventLeafRow>(
-    // Dedupe baseline_event to one canonical row per (source_aice_id,
-    // event_key) FIRST (no window predicate inside the CTE), THEN apply
-    // the bucket-window predicate to the canonical row's event_time. The
-    // issue locks this order (round-14 item 2): filtering before the
-    // dedupe could select an older in-window duplicate even when the
-    // canonical latest row's event_time is outside the bucket.
-    //
-    // Two-phase preference selection (#465 Scope 1), same structure as
-    // `selectTopStories`: `ranked` picks the single rank-1 leaf per
-    // (aice_id, event_key) across the preference order; the outer query then
-    // applies the existing tier/score/(aice_id, event_key) ordering under the
-    // hard ceiling `M` (= `limit`).
-    //
-    // Citation-cut policy (#494): the outer query gates the chosen-per-event
-    // leaves to the citation floor `priority_tier IN ('CRITICAL', 'HIGH',
-    // 'MEDIUM')` alongside `LIMIT M`. Because the ORDER BY is tier-first, this
-    // (a) guarantees every CRITICAL/HIGH leaf is cited up to `M`, (b) fills any
-    // remaining slots with MEDIUM by the same ranking, and (c) never pads with
-    // LOW on a quiet window. When CRITICAL/HIGH exceed `M`, the top-`M` are
-    // cited and the overflow stays recoverable as (full-set CRITICAL/HIGH) −
-    // (cited CRITICAL/HIGH) for #495's long-tail; #494 emits no bespoke
-    // remainder counter (tiers are retained on the cited set for #495 to
-    // subtract).
-    //
-    // The floor predicate MUST stay in the OUTER query, NOT pushed into the
-    // `ranked` CTE: that CTE picks one leaf per (aice_id, event_key) by model
-    // preference (`ORDER BY p.rank, generation`), and filtering LOW before the
-    // pick would drop a report-model LOW leaf and let a fallback-model
-    // higher-tier leaf win that event, breaking #465's cross-model
-    // leaf-selection contract (report model is always rank 1). The floor gates
-    // only after the per-event leaf is already chosen.
-    `WITH latest_baseline AS (
+// Shared per-event leaf selection (#495). The `ranked` CTE picks the single
+// rank-1 leaf per (aice_id, event_key) across the preference order, scoped to
+// the variant `lang`, `superseded_at IS NULL`, the bucket window on the
+// deduped `latest_baseline.event_time`, and the story-covered exclusion. The
+// CITED query (`selectTopEvents`) and the UNIVERSE query
+// (`selectUniverseEvents`) differ by EXACTLY the citation floor + `LIMIT M` —
+// this is the `cited ⊆ universe` invariant that keeps the partition exact and
+// `analyzedCount = citedCount + (universe − cited)` true by construction. Both
+// bind the same positional params `$1..$7` (lang, pref names, pref models,
+// curStart, curEnd, coveredAice, coveredKey); the cited query adds `$8` = M.
+//
+// Dedupe baseline_event to one canonical row per (source_aice_id, event_key)
+// FIRST (no window predicate inside the CTE), THEN apply the bucket-window
+// predicate to the canonical row's event_time (round-14 item 2): filtering
+// before the dedupe could select an older in-window duplicate even when the
+// canonical latest row's event_time is outside the bucket. Origin-agnostic by
+// the `baseline_event` join — no `origin` filter — so `auto_baseline` leaves
+// are in-universe by the join (Scope 1).
+const EVENT_RANKED_CTE = `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
               source_aice_id, event_key, event_time
          FROM baseline_event
@@ -537,31 +549,102 @@ async function selectTopEvents(
              WHERE c.a = e.aice_id AND c.k = e.event_key
           )
         ORDER BY e.aice_id, e.event_key, p.rank ASC, e.generation DESC
-     )
-     SELECT rk.aice_id,
+     )`;
+
+// Full leaf projection off the shared `ranked` CTE (aliased `rk`). Shared by
+// both the cited and universe selects so they return identical `EventLeafRow`
+// columns.
+const RANKED_LEAF_COLUMNS = `rk.aice_id,
             rk.event_key::text AS event_key,
             rk.generation, rk.model_name, rk.model,
             rk.severity_score, rk.likelihood_score,
             rk.priority_tier,
             rk.ttp_tags, rk.severity_factors, rk.likelihood_factors,
             rk.analysis_text, rk.redaction_policy_version,
-            rk.event_time
+            rk.event_time`;
+
+function rankedCteParams(args: {
+  variant: ReportVariant;
+  defaultPair: ModelPair;
+  windows: Windows;
+  covered: Array<{ aice_id: string; event_key: string }>;
+}): unknown[] {
+  const pref = leafPreferenceOrder(args.variant, args.defaultPair);
+  return [
+    args.variant.lang,
+    pref.map((p) => p.modelName),
+    pref.map((p) => p.model),
+    args.windows.curStart,
+    args.windows.curEnd,
+    args.covered.map((c) => c.aice_id),
+    args.covered.map((c) => c.event_key),
+  ];
+}
+
+async function selectTopEvents(
+  customerPool: Pool,
+  args: {
+    variant: ReportVariant;
+    defaultPair: ModelPair;
+    windows: Windows;
+    covered: Array<{ aice_id: string; event_key: string }>;
+    limit: number;
+  },
+): Promise<EventLeafRow[]> {
+  // Citation-cut policy (#494): the outer query gates the chosen-per-event
+  // leaves to the citation floor `priority_tier IN ('CRITICAL', 'HIGH',
+  // 'MEDIUM')` alongside `LIMIT M`. Because the ORDER BY is tier-first, this
+  // (a) guarantees every CRITICAL/HIGH leaf is cited up to `M`, (b) fills any
+  // remaining slots with MEDIUM by the same ranking, and (c) never pads with
+  // LOW on a quiet window. When CRITICAL/HIGH exceed `M`, the top-`M` are
+  // cited and the overflow stays recoverable as (full-set CRITICAL/HIGH) −
+  // (cited CRITICAL/HIGH) for #495's long-tail.
+  //
+  // The floor predicate MUST stay in the OUTER query, NOT pushed into the
+  // `ranked` CTE: that CTE picks one leaf per (aice_id, event_key) by model
+  // preference, and filtering LOW before the pick would drop a report-model
+  // LOW leaf and let a fallback-model higher-tier leaf win that event,
+  // breaking #465's cross-model leaf-selection contract.
+  const { rows } = await customerPool.query<EventLeafRow>(
+    `${EVENT_RANKED_CTE}
+     SELECT ${RANKED_LEAF_COLUMNS}
        FROM ranked rk
       WHERE rk.priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM')
       ORDER BY ${TIER_RANK_SQL.replaceAll("priority_tier", "rk.priority_tier")} DESC,
                (rk.severity_score + rk.likelihood_score) DESC,
                rk.aice_id ASC, rk.event_key ASC
       LIMIT $8`,
-    [
-      args.variant.lang,
-      prefModelNames,
-      prefModels,
-      args.windows.curStart,
-      args.windows.curEnd,
-      coveredAice,
-      coveredKey,
-      args.limit,
-    ],
+    [...rankedCteParams(args), args.limit],
+  );
+  return rows;
+}
+
+/**
+ * The non-story-covered analyzed-in-window UNIVERSE (#495 Scope 1): every
+ * ranked per-event leaf the shared `EVENT_RANKED_CTE` selects, MINUS the
+ * citation floor and the `LIMIT M`. Because it reuses the exact same `ranked`
+ * CTE as `selectTopEvents`, the cited set is a strict subset
+ * (`cited ⊆ universe`), so `uncited = universe − cited` is exact and
+ * `analyzedCount = citedCount + uncitedCount` holds by construction. Returns
+ * the full leaf columns the aggregates need (tier / scores / ttp_tags /
+ * factors / analysis / redaction policy). A stable `(aice_id, event_key)`
+ * order keeps the result deterministic.
+ */
+async function selectUniverseEvents(
+  customerPool: Pool,
+  args: {
+    variant: ReportVariant;
+    defaultPair: ModelPair;
+    windows: Windows;
+    covered: Array<{ aice_id: string; event_key: string }>;
+  },
+): Promise<EventLeafRow[]> {
+  const { rows } = await customerPool.query<EventLeafRow>(
+    `${EVENT_RANKED_CTE}
+     SELECT ${RANKED_LEAF_COLUMNS}
+       FROM ranked rk
+      ORDER BY rk.aice_id ASC, rk.event_key ASC`,
+    rankedCteParams(args),
   );
   return rows;
 }
@@ -694,6 +777,265 @@ function topTechniques(
     .map(([key, count]) => ({ key, count }));
 }
 
+// ---------------------------------------------------------------------------
+// Long-tail analyzed-event aggregates (#495 Scope 1/2)
+// ---------------------------------------------------------------------------
+
+// The factor sentinel the score-factor filter emits when nothing survives
+// (`factor-filter.ts`). An exemplar's `factor` falls back from
+// `severity_factors[0]` to `likelihood_factors[0]` when severity is this
+// sentinel, so the long-tail narrative is grounded in a real factor phrase.
+const INSUFFICIENT_EVIDENCE_SENTINEL = "insufficient evidence";
+
+// Hard cap on the number of technique-clustered exemplars sent to aimer
+// (#495 Scope 2). Beyond this the top clusters are kept and truncation is
+// logged (never silent).
+const LONG_TAIL_EXEMPLAR_CAP = 10;
+
+// Canonical tier order (high → low) for the `tierDistribution` payload, so its
+// element order — and the `input_hash` over it — is stable across runs.
+const TIER_ORDER: readonly PriorityTier[] = [
+  "CRITICAL",
+  "HIGH",
+  "MEDIUM",
+  "LOW",
+];
+
+/** The single `factor` phrase an exemplar surfaces from its representative
+ *  leaf: `severity_factors[0]`, falling back to `likelihood_factors[0]` when
+ *  severity is the `"insufficient evidence"` sentinel (or absent). The string
+ *  still carries event-scope redaction tokens; the caller rewrites it to
+ *  report scope. */
+function chooseExemplarFactor(leaf: {
+  severity_factors: ReadonlyArray<string>;
+  likelihood_factors: ReadonlyArray<string>;
+}): string {
+  const sev = leaf.severity_factors[0];
+  if (sev !== undefined && sev !== INSUFFICIENT_EVIDENCE_SENTINEL) return sev;
+  const lik = leaf.likelihood_factors[0];
+  if (lik !== undefined) return lik;
+  return sev ?? "";
+}
+
+/** Tier makeup of a leaf set, in canonical high→low order, dropping tiers
+ *  with no members so the payload carries only present tiers. */
+function tierDistribution(
+  leaves: ReadonlyArray<EventLeafRow>,
+): BaselineCountInput[] {
+  const counts = new Map<PriorityTier, number>();
+  for (const leaf of leaves) {
+    counts.set(leaf.priority_tier, (counts.get(leaf.priority_tier) ?? 0) + 1);
+  }
+  const out: BaselineCountInput[] = [];
+  for (const tier of TIER_ORDER) {
+    const count = counts.get(tier);
+    if (count !== undefined && count > 0) out.push({ key: tier, count });
+  }
+  return out;
+}
+
+/** Compare two event leaves by the exemplar representative ranking:
+ *  `tier desc → (severity + likelihood) desc → (aice_id, event_key)`. */
+function compareLeafRank(a: EventLeafRow, b: EventLeafRow): number {
+  const t = tierRank(b.priority_tier) - tierRank(a.priority_tier);
+  if (t !== 0) return t;
+  const s =
+    b.severity_score +
+    b.likelihood_score -
+    (a.severity_score + a.likelihood_score);
+  if (s !== 0) return s;
+  if (a.aice_id !== b.aice_id) return a.aice_id < b.aice_id ? -1 : 1;
+  return a.event_key < b.event_key ? -1 : a.event_key > b.event_key ? 1 : 0;
+}
+
+interface ExemplarCluster {
+  technique: string;
+  count: number;
+  tier: PriorityTier;
+  /** Top-ranked leaf of the cluster (drives `factor` + the exemplar ref). */
+  repLeaf: EventLeafRow;
+}
+
+/**
+ * Technique-cluster the uncited partition into long-tail exemplars (#495
+ * Scope 2). Each uncited leaf contributes to a cluster for every technique in
+ * its `ttp_tags`; a leaf with empty `ttp_tags` seeds no cluster (it still
+ * counts in `tierDistribution`/counts). Per cluster: `count` = number of
+ * uncited leaves carrying that technique (== its `uncitedRollup` count),
+ * `tier` = highest tier among them, `repLeaf` = the top-ranked leaf.
+ *
+ * Returns clusters sorted by the cap order `tier desc → count desc →
+ * technique ID`, already truncated to {@link LONG_TAIL_EXEMPLAR_CAP}, plus the
+ * total cluster count so the caller can log truncation.
+ */
+function clusterExemplars(uncited: ReadonlyArray<EventLeafRow>): {
+  kept: ExemplarCluster[];
+  totalClusters: number;
+} {
+  const byTechnique = new Map<string, EventLeafRow[]>();
+  for (const leaf of uncited) {
+    for (const technique of leaf.ttp_tags) {
+      const bucket = byTechnique.get(technique);
+      if (bucket) bucket.push(leaf);
+      else byTechnique.set(technique, [leaf]);
+    }
+  }
+  const clusters: ExemplarCluster[] = [];
+  for (const [technique, leaves] of byTechnique) {
+    const tier = maxTier(...leaves.map((l) => l.priority_tier));
+    const repLeaf = [...leaves].sort(compareLeafRank)[0];
+    clusters.push({ technique, count: leaves.length, tier, repLeaf });
+  }
+  clusters.sort(
+    (a, b) =>
+      tierRank(b.tier) - tierRank(a.tier) ||
+      b.count - a.count ||
+      (a.technique < b.technique ? -1 : a.technique > b.technique ? 1 : 0),
+  );
+  return {
+    kept: clusters.slice(0, LONG_TAIL_EXEMPLAR_CAP),
+    totalClusters: clusters.length,
+  };
+}
+
+/** Stable `(aice_id, event_key)` identity key for an event leaf / ref. */
+function eventKeyOf(e: { aice_id: string; event_key: string }): string {
+  return `${e.aice_id}:${e.event_key}`;
+}
+
+/**
+ * The exemplar leaf set + a finalizer for the `analyzedEventAggregates`
+ * payload. `exemplarLeaves` (the distinct kept-cluster representative leaves,
+ * each carrying only its chosen `factor` as `analysis`) are appended to the
+ * `buildReportTokenMap` leaf set so their `R{j}` numbering is stable;
+ * `finalize` then stitches the report-scope-rewritten factor strings back into
+ * the per-technique exemplars and returns the full payload (or `null` when the
+ * universe is empty → the section is omitted, NOT sent as `null`).
+ */
+interface AnalyzedAggregatesPlan {
+  exemplarLeaves: ReportLeafText[];
+  exemplarRefs: ExemplarRef[];
+  /**
+   * `redaction_policy_version` of each kept exemplar representative leaf (#495
+   * review round 1, item 2). The reps' factors are rewritten into report-scope
+   * tokens and sent to aimer, so the redaction-policy precondition must cover
+   * them too — otherwise a low-only window (no cited leaves) would ship
+   * exemplar factor tokens while stamping the `baseline-only` sentinel and
+   * never catch a missing/mismatched policy version. Empty on the pinned path:
+   * the English canonical already validated the (reused) exemplar set, and
+   * mixing English exemplar versions with target-language cited versions in one
+   * equality check could spuriously fail.
+   */
+  exemplarPolicyVersions: string[];
+  finalize: (
+    rewrittenExemplarTexts: ReadonlyArray<string>,
+  ) => AnalyzedEventAggregatesInput | null;
+}
+
+const EMPTY_AGGREGATES_PLAN: AnalyzedAggregatesPlan = {
+  exemplarLeaves: [],
+  exemplarRefs: [],
+  exemplarPolicyVersions: [],
+  finalize: () => null,
+};
+
+/**
+ * Plan the long-tail aggregates from the freshly-selected universe + cited
+ * sets (the English native / default path). `cited` is consumed directly
+ * (keyed by `(aice_id, event_key)`) so `citedCount` is byte-consistent with
+ * what the report actually cited; `uncited = universe − cited`.
+ */
+function planAnalyzedAggregates(args: {
+  windows: Windows;
+  universe: ReadonlyArray<EventLeafRow>;
+  cited: ReadonlyArray<EventLeafRow>;
+  warnContext: {
+    subjectId: string;
+    period: string;
+    bucketDate: string;
+    tz: string;
+  };
+}): AnalyzedAggregatesPlan {
+  if (args.universe.length === 0) return EMPTY_AGGREGATES_PLAN;
+
+  const citedKeys = new Set(args.cited.map(eventKeyOf));
+  const uncited = args.universe.filter((e) => !citedKeys.has(eventKeyOf(e)));
+
+  const { kept, totalClusters } = clusterExemplars(uncited);
+  if (totalClusters > LONG_TAIL_EXEMPLAR_CAP) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.report_long_tail_exemplars_truncated",
+        subject_id: args.warnContext.subjectId,
+        period: args.warnContext.period,
+        bucket_date: args.warnContext.bucketDate,
+        tz: args.warnContext.tz,
+        kept: kept.length,
+        dropped: totalClusters - kept.length,
+      }),
+    );
+  }
+
+  // Distinct representative leaves (≤10, fewer if one leaf represents several
+  // techniques), in kept-cluster order — this IS the order they enter the
+  // token map and `input_exemplar_refs`.
+  const exemplarLeaves: ReportLeafText[] = [];
+  const exemplarRefs: ExemplarRef[] = [];
+  const exemplarPolicyVersions: string[] = [];
+  const leafIndexByKey = new Map<string, number>();
+  for (const cluster of kept) {
+    const key = eventKeyOf(cluster.repLeaf);
+    if (leafIndexByKey.has(key)) continue;
+    leafIndexByKey.set(key, exemplarLeaves.length);
+    exemplarLeaves.push({ analysis: chooseExemplarFactor(cluster.repLeaf) });
+    exemplarRefs.push({
+      aice_id: cluster.repLeaf.aice_id,
+      event_key: cluster.repLeaf.event_key,
+      generation: cluster.repLeaf.generation,
+      model_name: cluster.repLeaf.model_name,
+      model: cluster.repLeaf.model,
+    });
+    // Carry the rep leaf's policy version into the precondition: its factor is
+    // prompt input once rewritten to report scope (#495 review r1, item 2).
+    exemplarPolicyVersions.push(cluster.repLeaf.redaction_policy_version);
+  }
+
+  const finalize = (
+    rewrittenExemplarTexts: ReadonlyArray<string>,
+  ): AnalyzedEventAggregatesInput => {
+    const exemplars: LongTailExemplarInput[] = kept.map((cluster) => {
+      const idx = leafIndexByKey.get(eventKeyOf(cluster.repLeaf)) ?? 0;
+      return {
+        technique: cluster.technique,
+        tier: cluster.tier,
+        count: cluster.count,
+        factor: rewrittenExemplarTexts[idx] ?? "",
+      };
+    });
+    return {
+      windowStart: args.windows.curStart.toISOString(),
+      windowEnd: args.windows.curEnd.toISOString(),
+      analyzedCount: args.universe.length,
+      citedCount: args.cited.length,
+      // Coverage facets over the FULL universe (RFC §Aggregates).
+      topTechniques: topTechniques(
+        args.universe.map((e) => e.ttp_tags),
+        TOP_AGGREGATE_K,
+      ),
+      tierDistribution: tierDistribution(args.universe),
+      // Technique rollup over the uncited partition only (uncapped).
+      uncitedRollup: topTechniques(
+        uncited.map((e) => e.ttp_tags),
+        Number.POSITIVE_INFINITY,
+      ),
+      exemplars,
+    };
+  };
+
+  return { exemplarLeaves, exemplarRefs, exemplarPolicyVersions, finalize };
+}
+
 function resolveRedactionPolicy(versions: string[]): RedactionPolicyResult {
   if (versions.length === 0) return { kind: "baseline-only" };
   let version: string | null = null;
@@ -753,6 +1095,7 @@ function computeInputHash(args: {
   variant: ReportVariant;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
+  exemplarRefs: ExemplarRef[];
   aimerInputs: PeriodicReportInputs;
 }): string {
   const storyRefs = [...args.storyRefs].sort(
@@ -765,6 +1108,22 @@ function computeInputHash(args: {
       a.event_key.localeCompare(b.event_key) ||
       a.generation - b.generation,
   );
+  // Exemplar refs are generation-pinned provenance with the SAME restoration
+  // semantics as cited refs: they decide which event redaction map turns a
+  // long-tail `R{j}` token back into plaintext. Because exemplar `factor`
+  // strings carry only report-scope placeholders, two different exemplar
+  // leaves/generations can yield a byte-identical payload yet restore to
+  // different plaintext — so hashing the payload alone would miss the change
+  // and keep serving stale `input_exemplar_refs`. Hash them like story/event
+  // refs (#495 review round 1, item 1).
+  const exemplarRefs = [...args.exemplarRefs].sort(
+    (a, b) =>
+      a.aice_id.localeCompare(b.aice_id) ||
+      a.event_key.localeCompare(b.event_key) ||
+      a.generation - b.generation ||
+      a.model_name.localeCompare(b.model_name) ||
+      a.model.localeCompare(b.model),
+  );
   const canonical = {
     period: args.period,
     bucket_date: args.bucketDate,
@@ -774,6 +1133,11 @@ function computeInputHash(args: {
     model: args.variant.model,
     story_refs: storyRefs,
     event_refs: eventRefs,
+    // Omit `exemplar_refs` entirely when empty (no long-tail) so an
+    // empty-universe report hashes byte-identically to pre-#495 — mirrors the
+    // `analyzedEventAggregates` `undefined` omission and keeps those reports
+    // from being marked dirty. A present-but-empty `[]` would change the hash.
+    ...(exemplarRefs.length > 0 ? { exemplar_refs: exemplarRefs } : {}),
     aimer_inputs: args.aimerInputs,
   };
   return createHash("sha256").update(stableStringify(canonical)).digest("hex");
@@ -823,6 +1187,28 @@ export async function buildPeriodicReportInput(
     limit: topEventsK,
   });
 
+  // --- Long-tail universe (#495): the non-story-covered analyzed-in-window
+  // set, reusing `selectTopEvents`' per-event leaf-pick minus floor + ceiling
+  // (so `cited ⊆ universe`). The cited set is consumed directly for the
+  // partition; the universe drives the analyzed-event aggregates + exemplars.
+  const universe = await selectUniverseEvents(args.customerPool, {
+    variant: args.variant,
+    defaultPair,
+    windows,
+    covered,
+  });
+  const aggregatesPlan = planAnalyzedAggregates({
+    windows,
+    universe,
+    cited: events,
+    warnContext: {
+      subjectId: args.customerId,
+      period: args.period,
+      bucketDate: args.bucketDate,
+      tz: args.variant.tz,
+    },
+  });
+
   return assembleReportInput(
     {
       customerPool: args.customerPool,
@@ -833,6 +1219,7 @@ export async function buildPeriodicReportInput(
     windows,
     stories,
     events,
+    aggregatesPlan,
   );
 }
 
@@ -855,6 +1242,7 @@ async function assembleReportInput(
   windows: Windows,
   stories: StoryLeafRow[],
   events: EventLeafRow[],
+  aggregatesPlan: AnalyzedAggregatesPlan,
 ): Promise<PeriodicReportBuildResult> {
   // --- Baseline aggregates + drift ------------------------------------
   const currentCounts = await categoryCounts(
@@ -890,9 +1278,15 @@ async function assembleReportInput(
   );
 
   // --- Redaction policy precondition (consumed leaves only) -----------
+  // Includes the kept exemplar representative leaves (#495 review r1, item 2):
+  // their factors are rewritten to report-scope tokens and sent to aimer, so a
+  // low-only long-tail window must not stamp `baseline-only` while shipping
+  // exemplar tokens, and a missing/mismatched exemplar policy version must be
+  // caught here before the LLM call.
   const leafPolicyVersions = [
     ...stories.map((s) => s.redaction_policy_version),
     ...events.map((e) => e.redaction_policy_version),
+    ...aggregatesPlan.exemplarPolicyVersions,
   ];
   const redaction = resolveRedactionPolicy(leafPolicyVersions);
 
@@ -901,9 +1295,13 @@ async function assembleReportInput(
   // token map so a scope token that defensively appears in a factor is
   // folded to report scope too, not passed through to the prompt raw
   // (#297 review round 1, item 2).
+  // The exemplar leaves (#495) are appended AFTER the cited story+event
+  // leaves so their `R{j}` numbering is stable across native / pinned /
+  // translate / restore.
   const {
     rewrittenStoryTexts,
     rewrittenEventTexts,
+    rewrittenExemplarTexts,
     rewrittenStoryFactors,
     rewrittenEventFactors,
     refs,
@@ -915,8 +1313,16 @@ async function assembleReportInput(
       severityFactors: e.severity_factors,
       likelihoodFactors: e.likelihood_factors,
     })),
+    aggregatesPlan.exemplarLeaves,
   );
   void allowedTokens; // the scan re-derives from refs at hallucination time
+
+  // Stitch the report-scope-rewritten exemplar factors back into the
+  // long-tail payload (or `null` when the universe was empty → the section
+  // is OMITTED below, never sent as `null`).
+  const analyzedEventAggregates = aggregatesPlan.finalize(
+    rewrittenExemplarTexts,
+  );
 
   // --- Aggregations ----------------------------------------------------
   // Hybrid calibration (#465 Scope 5, P2): coverage and calibration are
@@ -1023,6 +1429,12 @@ async function assembleReportInput(
       topSensors: sensors,
     },
     aggregateTtpTags,
+    // Long-tail analyzed-event aggregates (#495). OMITTED (left undefined)
+    // when the universe is empty so `computeInputHash` stays byte-identical
+    // to pre-change and empty-universe reports are not marked dirty —
+    // `stableStringify` drops `undefined` but hashes `null` as a value, so
+    // this MUST stay `undefined`, never `null`.
+    ...(analyzedEventAggregates !== null ? { analyzedEventAggregates } : {}),
   };
 
   // Each ref records the leaf's OWN model (#465 Scope 3) so the read/restore
@@ -1048,6 +1460,7 @@ async function assembleReportInput(
     variant: ctx.variant,
     storyRefs,
     eventRefs,
+    exemplarRefs: aggregatesPlan.exemplarRefs,
     aimerInputs,
   });
 
@@ -1062,6 +1475,8 @@ async function assembleReportInput(
     aimerInputs,
     storyRefs,
     eventRefs,
+    exemplarRefs: aggregatesPlan.exemplarRefs,
+    analyzedEventAggregates,
     tokenRefs: refs,
     inputHash,
     aggregateTtpTags,
@@ -1097,6 +1512,21 @@ export interface CanonicalPinnedBuildArgs {
   storyRefs: StoryRef[];
   /** The English canonical's `input_event_refs` (aice_id/event_key + gen). */
   eventRefs: EventRef[];
+  /**
+   * The English canonical's `input_exemplar_refs` (#495). Reused verbatim:
+   * the exemplar English leaves are re-fetched to re-mint the same exemplar
+   * `R{j}` token map (so the leak scan covers them), and the refs are
+   * persisted onto this row.
+   */
+  exemplarRefs: ExemplarRef[];
+  /**
+   * The English canonical's stored `input_analyzed_event_aggregates` (#495),
+   * reused verbatim so the native-pinned non-English long-tail carries the
+   * canonical's counts / rollups / tier distribution and exemplar token
+   * numbering — NO divergent universe is recomputed in the target language.
+   * `null` when the canonical omitted the section (empty universe).
+   */
+  analyzedEventAggregates: AnalyzedEventAggregatesInput | null;
 }
 
 export type CanonicalPinnedBuildResult =
@@ -1145,6 +1575,32 @@ export async function buildCanonicalPinnedReportInput(
   );
   if (events === null) return { complete: false };
 
+  // Exemplar leaves are ALWAYS English (the canonical owns the set + `R{j}`
+  // numbering, #495): re-fetch them at `DEFAULT_LANG` so the token map covers
+  // the reused (English) exemplar `factor` tokens, regardless of this row's
+  // target language. A missing exemplar leaf is an integrity failure for the
+  // native-pinned path — treat it like a missing cited leaf and fall through
+  // to translation.
+  const exemplarLeaves = await fetchExemplarLeavesByRefs(
+    args.customerPool,
+    args.exemplarRefs,
+  );
+  if (exemplarLeaves === null) return { complete: false };
+
+  const aggregatesPlan: AnalyzedAggregatesPlan = {
+    exemplarLeaves,
+    exemplarRefs: args.exemplarRefs,
+    // Empty by design: the English canonical already ran the redaction-policy
+    // precondition over this exact exemplar set, and the reused leaves are
+    // English while this row's cited leaves are the target language — folding
+    // English exemplar versions into the target-language equality check could
+    // spuriously trip `mismatched` (#495 review r1, item 2).
+    exemplarPolicyVersions: [],
+    // Reuse the canonical payload verbatim — never recompute the universe in
+    // the target language.
+    finalize: () => args.analyzedEventAggregates,
+  };
+
   const built = await assembleReportInput(
     {
       customerPool: args.customerPool,
@@ -1155,6 +1611,7 @@ export async function buildCanonicalPinnedReportInput(
     windows,
     stories,
     events,
+    aggregatesPlan,
   );
   return { complete: true, built };
 }
@@ -1278,6 +1735,61 @@ async function fetchEventLeavesByRefs(
 }
 
 /**
+ * Fetch the long-tail exemplar leaves for the pinned refs (#495), in `refs`
+ * order, each reduced to its single chosen `factor` as the leaf text fed to
+ * `buildReportTokenMap` (the exact field the builder rewrote). Pinned at
+ * `DEFAULT_LANG` (English) and the ref's exact `(generation, model_name,
+ * model)` — exemplars are inherently English, so this is independent of any
+ * target variant. Does NOT filter `superseded_at` (a generation is
+ * immutable). Returns `null` if any ref has no matching English leaf.
+ */
+async function fetchExemplarLeavesByRefs(
+  customerPool: Pool,
+  refs: ExemplarRef[],
+): Promise<ReportLeafText[] | null> {
+  if (refs.length === 0) return [];
+  const { rows } = await customerPool.query<{
+    aice_id: string;
+    event_key: string;
+    generation: number;
+    model_name: string;
+    model: string;
+    severity_factors: string[];
+    likelihood_factors: string[];
+  }>(
+    `SELECT e.aice_id,
+            e.event_key::text AS event_key,
+            e.generation, e.model_name, e.model,
+            e.severity_factors, e.likelihood_factors
+       FROM event_analysis_result e
+       JOIN unnest($1::text[], $2::numeric[], $3::int[], $4::text[], $5::text[])
+              AS ref(aice_id, event_key, generation, model_name, model)
+         ON ref.aice_id = e.aice_id AND ref.event_key = e.event_key
+        AND ref.generation = e.generation
+        AND ref.model_name = e.model_name AND ref.model = e.model
+      WHERE e.lang = $6`,
+    [
+      refs.map((r) => r.aice_id),
+      refs.map((r) => r.event_key),
+      refs.map((r) => r.generation),
+      refs.map((r) => r.model_name),
+      refs.map((r) => r.model),
+      DEFAULT_LANG,
+    ],
+  );
+  const ordered = orderByRefs(
+    rows,
+    refs,
+    (row) =>
+      `${row.aice_id}|${row.event_key}|${row.generation}|${row.model_name}|${row.model}`,
+    (ref) =>
+      `${ref.aice_id}|${ref.event_key}|${ref.generation}|${ref.model_name}|${ref.model}`,
+  );
+  if (ordered === null) return null;
+  return ordered.map((r) => ({ analysis: chooseExemplarFactor(r) }));
+}
+
+/**
  * Re-order fetched leaf rows to match the canonical ref order, returning
  * `null` if any ref is unmatched (the completeness gate). Keying both sides
  * with the same composite makes the result deterministic regardless of the
@@ -1317,6 +1829,7 @@ export async function buildPinnedTokenRefs(
   variant: ReportVariant,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
+  exemplarRefs: ExemplarRef[] = [],
 ): Promise<ReportTokenRef[] | null> {
   const stories = await fetchStoryLeavesByRefs(
     customerPool,
@@ -1327,6 +1840,16 @@ export async function buildPinnedTokenRefs(
   if (stories === null) return null;
   const events = await fetchEventLeavesByRefs(customerPool, variant, eventRefs);
   if (events === null) return null;
+  // Exemplar leaves replay at `DEFAULT_LANG` regardless of the row's variant
+  // (#495): the cited refs use the row/restoration variant above; the
+  // exemplar refs use the fixed English variant. The single combined
+  // `buildReportTokenMap` call appends them after the cited leaves so the
+  // `R{j}` numbering matches the canonical (and the union is implicit).
+  const exemplarLeaves = await fetchExemplarLeavesByRefs(
+    customerPool,
+    exemplarRefs,
+  );
+  if (exemplarLeaves === null) return null;
   const { refs } = buildReportTokenMap(
     stories.map(maskedStoryLeaf),
     events.map((e) => ({
@@ -1334,6 +1857,7 @@ export async function buildPinnedTokenRefs(
       severityFactors: e.severity_factors,
       likelihoodFactors: e.likelihood_factors,
     })),
+    exemplarLeaves,
   );
   return refs;
 }
@@ -1342,4 +1866,8 @@ export const __testables = {
   resolveRedactionPolicy,
   computeInputHash,
   dedupeSorted,
+  planAnalyzedAggregates,
+  clusterExemplars,
+  tierDistribution,
+  chooseExemplarFactor,
 };
