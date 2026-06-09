@@ -12,6 +12,7 @@
 
 import "server-only";
 
+import type { Pool } from "pg";
 import {
   type AppLocale,
   appLocaleToReportLanguage,
@@ -21,15 +22,25 @@ import {
 } from "@/i18n/locale";
 import { authorize, isAnalystForCustomer } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
+import { resolveGroupReadOutcome } from "@/lib/auth/group-authorization";
 import { verifyJwtFull } from "@/lib/auth/jwt";
 import { getSessionPolicy } from "@/lib/auth/session-policy";
 import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import {
+  type MemberPool,
+  resolveSubjectPools,
+  type SubjectKind,
+} from "@/lib/db/subject-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
-import { resolveDefaultModel } from "./default-model";
+import {
+  resolveDefaultModel,
+  resolveGlobalDefaultModel,
+} from "./default-model";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
+import { refCustomerId } from "./report-input-builder";
 import { buildReportTokenMap } from "./report-token";
 import { restoreReportAnalysisTokens } from "./report-token-restore";
 import { enqueueOnDemandReportJob } from "./report-worker";
@@ -313,6 +324,18 @@ export interface ReportResultPageData {
 
 export interface ReportResultPageInput {
   customerId: string;
+  /**
+   * The report subject (kind + id) (#525). A `customer` subject keeps the
+   * single-customer behavior end to end; a `group` subject reads the result
+   * row from the group's dedicated DB (via the #523 subject resolver) and
+   * fans de-redaction out across the member customer DBs. Optional for
+   * backward compatibility: when omitted the subject is `customerId` as a
+   * `customer` (the single-customer default the route passes today). When
+   * present for a `customer`, `id` MUST equal `customerId`; for a `group`,
+   * `id` is the group subject id and `customerId` is ignored by the group
+   * path (the route that reaches the loader for a group is #513).
+   */
+  subject?: { kind: SubjectKind; id: string };
   period: string;
   bucketDate: string;
   /**
@@ -370,6 +393,12 @@ interface StoryRef {
   generation: number;
   model_name?: string;
   model?: string;
+  // Member subject id of the customer DB this leaf lives in (#523). A group
+  // report cites leaves from MEMBER DBs and the same `story_id` can exist in
+  // more than one, so de-redaction routes by it. Absent on legacy / single-
+  // customer rows, where it degrades to the report's own subject id
+  // (`refCustomerId`).
+  customer_id?: string;
 }
 interface EventRef {
   aice_id: string;
@@ -377,6 +406,8 @@ interface EventRef {
   generation: number;
   model_name?: string;
   model?: string;
+  // Member subject id, same backward-compatible contract as `StoryRef` (#523).
+  customer_id?: string;
 }
 // Long-tail exemplar leaf ref (#495). Unlike the cited refs, `model_name` /
 // `model` are REQUIRED (this is a new column with no pre-#465 legacy form),
@@ -388,6 +419,8 @@ interface ExemplarRef {
   generation: number;
   model_name: string;
   model: string;
+  // Member subject id, same backward-compatible contract as `StoryRef` (#523).
+  customer_id?: string;
 }
 
 // Wire form of a citation `source` as aimer emits it inside `sections_jsonb`
@@ -395,9 +428,15 @@ interface ExemplarRef {
 // `story_id` / `event_ref` are the exact strings aimer-web sent in the input
 // bundle; `event_ref` is the packed `"{aice_id}:{event_key}"` token and is
 // never split here — the loader resolves it through the input refs instead.
+//
+// `customer_id` is the optional member identity of a group citation (#525):
+// the same `story_id` / `(aice_id, event_key)` can exist in more than one
+// member DB, so the input-ref lookup is keyed by `(customer_id, …)`. Absent on
+// a single-customer source, where it degrades to the report's own subject id
+// (`refCustomerId`) — byte-identical to the pre-#525 single-key behavior.
 type WireUnitSource =
-  | { type: "story"; story_id: string }
-  | { type: "event"; event_ref: string };
+  | { type: "story"; story_id: string; customer_id?: string }
+  | { type: "event"; event_ref: string; customer_id?: string };
 
 // Wire form of a render unit before token restoration / source decoding.
 interface WireCitationUnit {
@@ -441,63 +480,131 @@ export async function loadReportResultPage(
     return { kind: "unauthorized" };
   }
 
+  // The report subject (#525): a `customer` subject keeps the single-customer
+  // path end to end; a `group` subject reads the result row from the group's
+  // dedicated DB and fans de-redaction out across the member DBs below. When
+  // the caller omits `subject`, the subject is `customerId` as a customer (the
+  // single-customer default the route passes today).
+  const subjectKind: SubjectKind = input.subject?.kind ?? "customer";
+  const subjectId = input.subject?.id ?? input.customerId;
+
+  // Resolve the subject's pools up front: the RESULT DB (the customer DB for a
+  // `customer` subject, the group DB for a `group` subject) and, for a group,
+  // the ordered MEMBER pools the display fans de-redaction out over. The group
+  // result-DB selection is routed through the #523 subject resolver (the single
+  // subject-kind seam), not a raw `getGroupRuntimePool` branch. The customer
+  // path keeps the existing direct `getCustomerRuntimePool` — behavior-
+  // identical, and with no extra `subjects` round-trip on the hot path — with
+  // the subject modeled as its own sole "member" so the fan-out collapses to a
+  // single pool unchanged.
+  let resultPool: Pool;
+  let memberPools: MemberPool[];
+  if (subjectKind === "customer") {
+    resultPool = getCustomerRuntimePool(subjectId);
+    memberPools = [{ customerId: subjectId, pool: resultPool }];
+  } else {
+    try {
+      const resolved = await resolveSubjectPools(authPool, subjectId);
+      resultPool = resolved.resultPool;
+      memberPools = resolved.memberPools;
+    } catch {
+      // An unknown subject (or a group with no row) is an integrity miss;
+      // surface it as existence-hiding 404 rather than a 500.
+      return { kind: "not_found" };
+    }
+  }
+  const memberIds = memberPools.map((m) => m.customerId);
+
   // Resolve authorization AND the analyst-assignment signal in one
   // transaction so the analyst predicate reuses the already-acquired
   // connection (#457): no extra checkout, no extra auth handshake. The
   // flag is only meaningful when authorized, so it is computed only then.
-  const { auth, isViewerAnalyst } = await withTransaction(
-    authPool,
-    async (client) => {
-      const auth = await authorize(
-        client,
-        "general",
-        claims.sub,
-        "reports:read",
-        {
-          customerId: input.customerId,
-          operationKind: "read",
-          // Bridge sessions cannot read these surfaces (round-15 S3): an
-          // in-scope bridge → 403, mirroring the regenerate/summary endpoints.
-          allowInBridge: false,
-          bridgeScope: bridgeCustomerIds
-            ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
-            : null,
-        },
-      );
-      const isViewerAnalyst = auth.authorized
-        ? await isAnalystForCustomer(client, claims.sub, input.customerId)
-        : false;
-      return { auth, isViewerAnalyst };
-    },
-  );
-  if (!auth.authorized) {
-    // Distinguish outcomes so the page can map them to the right status
-    // (round-15 S3): bridge denial and member-without-permission → 403;
-    // non-membership → 404 (existence-hiding). `authorizeGeneral` returns
-    // a `permissions` set for members (even when the required permission is
-    // absent) and leaves it undefined for non-members; a `reason` is only
-    // set for bridge denials.
-    if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
-    if (auth.permissions !== undefined) return { kind: "forbidden" };
-    return { kind: "unauthorized" };
+  let isViewerAnalyst = false;
+  if (subjectKind === "customer") {
+    const { auth, analyst } = await withTransaction(
+      authPool,
+      async (client) => {
+        const auth = await authorize(
+          client,
+          "general",
+          claims.sub,
+          "reports:read",
+          {
+            customerId: subjectId,
+            operationKind: "read",
+            // Bridge sessions cannot read these surfaces (round-15 S3): an
+            // in-scope bridge → 403, mirroring the regenerate/summary endpoints.
+            allowInBridge: false,
+            bridgeScope: bridgeCustomerIds
+              ? { aiceId: bridgeAiceId ?? "", customerIds: bridgeCustomerIds }
+              : null,
+          },
+        );
+        const analyst = auth.authorized
+          ? await isAnalystForCustomer(client, claims.sub, subjectId)
+          : false;
+        return { auth, analyst };
+      },
+    );
+    if (!auth.authorized) {
+      // Distinguish outcomes so the page can map them to the right status
+      // (round-15 S3): bridge denial and member-without-permission → 403;
+      // non-membership → 404 (existence-hiding). `authorizeGeneral` returns
+      // a `permissions` set for members (even when the required permission is
+      // absent) and leaves it undefined for non-members; a `reason` is only
+      // set for bridge denials.
+      if (auth.reason === "bridge_not_allowed") return { kind: "forbidden" };
+      if (auth.permissions !== undefined) return { kind: "forbidden" };
+      return { kind: "unauthorized" };
+    }
+    isViewerAnalyst = analyst;
+  } else {
+    // Group: require `reports:read` on EVERY member, preserving the same
+    // existence-hiding mapping (non-member of any → 404, member-without-
+    // permission → 403). A bridge session is denied outright — `allowInBridge:
+    // false` is NOT loosened for groups, so an in-scope bridge → 403 exactly as
+    // on the customer path.
+    if (bridgeCustomerIds !== null) return { kind: "forbidden" };
+    const outcome = await withTransaction(authPool, (client) =>
+      resolveGroupReadOutcome(client, claims.sub, memberIds, "reports:read"),
+    );
+    if (outcome === "not_found") return { kind: "not_found" };
+    if (outcome === "forbidden") return { kind: "forbidden" };
+    // The analyst-only compare column / provenance gate is OFF for a group in
+    // v1 (no single-customer analyst signal applies to a group subject; the
+    // compare column is disabled below), so the flag stays false.
+    isViewerAnalyst = false;
   }
 
   // Variant resolution: each selector falls back to its default when the
-  // caller did not pin it. Default tz = the customer's current timezone
-  // snapshot; model_name/model default to the customer's resolved default
-  // (#473 — per-customer override → admin global → env), so the page and the
-  // coverage indicator below agree on which variant is "the default".
+  // caller did not pin it. Default tz = the subject's current timezone
+  // snapshot (`customers.timezone` for a customer, `customer_groups.tz` for a
+  // group — B1, #506); model_name/model default to the subject's resolved
+  // default so the page and the coverage indicator below agree on which
+  // variant is "the default". A customer uses the three-tier resolution (#473:
+  // per-customer override → admin global → env); a group uses the global/env-
+  // only policy (#524 — the per-customer `customer_default_model` join does not
+  // match a group subject), so display and generation agree on "the default".
   let tz: string;
   if (input.variant?.tz) {
     tz = input.variant.tz;
-  } else {
+  } else if (subjectKind === "customer") {
     const tzRow = await authPool.query<{ timezone: string }>(
       `SELECT timezone FROM customers WHERE id = $1`,
-      [input.customerId],
+      [subjectId],
     );
     tz = tzRow.rows[0]?.timezone ?? "UTC";
+  } else {
+    const tzRow = await authPool.query<{ tz: string }>(
+      `SELECT tz FROM customer_groups WHERE id = $1`,
+      [subjectId],
+    );
+    tz = tzRow.rows[0]?.tz ?? "UTC";
   }
-  const defaultPair = await resolveDefaultModel(input.customerId, authPool);
+  const defaultPair =
+    subjectKind === "customer"
+      ? await resolveDefaultModel(subjectId, authPool)
+      : await resolveGlobalDefaultModel(authPool, subjectId);
   const modelName = input.variant?.model_name ?? defaultPair.modelName;
   const model = input.variant?.model ?? defaultPair.model;
 
@@ -519,23 +626,23 @@ export async function loadReportResultPage(
     `SELECT status FROM periodic_report_state
       WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4`,
-    [input.customerId, input.period, input.bucketDate, tz],
+    [subjectId, input.period, input.bucketDate, tz],
   );
   if (stateRows.rows.length === 0) return { kind: "not_found" };
   if (stateRows.rows[0].status === "archived") return { kind: "not_found" };
 
-  const customerPool = getCustomerRuntimePool(input.customerId);
-
   // The bucket's available-language set for this `(tz, model_name, model)`
   // variant — drives both the switcher and the fallback chain. Scoped to
   // non-superseded rows so it matches what the result query below can fetch.
-  const availLangRows = await customerPool.query<{ lang: string }>(
+  // Read from the RESULT DB (the group DB for a group subject), keyed by the
+  // subject id.
+  const availLangRows = await resultPool.query<{ lang: string }>(
     `SELECT DISTINCT lang FROM periodic_report_result
       WHERE subject_id = $1 AND period = $2
         AND bucket_date = $3::date AND tz = $4
         AND model_name = $5 AND model = $6
         AND superseded_at IS NULL`,
-    [input.customerId, input.period, input.bucketDate, tz, modelName, model],
+    [subjectId, input.period, input.bucketDate, tz, modelName, model],
   );
   const availableLangs = availLangRows.rows.map((r) => r.lang);
 
@@ -572,18 +679,27 @@ export async function loadReportResultPage(
     }
 
     // A fallback occurred when the shown language is not the requested one.
-    // In that case (phase 2) enqueue the requested variant on-demand and
-    // surface its job status; repeated views coalesce (no generation bump).
+    // In that case (phase 2) the customer path enqueues the requested variant
+    // on-demand and surfaces its job status; repeated views coalesce (no
+    // generation bump). For a GROUP subject the policy is stored-variants-only
+    // (#525 default (a)): the customer-keyed `enqueueOnDemandReportJob` does
+    // not apply to a group subject and #524's subject-aware enqueue is not yet
+    // available, so the switcher offers only already-generated languages and
+    // no on-demand job is created (`jobStatus` stays null). The fallback notice
+    // still renders, just without an on-demand progress banner.
     if (shownLang !== requestedLang) {
-      const jobStatus = await enqueueRequestedLanguage(authPool, {
-        customerId: input.customerId,
-        period: input.period,
-        bucketDate: input.bucketDate,
-        tz,
-        lang: requestedLang,
-        modelName,
-        model,
-      });
+      const jobStatus =
+        subjectKind === "customer"
+          ? await enqueueRequestedLanguage(authPool, {
+              customerId: subjectId,
+              period: input.period,
+              bucketDate: input.bucketDate,
+              tz,
+              lang: requestedLang,
+              modelName,
+              model,
+            })
+          : null;
       languageFallback = {
         requestedLocale,
         shownLocale: reportLanguageToAppLocale(shownLang as ReportLanguage),
@@ -592,7 +708,7 @@ export async function loadReportResultPage(
     }
   }
 
-  const resultRow = await customerPool.query<ReportResultRow>(
+  const resultRow = await resultPool.query<ReportResultRow>(
     // Pinned path: target the exact generation and read `superseded_at`
     // so a superseded pin degrades to the notice; unpinned path keeps the
     // latest-non-superseded behavior. `superseded_at` is selected
@@ -616,7 +732,7 @@ export async function loadReportResultPage(
           LIMIT 1`,
     pinnedGeneration === null
       ? [
-          input.customerId,
+          subjectId,
           input.period,
           input.bucketDate,
           tz,
@@ -625,7 +741,7 @@ export async function loadReportResultPage(
           model,
         ]
       : [
-          input.customerId,
+          subjectId,
           input.period,
           input.bucketDate,
           tz,
@@ -679,10 +795,19 @@ export async function loadReportResultPage(
     modelName: row.model_name,
     model: row.model,
   };
+  // Member fan-out routing: map each ref's owning `customer_id` to the member
+  // pool that holds its leaf + redaction maps. For a customer subject this is
+  // the single result pool (all refs degrade to `subjectId`); for a group, the
+  // per-member pools resolved above. A ref naming a non-member id resolves to
+  // `undefined` and degrades (its tokens stay tokenized rather than 500ing).
+  const memberPoolById = new Map(
+    memberPools.map((m) => [m.customerId, m.pool]),
+  );
+  const poolFor = (cid: string): Pool | undefined => memberPoolById.get(cid);
   const { plaintextByReportToken, storyDisplays, eventDisplays } =
     await buildReportTokenPlaintext(
-      customerPool,
-      input.customerId,
+      poolFor,
+      subjectId,
       storyRefs,
       eventRefs,
       exemplarRefs,
@@ -749,6 +874,7 @@ export async function loadReportResultPage(
     storyRefs,
     eventRefs,
     plaintextByReportToken,
+    subjectId,
   );
 
   // Coverage indicator (#465 Scope 6): count cited leaves on the report's own
@@ -773,9 +899,20 @@ export async function loadReportResultPage(
   // NOT reuse the primary resolution above (which enqueues an on-demand job on
   // language fallback) — Scope 3 requires "render stored variants only / never
   // auto-generate". Only honored on the unpinned path and only for analysts.
+  //
+  // DISABLED for a `group` subject in v1 (#525): the compare replay would need
+  // the same per-member de-redaction fan-out as the primary column, and the
+  // group analyst-provenance gate is off (`isViewerAnalyst` is false for a
+  // group), so the gate below never opens for a group. The `subjectKind` guard
+  // makes that explicit and robust against a future analyst signal.
   let compare: ReportCompareOutcome | undefined;
-  if (input.compare && isViewerAnalyst && pinnedGeneration === null) {
-    compare = await resolveReportCompareColumn(customerPool, input.customerId, {
+  if (
+    subjectKind === "customer" &&
+    input.compare &&
+    isViewerAnalyst &&
+    pinnedGeneration === null
+  ) {
+    compare = await resolveReportCompareColumn(resultPool, subjectId, {
       period: input.period,
       bucketDate: input.bucketDate,
       tz,
@@ -788,7 +925,9 @@ export async function loadReportResultPage(
   return {
     kind: "ok",
     data: {
-      customerId: input.customerId,
+      // The report subject id — the customer id for a customer subject, the
+      // group id for a group subject (#525).
+      customerId: subjectId,
       period: input.period,
       bucketDate: input.bucketDate,
       tz,
@@ -863,6 +1002,16 @@ const REPORT_RESULT_COLUMNS = `model_actual_version, prompt_version, generation,
         requested_by::text AS requested_by, requested_at`;
 
 /**
+ * Compose a member-qualified map key (#525): `(customer_id, rest)` joined by a
+ * NUL separator. Neither a customer UUID nor a `story_id` / packed
+ * `"{aice_id}:{event_key}"` ref contains a NUL, so the boundary is
+ * unambiguous and same-`rest`-across-members keys never collide.
+ */
+function memberKey(customerId: string, rest: string): string {
+  return `${customerId}\u0000${rest}`;
+}
+
+/**
  * Restore a report result row's five display sections from the report→source
  * token map (#449). Pure (no DB): the three leaf-derived sections become
  * arrays of citation units with decoded sources, while
@@ -875,6 +1024,7 @@ function restoreReportSectionsFromRow(
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
   plaintextByReportToken: Map<string, string>,
+  subjectId: string,
 ): ReportSections {
   const restoreOne = (s: unknown) =>
     restoreReportAnalysisTokens(
@@ -897,15 +1047,32 @@ function restoreReportSectionsFromRow(
   // entry in the row's input refs — the single source of truth for
   // `generation` (#449). `lang`/`model` mirror the Sources panel's so a
   // citation links to the same leaf variant the report consumed.
-  const storyRefByKey = new Map(storyRefs.map((r) => [r.story_id, r]));
+  //
+  // Keyed by `(customer_id, …)` (#525): the same `story_id` / `(aice_id,
+  // event_key)` can exist in more than one member DB for a group report, so a
+  // bare key collides and mis-routes. The member id is `refCustomerId(ref,
+  // subjectId)` for the input refs and the wire source's optional `customer_id`
+  // (degrading to `subjectId`) for the citation — so a single-customer report,
+  // where every ref and source degrades to `subjectId`, keys identically to the
+  // pre-#525 bare-key behavior.
+  const storyRefByKey = new Map(
+    storyRefs.map((r) => [
+      memberKey(refCustomerId(r, subjectId), r.story_id),
+      r,
+    ]),
+  );
   const eventRefByKey = new Map(
-    eventRefs.map((r) => [`${r.aice_id}:${r.event_key}`, r]),
+    eventRefs.map((r) => [
+      memberKey(refCustomerId(r, subjectId), `${r.aice_id}:${r.event_key}`),
+      r,
+    ]),
   );
   const decodeSource = (raw: unknown): CitedUnitSource | undefined => {
     if (raw === null || typeof raw !== "object") return undefined;
     const wire = raw as Partial<WireUnitSource>;
+    const sourceCustomerId = refCustomerId(wire, subjectId);
     if (wire.type === "story" && typeof wire.story_id === "string") {
-      const ref = storyRefByKey.get(wire.story_id);
+      const ref = storyRefByKey.get(memberKey(sourceCustomerId, wire.story_id));
       // Drop a citation whose leaf is not in the input bundle rather than
       // render a dangling link (the worker already rejects fabricated sources
       // before persisting; this is the read-path defensive degrade).
@@ -924,9 +1091,11 @@ function restoreReportSectionsFromRow(
     }
     if (wire.type === "event" && typeof wire.event_ref === "string") {
       // `event_ref` is opaque; resolve it through the input refs by the same
-      // packed key the builder emitted instead of splitting on `:` (robust
-      // even if an `aice_id` ever contained a colon).
-      const ref = eventRefByKey.get(wire.event_ref);
+      // packed key the builder emitted (member-qualified, #525) instead of
+      // splitting on `:` (robust even if an `aice_id` ever contained a colon).
+      const ref = eventRefByKey.get(
+        memberKey(sourceCustomerId, wire.event_ref),
+      );
       if (!ref) return undefined;
       return {
         sourceType: "event",
@@ -1024,8 +1193,12 @@ async function resolveReportCompareColumn(
     ? row.input_exemplar_refs
     : [];
   const replayLang = row.restoration_lang ?? row.lang;
+  // The compare column is customer-only (disabled for groups in v1, #525), so
+  // the member fan-out collapses to the single customer pool: every ref
+  // degrades to `customerId` and routes back to `customerPool`.
+  const poolFor = () => customerPool as Pool;
   const { plaintextByReportToken } = await buildReportTokenPlaintext(
-    customerPool,
+    poolFor,
     customerId,
     storyRefs,
     eventRefs,
@@ -1038,6 +1211,7 @@ async function resolveReportCompareColumn(
     storyRefs,
     eventRefs,
     plaintextByReportToken,
+    customerId,
   );
   return {
     kind: "ok",
@@ -1137,14 +1311,27 @@ interface ReportLeafData {
  * relevant event redaction map. The result is keyed by the report-scope
  * token string so `restoreReportAnalysisTokens` can substitute directly.
  *
+ * Member fan-out (#525): each cited story / event / exemplar ref names the
+ * owning member `customer_id` (degrading to `subjectId` for a legacy / single-
+ * customer ref via `refCustomerId`). The leaf and its `event_redaction_map`
+ * live in that member's DB, so each ref's leaf SELECT runs on `poolFor(cid)`,
+ * and the redaction maps are GROUPED by member and decrypted with ONE batched
+ * query per member pool (`decryptMaps`) — never an open-and-query per ref. The
+ * decrypted maps are keyed by `(customer_id, aice_id:event_key)` so the same
+ * `(aice_id, event_key)` in two member DBs routes to the right member's
+ * plaintext. A story ref's member-event redaction lookups use the SAME member
+ * DB as the story leaf (the story leaf and its member-event maps co-reside).
+ * For a `customer` subject every ref degrades to `subjectId` and `poolFor`
+ * returns the single result pool, so this collapses to the prior single-pool
+ * behavior end to end.
+ *
  * The same per-leaf SELECTs also return the Sources-panel display fields
  * (tier / scores / TTP / `superseded_at`) at the pinned variant (T1), so
  * the cited-source display data costs no extra round-trips.
  */
 async function buildReportTokenPlaintext(
-  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
-  customerPool: any,
-  customerId: string,
+  poolFor: (customerId: string) => Pool | undefined,
+  subjectId: string,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
   exemplarRefs: ExemplarRef[],
@@ -1161,13 +1348,21 @@ async function buildReportTokenPlaintext(
     return { plaintextByReportToken: out, storyDisplays, eventDisplays };
   }
 
+  // Per-leaf owning member customer id (#523/#525), aligned positionally with
+  // each ref array. A legacy / single-customer ref degrades to `subjectId`.
+  const storyCustomerIds = storyRefs.map((r) => refCustomerId(r, subjectId));
+  const eventCustomerIds = eventRefs.map((r) => refCustomerId(r, subjectId));
+  const exemplarCustomerIds = exemplarRefs.map((r) =>
+    refCustomerId(r, subjectId),
+  );
+
   // Fetch story leaf narratives + their member refs at the pinned
-  // generation AND the report variant. `generation` is variant-scoped
-  // (the PK includes lang/model_name/model), so an English and a Korean
-  // leaf can both be generation 1 for the same story/event; without the
-  // variant predicates a LIMIT 1 could replay the wrong variant's text and
-  // either mis-restore or leave report tokens visible (#297 review round
-  // 1, item 3).
+  // generation AND the report variant, from the OWNING member's DB.
+  // `generation` is variant-scoped (the PK includes lang/model_name/model),
+  // so an English and a Korean leaf can both be generation 1 for the same
+  // story/event; without the variant predicates a LIMIT 1 could replay the
+  // wrong variant's text and either mis-restore or leave report tokens visible
+  // (#297 review round 1, item 3).
   const storyLeaves: Array<{
     analysis: string;
     severityFactors: string[];
@@ -1176,28 +1371,36 @@ async function buildReportTokenPlaintext(
   const storyMemberRefs: Array<
     Array<{ index: number; aiceId: string; eventKey: string }>
   > = [];
-  for (const ref of storyRefs) {
+  for (let i = 0; i < storyRefs.length; i++) {
+    const ref = storyRefs[i];
+    const cid = storyCustomerIds[i];
+    const pool = poolFor(cid);
     // Pin each leaf by ITS OWN ref model (#465 Scope 4): a fallback leaf lives
     // under a different model than the report row, so a row-model pin would
     // return no row and leave report tokens unrestored / visible. A pre-#465
-    // ref lacking a model falls back to the report variant's model.
-    const { rows } = await customerPool.query(
-      `SELECT analysis_text, severity_factors, likelihood_factors,
+    // ref lacking a model falls back to the report variant's model. A ref
+    // naming a non-member id (no pool) degrades to an empty leaf.
+    const rows = pool
+      ? (
+          await pool.query(
+            `SELECT analysis_text, severity_factors, likelihood_factors,
               input_event_refs, priority_tier, severity_score,
               likelihood_score, ttp_tags, superseded_at
          FROM story_analysis_result
         WHERE customer_id = $1 AND story_id = $2::bigint AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
         LIMIT 1`,
-      [
-        customerId,
-        ref.story_id,
-        ref.generation,
-        variant.lang,
-        ref.model_name ?? variant.modelName,
-        ref.model ?? variant.model,
-      ],
-    );
+            [
+              cid,
+              ref.story_id,
+              ref.generation,
+              variant.lang,
+              ref.model_name ?? variant.modelName,
+              ref.model ?? variant.model,
+            ],
+          )
+        ).rows
+      : [];
     storyLeaves.push({
       analysis: rows[0]?.analysis_text ?? "",
       severityFactors: Array.isArray(rows[0]?.severity_factors)
@@ -1214,31 +1417,37 @@ async function buildReportTokenPlaintext(
   }
 
   // Fetch event leaf narratives + factors at the pinned generation AND
-  // variant.
+  // variant, from the owning member's DB.
   const eventLeaves: Array<{
     analysis: string;
     severityFactors: string[];
     likelihoodFactors: string[];
   }> = [];
-  for (const ref of eventRefs) {
+  for (let i = 0; i < eventRefs.length; i++) {
+    const ref = eventRefs[i];
+    const pool = poolFor(eventCustomerIds[i]);
     // Per-ref model pin (#465 Scope 4), same as the story leaves above.
-    const { rows } = await customerPool.query(
-      `SELECT analysis_text, severity_factors, likelihood_factors,
+    const rows = pool
+      ? (
+          await pool.query(
+            `SELECT analysis_text, severity_factors, likelihood_factors,
               priority_tier, severity_score, likelihood_score, ttp_tags,
               superseded_at
          FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
         LIMIT 1`,
-      [
-        ref.aice_id,
-        ref.event_key,
-        ref.generation,
-        variant.lang,
-        ref.model_name ?? variant.modelName,
-        ref.model ?? variant.model,
-      ],
-    );
+            [
+              ref.aice_id,
+              ref.event_key,
+              ref.generation,
+              variant.lang,
+              ref.model_name ?? variant.modelName,
+              ref.model ?? variant.model,
+            ],
+          )
+        ).rows
+      : [];
     eventLeaves.push({
       analysis: rows[0]?.analysis_text ?? "",
       severityFactors: Array.isArray(rows[0]?.severity_factors)
@@ -1259,22 +1468,28 @@ async function buildReportTokenPlaintext(
   // were minted from the English leaves. `model_name` / `model` are required
   // on an exemplar ref (no pre-#465 legacy form).
   const exemplarLeaves: Array<{ analysis: string }> = [];
-  for (const ref of exemplarRefs) {
-    const { rows } = await customerPool.query(
-      `SELECT severity_factors, likelihood_factors
+  for (let i = 0; i < exemplarRefs.length; i++) {
+    const ref = exemplarRefs[i];
+    const pool = poolFor(exemplarCustomerIds[i]);
+    const rows = pool
+      ? (
+          await pool.query(
+            `SELECT severity_factors, likelihood_factors
          FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = $2::numeric AND generation = $3
           AND lang = $4 AND model_name = $5 AND model = $6
         LIMIT 1`,
-      [
-        ref.aice_id,
-        ref.event_key,
-        ref.generation,
-        ENGLISH_BASELINE,
-        ref.model_name,
-        ref.model,
-      ],
-    );
+            [
+              ref.aice_id,
+              ref.event_key,
+              ref.generation,
+              ENGLISH_BASELINE,
+              ref.model_name,
+              ref.model,
+            ],
+          )
+        ).rows
+      : [];
     exemplarLeaves.push({ analysis: chooseExemplarFactor(rows[0]) });
   }
 
@@ -1295,29 +1510,74 @@ async function buildReportTokenPlaintext(
     exemplarLeaves,
   );
 
-  // Decrypt every referenced event redaction map once, keyed by
-  // (aice_id, event_key) — cited events, story members, AND exemplar leaves.
-  const wanted = new Set<string>();
-  for (const memberRefs of storyMemberRefs) {
-    for (const m of memberRefs) wanted.add(`${m.aiceId}:${m.eventKey}`);
+  // Group every referenced event redaction map by its OWNING member customer
+  // id (#525), then decrypt with ONE batched query per member pool — cited
+  // events, story members, AND exemplar leaves. A story's member-event maps
+  // belong to the SAME member DB as the story leaf, so they inherit the story
+  // ref's customer id. Deduped per member by `aice_id:event_key`. The result
+  // is a per-member map (`mapsByCustomer[cid]` → `aice_id:event_key` →
+  // `RedactionMap`) so a same-`(aice_id, event_key)` key in two members never
+  // collides.
+  const wantedByCustomer = new Map<string, Map<string, EventKeyPair>>();
+  const addWanted = (cid: string, aiceId: string, eventKey: string) => {
+    let inner = wantedByCustomer.get(cid);
+    if (!inner) {
+      inner = new Map();
+      wantedByCustomer.set(cid, inner);
+    }
+    inner.set(`${aiceId}:${eventKey}`, { aiceId, eventKey });
+  };
+  for (let i = 0; i < storyMemberRefs.length; i++) {
+    const cid = storyCustomerIds[i];
+    for (const m of storyMemberRefs[i]) addWanted(cid, m.aiceId, m.eventKey);
   }
-  for (const ref of eventRefs) wanted.add(`${ref.aice_id}:${ref.event_key}`);
-  for (const ref of exemplarRefs) wanted.add(`${ref.aice_id}:${ref.event_key}`);
-  const mapByKey = await decryptMaps(customerPool, customerId, wanted);
+  for (let i = 0; i < eventRefs.length; i++) {
+    addWanted(
+      eventCustomerIds[i],
+      eventRefs[i].aice_id,
+      eventRefs[i].event_key,
+    );
+  }
+  for (let i = 0; i < exemplarRefs.length; i++) {
+    addWanted(
+      exemplarCustomerIds[i],
+      exemplarRefs[i].aice_id,
+      exemplarRefs[i].event_key,
+    );
+  }
+  const mapsByCustomer = new Map<string, Map<string, RedactionMap>>();
+  for (const [cid, inner] of wantedByCustomer) {
+    const pool = poolFor(cid);
+    if (!pool) continue;
+    mapsByCustomer.set(
+      cid,
+      await decryptMaps(pool, cid, Array.from(inner.values())),
+    );
+  }
 
   for (const leaf of refs) {
-    const memberRefs =
-      leaf.kind === "story" ? storyMemberRefs[leaf.index - 1] : null;
-    const eventRef =
-      leaf.kind === "event"
-        ? eventRefs[leaf.index - storyRefs.length - 1]
-        : null;
+    const storyIdx = leaf.kind === "story" ? leaf.index - 1 : -1;
+    const eventIdx =
+      leaf.kind === "event" ? leaf.index - storyRefs.length - 1 : -1;
     // Exemplar leaves follow all cited story+event leaves in the combined
     // order, so their 1-based `index` maps to `exemplarRefs` after both.
-    const exemplarRef =
+    const exemplarIdx =
       leaf.kind === "exemplar"
-        ? exemplarRefs[leaf.index - storyRefs.length - eventRefs.length - 1]
-        : null;
+        ? leaf.index - storyRefs.length - eventRefs.length - 1
+        : -1;
+    const memberRefs = storyIdx >= 0 ? storyMemberRefs[storyIdx] : null;
+    const eventRef = eventIdx >= 0 ? eventRefs[eventIdx] : null;
+    const exemplarRef = exemplarIdx >= 0 ? exemplarRefs[exemplarIdx] : null;
+    // The member map for this leaf's owning customer — story member events,
+    // the cited event, and the exemplar event all live in the leaf's own DB.
+    const memberMap =
+      storyIdx >= 0
+        ? mapsByCustomer.get(storyCustomerIds[storyIdx])
+        : eventIdx >= 0
+          ? mapsByCustomer.get(eventCustomerIds[eventIdx])
+          : exemplarIdx >= 0
+            ? mapsByCustomer.get(exemplarCustomerIds[exemplarIdx])
+            : undefined;
     for (const { reportToken, sourceToken } of leaf.tokens) {
       let plaintext: string | undefined;
       if (leaf.kind === "story" && memberRefs) {
@@ -1328,14 +1588,16 @@ async function buildReportTokenPlaintext(
           const nnn = m[3];
           const member = memberRefs.find((r) => r.index === memberIdx);
           if (member) {
-            const map = mapByKey.get(`${member.aiceId}:${member.eventKey}`);
+            const map = memberMap?.get(`${member.aiceId}:${member.eventKey}`);
             plaintext = map?.[`<<REDACTED_${kind}_${nnn}>>`]?.value;
           }
         }
       } else if (leaf.kind === "event" && eventRef) {
         const m = EVENT_SOURCE_RE.exec(sourceToken);
         if (m) {
-          const map = mapByKey.get(`${eventRef.aice_id}:${eventRef.event_key}`);
+          const map = memberMap?.get(
+            `${eventRef.aice_id}:${eventRef.event_key}`,
+          );
           plaintext = map?.[sourceToken]?.value;
         }
       } else if (leaf.kind === "exemplar" && exemplarRef) {
@@ -1343,7 +1605,7 @@ async function buildReportTokenPlaintext(
         // through the exemplar leaf's own (aice_id, event_key) redaction map.
         const m = EVENT_SOURCE_RE.exec(sourceToken);
         if (m) {
-          const map = mapByKey.get(
+          const map = memberMap?.get(
             `${exemplarRef.aice_id}:${exemplarRef.event_key}`,
           );
           plaintext = map?.[sourceToken]?.value;
@@ -1353,6 +1615,12 @@ async function buildReportTokenPlaintext(
     }
   }
   return { plaintextByReportToken: out, storyDisplays, eventDisplays };
+}
+
+/** A decomposed `(aice_id, event_key)` redaction-map key (#525). */
+interface EventKeyPair {
+  aiceId: string;
+  eventKey: string;
 }
 
 /**
@@ -1380,18 +1648,23 @@ function toLeafDisplay(
 // `loadReportResultPage` path.
 export const __testables = { buildReportTokenPlaintext };
 
+/**
+ * Decrypt one member's `event_redaction_map` rows in a SINGLE batched query
+ * (#525): `wanted` is the already-decomposed `(aice_id, event_key)` pairs for
+ * THIS member only, so the member identity is the `customerId` parameter and
+ * the `customerPool` it runs on — never encoded into a `:`-joined key the
+ * function has to split back apart. The returned map is keyed by
+ * `aice_id:event_key`, scoped to this member; the caller stores it under the
+ * member's customer id so a same-key collision across members cannot occur.
+ */
 async function decryptMaps(
-  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
-  customerPool: any,
+  customerPool: Pool,
   customerId: string,
-  wanted: ReadonlySet<string>,
+  wanted: ReadonlyArray<EventKeyPair>,
 ): Promise<Map<string, RedactionMap>> {
   const result = new Map<string, RedactionMap>();
-  if (wanted.size === 0) return result;
-  const pairs = Array.from(wanted).map((k) => {
-    const [aiceId, eventKey] = k.split(":");
-    return { aiceId, eventKey };
-  });
+  if (wanted.length === 0) return result;
+  const pairs = wanted;
   const { rows } = await customerPool.query(
     `SELECT aice_id::text AS aice_id, event_key::text AS event_key,
             ciphertext, wrapped_dek

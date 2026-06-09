@@ -104,7 +104,7 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
 
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
-      pool as any,
+      () => pool as any,
       "cust-1",
       [],
       // One cited event leaf → report token R1.
@@ -142,7 +142,7 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
     const pool = makePool(captured);
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
-      pool as any,
+      () => pool as any,
       "cust-1",
       [],
       [],
