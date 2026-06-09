@@ -34,6 +34,7 @@ import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import {
+  type AnalyzedEventAggregatesInput,
   PeriodicReportDocument,
   type PeriodicReportInputs,
 } from "@/lib/graphql/__generated__/generate-periodic-security-report";
@@ -48,6 +49,7 @@ import {
   buildPeriodicReportInput,
   buildPinnedTokenRefs,
   type EventRef,
+  type ExemplarRef,
   type PeriodicPeriod,
   type ReportVariant,
   type StoryRef,
@@ -683,6 +685,10 @@ export async function processReportJob(
     nowIso,
     storyRefs: canonical.storyRefs,
     eventRefs: canonical.eventRefs,
+    // Reuse the canonical's exemplar refs + aggregate payload verbatim so the
+    // native-pinned non-English long-tail matches the canonical (#495).
+    exemplarRefs: canonical.exemplarRefs,
+    analyzedEventAggregates: canonical.analyzedEventAggregates,
   });
   if (pinned.complete) {
     await runNativeGeneration({
@@ -940,6 +946,8 @@ async function runNativeGeneration(args: {
       sections: parsedSections,
       eventRefs: built.eventRefs,
       storyRefs: built.storyRefs,
+      exemplarRefs: built.exemplarRefs,
+      analyzedEventAggregates: built.analyzedEventAggregates,
       inputHash: built.inputHash,
       inputWatermark,
       redactionPolicyVersion,
@@ -1022,6 +1030,10 @@ async function runTranslation(args: {
     englishVariant,
     canonical.storyRefs,
     canonical.eventRefs,
+    // The translate path is uniformly English (restoration_lang = ENGLISH),
+    // so cited and exemplar leaves both replay at English; the union covers
+    // exemplar `R{j}` tokens that the translation preserved verbatim (#495).
+    canonical.exemplarRefs,
   );
   if (tokenRefs === null) {
     await failJob(opts.authPool, job, "canonical_leaves_missing", claimMarker, {
@@ -1284,6 +1296,10 @@ async function runTranslation(args: {
       sections: parsedSections,
       eventRefs: canonical.eventRefs,
       storyRefs: canonical.storyRefs,
+      // Copy the canonical's exemplar refs + aggregate payload onto the
+      // translated row for parity (it translates stored sections, not inputs).
+      exemplarRefs: canonical.exemplarRefs,
+      analyzedEventAggregates: canonical.analyzedEventAggregates,
       inputHash: canonical.inputHash,
       inputWatermark: canonical.inputWatermark,
       redactionPolicyVersion: canonical.redactionPolicyVersion,
@@ -1367,6 +1383,10 @@ interface EnglishCanonical {
   sections: ReportSectionsJson;
   storyRefs: StoryRef[];
   eventRefs: EventRef[];
+  /** The canonical's long-tail exemplar refs (#495), reused/copied verbatim. */
+  exemplarRefs: ExemplarRef[];
+  /** The canonical's stored `analyzedEventAggregates` (#495), or null. */
+  analyzedEventAggregates: AnalyzedEventAggregatesInput | null;
   modelName: string;
   model: string;
   modelActualVersion: string;
@@ -1388,6 +1408,8 @@ async function loadEnglishCanonical(
     sections_jsonb: ReportSectionsJson;
     input_story_refs: StoryRef[] | null;
     input_event_refs: EventRef[] | null;
+    input_exemplar_refs: ExemplarRef[] | null;
+    input_analyzed_event_aggregates: AnalyzedEventAggregatesInput | null;
     model_name: string;
     model: string;
     model_actual_version: string;
@@ -1402,6 +1424,7 @@ async function loadEnglishCanonical(
   }>(
     `SELECT sections_jsonb,
             input_story_refs, input_event_refs,
+            input_exemplar_refs, input_analyzed_event_aggregates,
             model_name, model, model_actual_version, prompt_version,
             aggregate_severity_score, aggregate_likelihood_score,
             aggregate_ttp_tags, priority_tier,
@@ -1430,6 +1453,10 @@ async function loadEnglishCanonical(
     sections: r.sections_jsonb ?? {},
     storyRefs: Array.isArray(r.input_story_refs) ? r.input_story_refs : [],
     eventRefs: Array.isArray(r.input_event_refs) ? r.input_event_refs : [],
+    exemplarRefs: Array.isArray(r.input_exemplar_refs)
+      ? r.input_exemplar_refs
+      : [],
+    analyzedEventAggregates: r.input_analyzed_event_aggregates ?? null,
     modelName: r.model_name,
     model: r.model,
     modelActualVersion: r.model_actual_version,
@@ -1540,6 +1567,10 @@ interface ResultRowValues {
   sections: ReportSectionsJson;
   eventRefs: EventRef[];
   storyRefs: StoryRef[];
+  /** Long-tail exemplar leaf refs (#495) → `input_exemplar_refs`. */
+  exemplarRefs: ExemplarRef[];
+  /** The `analyzedEventAggregates` payload sent, or null when omitted (#495). */
+  analyzedEventAggregates: AnalyzedEventAggregatesInput | null;
   inputHash: string;
   inputWatermark: Date | null;
   redactionPolicyVersion: string;
@@ -1564,14 +1595,16 @@ async function writeResultRow(
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
           input_event_refs, input_story_refs, input_hash, input_watermark,
-          redaction_policy_version, requested_by)
+          redaction_policy_version, requested_by,
+          input_exemplar_refs, input_analyzed_event_aggregates)
        VALUES ($1, $2, $3::date, $4, $5, $6,
                $7, $8,
                $9, $10, $11,
                $12, $13,
                $14::jsonb, $15, $16::jsonb,
                $17::jsonb, $18::jsonb, $19, $20,
-               $21, $22::uuid)`,
+               $21, $22::uuid,
+               $23::jsonb, $24::jsonb)`,
       [
         job.subject_id,
         job.period,
@@ -1595,6 +1628,12 @@ async function writeResultRow(
         values.inputWatermark,
         values.redactionPolicyVersion,
         values.requestedBy,
+        JSON.stringify(values.exemplarRefs),
+        // `null` when the section was omitted — persisted as SQL NULL, not the
+        // JSON string "null" (an absent long-tail, not an empty one) (#495).
+        values.analyzedEventAggregates === null
+          ? null
+          : JSON.stringify(values.analyzedEventAggregates),
       ],
     );
     await client.query(

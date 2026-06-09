@@ -116,7 +116,13 @@ const ALWAYS_REDACTED_PII_PATTERNS: ReadonlyArray<RegExp> = [
   MAC_PII_RE,
 ];
 
-export type ReportLeafKind = "story" | "event";
+// `exemplar` leaves are uncited long-tail representatives (#495). They are
+// event leaves (auto-analyzed baseline events), so they carry event-scope
+// source tokens and demap exactly like a cited event leaf — the distinct
+// kind only marks them as belonging to the appended exemplar bucket so the
+// replay sites can resolve them through `input_exemplar_refs` rather than
+// `input_event_refs`.
+export type ReportLeafKind = "story" | "event" | "exemplar";
 
 export interface ReportTokenMapping {
   /** Report-scope token embedded in the LLM input (`<<REDACTED_*_R{j}_*>>`). */
@@ -160,14 +166,22 @@ export interface BuildReportTokenMapResult {
   rewrittenStoryTexts: string[];
   /** Event leaf narratives, rewritten to report scope, in input order. */
   rewrittenEventTexts: string[];
+  /**
+   * Exemplar leaf single-field texts (the chosen `factor`), rewritten to
+   * report scope, in input order (#495). Kept in a SEPARATE bucket so the
+   * cited-event rewritten texts/refs stay cleanly separable from the
+   * appended exemplar leaves for persistence and the split-language replay.
+   */
+  rewrittenExemplarTexts: string[];
   /** Story leaf factors, rewritten to report scope, in input order. */
   rewrittenStoryFactors: RewrittenLeafFactors[];
   /** Event leaf factors, rewritten to report scope, in input order. */
   rewrittenEventFactors: RewrittenLeafFactors[];
   /**
-   * Per-leaf references, in combined order (all story leaves first, then
-   * all event leaves). `refs[k]` describes story leaf `k` for
-   * `k < storyLeaves.length`; the remainder describe the event leaves.
+   * Per-leaf references, in combined order: all story leaves first, then
+   * all event leaves, then all exemplar leaves (#495). `refs[k]` describes
+   * story leaf `k` for `k < storyLeaves.length`, then the event leaves, then
+   * the exemplar leaves. The `{j}` baked into each token IS this order.
    */
   refs: ReportTokenRef[];
   /**
@@ -240,11 +254,13 @@ function rewriteLeafFields(
 export function buildReportTokenMap(
   storyLeaves: ReadonlyArray<ReportLeafText>,
   eventLeaves: ReadonlyArray<ReportLeafText>,
+  exemplarLeaves: ReadonlyArray<ReportLeafText> = [],
 ): BuildReportTokenMapResult {
   const allowedTokens = new Set<string>();
   const refs: ReportTokenRef[] = [];
   const rewrittenStoryTexts: string[] = [];
   const rewrittenEventTexts: string[] = [];
+  const rewrittenExemplarTexts: string[] = [];
   const rewrittenStoryFactors: RewrittenLeafFactors[] = [];
   const rewrittenEventFactors: RewrittenLeafFactors[] = [];
 
@@ -302,10 +318,27 @@ export function buildReportTokenMap(
     rewrittenEventFactors.push(factors);
     refs.push(ref);
   }
+  // Exemplar leaves (#495): appended AFTER the cited story+event leaves so
+  // their `R{j}` numbering is stable and reproducible across native / pinned
+  // / translate / restore. Each carries a single field (the chosen `factor`),
+  // fed as `analysis`; exemplars are event leaves, so they fold event-scope
+  // source tokens like a cited event leaf.
+  for (const leaf of exemplarLeaves) {
+    leafIndex += 1;
+    const { analysis, ref } = rewriteOne(
+      leaf,
+      leafIndex,
+      "exemplar",
+      EVENT_SCOPE_TOKEN_RE,
+    );
+    rewrittenExemplarTexts.push(analysis);
+    refs.push(ref);
+  }
 
   return {
     rewrittenStoryTexts,
     rewrittenEventTexts,
+    rewrittenExemplarTexts,
     rewrittenStoryFactors,
     rewrittenEventFactors,
     refs,

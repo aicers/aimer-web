@@ -299,9 +299,9 @@ The worker pipeline runs without operator action:
    Event citation follows a **tier policy** under a hard ceiling: every
    `CRITICAL` and `HIGH` event is cited individually up to the ceiling; if
    they exceed it, only the top ranked ones up to the ceiling are cited (the
-   remainder is not silently dropped — it stays recoverable from the
-   analyzed-event record and will surface through the period's long-tail
-   accounting once that wiring lands); if they fall short, the remaining slots
+   remainder is not silently dropped — it stays in the analyzed-in-window set
+   and surfaces through the period's [long-tail
+   narrative](#long-tail-narrative)); if they fall short, the remaining slots
    are filled with `MEDIUM`
    events by the same ranking. `LOW` events are never cited individually, so
    a quiet period yields an empty **Notable events** rather than a list
@@ -312,8 +312,16 @@ The worker pipeline runs without operator action:
    scoring](#cross-model-coverage-and-scoring)). An **alternate-model**
    report (one an analyst generated under a non-default model) stays strict
    and selects only that model's leaves. The language is always strict. It
-   also computes the window's **suspicious-event aggregates**: deduplicated
-   event counts and a category distribution.
+   also computes the window's **suspicious-event aggregates** (deduplicated
+   event counts and a category distribution) and the **analyzed-event
+   aggregates** that drive the [long-tail narrative](#long-tail-narrative):
+   over the whole non-story-covered analyzed-in-window set — the cited events
+   plus every other event analyzed in the window — the builder counts the
+   analyzed total, how many were cited, the technique leaderboard and tier
+   distribution, a technique rollup over the *uncited* remainder, and up to
+   ten technique-clustered exemplar phrasings. A window with no analyzed
+   events beyond the cited set omits this entirely, so those reports read
+   exactly as before.
 4. Every included analysis narrative is re-namespaced into a single
    report-scope token namespace (`<<REDACTED_*_R{j}_*>>`) so the same
    placeholder in two different analyses cannot collide, and the bundle is
@@ -425,7 +433,9 @@ to plaintext:
   this section empty rather than padded.
 - **Suspicious-event trends** — short factual readings of the window's
   suspicious-event counts and ranks and any shift visible against the top
-  techniques and sensors.
+  techniques and sensors. When the window carried analyzed events beyond the
+  individually cited ones, this section also weaves in the **long-tail
+  narrative** (see below).
 - **Period outlook** — a short forward-looking note in the period's
   tone: for LIVE, what to watch in the next window; for DAILY, what
   tomorrow's operator should re-check; for WEEKLY / MONTHLY, the trend
@@ -439,6 +449,41 @@ highlights, and notable events — are instead rendered as a sequence of
 cannot be restored (decrypt failure, a superseded analysis, out-of-range
 index) are passed through unchanged so the page still renders;
 hallucinated decodes are blocked at write time and never reach this view.
+
+### Long-tail narrative
+
+The **Notable events** section only ever lists the handful of individually
+cited events. But a busy window can analyze far more suspicious events than
+it cites — every `LOW` event, and any `CRITICAL` / `HIGH` / `MEDIUM` past the
+citation ceiling. Rather than drop that signal, the report folds the whole
+non-story-covered analyzed-in-window set into a **long-tail narrative** that
+the **Suspicious-event trends** section weaves into prose. It is grounded in
+aggregates the builder computes, not in fabricated detail:
+
+- **How many were analyzed vs cited** — so the prose can say, e.g., "of 240
+  events analyzed this window, 10 are detailed above; the remaining 230…".
+- **A technique leaderboard and tier distribution** over the full analyzed
+  set, and a **technique rollup** over just the *uncited* remainder, so the
+  narrative can characterize what the long tail was made of.
+- **Up to ten technique-clustered exemplars** — one per dominant MITRE
+  technique, each carrying the tier it tops out at, how many uncited events
+  it stands for, and one representative factor phrase. These ground the prose
+  in concrete examples without citing individual analyses; they are *not*
+  rendered as Sources cards. (If more than ten techniques appear, the top ten
+  by tier then frequency are kept and the truncation is logged.)
+
+These figures come entirely from analyses aimer-web already produced, are
+redaction-token rewritten exactly like the cited leaves, and are restored to
+plaintext for an authorized viewer on the same path. A window with no
+analyzed events beyond the cited set carries no long-tail narrative, and the
+report reads exactly as it did before this section existed. The English
+report owns the exemplar set and its token numbering; a non-English variant
+reuses the English aggregates verbatim (its long-tail figures and exemplar
+phrasings match the English report), while its cited narrative stays native.
+
+> _Screenshot pending: the long-tail narrative renders data derived from
+> aice-web-next, so a representative capture is taken from a real-data stack
+> rather than fabricated._
 
 ### Sentence-level citations
 

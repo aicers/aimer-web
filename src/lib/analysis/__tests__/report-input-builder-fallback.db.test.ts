@@ -347,6 +347,8 @@ describe.skipIf(!hasPostgres)("#465 never-drop + hybrid scoring (db)", () => {
       nowIso: NOW,
       storyRefs: [{ story_id: "8001", generation: 1 }],
       eventRefs: [{ aice_id: "aice-1", event_key: "9001", generation: 1 }],
+      exemplarRefs: [],
+      analyzedEventAggregates: null,
     });
     expect(pinned.complete).toBe(true);
     if (!pinned.complete) return;
