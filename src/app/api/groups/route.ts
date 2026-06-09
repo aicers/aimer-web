@@ -161,7 +161,18 @@ export const POST = withAuth(
         throw err;
       }
 
-      void auditLog({
+      // Awaited (not fire-and-forget) so the PII-bearing create row —
+      // details.name and details.memberIds — is committed BEFORE the 201
+      // returns, establishing a happens-before edge over any subsequent
+      // delete. teardownGroupDb()'s anonymizeGroupAuditLogs() scrubs by
+      // `WHERE target_id = $1` at a point in time; a `void auditLog(...)`
+      // here races that scrub: if the client deletes the just-created group
+      // and the floating insert lands after anonymization, the create row
+      // survives with the raw group name and membership list intact,
+      // defeating the crypto-shred (the same class of race the delete row
+      // fix closed). auditLog() still swallows audit-DB errors, so awaiting
+      // keeps the write best-effort while denying a late raw row an escape.
+      await auditLog({
         actorId: auth.accountId,
         authContext: "general",
         action: "customer_group.created",

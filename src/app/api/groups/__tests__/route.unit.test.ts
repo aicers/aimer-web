@@ -30,7 +30,10 @@ const fakeClient = {
 const fakePool = { connect: vi.fn().mockResolvedValue(fakeClient) };
 vi.mock("@/lib/db/client", () => ({ getAuthPool: () => fakePool }));
 
-vi.mock("@/lib/audit", () => ({ auditLog: vi.fn() }));
+const mockAuditLog = vi.fn();
+vi.mock("@/lib/audit", () => ({
+  auditLog: (...a: unknown[]) => mockAuditLog(...a),
+}));
 
 const mockAssertManagement = vi.fn();
 vi.mock("@/lib/auth/group-authorization", () => ({
@@ -73,6 +76,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockAssertManagement.mockResolvedValue(undefined);
   mockProvisionGroupDb.mockResolvedValue("active");
+  mockAuditLog.mockResolvedValue(undefined);
 });
 
 describe("POST /api/groups — request validation", () => {
@@ -222,5 +226,53 @@ describe("POST /api/groups — authorization + eligibility + tz", () => {
     const res = await POST(req({ name: "G", memberIds: [A, B] }));
     expect(res.status).toBe(201);
     expect((await res.json()).databaseStatus).toBe("failed");
+  });
+
+  it("awaits the PII create audit before responding (no anonymize race)", async () => {
+    mockFetchMemberStates.mockResolvedValue([
+      operational(A, "Asia/Seoul"),
+      operational(B, "Asia/Seoul"),
+    ]);
+    mockCreateGroup.mockResolvedValue({
+      id: "group-3",
+      name: "G",
+      description: null,
+      ownerId: "acct-1",
+      createdBy: "acct-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      tz: "Asia/Seoul",
+      memberIds: [A, B],
+    });
+
+    // Gate the customer_group.created write so we can observe the
+    // happens-before edge: the PII-bearing create row (details.name,
+    // details.memberIds) must be written BEFORE the 201 returns, so a
+    // subsequent delete's anonymizeGroupAuditLogs() cannot be beaten by a
+    // late raw create insert. Provisioning, which follows the audit write,
+    // must stay blocked until that row lands.
+    let resolveAudit!: () => void;
+    mockAuditLog.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveAudit = resolve;
+      }),
+    );
+
+    const pending = POST(req({ name: "G", memberIds: [A, B] }));
+    // Drain microtasks past the awaited auth-DB mocks; the handler should
+    // now be parked on the (gated) audit write, with provisioning blocked.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "customer_group.created",
+        targetId: "group-3",
+        details: { name: "G", memberIds: [A, B], tz: "Asia/Seoul" },
+      }),
+    );
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+
+    resolveAudit();
+    const res = await pending;
+    expect(res.status).toBe(201);
+    expect(mockProvisionGroupDb).toHaveBeenCalled();
   });
 });
