@@ -222,4 +222,78 @@ describe.skipIf(!hasPostgres)("group readiness tick (#524)", () => {
     expect(rows[0].status).toBe("dirty");
     expect(Number(rows[0].event_count)).toBe(0);
   });
+
+  it("isolates a failing group so others are still reconciled", async () => {
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
+      [groupId],
+    );
+    await m1Pool.query("DELETE FROM baseline_event");
+    await seedBaselineEvent(m1Pool, "1", "2026-05-27T03:00:00Z");
+
+    // A second active group whose member DB read throws. It is ordered before
+    // the healthy group by id (all-zero uuid) so, without per-group isolation,
+    // its failure would abort the pass before the healthy group is reconciled.
+    const BAD_GROUP = "00000000-0000-0000-0000-0000000000b0";
+    const BAD_MEMBER = "00000000-0000-0000-0000-0000000000b1";
+    await authPool.query(
+      `INSERT INTO subjects (id, kind) VALUES ($1, 'group')`,
+      [BAD_GROUP],
+    );
+    await authPool.query(
+      `INSERT INTO customers (id, external_key, name, database_status, timezone)
+       VALUES ($1, 'bad', 'BAD', 'active', $2)`,
+      [BAD_MEMBER, TZ],
+    );
+    await authPool.query(
+      `INSERT INTO customer_groups
+         (id, kind, name, created_by, owner_id, tz, database_status, created_at)
+       VALUES ($1, 'group', 'BAD', $2, $2, $3, 'active', $4::timestamptz)`,
+      [BAD_GROUP, ACCOUNT, TZ, GROUP_CREATED],
+    );
+    await authPool.query(
+      `INSERT INTO customer_group_members (group_id, customer_id) VALUES ($1, $2)`,
+      [BAD_GROUP, BAD_MEMBER],
+    );
+
+    try {
+      const outcome = await tickGroupReadiness(
+        {
+          authPool,
+          connectMember: (customerId: string) => {
+            if (customerId === BAD_MEMBER) {
+              return {
+                query: () => Promise.reject(new Error("member DB unreachable")),
+                end: async () => {},
+                // biome-ignore lint/suspicious/noExplicitAny: connection shim
+              } as any;
+            }
+            return {
+              query: m1Pool.query.bind(m1Pool),
+              end: async () => {},
+              // biome-ignore lint/suspicious/noExplicitAny: connection shim
+            } as any;
+          },
+        },
+        "2026-05-28T00:00:00Z",
+      );
+
+      // The bad group is counted as failed, but the healthy group is still
+      // reconciled and its bucket seeded.
+      expect(outcome.groupsFailed).toBe(1);
+      const { rows } = await authPool.query<{ bucket_date: string }>(
+        `SELECT bucket_date::text AS bucket_date
+           FROM periodic_report_state
+          WHERE subject_id = $1 AND period = 'DAILY'`,
+        [groupId],
+      );
+      expect(rows.map((r) => r.bucket_date)).toContain("2026-05-27");
+    } finally {
+      await authPool.query(`DELETE FROM customer_groups WHERE id = $1`, [
+        BAD_GROUP,
+      ]);
+      await authPool.query(`DELETE FROM subjects WHERE id = $1`, [BAD_GROUP]);
+      await authPool.query(`DELETE FROM customers WHERE id = $1`, [BAD_MEMBER]);
+    }
+  });
 });

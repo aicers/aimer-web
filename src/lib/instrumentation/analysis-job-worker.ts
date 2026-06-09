@@ -478,10 +478,17 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   // would never appear. Runs on the pool (its own writes + member
   // connections), outside the seeding tx.
   try {
-    await tickGroupReadiness({ authPool: pool }, nowIso);
+    const out = await tickGroupReadiness({ authPool: pool }, nowIso);
+    // `tickGroupReadiness` isolates per-group failures internally (one bad
+    // member DB skips only that group); surface the count here.
+    if (out.groupsFailed > 0) {
+      console.warn(
+        `[analysis-job-worker] group readiness skipped ${out.groupsFailed} group(s) this tick`,
+      );
+    }
   } catch (err) {
-    // A group readiness failure (e.g. one member DB unreachable) must not
-    // stall the per-customer seeding/dispatch below.
+    // Backstop for a pass-level failure (e.g. the active-group query itself):
+    // it must not stall the per-customer seeding/dispatch below.
     console.error("[analysis-job-worker] tickGroupReadiness failed:", err);
   }
   // Seeding pass (state → job rows) runs inside a single auth-DB tx.

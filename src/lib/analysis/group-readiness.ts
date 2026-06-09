@@ -47,6 +47,12 @@ export interface GroupReadinessDeps {
 
 export interface GroupReadinessOutcome {
   groups: number;
+  /**
+   * Groups whose reconcile threw and were skipped this tick (e.g. an
+   * unreachable member DB). Counted, logged, and isolated so one bad group
+   * never suppresses readiness for the others.
+   */
+  groupsFailed: number;
   statesSeeded: number;
   statesDirtied: number;
   statesPatched: number;
@@ -161,16 +167,35 @@ export async function tickGroupReadiness(
     ((customerId: string) =>
       poolConnection(getCustomerRuntimePool(customerId)));
   const groups = await loadActiveGroups(deps.authPool);
+  let groupsFailed = 0;
   let statesSeeded = 0;
   let statesDirtied = 0;
   let statesPatched = 0;
   for (const g of groups) {
-    const out = await reconcileGroup(deps.authPool, g, connectMember, nowIso);
-    statesSeeded += out.seeded;
-    statesDirtied += out.dirtied;
-    statesPatched += out.patched;
+    // Per-group error boundary: a single group's reconcile reads each member
+    // DB (an unreachable/broken member can throw), so isolate the failure to
+    // that group — log and continue — rather than aborting the whole pass and
+    // starving unrelated groups of seeding/dirtying this tick.
+    try {
+      const out = await reconcileGroup(deps.authPool, g, connectMember, nowIso);
+      statesSeeded += out.seeded;
+      statesDirtied += out.dirtied;
+      statesPatched += out.patched;
+    } catch (err) {
+      groupsFailed += 1;
+      console.error(
+        `[group-readiness] reconcile failed for group ${g.id}; skipping:`,
+        err,
+      );
+    }
   }
-  return { groups: groups.length, statesSeeded, statesDirtied, statesPatched };
+  return {
+    groups: groups.length,
+    groupsFailed,
+    statesSeeded,
+    statesDirtied,
+    statesPatched,
+  };
 }
 
 async function reconcileGroup(
