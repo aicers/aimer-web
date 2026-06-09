@@ -81,6 +81,24 @@ there is no degraded-display fallback. Only
 `provisioning` / `failed` groups are skipped without a connection
 attempt.
 
+**The drop is durable (regeneration gate).** Before deleting the result
+rows in the group data DB, the reaper **archives** the matching over-bound
+historical `periodic_report_state` rows in the auth DB (sets `status =
+'archived'`, the existing terminal status). This is required because the
+report result and the report state/job machinery live in different
+databases: deleting only the result would leave the auth-side state free
+to regenerate the same over-bound bucket — the report worker would re-pick
+a queued job, the eager seeder would re-seed one, or an operator could hit
+the regenerate endpoint — re-creating a report that the same tick's later
+`event_redaction_map` sweep is about to strip the maps for. `archived` is
+the status every generation path already refuses to act on (worker
+pickup/claim gate on `status <> 'archived'`, the eager seeder only acts on
+`dirty`/`ready` states, the regenerate endpoint returns `409
+source_unavailable`, and the group dirty-marker never revives an archived
+row), so archiving terminally closes the reap→regenerate gap. The archive
+runs first so the gate is in place even if the group data-DB connection
+later fails.
+
 **LIVE is never reaped by bucket date.** LIVE is a single rolling "now"
 bucket stored on the synthetic `bucket_date = '1970-01-01'`; the reaper
 filters `period <> 'LIVE'`. LIVE de-redactability is maintained by its
@@ -88,12 +106,16 @@ regeneration cadence, not by this retention bound. (Hardening a LIVE
 result that stops regenerating for longer than the shortest member's
 retention is deferred to a separate follow-up.)
 
-**Missing member policy.** If any member is missing its
+**Missing policy.** If the group is missing its own
+`group_retention_policy` row, or any member is missing its
 `customer_retention_policy` row, the group is **skipped** for the tick
 (audited as `retention_sweep.group_skipped`) rather than reaped on
-incomplete bound info — dropping the member from the `min` would
-wrongly *lengthen* the group's retention. Investigate the missing
-policy before the next tick.
+incomplete bound info — guessing a bound from a missing term would wrongly
+*lengthen* the group's retention. A missing `group_retention_policy` row
+is a foundation bug (group creation always inserts one), and is distinct
+from a *present* row with `analysis_days = NULL`, which is the
+operator-selected "no expiry". Investigate the missing policy before the
+next tick.
 
 ## Environment variables
 
@@ -128,11 +150,16 @@ of rows actually cascaded by the parent `DELETE`, not the parent's
 own `rowCount`.
 
 The group reap emits its own events: `retention_sweep.group_reaped`
-when at least one historical report row is deleted (details carry
-`bound_days`, the `cutoff_bucket_date`, and the deleted row count),
-`retention_sweep.group_skipped` when a member's missing policy forces
-the group to be skipped, and `retention_sweep.group_failed` when the
-group data DB cannot be reached or the delete fails.
+when at least one historical report row is deleted **or** at least one
+over-bound state is archived (details carry `bound_days`, the
+`cutoff_bucket_date`, the deleted-result count in
+`deleted_periodic_report_result`, and the archived-state count in
+`archived_periodic_report_state`), `retention_sweep.group_skipped` when a
+missing group or member policy forces the group to be skipped (details
+carry `error_message` — `missing_group_retention_policy` or
+`missing_retention_policy`), and `retention_sweep.group_failed` when the
+group data DB cannot be reached, the result delete fails, or the state
+archive fails.
 
 ## Missing-policy invariant
 

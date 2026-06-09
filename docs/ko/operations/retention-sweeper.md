@@ -81,6 +81,23 @@
 `customer_groups.database_status = 'active'`인 그룹만 처리하며,
 `provisioning` / `failed` 그룹은 연결 시도 없이 건너뜁니다.
 
+**삭제는 영구적입니다(재생성 차단).** 그룹 데이터 DB에서 결과 행을
+삭제하기 전에, 수거기는 한도를 넘긴 과거 `periodic_report_state` 행을
+auth DB에서 먼저 **보관 처리**(`status = 'archived'`, 기존 종료 상태)
+합니다. 리포트 결과와 리포트 상태/잡 기계는 서로 다른 DB에 있기
+때문에 필요한 조치입니다. 결과만 삭제하면 auth 측 상태가 남아 같은
+한도 초과 버킷을 다시 생성할 수 있습니다 — 리포트 워커가 큐에 있는
+잡을 다시 집어 올리거나, 이거 시더가 다시 시드하거나, 운영자가
+재생성 엔드포인트를 호출할 수 있고 — 그러면 같은 틱의 뒤이은
+`event_redaction_map` 스윕이 곧 맵을 제거할 리포트를 다시 만들게
+됩니다. `archived`는 모든 생성 경로가 이미 처리하지 않는 상태입니다
+(워커 픽업/클레임은 `status <> 'archived'`로 막고, 이거 시더는
+`dirty`/`ready` 상태에만 작동하며, 재생성 엔드포인트는 `409
+source_unavailable`을 반환하고, 그룹 dirty 표시기는 보관된 행을 절대
+되살리지 않습니다). 따라서 보관 처리는 수거→재생성 틈을 종결적으로
+닫습니다. 보관은 가장 먼저 실행되어, 이후 그룹 데이터 DB 연결이
+실패하더라도 차단이 먼저 자리잡도록 합니다.
+
 **LIVE는 버킷 날짜로 수거되지 않습니다.** LIVE는 합성
 `bucket_date = '1970-01-01'`에 저장되는 단일 롤링 "현재" 버킷이며,
 수거기는 `period <> 'LIVE'`로 필터링합니다. LIVE의 역비식별성은 이
@@ -88,10 +105,14 @@
 기간보다 오래 재생성이 멈춘 LIVE 결과를 강화하는 작업은 별도
 후속 이슈로 미룹니다.)
 
-**멤버 정책 누락.** 멤버 중 하나라도 `customer_retention_policy`
-행이 없으면, 불완전한 한도 정보로 수거하지 않고 해당 틱에서 그룹을
-**건너뜁니다**(`retention_sweep.group_skipped`로 감사). 멤버를
-`min`에서 빼면 그룹 보존이 잘못 *연장*되기 때문입니다. 다음 틱 전에
+**정책 누락.** 그룹 자신의 `group_retention_policy` 행이 없거나,
+멤버 중 하나라도 `customer_retention_policy` 행이 없으면, 불완전한
+한도 정보로 수거하지 않고 해당 틱에서 그룹을
+**건너뜁니다**(`retention_sweep.group_skipped`로 감사). 누락된 항으로
+한도를 추정하면 그룹 보존이 잘못 *연장*되기 때문입니다.
+`group_retention_policy` 행의 누락은 파운데이션 버그이며(그룹 생성 시
+항상 한 행을 삽입합니다), `analysis_days = NULL`인 *존재하는* 행
+— 즉 운영자가 선택한 "무제한" — 과는 구분됩니다. 다음 틱 전에
 누락된 정책을 조사하십시오.
 
 ## 환경 변수
@@ -124,10 +145,15 @@
 실제 캐스케이드로 삭제될 자식 행 수를 의미합니다.
 
 그룹 수거는 자체 이벤트를 기록합니다. 과거 리포트 행이 하나라도
-삭제되면 `retention_sweep.group_reaped`(상세에 `bound_days`,
-`cutoff_bucket_date`, 삭제 행 수 포함), 멤버 정책 누락으로 그룹을
-건너뛰면 `retention_sweep.group_skipped`, 그룹 데이터 DB에 연결할 수
-없거나 삭제가 실패하면 `retention_sweep.group_failed`를 기록합니다.
+삭제되거나 한도를 넘긴 상태가 하나라도 보관 처리되면
+`retention_sweep.group_reaped`(상세에 `bound_days`,
+`cutoff_bucket_date`, 삭제 결과 수 `deleted_periodic_report_result`,
+보관된 상태 수 `archived_periodic_report_state` 포함), 그룹 또는 멤버
+정책 누락으로 그룹을 건너뛰면 `retention_sweep.group_skipped`(상세의
+`error_message`는 `missing_group_retention_policy` 또는
+`missing_retention_policy`), 그룹 데이터 DB에 연결할 수 없거나 결과
+삭제 또는 상태 보관이 실패하면 `retention_sweep.group_failed`를
+기록합니다.
 
 ## 정책 누락 인바리언트
 

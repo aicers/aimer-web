@@ -125,6 +125,7 @@ describeDb("group-report retention reaper integration", () => {
   beforeEach(async () => {
     groupConnects.length = 0;
     await groupPool.query("TRUNCATE TABLE periodic_report_result");
+    await authPool.query("TRUNCATE TABLE periodic_report_state CASCADE");
     await authPool.query(
       `TRUNCATE TABLE group_retention_policy, customer_group_members,
                       customer_retention_policy, customer_groups, customers,
@@ -241,6 +242,41 @@ describeDb("group-report retention reaper integration", () => {
     return rows;
   }
 
+  // `periodic_report_state` lives in the AUTH DB (keyed by `subject_id`
+  // post-rekey, == the group id for a group). The reaper archives the
+  // over-bound historical rows here so no worker pickup/claim, eager
+  // seeder, or regenerate request can re-create the dropped report.
+  async function seedState(
+    groupId: string,
+    period: string,
+    bucketDate: string,
+    status: string,
+  ): Promise<void> {
+    await authPool.query(
+      `INSERT INTO periodic_report_state
+         (subject_id, period, bucket_date, tz, status)
+       VALUES ($1, $2, $3::date, 'UTC', $4)`,
+      [groupId, period, bucketDate, status],
+    );
+  }
+
+  async function groupStates(
+    groupId: string,
+  ): Promise<{ period: string; bucket_date: string; status: string }[]> {
+    const { rows } = await authPool.query<{
+      period: string;
+      bucket_date: string;
+      status: string;
+    }>(
+      `SELECT period, bucket_date::text AS bucket_date, status
+         FROM periodic_report_state
+        WHERE subject_id = $1
+        ORDER BY period, bucket_date`,
+      [groupId],
+    );
+    return rows;
+  }
+
   it("reaps over-bound historical rows by bucket_date and preserves LIVE", async () => {
     // group policy 200; member H_c = max(365, 1095) = 1095 ⇒ bound = 200d.
     const groupId = await createGroup("Bounded", { groupPolicyDays: 200 });
@@ -350,5 +386,95 @@ describeDb("group-report retention reaper integration", () => {
     );
     expect(skipped?.details.error_message).toBe("missing_retention_policy");
     expect(skipped?.details.member_id).toBe(badMember);
+  });
+
+  it("archives over-bound historical states (gating regeneration) while sparing within-bound and LIVE states", async () => {
+    // group policy 200; member H_c = max(365, 1095) = 1095 ⇒ bound = 200d.
+    const groupId = await createGroup("ArchiveStates", {
+      groupPolicyDays: 200,
+    });
+    await addMember(groupId, { ingestionDays: 365, analysisDays: 1095 });
+
+    await seedState(groupId, "DAILY", bucketDaysAgo(300), "ready"); // over → archived
+    await seedState(groupId, "WEEKLY", bucketDaysAgo(365), "dirty"); // over → archived
+    await seedState(groupId, "DAILY", bucketDaysAgo(100), "ready"); // within → kept
+    await seedState(groupId, "LIVE", "1970-01-01", "ready"); // LIVE → kept
+    // A matching over-bound result row so the reap also runs the delete.
+    await seedReport(groupId, "DAILY", bucketDaysAgo(300));
+
+    await reapGroupReports(
+      {
+        authPool,
+        connectCustomer: async () => {
+          throw new Error("unused");
+        },
+        connectGroup,
+      },
+      NOW,
+    );
+
+    // Over-bound historical states are flipped to the terminal `archived`
+    // status (so no path regenerates them); the within-bound DAILY and the
+    // LIVE rolling bucket are untouched.
+    expect(await groupStates(groupId)).toEqual([
+      { period: "DAILY", bucket_date: bucketDaysAgo(300), status: "archived" },
+      { period: "DAILY", bucket_date: bucketDaysAgo(100), status: "ready" },
+      { period: "LIVE", bucket_date: "1970-01-01", status: "ready" },
+      { period: "WEEKLY", bucket_date: bucketDaysAgo(365), status: "archived" },
+    ]);
+
+    const { rows: auditRows } = await auditPool.query<{
+      action: string;
+      details: {
+        archived_periodic_report_state?: number;
+        deleted_periodic_report_result?: number;
+      };
+    }>(
+      `SELECT action, details FROM audit_logs WHERE target_id = $1 ORDER BY id`,
+      [groupId],
+    );
+    const reaped = auditRows.find(
+      (r) => r.action === "retention_sweep.group_reaped",
+    );
+    expect(reaped?.details.archived_periodic_report_state).toBe(2);
+    expect(reaped?.details.deleted_periodic_report_result).toBe(1);
+  });
+
+  it("skips and audits a group missing its group_retention_policy row; no group-DB connection", async () => {
+    // `createGroup` without `groupPolicyDays` inserts no policy row — the
+    // foundation-bug condition (#506 always seeds one), distinct from a
+    // present row with `analysis_days = NULL` (operator no-expiry).
+    const groupId = await createGroup("NoGroupPolicy");
+    await addMember(groupId, { ingestionDays: 30, analysisDays: 90 });
+    await seedReport(groupId, "DAILY", bucketDaysAgo(300));
+
+    await reapGroupReports(
+      {
+        authPool,
+        connectCustomer: async () => {
+          throw new Error("unused");
+        },
+        connectGroup,
+      },
+      NOW,
+    );
+
+    // No bound could be computed on complete info ⇒ no connection, no reap.
+    expect(groupConnects).toEqual([]);
+    expect((await remainingReports(groupId)).length).toBe(1);
+
+    const { rows: auditRows } = await auditPool.query<{
+      action: string;
+      details: { error_message?: string };
+    }>(
+      `SELECT action, details FROM audit_logs WHERE target_id = $1 ORDER BY id`,
+      [groupId],
+    );
+    const skipped = auditRows.find(
+      (r) => r.action === "retention_sweep.group_skipped",
+    );
+    expect(skipped?.details.error_message).toBe(
+      "missing_group_retention_policy",
+    );
   });
 });

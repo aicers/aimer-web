@@ -783,6 +783,7 @@ function makeGroupConn(rowCount = 0) {
 function groupRow(
   overrides: Partial<{
     group_id: string;
+    has_group_policy: boolean;
     group_policy_days: number | null;
     member_id: string | null;
     has_member_policy: boolean;
@@ -792,6 +793,7 @@ function groupRow(
 ) {
   return {
     group_id: "grp-1",
+    has_group_policy: true,
     group_policy_days: null,
     member_id: "mem-1",
     has_member_policy: true,
@@ -939,6 +941,115 @@ describe("reapGroupReports", () => {
     expect(sql).toContain("group_retention_policy");
     expect(sql).toContain("customer_group_members");
   });
+
+  it("archives over-bound historical states BEFORE deleting result rows, gating regeneration", async () => {
+    const order: string[] = [];
+    let archiveSql = "";
+    let archiveParams: unknown[] = [];
+    const authQuery = vi.fn(async (sql: string, params?: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("FROM customer_groups cg")) {
+        return {
+          rows: [
+            groupRow({
+              group_policy_days: 200,
+              member_ingestion_days: 365,
+              member_analysis_days: 1095,
+            }),
+          ],
+        };
+      }
+      if (text.includes("UPDATE periodic_report_state")) {
+        order.push("archive");
+        archiveSql = text;
+        archiveParams = params ?? [];
+        return { rows: [], rowCount: 2 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const pool = { query: authQuery } as unknown as Parameters<
+      typeof reapGroupReports
+    >[0]["authPool"];
+
+    const groupConn = (() => {
+      const query = vi.fn(async (sql: string) => {
+        if (String(sql).includes("DELETE FROM periodic_report_result")) {
+          order.push("delete");
+        }
+        return { rows: [], rowCount: 3 };
+      });
+      return {
+        query: query as unknown as GroupConn["query"],
+        end: vi.fn(async () => {}),
+      } satisfies GroupConn;
+    })();
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup: async () => groupConn,
+      },
+      NOW,
+    );
+
+    // The auth-side state archive (the regeneration gate) must run before
+    // the group-DB result delete.
+    expect(order).toEqual(["archive", "delete"]);
+    // The archive targets historical states only, past the bound cutoff,
+    // flipping non-archived rows to the terminal `archived` status.
+    expect(archiveSql).toContain("SET status = 'archived'");
+    expect(archiveSql).toContain("period <> 'LIVE'");
+    expect(archiveSql).toContain("bucket_date < $3");
+    expect(archiveSql).toContain("status <> 'archived'");
+    expect(archiveParams[0]).toBe("grp-1");
+    // bound = min(200, max(365, 1095) = 1095) = 200 days before NOW.
+    const cutoff = new Date(NOW.getTime() - 200 * 86_400_000);
+    expect((archiveParams[2] as Date).getTime()).toBe(cutoff.getTime());
+
+    const reaped = auditLogMock.mock.calls
+      .map(
+        (c) =>
+          c[0] as {
+            action: string;
+            details: {
+              archived_periodic_report_state?: number;
+              deleted_periodic_report_result?: number;
+            };
+          },
+      )
+      .find((e) => e.action === "retention_sweep.group_reaped");
+    expect(reaped?.details.archived_periodic_report_state).toBe(2);
+    expect(reaped?.details.deleted_periodic_report_result).toBe(3);
+  });
+
+  it("skips and audits group_skipped when the group is missing its policy row; never opens the group DB", async () => {
+    const connectGroup = vi.fn();
+    const { pool } = makeAuthPool([
+      groupRow({ has_group_policy: false, group_policy_days: null }),
+    ]);
+
+    await reapGroupReports(
+      {
+        authPool: pool,
+        connectCustomer: async () => makeConn(() => ({ rows: [] })).conn,
+        connectGroup,
+      },
+      NOW,
+    );
+
+    // A missing `group_retention_policy` row is incomplete bound info, not
+    // an operator no-expiry: skip rather than guess a bound.
+    expect(connectGroup).not.toHaveBeenCalled();
+    const skipped = auditLogMock.mock.calls
+      .map(
+        (c) => c[0] as { action: string; details: { error_message?: string } },
+      )
+      .find((e) => e.action === "retention_sweep.group_skipped");
+    expect(skipped?.details.error_message).toBe(
+      "missing_group_retention_policy",
+    );
+  });
 });
 
 describe("runRetentionTick group/customer ordering", () => {
@@ -970,24 +1081,37 @@ describe("runRetentionTick group/customer ordering", () => {
       return { rows: [], rowCount: 0 };
     });
 
-    // First authPool.query → the group join; second → the customers join.
-    const query = vi
-      .fn()
-      .mockResolvedValueOnce({
-        rows: [
-          groupRow({ member_ingestion_days: 30, member_analysis_days: 90 }),
-        ],
-      })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            customer_id: "cust-1",
-            external_key: "k",
-            ingestion_days: 365,
-            analysis_days: 1095,
-          },
-        ],
-      });
+    // The auth pool now serves three query shapes per tick: the group
+    // join, the per-group state-archive UPDATE, and the customers join.
+    // Dispatch on SQL so the archive UPDATE (which records ordering)
+    // does not consume the customers-join mock.
+    const query = vi.fn(async (sql: string) => {
+      const text = String(sql);
+      if (text.includes("FROM customer_groups cg")) {
+        return {
+          rows: [
+            groupRow({ member_ingestion_days: 30, member_analysis_days: 90 }),
+          ],
+        };
+      }
+      if (text.includes("UPDATE periodic_report_state")) {
+        events.push("group_state_archive");
+        return { rows: [], rowCount: 1 };
+      }
+      if (text.includes("FROM customers c")) {
+        return {
+          rows: [
+            {
+              customer_id: "cust-1",
+              external_key: "k",
+              ingestion_days: 365,
+              analysis_days: 1095,
+            },
+          ],
+        };
+      }
+      return { rows: [], rowCount: 0 };
+    });
     const pool = { query } as unknown as Parameters<
       typeof runRetentionTick
     >[0]["authPool"];
@@ -999,6 +1123,13 @@ describe("runRetentionTick group/customer ordering", () => {
       now: () => NOW,
     });
 
-    expect(events).toEqual(["group_reap", "customer_map_sweep"]);
+    // The state archive runs before the result delete (regeneration
+    // gate in place first), and the whole group reap precedes the
+    // per-customer map sweep.
+    expect(events).toEqual([
+      "group_state_archive",
+      "group_reap",
+      "customer_map_sweep",
+    ]);
   });
 });

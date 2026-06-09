@@ -370,6 +370,7 @@ export function computeGroupRetentionBoundDays(
 
 interface GroupReapRow {
   group_id: string;
+  has_group_policy: boolean;
   group_policy_days: number | null;
   member_id: string | null;
   has_member_policy: boolean;
@@ -378,6 +379,7 @@ interface GroupReapRow {
 }
 
 interface GroupReapState {
+  hasPolicy: boolean;
   policyDays: number | null;
   members: GroupReapRow[];
 }
@@ -399,24 +401,56 @@ async function defaultConnectGroup(groupId: string): Promise<GroupConnection> {
 /**
  * Reap one active group's over-bound historical reports.
  *
- *   - A member missing its `customer_retention_policy` row is the same
- *     foundation-bug condition the customer tick flags. We do NOT drop
- *     that member from the `min` (which would lengthen the group's
- *     retention on incomplete info); instead we audit `group_skipped`
- *     and leave every report until the policy is well-formed.
+ *   - A group missing its `group_retention_policy` row, or any member
+ *     missing its `customer_retention_policy` row, is the same
+ *     foundation-bug condition the customer tick flags. #506 inserts a
+ *     `group_retention_policy` row at group creation, so an absent row is
+ *     incomplete bound info — NOT an operator-selected "no expiry" (which
+ *     is a present row with `analysis_days = NULL`). We do NOT guess a
+ *     bound from incomplete info (which could wrongly lengthen retention);
+ *     instead we audit `group_skipped` and leave every report until the
+ *     policy is well-formed.
  *   - An unbounded group (NULL group policy + every member unbounded)
  *     is never reaped, and its data DB is never opened.
  *   - LIVE rows are never reaped by bucket date (`period <> 'LIVE'`):
  *     LIVE is a single rolling bucket on the synthetic `1970-01-01`
  *     bucket_date, kept de-redactable by regeneration cadence, not by
  *     this retention bound (see #509 LIVE pin).
+ *
+ * The reap also **archives** the over-bound historical
+ * `periodic_report_state` rows (auth DB) before deleting the result rows
+ * (group data DB). Deleting only the result would leave the auth-side
+ * state/job machinery free to regenerate the same over-bound bucket
+ * (worker pickup/claim, the eager seeder, or the regenerate route),
+ * defeating the drop and potentially re-creating a report that references
+ * a member map the same tick's later `event_redaction_map` sweep deletes.
+ * `archived` is the existing terminal status those paths already refuse to
+ * generate from (worker pickup/claim gate on `status <> 'archived'`, the
+ * eager seeder only acts on `dirty`/`ready`, the regenerate route returns
+ * `409 source_unavailable`, and the group dirty-marker never revives an
+ * archived row), so archiving durably closes the reap→regenerate gap.
  */
 async function reapGroup(
   groupId: string,
   state: GroupReapState,
+  authPool: Pool,
   connectGroup: (groupId: string) => Promise<GroupConnection>,
   now: Date,
 ): Promise<void> {
+  if (!state.hasPolicy) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_skipped",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: "missing_group_retention_policy",
+      },
+    });
+    return;
+  }
+
   const missingMember = state.members.find((m) => !m.has_member_policy);
   if (missingMember) {
     await auditLog({
@@ -445,6 +479,36 @@ async function reapGroup(
 
   const cutoff = new Date(now.getTime() - boundDays * DAY_MS);
 
+  // Archive the over-bound historical states FIRST (auth DB), so no worker
+  // pickup/claim, eager seeder, or regenerate request can re-create the
+  // result we are about to delete. Done before the group-DB delete so the
+  // regeneration gate is in place even if the data-DB connection fails.
+  let archived: number;
+  try {
+    const archiveResult = await authPool.query(
+      `UPDATE periodic_report_state
+          SET status = 'archived', updated_at = $2
+        WHERE subject_id = $1
+          AND period <> 'LIVE'
+          AND bucket_date < $3
+          AND status <> 'archived'`,
+      [groupId, now, cutoff],
+    );
+    archived = archiveResult.rowCount ?? 0;
+  } catch (err) {
+    await auditLog({
+      actorId: SYSTEM_ACTOR,
+      action: "retention_sweep.group_failed",
+      targetType: "customer_group",
+      targetId: groupId,
+      details: {
+        group_id: groupId,
+        error_message: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return;
+  }
+
   let conn: GroupConnection;
   try {
     conn = await connectGroup(groupId);
@@ -471,7 +535,7 @@ async function reapGroup(
       [cutoff],
     );
     const deleted = result.rowCount ?? 0;
-    if (deleted > 0) {
+    if (deleted > 0 || archived > 0) {
       await auditLog({
         actorId: SYSTEM_ACTOR,
         action: "retention_sweep.group_reaped",
@@ -482,6 +546,7 @@ async function reapGroup(
           bound_days: boundDays,
           cutoff_bucket_date: cutoff.toISOString(),
           deleted_periodic_report_result: deleted,
+          archived_periodic_report_state: archived,
         },
       });
     }
@@ -522,6 +587,7 @@ export async function reapGroupReports(
   const connectGroup = deps.connectGroup ?? defaultConnectGroup;
   const rows = await deps.authPool.query<GroupReapRow>(
     `SELECT cg.id AS group_id,
+            grp.subject_id IS NOT NULL AS has_group_policy,
             grp.analysis_days AS group_policy_days,
             m.customer_id AS member_id,
             crp.customer_id IS NOT NULL AS has_member_policy,
@@ -538,12 +604,18 @@ export async function reapGroupReports(
   // Collapse the (group × member) rows into one state per group. A LEFT
   // JOIN keeps a memberless group as a single row with a NULL member_id;
   // such a group has no finite member term and (unless its own policy
-  // bounds it) is left unreaped.
+  // bounds it) is left unreaped. `has_group_policy` distinguishes an
+  // absent `group_retention_policy` row (incomplete bound info ⇒ skip)
+  // from a present row with `analysis_days = NULL` (operator no-expiry).
   const groups = new Map<string, GroupReapState>();
   for (const row of rows.rows) {
     let state = groups.get(row.group_id);
     if (!state) {
-      state = { policyDays: row.group_policy_days, members: [] };
+      state = {
+        hasPolicy: row.has_group_policy,
+        policyDays: row.group_policy_days,
+        members: [],
+      };
       groups.set(row.group_id, state);
     }
     if (row.member_id != null) state.members.push(row);
@@ -551,7 +623,7 @@ export async function reapGroupReports(
 
   for (const [groupId, state] of groups) {
     try {
-      await reapGroup(groupId, state, connectGroup, now);
+      await reapGroup(groupId, state, deps.authPool, connectGroup, now);
     } catch (err) {
       // reapGroup converts connect/delete failures into a persisted
       // `group_failed` audit row. Reaching here means an audit write
