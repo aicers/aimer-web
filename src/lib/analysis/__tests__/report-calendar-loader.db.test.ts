@@ -268,6 +268,52 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       bucketDate: "2026-04-15",
       generation: 1,
     });
+
+    // WEEKLY multi-tz on a single bucket date (#505 Round 3, item 1). The week
+    // starting 2026-05-18 (the Monday after the navigable 05-11 week) carries
+    // two tz variants: an OLD tz whose result has the HIGHER generation but only
+    // an archived state (the tz-archive case), and the live tz whose result has
+    // a lower generation but a `ready` state. A LIMIT-1 highest-generation probe
+    // would pick the archived old-tz row and skip the whole date; the per-date
+    // intersection must instead surface the eligible live-tz sibling.
+    await seedResult({
+      period: "WEEKLY",
+      bucketDate: "2026-05-18",
+      tz: "UTC",
+      generation: 2,
+    });
+    await seedState({
+      period: "WEEKLY",
+      bucketDate: "2026-05-18",
+      tz: "UTC",
+      status: "archived",
+    });
+    await seedResult({
+      period: "WEEKLY",
+      bucketDate: "2026-05-18",
+      tz: TZ,
+      generation: 1,
+    });
+    await seedState({
+      period: "WEEKLY",
+      bucketDate: "2026-05-18",
+      tz: TZ,
+      status: "ready",
+    });
+
+    // A future-dated DAILY result + `ready` state (#505 Round 3, item 2). With
+    // today 2026-06-09 this bucket starts in the future, so the calendar marks
+    // it `future` and prev/next must never step onto it.
+    await seedResult({
+      period: "DAILY",
+      bucketDate: "2026-06-15",
+      generation: 1,
+    });
+    await seedState({
+      period: "DAILY",
+      bucketDate: "2026-06-15",
+      status: "ready",
+    });
   }, 30_000);
 
   afterAll(async () => {
@@ -483,6 +529,50 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
       provider: stubProvider(null, "2026-06-09"),
     });
     expect(fromTwenty.prev?.bucketDate).toBe("2026-05-15"); // skips 19
+  });
+
+  it("steps onto the eligible tz when a date has multiple tz variants", async () => {
+    // The 2026-05-18 WEEKLY bucket has two tz variants: an old-tz result with
+    // the higher generation but an archived state, and the live-tz result with
+    // a lower generation but a `ready` state. Stepping newer from 2026-05-11
+    // must land on that date via the live tz, not skip it because the
+    // highest-generation row's tz drifted (#505 Round 3, item 1).
+    const n = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "WEEKLY",
+      bucketDate: "2026-05-11",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(n.next?.bucketDate).toBe("2026-05-18");
+    expect(n.next?.tz).toBe(TZ);
+  });
+
+  it("does not step onto a future-dated bucket", async () => {
+    // 2026-06-15 has a result + `ready` state but starts after today, so it is
+    // non-navigable and the newer step must not reach it (#505 Round 3, item 2).
+    const beforeFuture = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-20",
+      provider: stubProvider(null, "2026-06-09"),
+    });
+    expect(beforeFuture.next).toBeNull();
+
+    // Sanity: once today moves past it, the same bucket becomes the next
+    // neighbor — proving the null above is the future cutoff, not another skip.
+    const afterFuture = await loadReportNeighbors({
+      authPool,
+      customerPool,
+      subjectId: CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-05-20",
+      provider: stubProvider(null, "2026-06-30"),
+    });
+    expect(afterFuture.next?.bucketDate).toBe("2026-06-15");
   });
 
   it("does not claim retention at the first report (olderStop false)", async () => {

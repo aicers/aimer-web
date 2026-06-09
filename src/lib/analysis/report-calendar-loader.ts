@@ -336,10 +336,19 @@ const NEIGHBOR_PROBE_LIMIT = 16;
  * Step from `from` to the nearest navigable bucket in one direction. A bucket
  * is navigable only when a non-superseded default-variant result AND a
  * `ready`/`dirty` state row coexist at the same (bucket_date, tz) — the issue's
- * navigable predicate. The result is probed nearest-first (auth/customer pools
- * are separate, so this can't be one JOIN); a result whose state is missing,
- * `pending`, or `archived` is skipped and the probe advances past its date
- * until an eligible one is found, the direction is exhausted, or the cap hits.
+ * navigable predicate. The nearest candidate DATE is probed first (auth/customer
+ * pools are separate, so this can't be one JOIN), and ALL of that date's result
+ * tzs are intersected against its eligible state tzs — the same per-date
+ * intersection the calendar does, so a stale/old-tz row can't mask an eligible
+ * sibling tz on the same date (a real case: a timezone change archives the old
+ * tz's state while its result survives and a new-tz result/state pair lands on
+ * the same bucket date — see `0030_periodic_state_event_count_and_tz_archive`).
+ * When no tz on a date is navigable the probe advances past that date until an
+ * eligible one is found, the direction is exhausted, or the cap hits.
+ *
+ * `upperBound` (inclusive) excludes future-dated buckets on the newer side: the
+ * issue makes a bucket whose start is after the subject-tz `today` non-navigable
+ * (the calendar classifies it `future`), so prev/next must never step onto one.
  */
 async function findNeighbor(args: {
   authPool: Pool;
@@ -351,11 +360,18 @@ async function findNeighbor(args: {
   direction: "older" | "newer";
   /** Retention floor for the older direction (inclusive); null = unbounded. */
   lowerBound: string | null;
+  /** Future ceiling (inclusive, subject-tz today) for the newer direction;
+   * null = unbounded. Buckets starting after it are non-navigable. */
+  upperBound: string | null;
 }): Promise<NeighborBucket | null> {
   const { authPool, customerPool, subjectId, period, def, lowerBound } = args;
+  const { upperBound } = args;
   const older = args.direction === "older";
   let cursor = args.from;
   for (let probe = 0; probe < NEIGHBOR_PROBE_LIMIT; probe++) {
+    // All non-superseded result rows for the NEAREST candidate date in this
+    // direction (not just the highest-generation one), bounded to a single date
+    // by the correlated subquery so this never scans the whole history.
     const res = await customerPool.query<{ bucket_date: string; tz: string }>(
       `SELECT bucket_date::text AS bucket_date, tz
          FROM periodic_report_result
@@ -365,24 +381,52 @@ async function findNeighbor(args: {
           AND superseded_at IS NULL
           AND bucket_date ${older ? "<" : ">"} $5::date
           AND ($6::date IS NULL OR bucket_date >= $6::date)
-        ORDER BY bucket_date ${older ? "DESC" : "ASC"}, generation DESC
-        LIMIT 1`,
-      [subjectId, period, def.modelName, def.model, cursor, lowerBound],
+          AND ($7::date IS NULL OR bucket_date <= $7::date)
+          AND bucket_date = (
+            SELECT bucket_date
+              FROM periodic_report_result
+             WHERE subject_id = $1
+               AND period = $2
+               AND model_name = $3 AND model = $4
+               AND superseded_at IS NULL
+               AND bucket_date ${older ? "<" : ">"} $5::date
+               AND ($6::date IS NULL OR bucket_date >= $6::date)
+               AND ($7::date IS NULL OR bucket_date <= $7::date)
+             ORDER BY bucket_date ${older ? "DESC" : "ASC"}
+             LIMIT 1
+          )
+        ORDER BY generation DESC`,
+      [
+        subjectId,
+        period,
+        def.modelName,
+        def.model,
+        cursor,
+        lowerBound,
+        upperBound,
+      ],
     );
     if (res.rows.length === 0) return null;
-    const { bucket_date, tz } = res.rows[0];
-    const state = await authPool.query(
-      `SELECT 1 FROM periodic_report_state
+    const candidateDate = res.rows[0].bucket_date;
+    // Eligible (`ready`/`dirty`) state tzs for that single date.
+    const stateRes = await authPool.query<{ tz: string }>(
+      `SELECT tz FROM periodic_report_state
         WHERE subject_id = $1 AND period = $2
-          AND bucket_date = $3::date AND tz = $4
-          AND status IN ('ready', 'dirty')
-        LIMIT 1`,
-      [subjectId, period, bucket_date, tz],
+          AND bucket_date = $3::date
+          AND status IN ('ready', 'dirty')`,
+      [subjectId, period, candidateDate],
     );
-    if (state.rows.length > 0) return { bucketDate: bucket_date, tz };
-    // Non-navigable (result with a missing / `pending` / `archived` state)
-    // bucket. Skip its date and keep probing in the same direction.
-    cursor = bucket_date;
+    const eligibleTz = new Set(stateRes.rows.map((r) => r.tz));
+    // Results arrive highest-generation first; the first whose tz also has a
+    // live state row wins — the same per-bucket tie-break the calendar uses.
+    for (const row of res.rows) {
+      if (eligibleTz.has(row.tz)) {
+        return { bucketDate: row.bucket_date, tz: row.tz };
+      }
+    }
+    // No tz on this date is navigable (every result drifted from its state).
+    // Skip the date and keep probing in the same direction.
+    cursor = candidateDate;
   }
   return null;
 }
@@ -414,7 +458,8 @@ export async function loadReportNeighbors(args: {
   try {
     // Inside the try so a boundary or default-model read failure degrades to
     // "no neighbors" rather than crashing the detail page.
-    const { oldestNavigableDate } = await provider.resolveBoundary(period);
+    const { oldestNavigableDate, today } =
+      await provider.resolveBoundary(period);
     const def = await resolveDefaultModel(subjectId, authPool);
     const prev = await findNeighbor({
       authPool,
@@ -425,6 +470,7 @@ export async function loadReportNeighbors(args: {
       from: bucketDate,
       direction: "older",
       lowerBound: oldestNavigableDate,
+      upperBound: null,
     });
     const next = await findNeighbor({
       authPool,
@@ -435,6 +481,10 @@ export async function loadReportNeighbors(args: {
       from: bucketDate,
       direction: "newer",
       lowerBound: null,
+      // Subject-tz today: a future-dated report (start > today) is non-navigable
+      // per the issue, so the newer step must stop before it (mirrors the
+      // calendar's `future` classification).
+      upperBound: today,
     });
 
     // Only claim the retention boundary when an older NAVIGABLE report actually
@@ -457,6 +507,7 @@ export async function loadReportNeighbors(args: {
         from: oldestNavigableDate,
         direction: "older",
         lowerBound: null,
+        upperBound: null,
       });
       olderStop = olderNavigable !== null;
     }
