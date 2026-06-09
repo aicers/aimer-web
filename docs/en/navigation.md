@@ -76,8 +76,9 @@ summaries in one place.
     many customers. In collapsed mode each entry shows an icon with the
     customer name; hover for a tooltip.
 
-In a bridge session the list shows only the customers the bridge is
-pinned to, matching that session's fixed scope.
+In a bridge session this section is hidden. Bridge sessions cannot read
+a customer's analysis hub (the hub returns `403` under a bridge), so
+there are no reachable hubs to list.
 
 ![The sidebar Customers section listing each accessible customer as a direct link to its analysis hub](../assets/navigation-summary-subjects.en.png)
 

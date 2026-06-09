@@ -231,10 +231,14 @@ function ScopeSelector({ collapsed }: { collapsed: boolean }) {
  * scope filter driven by {@link ScopeSelector}. The two customer lists stay
  * visibly distinct controls with different jobs.
  *
- * Bridge sessions need no special branching: `useCustomerContext().customers`
- * is already filtered to the bridge scope server-side
- * (`/api/auth/customers`), so the rendered hub links expose nothing the
- * session cannot read.
+ * Bridge sessions are omitted entirely. Although `useCustomerContext().customers`
+ * is already filtered to the bridge scope server-side (`/api/auth/customers`),
+ * the hub route itself forbids in-scope bridge sessions
+ * (`resolveCustomerReadAccess` passes `allowInBridge: false`, so the hub page
+ * 403s via its `forbidden.tsx` boundary). Rendering hub links for a bridge
+ * session would therefore produce a list where every entry dead-ends at a 403,
+ * so the section short-circuits — mirroring how {@link ScopeSelector}
+ * short-circuits for bridge sessions.
  */
 function SummarySubjects({
   collapsed,
@@ -246,9 +250,12 @@ function SummarySubjects({
   const tSidebar = useTranslations("sidebar");
   const locale = useLocale();
   const pathname = usePathname();
-  const { customers } = useCustomerContext();
+  const { customers, isBridgeSession } = useCustomerContext();
 
-  if (customers.length === 0) return null;
+  // Bridge sessions cannot read any analysis hub (see the component doc), so
+  // there is nothing navigable to list — omit the section rather than render
+  // links that all resolve to a 403.
+  if (isBridgeSession || customers.length === 0) return null;
 
   const label = tSidebar("summarySubjectsLabel");
 

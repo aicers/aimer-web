@@ -446,7 +446,10 @@ describe("Sidebar summary subjects", () => {
     expect(active.getAttribute("href")).toBe("/en/subjects/c2");
   });
 
-  it("renders only the bridge-filtered customers in a bridge session", () => {
+  it("omits the section entirely in a bridge session", () => {
+    // The hub route forbids in-scope bridge sessions (`allowInBridge: false`
+    // → 403), so every hub link would dead-end at a 403. The section must not
+    // render dead links — it short-circuits like the scope selector does.
     mockDefaults({
       customers: [CUSTOMERS[0]],
       isBridgeSession: true,
@@ -466,13 +469,8 @@ describe("Sidebar summary subjects", () => {
     });
 
     const { container } = render(<Sidebar collapsed={false} />);
-    const nav = subjectsNav(container);
-    assertDefined(nav);
-    const links = nav.querySelectorAll("a");
 
-    expect(links.length).toBe(1);
-    expect(links[0].getAttribute("href")).toBe("/en/subjects/c1");
-    expect(nav.textContent).not.toContain("Beta Inc");
+    expect(subjectsNav(container)).toBeNull();
   });
 
   it("renders subject links when collapsed", () => {
