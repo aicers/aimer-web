@@ -85,6 +85,33 @@ CREATE TRIGGER customers_ensure_subject
     BEFORE INSERT ON customers
     FOR EACH ROW EXECUTE FUNCTION ensure_customer_subject();
 
+-- The insert trigger guards customer *creation*, but `subjects.kind` is
+-- mutable (UPDATE is granted), so without this guard an existing
+-- customer-backed subject could later be flipped with
+-- `UPDATE subjects SET kind = 'group' WHERE id = $customer_id`, leaving a
+-- customer backed by a non-customer subject — the same invariant
+-- violation the insert trigger rejects, just after the fact. Keep
+-- `kind` immutable for any subject that has a `customers` subtype row:
+-- such a subject is a customer by definition and can only stop being one
+-- by deleting the customer (which cascades the subject away). A subject
+-- with no customer subtype (e.g. a future `kind='group'`) is unaffected.
+CREATE FUNCTION subjects_protect_customer_kind() RETURNS trigger AS $$
+BEGIN
+    IF NEW.kind IS DISTINCT FROM OLD.kind
+       AND EXISTS (SELECT 1 FROM customers WHERE id = NEW.id) THEN
+        RAISE EXCEPTION
+            'subject % backs a customer and cannot change kind from % to %',
+            NEW.id, OLD.kind, NEW.kind
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER subjects_protect_customer_kind
+    BEFORE UPDATE OF kind ON subjects
+    FOR EACH ROW EXECUTE FUNCTION subjects_protect_customer_kind();
+
 -- --------------------------------------------------------------------
 -- periodic_report_state: customer_id → subject_id, FK → subjects(id)
 -- --------------------------------------------------------------------

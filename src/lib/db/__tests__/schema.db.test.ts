@@ -978,7 +978,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       expect(leftover[0].c).toBe(0);
     });
 
-    it("customer insert materializes a kind='customer' subject and rejects a non-customer subject", async () => {
+    it("customer insert materializes a kind='customer' subject and rejects a non-customer subject (insert or update)", async () => {
       // RFC 0004 / #503: the `customers_ensure_subject` trigger backs
       // every customer with a `kind='customer'` subject sharing its UUID.
       // A plain insert must auto-create that subject row.
@@ -1006,6 +1006,18 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
           [gid],
         ),
       ).rejects.toThrow(/non-customer subject/);
+
+      // The invariant must also hold after creation: a subject backing a
+      // customer cannot later be flipped to a non-customer kind, which
+      // would orphan the existing customer onto a `kind='group'` subject.
+      await expect(
+        pool.query("UPDATE subjects SET kind = 'group' WHERE id = $1", [cid]),
+      ).rejects.toThrow(/cannot change kind/);
+      const { rows: stillCustomer } = await pool.query<{ kind: string }>(
+        "SELECT kind FROM subjects WHERE id = $1",
+        [cid],
+      );
+      expect(stillCustomer[0].kind).toBe("customer");
     });
 
     it("customer-timezone-change trigger archives mismatched periodic_report_state rows", async () => {
