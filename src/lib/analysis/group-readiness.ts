@@ -251,7 +251,33 @@ async function reconcileGroup(
   let patched = 0;
 
   // --- Non-LIVE buckets (DAILY/WEEKLY/MONTHLY) ---
-  for (const [key, agg] of nonLive) {
+  // Candidate keys are the UNION of the current member aggregates AND every
+  // existing non-archived non-LIVE bucket. Merging in existing buckets covers
+  // the zero-current-data case (member data for an already-generated bucket
+  // was deleted or window-replaced down to zero rows): no aggregate key is
+  // produced, but the stale `event_count`/`story_count` must still resync to
+  // 0 and an already-generated bucket flip to `dirty`. Without this, that
+  // member-data change would never dirty the group bucket — the per-customer
+  // reconcile path merges existing buckets the same way.
+  const zeroAgg: NonLiveAgg = {
+    eventCount: 0,
+    maxEventAt: null,
+    maxReceivedAt: null,
+    storyCount: 0,
+    maxStoryReceivedAt: null,
+  };
+  const nonLiveKeys = new Set<string>(nonLive.keys());
+  for (const [key, ex] of existing) {
+    const [period] = key.split("|");
+    if (
+      ex.status !== "archived" &&
+      (period === "DAILY" || period === "WEEKLY" || period === "MONTHLY")
+    ) {
+      nonLiveKeys.add(key);
+    }
+  }
+
+  for (const key of nonLiveKeys) {
     const [period, bd] = key.split("|");
     if (period !== "DAILY" && period !== "WEEKLY" && period !== "MONTHLY") {
       continue;
@@ -259,6 +285,9 @@ async function reconcileGroup(
     // Non-retroactive: skip buckets before the group's creation bucket.
     if (bd < floors[period]) continue;
 
+    // No current aggregate → zero counts / null watermarks, so an existing
+    // bucket whose member data vanished resyncs to 0 and dirties.
+    const agg = nonLive.get(key) ?? zeroAgg;
     const ex = existing.get(key);
     if (ex === undefined) {
       const res = await authPool.query(

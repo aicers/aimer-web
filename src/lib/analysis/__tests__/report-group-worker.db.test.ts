@@ -63,9 +63,9 @@ const AIMER_RESPONSE = {
   modelActualVersion: "gpt-4o-2026",
 };
 
-const EMPTY_RANGES = { v4: [], v6: [] } as unknown as Awaited<
+const EMPTY_RANGES: Awaited<
   ReturnType<typeof import("@/lib/redaction/load-ranges").loadCustomerRanges>
->;
+> = { normalisedCidrs: [], ranges: [] };
 
 function makeGroupJob(
   groupId: string,
@@ -301,6 +301,7 @@ describe.skipIf(!hasPostgres)("group report worker (#524)", () => {
       await p.query("DELETE FROM story");
     }
     await groupPool.query("DELETE FROM periodic_report_result");
+    await authPool.query("DELETE FROM customer_redaction_ranges");
     await authPool.query("DELETE FROM periodic_report_job");
     await authPool.query("DELETE FROM periodic_report_state");
     await authPool.query("DELETE FROM story_analysis_state");
@@ -469,6 +470,57 @@ describe.skipIf(!hasPostgres)("group report worker (#524)", () => {
     expect(
       refs.some((r) => r.customer_id === M1 && r.aice_id === "aice-A"),
     ).toBe(false);
+  });
+
+  it("scans group output against the UNION of member redaction policies", async () => {
+    await resetData();
+    await seedEvent(custAPool, "aice-A", "1", { tier: "HIGH" });
+    await seedEvent(custBPool, "aice-B", "2", { tier: "HIGH" });
+    await seedGroupStateJob(authPool, groupId);
+
+    // Member M1 configures a redaction range; the group subject id has no such
+    // row, so loading policy by group id would see an EMPTY set. The fix unions
+    // member policies, so a plaintext public IP inside M1's range is caught.
+    await authPool.query(
+      `INSERT INTO customer_redaction_ranges
+         (customer_id, cidr, ip_version, created_by)
+       VALUES ($1, '203.0.113.0/24', 4, $2)`,
+      [M1, ACCOUNT],
+    );
+
+    const leakyResponse = {
+      ...AIMER_RESPONSE,
+      sections: JSON.stringify({
+        ...AIMER_SECTIONS,
+        period_outlook: "Traffic from 203.0.113.5 warrants monitoring.",
+      }),
+    };
+
+    await processReportJob(
+      makeGroupJob(groupId),
+      // Drop the EMPTY_RANGES stub so the REAL union-of-members loader runs.
+      opts({
+        loadRanges: undefined,
+        callGenerateReport: async () => {
+          aimerCalls += 1;
+          return leakyResponse;
+        },
+      }),
+    );
+
+    // The member-policy backstop fired: no result row, job failed loudly.
+    const result = await groupPool.query(
+      `SELECT 1 FROM periodic_report_result WHERE subject_id = $1`,
+      [groupId],
+    );
+    expect(result.rows).toHaveLength(0);
+    const job = await authPool.query<{ status: string; last_error: string }>(
+      `SELECT status, last_error FROM periodic_report_job
+        WHERE subject_id = $1 AND period = 'DAILY' AND lang = 'ENGLISH'`,
+      [groupId],
+    );
+    expect(job.rows[0].status).toBe("failed");
+    expect(job.rows[0].last_error).toBe("hallucination_detected");
   });
 
   it("defers non-terminally when a member is suspended, resumes on recovery", async () => {

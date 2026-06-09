@@ -47,6 +47,7 @@ import { fetchMemberStates } from "@/lib/groups/groups";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import type { OwnedDomainSet, RangeSet } from "@/lib/redaction/types";
 import { getModelCatalog } from "./model-catalog";
 import {
   buildCanonicalPinnedReportInput,
@@ -737,6 +738,7 @@ export async function processReportJob(
       auditBase,
       callLlm,
       memberQualified: isGroup,
+      memberPools: isGroup ? subjectPools.memberPools : [],
     });
     return;
   }
@@ -817,6 +819,7 @@ export async function processReportJob(
       auditBase,
       callLlm,
       memberQualified: false,
+      memberPools: [],
     });
     return;
   }
@@ -830,6 +833,73 @@ export async function processReportJob(
     memberQualified: false,
     memberPools: [],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Leak-scan redaction policy (single-customer subject vs. group member union)
+// ---------------------------------------------------------------------------
+
+/** Union member `RangeSet`s, deduping by normalised CIDR. */
+function mergeRangeSets(sets: ReadonlyArray<RangeSet>): RangeSet {
+  const byCidr = new Map<string, RangeSet["ranges"][number]>();
+  for (const set of sets) {
+    for (const range of set.ranges) byCidr.set(range.cidr, range);
+  }
+  const ranges = Array.from(byCidr.values());
+  return { normalisedCidrs: ranges.map((r) => r.cidr).sort(), ranges };
+}
+
+/** Union member `OwnedDomainSet`s, deduping by normalised suffix. */
+function mergeOwnedDomainSets(
+  sets: ReadonlyArray<OwnedDomainSet>,
+): OwnedDomainSet {
+  const suffixes = new Set<string>();
+  for (const set of sets) {
+    for (const suffix of set.normalisedSuffixes) suffixes.add(suffix);
+  }
+  return { normalisedSuffixes: Array.from(suffixes).sort() };
+}
+
+/**
+ * Load the redaction policy (public-IP ranges + owned domains) the leak scan
+ * uses as the member-policy plaintext backstop.
+ *
+ * The single-customer path keys both `customer_redaction_ranges` and
+ * `customer_owned_domains` by the subject id (which IS the customer id). The
+ * GROUP path (#524) cannot: those tables are keyed to `customers(id)`, so the
+ * group subject id matches nothing and the loaders would return an empty
+ * policy — silently disabling the backstop and letting a group report persist
+ * a plaintext public IP inside a member's configured range, or a member-owned
+ * domain. Union every member's policy instead, so a hit against ANY member's
+ * range/domain is still caught before the group result row is written. (The
+ * token-shape checks run regardless; this restores the policy backstop.)
+ */
+async function loadLeakScanPolicy(
+  opts: ProcessOptions,
+  subjectId: string,
+  memberPools: ReadonlyArray<GroupMemberPool>,
+): Promise<{ ranges: RangeSet; ownedDomains: OwnedDomainSet }> {
+  const loadRanges = opts.loadRanges ?? loadCustomerRanges;
+  const loadOwnedDomains = opts.loadOwnedDomains ?? loadCustomerOwnedDomains;
+  if (memberPools.length === 0) {
+    const [ranges, ownedDomains] = await Promise.all([
+      loadRanges(opts.authPool, subjectId),
+      loadOwnedDomains(opts.authPool, subjectId),
+    ]);
+    return { ranges, ownedDomains };
+  }
+  const [memberRanges, memberDomains] = await Promise.all([
+    Promise.all(
+      memberPools.map((m) => loadRanges(opts.authPool, m.customerId)),
+    ),
+    Promise.all(
+      memberPools.map((m) => loadOwnedDomains(opts.authPool, m.customerId)),
+    ),
+  ]);
+  return {
+    ranges: mergeRangeSets(memberRanges),
+    ownedDomains: mergeOwnedDomainSets(memberDomains),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -854,6 +924,11 @@ async function runNativeGeneration(args: {
   callLlm: typeof callGenerateReport;
   /** Group path: validate citations against member-qualified keys (#524). */
   memberQualified: boolean;
+  /**
+   * Group path: member pools whose redaction policy the leak scan unions
+   * (#524). Empty for the single-customer path (policy keyed by subject id).
+   */
+  memberPools: ReadonlyArray<GroupMemberPool>;
 }): Promise<void> {
   const {
     job,
@@ -864,6 +939,7 @@ async function runNativeGeneration(args: {
     auditBase,
     callLlm,
     memberQualified,
+    memberPools,
   } = args;
 
   // Redaction-policy precondition across the consumed leaves. A
@@ -990,13 +1066,11 @@ async function runNativeGeneration(args: {
   // Hallucination scan across every rendered section. The section keys are
   // prompt-defined, so scan every string value in the parsed payload rather
   // than a fixed field list.
-  const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
-    opts.authPool,
+  const { ranges, ownedDomains } = await loadLeakScanPolicy(
+    opts,
     job.subject_id,
+    memberPools,
   );
-  const ownedDomains = await (
-    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
-  )(opts.authPool, job.subject_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,
@@ -1299,13 +1373,11 @@ async function runTranslation(args: {
   // derived from the English leaves must cover the translated text. Any
   // residual / leaked token fails the job BEFORE the row is written (#412
   // item 7).
-  const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
-    opts.authPool,
+  const { ranges, ownedDomains } = await loadLeakScanPolicy(
+    opts,
     job.subject_id,
+    memberPools,
   );
-  const ownedDomains = await (
-    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
-  )(opts.authPool, job.subject_id);
   const reportText = collectSectionStrings(parsedSections).join("\n\n");
   const leakScan = scanReportAnalysisForLeaks(
     reportText,

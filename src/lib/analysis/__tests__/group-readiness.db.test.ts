@@ -175,4 +175,51 @@ describe.skipIf(!hasPostgres)("group readiness tick (#524)", () => {
     expect(rows[0].status).toBe("dirty");
     expect(Number(rows[0].event_count)).toBe(2);
   });
+
+  it("dirties an already-generated bucket when member data drops to zero", async () => {
+    await authPool.query(
+      `DELETE FROM periodic_report_state WHERE subject_id = $1`,
+      [groupId],
+    );
+    await authPool.query(
+      `DELETE FROM periodic_report_job WHERE subject_id = $1`,
+      [groupId],
+    );
+    await m1Pool.query("DELETE FROM baseline_event");
+    await seedBaselineEvent(m1Pool, "1", "2026-05-27T03:00:00Z");
+
+    // Seed + generate the bucket (event_count = 1).
+    await tickGroupReadiness(deps(), "2026-05-28T00:00:00Z");
+    await authPool.query(
+      `UPDATE periodic_report_state SET status = 'ready'
+        WHERE subject_id = $1 AND period = 'DAILY' AND bucket_date = '2026-05-27'`,
+      [groupId],
+    );
+    await authPool.query(
+      `INSERT INTO periodic_report_job
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
+          status, generation, dry_run)
+       VALUES ($1, 'DAILY', '2026-05-27'::date, $2, 'ENGLISH', 'openai', 'gpt-4o',
+               'done', 1, FALSE)`,
+      [groupId, TZ],
+    );
+
+    // Member data is deleted/window-replaced AFTER generation: zero rows now
+    // produce NO aggregate key, so the tick must still merge the existing
+    // bucket and resync it to event_count = 0 + flip to dirty.
+    await m1Pool.query("DELETE FROM baseline_event");
+    await tickGroupReadiness(deps(), "2026-05-28T01:00:00Z");
+
+    const { rows } = await authPool.query<{
+      status: string;
+      event_count: string;
+    }>(
+      `SELECT status, event_count::text AS event_count
+         FROM periodic_report_state
+        WHERE subject_id = $1 AND period = 'DAILY' AND bucket_date = '2026-05-27'`,
+      [groupId],
+    );
+    expect(rows[0].status).toBe("dirty");
+    expect(Number(rows[0].event_count)).toBe(0);
+  });
 });

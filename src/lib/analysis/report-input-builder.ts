@@ -1544,15 +1544,22 @@ export async function buildGroupPeriodicReportInput(
     args.nowIso,
   );
 
-  // The member's effective default model decides its own never-drop fallback
-  // (the group report variant is the global/env default — #524 scope 6).
-  const defaultPairs = new Map<string, ModelPair>();
-  for (const m of args.memberPools) {
-    defaultPairs.set(
-      m.customerId,
-      await resolveDefaultModel(m.customerId, args.authPool),
-    );
-  }
+  // Never-drop fallback is driven by the GROUP's resolved default, applied
+  // uniformly to every member — NOT each member's own per-customer default.
+  // The group report variant is the group default-model policy (global/env
+  // only — #524 scope 6); `resolveDefaultModel(groupId)` returns that same
+  // pair because a group has no `customer_default_model` row. Keying the
+  // fallback off it makes `variant === defaultPair` for all members, so the
+  // group default report extends the single-customer default-report behavior
+  // (never silently dropping a fallback-only analyzed leaf) across the union.
+  // Using each member's own default instead would put any member whose
+  // override differs from the group model onto the strict exact-match path,
+  // silently dropping its fallback-only leaves — surprising for a default
+  // group report.
+  const groupDefaultPair = await resolveDefaultModel(
+    args.groupId,
+    args.authPool,
+  );
 
   // --- Stories: per-member top-K → union → global top-K ----------------
   const memberStorySets: StoryLeafRow[][] = [];
@@ -1562,8 +1569,7 @@ export async function buildGroupPeriodicReportInput(
       await selectTopStories(m.pool, {
         customerId: m.customerId,
         variant: args.variant,
-        // biome-ignore lint/style/noNonNullAssertion: populated above per member.
-        defaultPair: defaultPairs.get(m.customerId)!,
+        defaultPair: groupDefaultPair,
         readyStoryIds,
         windows,
         limit: topStoriesK,
@@ -1589,8 +1595,7 @@ export async function buildGroupPeriodicReportInput(
   const memberUniverseSets: EventLeafRow[][] = [];
   const baselineBundles: BaselineAggregateBundle[] = [];
   for (const m of args.memberPools) {
-    // biome-ignore lint/style/noNonNullAssertion: populated above per member.
-    const defaultPair = defaultPairs.get(m.customerId)!;
+    const defaultPair = groupDefaultPair;
     const memberCited = citedStoriesByMember.get(m.customerId) ?? [];
     const covered = await loadStoryMemberKeys(
       m.pool,
