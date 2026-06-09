@@ -3,7 +3,10 @@ import { forbidden, notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
-import type { PeriodKind } from "@/lib/analysis/report-bucket-date";
+import {
+  calendarViewportQuery,
+  type PeriodKind,
+} from "@/lib/analysis/report-bucket-date";
 import {
   loadReportIndexPage,
   type ReportBucketItem,
@@ -117,7 +120,11 @@ function PeriodSection({
             single rolling bucket — no calendar. */}
         {group.period !== "LIVE" && (
           <Link
-            href={subjectPages.reportCalendar(locale, subjectId, group.period)}
+            href={`${subjectPages.reportCalendar(
+              locale,
+              subjectId,
+              group.period,
+            )}${calendarViewportQuery(group.period, latest.bucketDate)}`}
             data-testid={`period-calendar-link-${group.period}`}
             className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           >

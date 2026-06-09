@@ -67,7 +67,10 @@ without `reports:read` or a rejected bridge session returns a real
 
 The recent list is a **preview**, not the full history: each period
 section (except Live) carries a **View all in calendar** link into the
-per-period calendar below, which reaches every retained bucket.
+per-period calendar below, which reaches every retained bucket. The link
+opens the calendar already scrolled to the viewport (month for daily, year
+for weekly/monthly) that holds that period's most recent report, rather
+than the current month/year.
 
 ## Report calendar
 
@@ -95,14 +98,14 @@ of them navigable:
 - **Has report** — highlighted and clickable. A bucket is "has report"
   when it has a real, non-superseded result for the default model that
   resolves through the same language fallback the detail page uses
-  (your language → English → any) **and** a live (non-archived) tracking
-  state — exactly the pair the detail page itself requires before it
-  renders. A bucket that is only tracked (`pending` with no result yet),
-  whose `ready`/`dirty` state has no viewable result, or whose result
-  lingers in the report store while the tracking state is missing or
-  archived, is **not** "has report". This is the same rule the prev/next
-  stepping uses, so a cell never looks ready in the calendar but opens to a
-  "being generated" or not-found page.
+  (your language → English → any) **and** a tracking state of `ready` or
+  `dirty` — the two states that mark a bucket as a finished (or refreshing)
+  report. A bucket that is still only being produced (`pending`, even if a
+  stale result has drifted into the report store), whose `ready`/`dirty`
+  state has no viewable result, or whose result lingers in the report store
+  while the tracking state is missing or archived, is **not** "has report".
+  This is the same rule the prev/next stepping uses, so a cell never looks
+  ready in the calendar but steps to a bucket that would not render.
 - **No report** — within retention but with no result; greyed and
   non-navigable.
 - **Out of retention** — older than the subject's retention boundary
@@ -222,8 +225,10 @@ Both ends are explicit states, never a dead link or a `404`:
   control.
 
 An **Open calendar** link sits beside the controls for jumping straight to
-a date. **Live** has no prev/next (it is a single rolling bucket), so the
-control is not shown there.
+a date; it opens the calendar at the viewport (month or year) containing the
+report you are currently reading, not the current month/year. **Live** has
+no prev/next (it is a single rolling bucket), so the control is not shown
+there.
 
 ## Report language
 

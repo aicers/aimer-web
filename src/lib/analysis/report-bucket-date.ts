@@ -133,6 +133,25 @@ export function addCalendarDays(date: string, days: number): string {
   return fmtDay(dt);
 }
 
+/**
+ * Calendar-viewport query string (`#505`) for the viewport that CONTAINS
+ * `bucketDate`, matching the calendar route's granularity-bound params:
+ * DAILY → `?month=YYYY-MM`, WEEKLY/MONTHLY → `?year=YYYY`. Returns `""` for
+ * LIVE (no calendar) or a malformed date, so callers can append it
+ * unconditionally and a generated "open calendar" link always lands on the
+ * canonical, range-bound viewport that holds the bucket the operator was
+ * reading — never the bare `/calendar` path that silently defaults to the
+ * current month/year.
+ */
+export function calendarViewportQuery(
+  period: PeriodKind,
+  bucketDate: string,
+): string {
+  if (period === "LIVE" || !isValidBucketDate(bucketDate)) return "";
+  if (period === "DAILY") return `?month=${bucketDate.slice(0, 7)}`;
+  return `?year=${bucketDate.slice(0, 4)}`;
+}
+
 /** Every `YYYY-MM-DD` day in the given month (`month` is 1-based). */
 export function enumerateMonthDays(year: number, month: number): string[] {
   const days: string[] = [];

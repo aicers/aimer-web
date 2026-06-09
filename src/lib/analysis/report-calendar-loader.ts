@@ -14,23 +14,29 @@
 //   2. `loadReportNeighbors` — the nearest has-report bucket older / newer
 //      than the open one, for the detail page's within-period prev/next.
 //
-// "Has-report" means the detail route would actually render a report at that
-// bucket: a non-superseded `periodic_report_result` at the default model
-// variant (any language — the detail page's viewer→English→any fallback always
-// resolves when one exists) that ALSO has a non-archived `periodic_report_state`
-// row at the same (bucket_date, tz). Grounding on the result row avoids the
-// "looked has-report but opens to `pending`" mismatch; intersecting with a
-// live state row avoids the reverse drift — a stale customer-DB result
-// surviving while the auth-side state is missing or archived, which the detail
-// route 404s (`report-result-page-loader.ts` rejects a missing/archived state
-// before it ever reads a result). `pending`-only, result-less `ready`/`dirty`,
-// gap, and result-without-live-state buckets are all non-navigable.
+// "Has-report" follows the issue's settled predicate: a non-superseded
+// `periodic_report_result` at the default model variant (any language — the
+// detail page's viewer→English→any fallback always resolves when one exists)
+// that ALSO has a `ready`/`dirty` `periodic_report_state` row at the same
+// (bucket_date, tz). `ready`/`dirty` are the navigable candidates; a `pending`
+// state is NOT. A bucket whose only state is `pending` is non-navigable even
+// when a (drifted) result survives, because the worker has not yet declared the
+// bucket ready — the issue calls out "pending-only" buckets as `none`.
 //
-// The state row may be `pending` so long as a viewable result exists: the
-// detail route renders such a bucket (it only 404s on a missing/archived
-// state, never on `pending`), so the calendar must match. A `pending` row with
-// no result is the "pending-only" case and stays non-navigable via the result
-// half of the intersection.
+// Grounding on the result row avoids the "looked has-report but opens to
+// `pending`" mismatch; intersecting with a `ready`/`dirty` state row avoids the
+// reverse drift — a stale customer-DB result surviving while the auth-side
+// state is missing, `pending`, or `archived` (the two pools can diverge).
+// `pending`-only, result-less `ready`/`dirty`, gap, and result-without-eligible-
+// state buckets are all non-navigable, consistently in the calendar and
+// prev/next.
+//
+// This predicate is deliberately STRICTER than the detail route's own 404 gate,
+// which rejects only a missing/archived state and renders a `pending`+result
+// bucket. The divergence is intentional and safe: the calendar never links a
+// non-navigable cell, so a `pending`+result bucket is simply not reachable via
+// the temporal-nav surfaces (it stays reachable by direct URL and the hub's
+// "recent" preview), and no green cell or prev/next step ever lands on one.
 //
 // Auth DB (state) and the customer DB (results) are separate pools and cannot
 // be JOINed, so discovery reads both for the viewport range and intersects in
@@ -155,18 +161,28 @@ export async function discoverCalendarBuckets(args: {
   const { oldestNavigableDate, today } = await provider.resolveBoundary(period);
 
   // has-report lookup: a non-superseded result at the default variant (any
-  // language) that ALSO has a non-archived state row at the same
-  // (bucket_date, tz) — the detail route's gate, so a green cell never opens
-  // to a 404. Both reads are viewport-range-bounded so unbounded retention
-  // never widens the query. Best-effort — leave the map empty on any failure.
+  // language) that ALSO has a `ready`/`dirty` state row at the same
+  // (bucket_date, tz) — the issue's navigable predicate, so a green cell never
+  // opens to a non-navigable bucket. Both reads are viewport-range-bounded, and
+  // additionally clamped to the retention boundary: a bucket before
+  // `oldestNavigableDate` can only ever be greyed (out-of-retention), so there
+  // is no point fetching its rows. The full viewport is still enumerated below
+  // for the greyed cells; only the result/state QUERIES skip the aged-out span.
+  // This keeps discovery retention-bounded even for a year viewport with a
+  // short retention window. Best-effort — leave the map empty on any failure.
+  const queryStart =
+    oldestNavigableDate !== null && range && oldestNavigableDate > range.start
+      ? oldestNavigableDate
+      : range?.start;
   const resultTz = new Map<string, string>();
-  if (range) {
+  if (range && queryStart !== undefined) {
     try {
       const def = await resolveDefaultModel(subjectId, authPool);
-      // Non-archived state rows (auth DB) keyed on bucket/tz: the detail route
-      // 404s a missing/archived state even when a result row survives, and the
-      // two pools can drift. `pending` is allowed here — the result half below
-      // is what excludes the pending-only (result-less) case.
+      // `ready`/`dirty` state rows (auth DB) keyed on bucket/tz: these are the
+      // navigable candidates. A `pending` state is excluded here — a
+      // `pending`-only bucket is non-navigable per the issue, even when a
+      // drifted result survives in the customer DB. A missing/archived state is
+      // likewise excluded, matching what the detail route would reject.
       const stateRes = await authPool.query<{
         bucket_date: string;
         tz: string;
@@ -175,9 +191,9 @@ export async function discoverCalendarBuckets(args: {
            FROM periodic_report_state
           WHERE subject_id = $1
             AND period = $2
-            AND status <> 'archived'
+            AND status IN ('ready', 'dirty')
             AND bucket_date BETWEEN $3::date AND $4::date`,
-        [subjectId, period, range.start, range.end],
+        [subjectId, period, queryStart, range.end],
       );
       const stateKeys = new Set(
         stateRes.rows.map((r) => `${r.bucket_date}|${r.tz}`),
@@ -194,7 +210,7 @@ export async function discoverCalendarBuckets(args: {
             AND superseded_at IS NULL
             AND bucket_date BETWEEN $5::date AND $6::date
           ORDER BY bucket_date, generation DESC`,
-        [subjectId, period, def.modelName, def.model, range.start, range.end],
+        [subjectId, period, def.modelName, def.model, queryStart, range.end],
       );
       // Per bucket, the highest-generation result whose tz also has a live
       // state row wins (rows arrive newest-generation first). A result-only
@@ -319,11 +335,11 @@ const NEIGHBOR_PROBE_LIMIT = 16;
 /**
  * Step from `from` to the nearest navigable bucket in one direction. A bucket
  * is navigable only when a non-superseded default-variant result AND a
- * non-archived state row coexist at the same (bucket_date, tz) — the detail
- * route's gate. The result is probed nearest-first (auth/customer pools are
- * separate, so this can't be one JOIN); a result-only or archived-state bucket
- * is skipped and the probe advances past its date until a live one is found,
- * the direction is exhausted, or the probe cap is hit.
+ * `ready`/`dirty` state row coexist at the same (bucket_date, tz) — the issue's
+ * navigable predicate. The result is probed nearest-first (auth/customer pools
+ * are separate, so this can't be one JOIN); a result whose state is missing,
+ * `pending`, or `archived` is skipped and the probe advances past its date
+ * until an eligible one is found, the direction is exhausted, or the cap hits.
  */
 async function findNeighbor(args: {
   authPool: Pool;
@@ -359,13 +375,13 @@ async function findNeighbor(args: {
       `SELECT 1 FROM periodic_report_state
         WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4
-          AND status <> 'archived'
+          AND status IN ('ready', 'dirty')
         LIMIT 1`,
       [subjectId, period, bucket_date, tz],
     );
     if (state.rows.length > 0) return { bucketDate: bucket_date, tz };
-    // Drifted (result-only / archived-state) bucket — the detail route would
-    // 404 it. Skip its date and keep probing in the same direction.
+    // Non-navigable (result with a missing / `pending` / `archived` state)
+    // bucket. Skip its date and keep probing in the same direction.
     cursor = bucket_date;
   }
   return null;
@@ -375,8 +391,8 @@ async function findNeighbor(args: {
  * Resolve the nearest has-report buckets on either side of `bucketDate`,
  * subject-generic via the injected `provider`. The caller (detail page) has
  * already authorized the read, so this performs no auth preamble. "Has-report"
- * uses the same result+live-state intersection as the calendar, so prev/next
- * never link to a bucket the detail page rejects. Older neighbors are clamped
+ * uses the same result + `ready`/`dirty`-state predicate as the calendar, so
+ * prev/next never link to a non-navigable bucket. Older neighbors are clamped
  * to the retention boundary; the newer side is unbounded (it stops naturally
  * at the most recent report). Best-effort: a read failure yields no neighbors
  * — and, critically, `olderStop: false`, never falsely blaming retention.
@@ -421,23 +437,28 @@ export async function loadReportNeighbors(args: {
       lowerBound: null,
     });
 
-    // Only claim the retention boundary when an older report actually exists
-    // beyond it. With no prev under unbounded retention (or simply no older
-    // report at all), this is the first report — show no affordance, not a
-    // "no older retained" stop. A bare result (no live-state requirement) is
-    // enough evidence that older reports were generated and then aged out.
+    // Only claim the retention boundary when an older NAVIGABLE report actually
+    // exists beyond it. With no prev under unbounded retention (or simply no
+    // older report at all), this is the first report — show no affordance, not
+    // a "no older retained" stop. The evidence probe reuses `findNeighbor` from
+    // the boundary going older with no lower bound, so it applies the SAME
+    // result+`ready`/`dirty`-state predicate as prev/next: a bare result whose
+    // state is missing, `pending`, or archived is not evidence that a navigable
+    // report aged out, and must not make the UI falsely blame retention (the
+    // same cross-DB drift class as the prev/next gating, applied to the stop).
     let olderStop = false;
     if (prev === null && oldestNavigableDate !== null) {
-      const olderBeyondBoundary = await customerPool.query(
-        `SELECT 1 FROM periodic_report_result
-          WHERE subject_id = $1 AND period = $2
-            AND model_name = $3 AND model = $4
-            AND superseded_at IS NULL
-            AND bucket_date < $5::date
-          LIMIT 1`,
-        [subjectId, period, def.modelName, def.model, oldestNavigableDate],
-      );
-      olderStop = olderBeyondBoundary.rows.length > 0;
+      const olderNavigable = await findNeighbor({
+        authPool,
+        customerPool,
+        subjectId,
+        period,
+        def,
+        from: oldestNavigableDate,
+        direction: "older",
+        lowerBound: null,
+      });
+      olderStop = olderNavigable !== null;
     }
     return { prev, next, olderStop };
   } catch {

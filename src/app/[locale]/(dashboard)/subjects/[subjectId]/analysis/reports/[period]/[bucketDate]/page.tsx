@@ -15,6 +15,7 @@ import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
+  calendarViewportQuery,
   isValidBucketDate,
   LIVE_BUCKET_DATE,
   type PeriodKind,
@@ -268,7 +269,11 @@ export default async function ReportDetailPage({
         prev={neighbors.prev}
         next={neighbors.next}
         olderStop={neighbors.olderStop}
-        calendarHref={subjectPages.reportCalendar(locale, customerId, period)}
+        calendarHref={`${subjectPages.reportCalendar(
+          locale,
+          customerId,
+          period,
+        )}${calendarViewportQuery(period as PeriodKind, bucketDate)}`}
         labels={{
           navLabel: tA("reportDetail.temporalNavLabel"),
           prev: tA("reportDetail.prevReport"),
