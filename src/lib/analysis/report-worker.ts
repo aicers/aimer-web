@@ -613,6 +613,48 @@ export async function processReportJob(
   // attempt's `done`/`processing` state (#297 review round 5, item 1).
   const claimMarker = claim.rows[0].processing_started_at;
 
+  // --- Operational gate (#524 scope 4) -------------------------------
+  // MUST run before the result-row probe below: for a `group` subject that
+  // probe reads `customerPool` (= the group result DB), so a group whose own
+  // `database_status` is `provisioning`/`failed` would otherwise have its
+  // unavailable DB touched first — the connection/query error would propagate
+  // and leave the just-claimed job stuck in `processing` until watchdog
+  // recovery, bypassing the required non-terminal defer. Gating first turns an
+  // inactive group DB (or a non-operational member) into the intended defer
+  // before any group result-DB access (#537 review round 2).
+  //
+  // A group report aggregates member DBs, so it must skip generation while the
+  // group is suspended/deleted or any member is non-operational: the group's
+  // own `database_status` must be `active`, and EVERY member must have
+  // `status = 'active'` AND `database_status = 'active'`. A skip is a
+  // NON-TERMINAL defer (status stays `queued`, `attempts` unchanged, a future
+  // `next_due_at`), so generation resumes once the group/members return to
+  // active — never a `failed` (which would burn the retry budget) or a hot
+  // `queued` loop. Single-customer jobs are unaffected.
+  if (isGroup) {
+    const blocked = await groupGenerationBlockedReason(
+      opts.authPool,
+      job.subject_id,
+      subjectPools.memberPools,
+    );
+    if (blocked !== null) {
+      await deferJobForOperational(opts.authPool, job, claimMarker);
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "analysis.report_group_not_operational",
+          subject_id: job.subject_id,
+          period: job.period,
+          bucket_date: job.bucket_date,
+          tz: job.tz,
+          generation: job.generation,
+          reason: blocked,
+        }),
+      );
+      return;
+    }
+  }
+
   // Result-row probe — a row at the captured PK means step 1 already
   // landed before a crash; skip the LLM call and finalize only. A translated
   // row (`restoration_lang IS NOT NULL`) carries its translation audit on the
@@ -647,39 +689,6 @@ export async function processReportJob(
       translated ? { mode: "preserve" } : { mode: "clear" },
     );
     return;
-  }
-
-  // --- Operational gate (#524 scope 4) -------------------------------
-  // A group report aggregates member DBs, so it must skip generation while the
-  // group is suspended/deleted or any member is non-operational: the group's
-  // own `database_status` must be `active`, and EVERY member must have
-  // `status = 'active'` AND `database_status = 'active'`. A skip is a
-  // NON-TERMINAL defer (status stays `queued`, `attempts` unchanged, a future
-  // `next_due_at`), so generation resumes once the group/members return to
-  // active — never a `failed` (which would burn the retry budget) or a hot
-  // `queued` loop. Single-customer jobs are unaffected.
-  if (isGroup) {
-    const blocked = await groupGenerationBlockedReason(
-      opts.authPool,
-      job.subject_id,
-      subjectPools.memberPools,
-    );
-    if (blocked !== null) {
-      await deferJobForOperational(opts.authPool, job, claimMarker);
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          event: "analysis.report_group_not_operational",
-          subject_id: job.subject_id,
-          period: job.period,
-          bucket_date: job.bucket_date,
-          tz: job.tz,
-          generation: job.generation,
-          reason: blocked,
-        }),
-      );
-      return;
-    }
   }
 
   const variant: ReportVariant = {

@@ -12,6 +12,8 @@
 //     suppress a member-B event)
 //   - the operational gate defers non-terminally for a suspended member and
 //     resumes on recovery
+//   - an inactive group DB defers BEFORE the crash-recovery result probe
+//     touches the group result pool (gate precedes any group result-DB access)
 //   - a missing subject takes the terminal `source_unavailable` release
 //   - group default-model resolution is global/env-only at seeding
 
@@ -572,6 +574,64 @@ describe.skipIf(!hasPostgres)("group report worker (#524)", () => {
       [groupId],
     );
     expect(after.rows).toHaveLength(1);
+  });
+
+  it("defers an inactive group DB before touching the group result pool", async () => {
+    await resetData();
+    await seedEvent(custAPool, "aice-A", "1", { tier: "HIGH" });
+    await seedEvent(custBPool, "aice-B", "2", { tier: "HIGH" });
+    await seedGroupStateJob(authPool, groupId);
+    // The group's own data DB is non-operational (provisioning/failed): the
+    // crash-recovery result probe runs against this very pool, so the gate
+    // MUST defer before any access to it. A result pool that throws on every
+    // query proves the probe is never reached (#537 review round 2).
+    await authPool.query(
+      `UPDATE customer_groups SET database_status = 'failed' WHERE id = $1`,
+      [groupId],
+    );
+    const throwingResultPool = {
+      query: async () => {
+        throw new Error("group result DB must not be touched while inactive");
+      },
+      connect: async () => {
+        throw new Error("group result DB must not be touched while inactive");
+      },
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Pool stub
+    } as any;
+
+    // Resolves without error (auth-side), but hands back a result pool that
+    // would throw if the probe ran. The call must NOT reject.
+    await expect(
+      processReportJob(
+        makeGroupJob(groupId),
+        opts({
+          resolveSubjectPools: async () => ({
+            kind: "group" as const,
+            resultPool: throwingResultPool,
+            memberPools: [
+              { customerId: M1, pool: custAPool },
+              { customerId: M2, pool: custBPool },
+            ],
+          }),
+        }),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(aimerCalls).toBe(0);
+    const deferred = await authPool.query<{
+      status: string;
+      attempts: number;
+      next_due_at: Date | null;
+      last_error: string | null;
+    }>(
+      `SELECT status, attempts, next_due_at, last_error
+         FROM periodic_report_job WHERE subject_id = $1`,
+      [groupId],
+    );
+    expect(deferred.rows[0].status).toBe("queued");
+    expect(deferred.rows[0].attempts).toBe(0);
+    expect(deferred.rows[0].next_due_at).not.toBeNull();
+    expect(deferred.rows[0].last_error).toBe("group_not_operational");
   });
 
   it("releases a missing subject terminally as source_unavailable", async () => {
