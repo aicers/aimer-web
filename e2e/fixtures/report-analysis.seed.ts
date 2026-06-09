@@ -85,11 +85,14 @@ export async function seedReportAnalysisFixture(opts: {
   );
   const tz = tzRow.rows[0]?.timezone ?? "UTC";
 
+  // `periodic_report_state` is keyed on `subject_id` after the RFC 0004
+  // re-key (#503). A customer's `subject_id == customer_id`, so the
+  // customer id is passed straight through as the subject id.
   await opts.authPool.query(
     `INSERT INTO periodic_report_state
-       (customer_id, period, bucket_date, tz, status)
+       (subject_id, period, bucket_date, tz, status)
      VALUES ($1, $2, $3::date, $4, 'ready')
-     ON CONFLICT (customer_id, period, bucket_date, tz)
+     ON CONFLICT (subject_id, period, bucket_date, tz)
      DO UPDATE SET status = 'ready'`,
     [opts.customerId, REPORT_PERIOD, REPORT_BUCKET_DATE, tz],
   );
@@ -101,7 +104,7 @@ export async function seedReportAnalysisFixture(opts: {
   try {
     await pool.query(
       `INSERT INTO periodic_report_result
-         (customer_id, period, bucket_date, tz, lang, model_name, model,
+         (subject_id, period, bucket_date, tz, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           aggregate_severity_score, aggregate_likelihood_score,
           aggregate_ttp_tags, priority_tier, sections_jsonb,
@@ -113,7 +116,7 @@ export async function seedReportAnalysisFixture(opts: {
                $10::jsonb, 'HIGH', $11::jsonb,
                '[]'::jsonb, '[]'::jsonb, $12, NULL,
                $13, NULL, $14::timestamptz)
-       ON CONFLICT (customer_id, period, bucket_date, tz, lang, model_name, model, generation)
+       ON CONFLICT (subject_id, period, bucket_date, tz, lang, model_name, model, generation)
        DO UPDATE SET
          aggregate_severity_score   = EXCLUDED.aggregate_severity_score,
          aggregate_likelihood_score = EXCLUDED.aggregate_likelihood_score,

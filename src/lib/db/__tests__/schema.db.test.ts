@@ -978,6 +978,36 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       expect(leftover[0].c).toBe(0);
     });
 
+    it("customer insert materializes a kind='customer' subject and rejects a non-customer subject", async () => {
+      // RFC 0004 / #503: the `customers_ensure_subject` trigger backs
+      // every customer with a `kind='customer'` subject sharing its UUID.
+      // A plain insert must auto-create that subject row.
+      const { rows: cRows } = await pool.query(
+        "INSERT INTO customers (external_key, name) VALUES ('subj-trg', 'SC') RETURNING id",
+      );
+      const cid = cRows[0].id;
+      const { rows: sRows } = await pool.query<{ kind: string }>(
+        "SELECT kind FROM subjects WHERE id = $1",
+        [cid],
+      );
+      expect(sRows).toHaveLength(1);
+      expect(sRows[0].kind).toBe("customer");
+
+      // The invariant must hold even when the subject id already exists
+      // as a different kind: inserting a customer onto a pre-existing
+      // `kind='group'` subject must be rejected, not silently accepted.
+      const { rows: gRows } = await pool.query<{ id: string }>(
+        "INSERT INTO subjects (kind) VALUES ('group') RETURNING id",
+      );
+      const gid = gRows[0].id;
+      await expect(
+        pool.query(
+          "INSERT INTO customers (id, external_key, name) VALUES ($1, 'subj-grp', 'GC')",
+          [gid],
+        ),
+      ).rejects.toThrow(/non-customer subject/);
+    });
+
     it("customer-timezone-change trigger archives mismatched periodic_report_state rows", async () => {
       // The migration-0030 trigger is part of the schema gate too —
       // verify it fires on a tz update.

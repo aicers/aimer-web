@@ -55,13 +55,28 @@ ALTER TABLE customers
 -- transaction, before the row lands, so the FK is always satisfiable.
 -- `NEW.id` is already populated here (column DEFAULT runs before
 -- BEFORE-row triggers), covering both explicit-id and default-id inserts.
--- `ON CONFLICT DO NOTHING` makes it a no-op when `createCustomer()` (or a
--- group path) already inserted the subject.
+-- `ON CONFLICT DO NOTHING` makes it a no-op when `createCustomer()`
+-- already inserted the `kind='customer'` subject. But DO NOTHING also
+-- silently keeps a *pre-existing* subject of a DIFFERENT kind — e.g. an
+-- `INSERT INTO subjects (id, kind) VALUES ($id, 'group')` followed by an
+-- `INSERT INTO customers (id, …) VALUES ($id, …)` would otherwise create
+-- a customer backed by a `kind='group'` subject, violating the core
+-- invariant that every customer is a `kind='customer'` subject sharing
+-- its UUID (#503). Re-check after the upsert and reject that case.
 CREATE FUNCTION ensure_customer_subject() RETURNS trigger AS $$
 BEGIN
     INSERT INTO subjects (id, kind)
     VALUES (NEW.id, 'customer')
     ON CONFLICT (id) DO NOTHING;
+    IF NOT EXISTS (
+        SELECT 1 FROM subjects
+         WHERE id = NEW.id AND kind = 'customer'
+    ) THEN
+        RAISE EXCEPTION
+            'customer % cannot be backed by a non-customer subject',
+            NEW.id
+            USING ERRCODE = 'integrity_constraint_violation';
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

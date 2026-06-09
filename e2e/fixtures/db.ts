@@ -314,6 +314,14 @@ export async function cleanupTestData(data: TestData): Promise<void> {
   ]);
   await p.query(`DELETE FROM accounts WHERE id = ANY($1)`, [accountIds]);
   await p.query(`DELETE FROM customers WHERE id = ANY($1)`, [customerIds]);
+  // Delete the `subjects` supertype roots too (RFC 0004 / #503). A
+  // customer shares its UUID with its subject, but `customers.id`
+  // references `subjects(id)` (cascade is subject→customer, not the
+  // reverse), so deleting the customer leaves the subject orphaned.
+  // `periodic_report_*` now cascades from `subjects`, so removing the
+  // subject root is what clears any subject-keyed report state/result
+  // rows for the E2E customers.
+  await p.query(`DELETE FROM subjects WHERE id = ANY($1)`, [customerIds]);
 }
 
 /**
