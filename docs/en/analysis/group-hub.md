@@ -5,8 +5,7 @@ surface. A customer group bundles several member customers so their
 periodic security reports can be generated and read together. In this
 version the group hub surfaces **reports only**.
 
-<!-- Real-data screenshot pending: capture from a stack with a group that
-     has generated reports. -->
+![Placeholder for the group hub — the single Security Reports card with no Threat Stories or Suspicious Events sections — pending a real-data recapture (the group hub requires a stack with a customer group that has generated reports, which the fixture stack cannot reproduce)](../../assets/group-hub.en.png)
 
 ## Reaching the hub
 
