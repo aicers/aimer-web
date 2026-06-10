@@ -10,7 +10,7 @@
 // `likelihood_score` onto that table precisely so priority-first ordering
 // and a stable keyset cursor work in a single query.
 //
-// Lifecycle filter (see migration 0037): the default list shows `ready` and
+// Lifecycle filter (WS3, #392): the default list shows `ready` and
 // `dirty` rows that have a denormalized result (`priority_tier IS NOT
 // NULL`). `pending` rows (no result yet) have NULL priority and are
 // excluded; `archived` rows are excluded. `dirty` rows surface their

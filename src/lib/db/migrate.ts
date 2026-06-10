@@ -11,16 +11,10 @@ interface MigrationRow {
   checksum: string;
 }
 
-export interface MigrationContext {
-  /** Decrypt a customer's DEK via OpenBao Transit. Available for customer_db DML migrations. */
-  decryptDek?: (wrappedDek: string) => Promise<Buffer>;
-}
-
 export interface MigrationFile {
   version: string;
   name: string;
   path: string;
-  ext: string;
 }
 
 async function ensureMigrationsTable(client: PoolClient): Promise<void> {
@@ -58,16 +52,15 @@ export async function listMigrationFiles(
   }
 
   return entries
-    .filter((f) => /^\d{4}[a-z]?_.*\.(sql|ts)$/.test(f))
+    .filter((f) => /^\d{4}_.*\.sql$/.test(f))
     .sort()
     .map((f) => {
-      const match = f.match(/^(\d{4}[a-z]?)_(.+)\.(sql|ts)$/);
+      const match = f.match(/^(\d{4})_(.+)\.sql$/);
       if (!match) throw new Error(`Invalid migration filename: ${f}`);
       return {
         version: match[1],
         name: match[2],
         path: join(dir, f),
-        ext: match[3],
       };
     });
 }
@@ -77,43 +70,10 @@ async function applySqlMigration(
   migration: MigrationFile,
   content: string,
   checksum: string,
-  noTransaction: boolean,
 ): Promise<void> {
-  if (noTransaction) {
-    await client.query(content);
-  } else {
-    await client.query("SAVEPOINT migration");
-    try {
-      await client.query(content);
-      await client.query("RELEASE SAVEPOINT migration");
-    } catch (err) {
-      await client.query("ROLLBACK TO SAVEPOINT migration");
-      throw err;
-    }
-  }
-
-  await client.query(
-    "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
-    [migration.version, migration.name, checksum],
-  );
-}
-
-async function applyTsMigration(
-  client: PoolClient,
-  migration: MigrationFile,
-  checksum: string,
-  context?: MigrationContext,
-): Promise<void> {
-  const mod = await import(migration.path);
-  if (typeof mod.default !== "function") {
-    throw new Error(
-      `DML migration ${migration.path} must export a default function`,
-    );
-  }
-
   await client.query("SAVEPOINT migration");
   try {
-    await mod.default(client, context);
+    await client.query(content);
     await client.query("RELEASE SAVEPOINT migration");
   } catch (err) {
     await client.query("ROLLBACK TO SAVEPOINT migration");
@@ -160,7 +120,6 @@ export async function runMigrations(
   pool: Pool,
   migrationsDir: string,
   lockId: number,
-  context?: MigrationContext,
 ): Promise<void> {
   const client = await pool.connect();
   try {
@@ -189,29 +148,16 @@ export async function runMigrations(
           continue; // Already applied
         }
 
-        const noTransaction =
-          file.ext === "sql" && content.includes("-- no-transaction");
-
-        if (noTransaction) {
-          // No-transaction migrations run outside any transaction block.
-          // The advisory lock still prevents concurrent execution.
-          await applySqlMigration(client, file, content, checksum, true);
-        } else {
-          // Wrap in a transaction for atomicity
-          await client.query("BEGIN");
-          try {
-            if (file.ext === "sql") {
-              await applySqlMigration(client, file, content, checksum, false);
-            } else {
-              await applyTsMigration(client, file, checksum, context);
-            }
-            await client.query("COMMIT");
-          } catch (err) {
-            await client.query("ROLLBACK");
-            throw new Error(
-              `Migration ${file.version}_${file.name} failed: ${(err as Error).message}`,
-            );
-          }
+        // Wrap in a transaction for atomicity
+        await client.query("BEGIN");
+        try {
+          await applySqlMigration(client, file, content, checksum);
+          await client.query("COMMIT");
+        } catch (err) {
+          await client.query("ROLLBACK");
+          throw new Error(
+            `Migration ${file.version}_${file.name} failed: ${(err as Error).message}`,
+          );
         }
 
         console.log(`Applied migration: ${file.version}_${file.name}`);
@@ -260,11 +206,7 @@ async function runStartupCustomerMigrations(
   authPool: Pool,
   migrationsRoot: string,
 ): Promise<void> {
-  const { customerDbUrl, customerLockId, customerTransitKeyName } =
-    await import("./customer-db");
-  const { decryptDataKey, getTransitConfig } = await import(
-    "../crypto/transit"
-  );
+  const { customerDbUrl, customerLockId } = await import("./customer-db");
 
   const ownerTemplateUrl = process.env.CUSTOMER_DATABASE_OWNER_URL;
   if (!ownerTemplateUrl) {
@@ -274,10 +216,9 @@ async function runStartupCustomerMigrations(
     return;
   }
 
-  const result = await authPool.query<{
-    id: string;
-    wrapped_dek: string | null;
-  }>("SELECT id, wrapped_dek FROM customers WHERE database_status = 'active'");
+  const result = await authPool.query<{ id: string }>(
+    "SELECT id FROM customers WHERE database_status = 'active'",
+  );
 
   if (result.rows.length === 0) {
     console.log("No active customers to migrate.");
@@ -316,21 +257,10 @@ async function runStartupCustomerMigrations(
     const customerPool = new Pool({ connectionString: ownerUrl });
 
     try {
-      let context: MigrationContext | undefined;
-      if (customer.wrapped_dek) {
-        const transitConfig = getTransitConfig();
-        const keyName = customerTransitKeyName(customer.id);
-        const wrappedDek = customer.wrapped_dek;
-        context = {
-          decryptDek: () => decryptDataKey(transitConfig, keyName, wrappedDek),
-        };
-      }
-
       await runMigrations(
         customerPool,
         customerMigrationsDir,
         customerLockId(customer.id),
-        context,
       );
     } catch (err) {
       console.error(
@@ -359,11 +289,7 @@ async function runStartupGroupMigrations(
   authPool: Pool,
   migrationsRoot: string,
 ): Promise<void> {
-  const { groupDbName, groupDbUrl, groupLockId, groupTransitKeyName } =
-    await import("./group-db");
-  const { decryptDataKey, getTransitConfig } = await import(
-    "../crypto/transit"
-  );
+  const { groupDbName, groupDbUrl, groupLockId } = await import("./group-db");
 
   // Group DBs reuse the shared subject-DB owner template (see group-db.ts).
   const ownerTemplateUrl = process.env.CUSTOMER_DATABASE_OWNER_URL;
@@ -374,11 +300,8 @@ async function runStartupGroupMigrations(
     return;
   }
 
-  const result = await authPool.query<{
-    id: string;
-    wrapped_dek: string | null;
-  }>(
-    "SELECT id, wrapped_dek FROM customer_groups WHERE database_status = 'active'",
+  const result = await authPool.query<{ id: string }>(
+    "SELECT id FROM customer_groups WHERE database_status = 'active'",
   );
 
   if (result.rows.length === 0) {
@@ -415,22 +338,7 @@ async function runStartupGroupMigrations(
     const groupPool = new Pool({ connectionString: ownerUrl });
 
     try {
-      let context: MigrationContext | undefined;
-      if (group.wrapped_dek) {
-        const transitConfig = getTransitConfig();
-        const keyName = groupTransitKeyName(group.id);
-        const wrappedDek = group.wrapped_dek;
-        context = {
-          decryptDek: () => decryptDataKey(transitConfig, keyName, wrappedDek),
-        };
-      }
-
-      await runMigrations(
-        groupPool,
-        groupMigrationsDir,
-        groupLockId(group.id),
-        context,
-      );
+      await runMigrations(groupPool, groupMigrationsDir, groupLockId(group.id));
     } catch (err) {
       console.error(
         `Group ${group.id}: migration failed:`,

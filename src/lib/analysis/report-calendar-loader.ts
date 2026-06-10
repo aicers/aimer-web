@@ -382,7 +382,7 @@ export interface ReportNeighbors {
  * does, so a stale/old-tz row can't mask an eligible sibling tz on the same
  * date (a real case: a timezone change archives the old tz's state while its
  * result survives and a new-tz result/state pair lands on the same bucket date
- * — see `0030_periodic_state_event_count_and_tz_archive`).
+ * — see the tz-change archive trigger in `migrations/auth/0000_init.sql`).
  *
  * Bounding by the range rather than a probe budget guarantees the nearest
  * has-report bucket is always reached no matter how many non-navigable result

@@ -11,8 +11,8 @@
 // `input_story_refs`, the same generation-stamped ref lists the Sources
 // panel reads forward (`report-input-builder.ts` persists each ref as
 // `{aice_id, event_key, generation}` / `{story_id, generation}`). The
-// lookup is a JSONB containment (`@>`) scan backed by the GIN indexes in
-// migration 0009.
+// lookup is a JSONB containment (`@>`) scan backed by the
+// jsonb_path_ops GIN indexes on the ref columns.
 //
 // Contract (parent #386 / #396):
 //   - Scoped strictly to the page's `customerId` / customer DB. Reports

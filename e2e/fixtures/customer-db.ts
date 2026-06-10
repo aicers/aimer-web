@@ -13,7 +13,7 @@
 // import the TypeScript `src/lib/db/migrate.ts` source at runtime, so
 // `runCustomerMigrations` is a small inlined SQL runner that mirrors the
 // production migrator's apply semantics (checksum-tracked `_migrations`
-// table, `-- no-transaction` opt-out).
+// table, per-file transaction).
 
 import type { Pool } from "pg";
 
@@ -72,11 +72,10 @@ export async function provisionAnalysisCustomerDb(
     await ownerPool.end();
   }
 
-  // Run the customer migration set on a fresh pool. All customer
-  // migrations are plain SQL files (no DML/TS migrations exist for
-  // this DB), so a small inlined runner is sufficient — Playwright
-  // bundles this spec as CJS and cannot dynamically import the
-  // TypeScript `src/lib/db/migrate.ts` source at runtime.
+  // Run the customer migration set on a fresh pool. Migrations are
+  // plain SQL files, so a small inlined runner is sufficient —
+  // Playwright bundles this spec as CJS and cannot dynamically import
+  // the TypeScript `src/lib/db/migrate.ts` source at runtime.
   const { resolve } = await import("node:path");
   const migrationOwnerPool = new Pool({ connectionString: ownerUrl });
   try {
@@ -115,39 +114,29 @@ export async function runCustomerMigrations(
     for (const row of rows.rows) applied.set(row.version, row.checksum);
 
     const entries = (await readdir(dir))
-      .filter((f) => /^\d{4}[a-z]?_.*\.sql$/.test(f))
+      .filter((f) => /^\d{4}_.*\.sql$/.test(f))
       .sort();
 
     for (const file of entries) {
-      const match = file.match(/^(\d{4}[a-z]?)_(.+)\.sql$/);
+      const match = file.match(/^(\d{4})_(.+)\.sql$/);
       if (!match) continue;
       const [, version, name] = match;
       const content = await readFile(resolve(dir, file), "utf-8");
       const checksum = createHash("sha256").update(content).digest("hex");
       if (applied.has(version)) continue;
 
-      const noTx = content.includes("-- no-transaction");
-      if (noTx) {
+      await client.query("BEGIN");
+      try {
         await client.query(content);
-      } else {
-        await client.query("BEGIN");
-        try {
-          await client.query(content);
-          await client.query(
-            "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
-            [version, name, checksum],
-          );
-          await client.query("COMMIT");
-          continue;
-        } catch (err) {
-          await client.query("ROLLBACK");
-          throw err;
-        }
+        await client.query(
+          "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
+          [version, name, checksum],
+        );
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
       }
-      await client.query(
-        "INSERT INTO _migrations (version, name, checksum) VALUES ($1, $2, $3)",
-        [version, name, checksum],
-      );
     }
   } finally {
     client.release();

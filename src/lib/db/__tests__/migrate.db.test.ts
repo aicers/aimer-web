@@ -41,7 +41,6 @@ describe.skipIf(!hasPostgres)(
         await client.query("DROP TABLE IF EXISTS t3 CASCADE");
         await client.query("DROP TABLE IF EXISTS t4 CASCADE");
         await client.query("DROP TABLE IF EXISTS t5 CASCADE");
-        await client.query("DROP TABLE IF EXISTS ts_test CASCADE");
       } finally {
         client.release();
       }
@@ -90,28 +89,6 @@ describe.skipIf(!hasPostgres)(
         "SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'test_table')",
       );
       expect(tables[0].exists).toBe(true);
-    });
-
-    it("no-transaction migration with CREATE INDEX CONCURRENTLY", async () => {
-      // First migration creates a table
-      await writeFile(
-        join(tempDir, "0001_create.sql"),
-        "CREATE TABLE test_table (id int, name text);",
-      );
-      await runMigrations(pool, tempDir, LOCK_ID);
-
-      // Add a no-transaction migration
-      await writeFile(
-        join(tempDir, "0002_index.sql"),
-        "-- no-transaction\nCREATE INDEX CONCURRENTLY idx_test_name ON test_table (name);",
-      );
-      await runMigrations(pool, tempDir, LOCK_ID);
-
-      // Verify index exists
-      const { rows } = await pool.query(
-        "SELECT indexname FROM pg_indexes WHERE tablename = 'test_table' AND indexname = 'idx_test_name'",
-      );
-      expect(rows).toHaveLength(1);
     });
 
     it("rolls back failed migration without affecting prior successes", async () => {
@@ -201,71 +178,6 @@ describe.skipIf(!hasPostgres)(
         );
         expect(rows[0].exists).toBe(expected);
       }
-    });
-
-    it("executes TypeScript migration with default export function", async () => {
-      // Create the target table first
-      await writeFile(
-        join(tempDir, "0001_setup.sql"),
-        "CREATE TABLE ts_test (id serial PRIMARY KEY, value text);",
-      );
-
-      // Create a .ts migration that inserts a row
-      await writeFile(
-        join(tempDir, "0002_seed.ts"),
-        `export default async function(client) {
-          await client.query("INSERT INTO ts_test (value) VALUES ('hello')");
-        }`,
-      );
-
-      await runMigrations(pool, tempDir, LOCK_ID);
-
-      // Verify the row was inserted
-      const { rows } = await pool.query("SELECT value FROM ts_test");
-      expect(rows).toEqual([{ value: "hello" }]);
-
-      // Verify both migrations recorded
-      const { rows: applied } = await pool.query(
-        "SELECT version FROM _migrations ORDER BY version",
-      );
-      expect(applied.map((r) => r.version)).toEqual(["0001", "0002"]);
-    });
-
-    it("rejects TypeScript migration without default function export", async () => {
-      await writeFile(
-        join(tempDir, "0001_bad.ts"),
-        'export default "not a function";',
-      );
-
-      await expect(runMigrations(pool, tempDir, LOCK_ID)).rejects.toThrow(
-        "must export a default function",
-      );
-    });
-
-    it("passes MigrationContext to TypeScript migration", async () => {
-      // Create a table to store the context proof
-      await writeFile(
-        join(tempDir, "0001_setup.sql"),
-        "CREATE TABLE ts_test (id serial PRIMARY KEY, value text);",
-      );
-
-      // Migration that uses context
-      await writeFile(
-        join(tempDir, "0002_ctx.ts"),
-        `export default async function(client, context) {
-          const val = context?.decryptDek ? "has_context" : "no_context";
-          await client.query("INSERT INTO ts_test (value) VALUES ($1)", [val]);
-        }`,
-      );
-
-      const mockContext = {
-        decryptDek: async () => Buffer.from("test"),
-      };
-
-      await runMigrations(pool, tempDir, LOCK_ID, mockContext);
-
-      const { rows } = await pool.query("SELECT value FROM ts_test");
-      expect(rows[0].value).toBe("has_context");
     });
   },
 );

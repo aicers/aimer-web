@@ -98,8 +98,8 @@ interface VerifiedBridgePayload {
   /**
    * `undefined` means the verified token omitted `lang` and the BFF
    * should let aimer apply its server-side default. Persisted as
-   * `NULL` in `pending_analysis_requests.lang` so `/continue` after
-   * OIDC can reconstruct the same absence (DB migration 0026).
+   * `NULL` in `pending_analysis_requests.lang` (nullable for exactly
+   * this) so `/continue` after OIDC can reconstruct the same absence.
    */
   lang: SupportedLang | undefined;
   modelName: string;

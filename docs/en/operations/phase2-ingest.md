@@ -112,12 +112,13 @@ Use this checklist when bringing up a new customer + AICE pair.
 3. **Customer database**: `customers.database_status = 'active'`.
    A provisioning or failed status means the per-customer DB is not
    ready; the route resolves the pool but INSERTs will fail.
-4. **Phase 2 tables**: the customer DB has migration `0002` applied
-   (`SELECT version FROM _migrations` in the customer DB). The five
-   tables required for ingest are `baseline_event`, `story`,
-   `story_member`, `policy_run`, `policy_event`.
-5. **JTI replay store**: the auth DB has migration `0018` applied
-   and the runtime role can `INSERT` and `DELETE`. Verify with
+4. **Phase 2 tables**: the customer DB has the schema applied
+   (`SELECT version FROM _migrations` in the customer DB returns
+   `0000`). The five tables required for ingest are `baseline_event`,
+   `story`, `story_member`, `policy_run`, `policy_event`.
+5. **JTI replay store**: the auth DB has the schema applied
+   (`SELECT version FROM _migrations` returns `0000`) and the runtime
+   role can `INSERT` and `DELETE`. Verify with
    `SELECT 1 FROM phase2_consumed_jtis LIMIT 1` as `aimer_auth`.
 6. **Send a probe batch** from aice-web-next with one event. A
    successful call returns 200 with `accepted: 1`,

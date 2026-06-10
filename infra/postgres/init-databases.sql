@@ -29,7 +29,8 @@ $$;
 GRANT ALL ON DATABASE auth_db TO aimer_auth_owner;
 GRANT ALL ON SCHEMA public TO aimer_auth_owner;
 
--- Runtime needs CONNECT; table-level grants are applied by migration 0012.
+-- Runtime needs CONNECT; table-level grants are applied by the auth
+-- migrations.
 GRANT CONNECT ON DATABASE auth_db TO aimer_auth;
 
 -- ---------------------------------------------------------------
@@ -53,7 +54,7 @@ GRANT CONNECT ON DATABASE audit_db TO aimer_audit;
 \connect audit_db
 
 GRANT ALL ON SCHEMA public TO aimer_audit_owner;
--- Runtime table-level grants are applied by migration 0001_audit_roles.sql.
+-- Runtime table-level grants are applied by the audit migrations.
 GRANT USAGE ON SCHEMA public TO aimer_audit;
 
 -- ---------------------------------------------------------------

@@ -8,7 +8,7 @@ export type JtiConsumeResult = "consumed" | "replay";
 
 /**
  * Attempt to consume a context-token jti against the Phase 2 replay
- * store (`phase2_consumed_jtis` in the auth DB, migration 0018).
+ * store (`phase2_consumed_jtis` in the auth DB).
  *
  * Returns `"consumed"` if the jti was newly inserted, `"replay"` if a
  * row with the same primary key already existed (translated to a

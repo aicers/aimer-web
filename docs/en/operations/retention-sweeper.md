@@ -163,11 +163,9 @@ archive fails.
 
 ## Missing-policy invariant
 
-An active customer must have a `customer_retention_policy` row.
-Provisioning inserts the row at customer creation, and the
-backfill in migration `0023_backfill_customer_retention_policy.sql`
-covers customers that pre-existed the table. If the sweeper finds
-an active customer with no policy row, it emits
+An active customer must have a `customer_retention_policy` row;
+provisioning inserts the row at customer creation. If the sweeper
+finds an active customer with no policy row, it emits
 `retention_sweep.tick_failed` with
 `error_message = 'missing_retention_policy'` and skips the
 customer for that tick. The customer-db is **not** opened in this

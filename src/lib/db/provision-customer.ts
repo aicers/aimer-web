@@ -66,7 +66,7 @@ async function reconcileGroupsBestEffort(
  * 1. CREATE DATABASE via admin connection
  * 2. Grant schema privileges to owner/runtime roles
  * 3. Generate DEK via OpenBao Transit and store wrapped_dek
- * 4. Run customer migrations (with MigrationContext)
+ * 4. Run customer migrations
  * 5. Update database_status to 'active'
  *
  * On failure at any step, database_status is set to 'failed' and the

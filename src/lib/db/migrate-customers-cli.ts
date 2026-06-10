@@ -1,14 +1,11 @@
 import { join } from "node:path";
 import { Pool } from "pg";
-import { decryptDataKey, getTransitConfig } from "../crypto/transit";
 import { reconcileGroupsForCustomer } from "../groups/lifecycle";
 import {
   customerDbUrl,
   customerLockId,
-  customerTransitKeyName,
   getCustomerOwnerTemplateUrl,
 } from "./customer-db";
-import type { MigrationContext } from "./migrate";
 import { runMigrations } from "./migrate";
 
 // Group lifecycle (#510): a `database_status` write here can flip a member
@@ -67,23 +64,10 @@ async function main() {
       const customerPool = new Pool({ connectionString: ownerUrl });
 
       try {
-        // Build MigrationContext with decryptDek if DEK is available
-        let context: MigrationContext | undefined;
-        if (customer.wrapped_dek) {
-          const transitConfig = getTransitConfig();
-          const keyName = customerTransitKeyName(customer.id);
-          const wrappedDek = customer.wrapped_dek;
-          context = {
-            decryptDek: () =>
-              decryptDataKey(transitConfig, keyName, wrappedDek),
-          };
-        }
-
         await runMigrations(
           customerPool,
           migrationsDir,
           customerLockId(customer.id),
-          context,
         );
 
         // Update status to active on success (for targeted mode retries)

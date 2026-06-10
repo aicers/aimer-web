@@ -23,9 +23,10 @@ import { expect, test } from "./fixtures";
 
 const ORIGIN = "http://localhost:3000";
 
-// Permission keys that only the Analyst role grants (migrations 0003). The
-// User and Manager roles never grant these, so their presence proves a grant
-// arrived via an analyst assignment rather than a membership role.
+// Permission keys that only the Analyst role grants (seeded by
+// migrations/auth/0000_init.sql). The User and Manager roles never grant
+// these, so their presence proves a grant arrived via an analyst
+// assignment rather than a membership role.
 const ANALYST_ONLY_PERMISSIONS = [
   "analyses:export",
   "analyses:configure",

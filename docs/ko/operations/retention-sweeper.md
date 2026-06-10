@@ -157,10 +157,8 @@ source_unavailable`을 반환하고, 그룹 dirty 표시기는 보관된 행을 
 
 ## 정책 누락 인바리언트
 
-활성 고객은 반드시 `customer_retention_policy` 행을 가져야 합니다.
-프로비저닝 시 행을 삽입하며, 마이그레이션
-`0023_backfill_customer_retention_policy.sql`이 테이블 이전에 만들
-어진 고객을 백필합니다. 그럼에도 스위퍼가 정책 행이 없는 활성
+활성 고객은 반드시 `customer_retention_policy` 행을 가져야 하며,
+프로비저닝 시 행을 삽입합니다. 그럼에도 스위퍼가 정책 행이 없는 활성
 고객을 만나면, `retention_sweep.tick_failed`를
 `error_message = 'missing_retention_policy'`로 기록하고 해당 고객을
 건너뜁니다. 이 경우 고객 DB는 **열리지 않으며**, 부분 삭제도

@@ -47,23 +47,17 @@ describe("listMigrationFiles", () => {
   it("lists SQL migration files in sorted order", async () => {
     await writeFile(join(tempDir, "0002_add_index.sql"), "CREATE INDEX;");
     await writeFile(join(tempDir, "0001_create_table.sql"), "CREATE TABLE;");
-    await writeFile(
-      join(tempDir, "0003_backfill.ts"),
-      "export default () => {}",
-    );
+    await writeFile(join(tempDir, "0003_seed.sql"), "INSERT;");
 
     const files = await listMigrationFiles(tempDir);
 
     expect(files).toHaveLength(3);
     expect(files[0].version).toBe("0001");
     expect(files[0].name).toBe("create_table");
-    expect(files[0].ext).toBe("sql");
     expect(files[1].version).toBe("0002");
     expect(files[1].name).toBe("add_index");
-    expect(files[1].ext).toBe("sql");
     expect(files[2].version).toBe("0003");
-    expect(files[2].name).toBe("backfill");
-    expect(files[2].ext).toBe("ts");
+    expect(files[2].name).toBe("seed");
   });
 
   it("ignores files that do not match the naming convention", async () => {
@@ -72,25 +66,13 @@ describe("listMigrationFiles", () => {
     await writeFile(join(tempDir, ".gitkeep"), "");
     await writeFile(join(tempDir, "random.sql"), "SQL");
     await writeFile(join(tempDir, "001_short_version.sql"), "SQL");
+    await writeFile(join(tempDir, "0002b_letter_suffix.sql"), "SQL");
+    await writeFile(join(tempDir, "0003_typescript.ts"), "export default 1");
 
     const files = await listMigrationFiles(tempDir);
 
     expect(files).toHaveLength(1);
     expect(files[0].version).toBe("0001");
-  });
-
-  it("lists migration files with letter suffix in correct order", async () => {
-    await writeFile(join(tempDir, "0005_accounts.sql"), "CREATE TABLE;");
-    await writeFile(join(tempDir, "0005b_assignments.sql"), "CREATE TABLE;");
-    await writeFile(join(tempDir, "0006_sessions.sql"), "CREATE TABLE;");
-
-    const files = await listMigrationFiles(tempDir);
-
-    expect(files).toHaveLength(3);
-    expect(files[0].version).toBe("0005");
-    expect(files[1].version).toBe("0005b");
-    expect(files[1].name).toBe("assignments");
-    expect(files[2].version).toBe("0006");
   });
 
   it("includes full path in migration file entries", async () => {
@@ -246,29 +228,6 @@ describe("runMigrations", () => {
     expect(sqlTexts).not.toContain("COMMIT");
     // Advisory unlock must still fire (in finally block)
     expect(sqlTexts).toContain("SELECT pg_advisory_unlock($1)");
-  });
-
-  it("executes no-transaction migration without BEGIN/COMMIT", async () => {
-    const sql = "-- no-transaction\nCREATE INDEX CONCURRENTLY idx ON foo(bar);";
-    await writeFile(join(tempDir, "0001_add_index.sql"), sql);
-
-    const { client, calls } = createMockClient();
-    const pool = createMockPool(client);
-
-    await runMigrations(pool, tempDir, 1);
-
-    const sqlTexts = calls.map((c) => c.sql);
-
-    // The raw SQL should be executed
-    expect(sqlTexts).toContain(sql);
-    // No transaction wrapping
-    expect(sqlTexts).not.toContain("BEGIN");
-    expect(sqlTexts).not.toContain("COMMIT");
-    expect(sqlTexts).not.toContain("SAVEPOINT migration");
-    // But _migrations insert still happens
-    expect(calls.some((c) => c.sql.includes("INSERT INTO _migrations"))).toBe(
-      true,
-    );
   });
 
   it("skips an already-applied migration with matching checksum", async () => {
