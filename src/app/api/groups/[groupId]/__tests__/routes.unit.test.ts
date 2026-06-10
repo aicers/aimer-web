@@ -60,12 +60,14 @@ const mockDeleteGroup = vi.fn();
 const mockGetGroupRetention = vi.fn();
 const mockUpdateGroupRetention = vi.fn();
 const mockUpdateGroupTimezone = vi.fn();
+const mockFetchMemberNames = vi.fn();
 vi.mock("@/lib/groups/groups", () => ({
   getGroupWithMembers: (...a: unknown[]) => mockGetGroupWithMembers(...a),
   deleteGroup: (...a: unknown[]) => mockDeleteGroup(...a),
   getGroupRetention: (...a: unknown[]) => mockGetGroupRetention(...a),
   updateGroupRetention: (...a: unknown[]) => mockUpdateGroupRetention(...a),
   updateGroupTimezone: (...a: unknown[]) => mockUpdateGroupTimezone(...a),
+  fetchMemberNames: (...a: unknown[]) => mockFetchMemberNames(...a),
 }));
 
 const mockProvisionGroupDb = vi.fn();
@@ -73,7 +75,7 @@ vi.mock("@/lib/db/provision-group", () => ({
   provisionGroupDb: (...a: unknown[]) => mockProvisionGroupDb(...a),
 }));
 
-const { DELETE } = await import("../route");
+const { DELETE, GET: DETAIL_GET } = await import("../route");
 const { GET: RETENTION_GET, PUT: RETENTION_PUT } = await import(
   "../retention/route"
 );
@@ -104,6 +106,7 @@ const loaded = {
     createdBy: "acct-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     tz: "Asia/Seoul",
+    databaseStatus: "active",
   },
   memberIds: [M1, M2],
 };
@@ -115,6 +118,58 @@ beforeEach(() => {
   mockTeardownGroupDb.mockResolvedValue(undefined);
   mockAuditLog.mockResolvedValue(undefined);
   mockProvisionGroupDb.mockResolvedValue("active");
+  mockFetchMemberNames.mockResolvedValue([
+    { id: M1, name: "Member One" },
+    { id: M2, name: "Member Two" },
+  ]);
+  mockGetGroupRetention.mockResolvedValue({ analysisDays: 1095 });
+});
+
+describe("GET /api/groups/[groupId] — management detail", () => {
+  it("returns 400 for a non-UUID id", async () => {
+    const res = await DETAIL_GET(req("/api/groups/not-a-uuid"));
+    expect(res.status).toBe(400);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    mockGetGroupWithMembers.mockResolvedValue(null);
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(404);
+    expect(mockAssertManagement).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller does not manage every member", async () => {
+    mockAssertManagement.mockRejectedValue(new HttpError("Forbidden", 403));
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockFetchMemberNames).not.toHaveBeenCalled();
+  });
+
+  it("returns owner, members with names, db status, and retention", async () => {
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      id: GID,
+      tz: "Asia/Seoul",
+      ownerId: "acct-1",
+      createdBy: "acct-1",
+      databaseStatus: "active",
+      groupPolicyDays: 1095,
+    });
+    expect(body.members).toEqual([
+      { id: M1, name: "Member One" },
+      { id: M2, name: "Member Two" },
+    ]);
+  });
+
+  it("treats a missing retention policy row as no-expiry (null)", async () => {
+    mockGetGroupRetention.mockResolvedValue(undefined);
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).groupPolicyDays).toBeNull();
+  });
 });
 
 describe("DELETE /api/groups/[groupId]", () => {

@@ -40,6 +40,13 @@ export interface GroupRow {
   createdBy: string;
   createdAt: string;
   tz: string;
+  /**
+   * The group's own dedicated data-DB provisioning state
+   * (`provisioning` | `active` | `failed`, #507). Distinct from the
+   * lifecycle/generation status (#510); the management read surfaces (#512)
+   * expose it so an owner can spot a `failed` group and retry provisioning.
+   */
+  databaseStatus: string;
 }
 
 export interface CreatedGroup extends GroupRow {
@@ -78,6 +85,28 @@ export async function fetchMemberStates(
     databaseStatus: r.database_status,
     timezone: r.timezone,
   }));
+}
+
+/**
+ * Fetch the display name for each given customer id, in the requested order
+ * (ids absent from `customers` are dropped). The management detail surface
+ * (#512) pairs member ids with their names in one round trip rather than
+ * exposing bare uuids.
+ */
+export async function fetchMemberNames(
+  client: PoolClient,
+  memberIds: string[],
+): Promise<{ id: string; name: string }[]> {
+  if (memberIds.length === 0) return [];
+  const { rows } = await client.query<{ id: string; name: string }>(
+    `SELECT id, name FROM customers WHERE id = ANY($1::uuid[])`,
+    [memberIds],
+  );
+  const nameById = new Map(rows.map((r) => [r.id, r.name]));
+  return memberIds.flatMap((id) => {
+    const name = nameById.get(id);
+    return name === undefined ? [] : [{ id, name }];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +161,9 @@ export async function createGroup(
     createdBy: params.creatorAccountId,
     createdAt: grp.rows[0].created_at,
     tz: params.tz,
+    // The row is inserted with the DDL default; the data DB is provisioned
+    // post-commit (the create route surfaces the resulting status).
+    databaseStatus: "provisioning",
     memberIds: params.memberIds,
   };
 }
@@ -157,8 +189,10 @@ export async function getGroupWithMembers(
     created_by: string;
     created_at: string;
     tz: string;
+    database_status: string;
   }>(
-    `SELECT id, name, description, owner_id, created_by, created_at, tz
+    `SELECT id, name, description, owner_id, created_by, created_at, tz,
+            database_status
        FROM customer_groups
       WHERE id = $1`,
     [groupId],
@@ -182,6 +216,7 @@ export async function getGroupWithMembers(
       createdBy: r.created_by,
       createdAt: r.created_at,
       tz: r.tz,
+      databaseStatus: r.database_status,
     },
     memberIds: memberRows.rows.map((m) => m.customer_id),
   };
@@ -217,8 +252,10 @@ export async function listGroupsWithMembers(
     created_by: string;
     created_at: string;
     tz: string;
+    database_status: string;
   }>(
-    `SELECT id, name, description, owner_id, created_by, created_at, tz
+    `SELECT id, name, description, owner_id, created_by, created_at, tz,
+            database_status
        FROM customer_groups
       ORDER BY name, id`,
   );
@@ -250,6 +287,7 @@ export async function listGroupsWithMembers(
       createdBy: r.created_by,
       createdAt: r.created_at,
       tz: r.tz,
+      databaseStatus: r.database_status,
     },
     memberIds: membersByGroup.get(r.id) ?? [],
   }));

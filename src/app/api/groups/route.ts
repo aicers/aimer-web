@@ -2,12 +2,39 @@ import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { validateCustomerFields } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
+import { listManageableGroups } from "@/lib/auth/group-authorization";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
 import { DEFAULT_ANALYSIS_RETENTION_DAYS } from "@/lib/auth/retention-defaults";
-import { getAuthPool } from "@/lib/db/client";
+import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { provisionGroupDb } from "@/lib/db/provision-group";
 import { createGroup } from "@/lib/groups/groups";
 import { validateGroupMembers } from "@/lib/groups/member-validation";
+
+// GET /api/groups — list the groups the caller QUALIFIES TO MANAGE
+// (Manager or eligible Analyst on EVERY member, per `assertAllMemberManagement`
+// lifted to a list). This is the MANAGEMENT-scoped counterpart of #513's
+// view-scoped `GET /api/auth/groups`: a stricter gate, and it carries owner /
+// provisioning state the view list omits. The set-based `listManageableGroups`
+// resolves access in one round trip rather than looping the predicate per group.
+//
+// Bridge sessions get `{ groups: [] }` — the same short-circuit the view list
+// and the other group surfaces apply (a bridge holds no management grant), so
+// the settings page is offered nothing under a bridge with no group-specific
+// branch.
+export const GET = withAuth(
+  async (_req: NextRequest, auth) => {
+    if (auth.bridgeCustomerIds !== null) {
+      return Response.json({ groups: [] });
+    }
+
+    const groups = await withTransaction(getAuthPool(), (client) =>
+      listManageableGroups(client, auth.accountId),
+    );
+
+    return Response.json({ groups });
+  },
+  { ctx: "general" },
+);
 
 // POST /api/groups — create a customer group.
 //
