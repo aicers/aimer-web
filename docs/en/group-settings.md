@@ -12,11 +12,7 @@ the sidebar and the [Group Hub](analysis/group-hub.md) instead; this page
 is the manage-only counterpart, and it is never offered in a bridged
 session.
 
-<!-- Screenshot placeholder: the Group Settings list — a "Create group"
-     button and a list of manageable groups, each row showing the group
-     name, member count, and database status, with an "Owner" tag on
-     groups you own. Capture from a stack with real customer groups once
-     available (the list shows customer-group data from aice-web-next). -->
+![The Group Settings list — the Create group button and a manageable group row showing its name, Owner tag, member count, and Active database status](../assets/group-settings-list.en.png)
 
 ## What you can manage
 
@@ -49,11 +45,7 @@ Select a group to open its detail page.
 
 Click **Create group** to open the create dialog.
 
-<!-- Screenshot placeholder: the Create group dialog — name and
-     description fields, the checkbox list of eligible member customers
-     (each with its timezone), the timezone selector, and the estimated
-     cost panel. Capture from a real-data stack once available (the member
-     list and cost estimate use aice-web-next customer data). -->
+![The Create group dialog — name and description fields, the checkbox list of eligible member customers with each member's timezone, the auto-filled timezone selector, and the estimated-cost panel (recent event volume, estimated monthly tokens, and estimated monthly cost)](../assets/group-create-dialog.en.png)
 
 1. **Name** the group (and optionally add a description).
 2. **Select members** — two to ten customers. The list is limited to your
@@ -79,10 +71,7 @@ message rather than creating an invalid group.
 
 Open a group from the list to reach its detail page.
 
-<!-- Screenshot placeholder: the group detail page — the member list
-     (read-only), the timezone control, the retention control, and the
-     provisioning/deletion section. Capture from a real-data stack once
-     available. -->
+![The group detail page — the read-only member list, the timezone control, the retention control, and the provisioning/deletion section showing the Active database status and the Delete group action](../assets/group-detail.en.png)
 
 - **Members** are listed read-only; membership cannot be edited.
 - **Timezone** — change the group's report bucket timezone. The change
@@ -107,3 +96,24 @@ group's lifecycle.
 If a group's **Database status** is **Failed**, the owner sees a **Retry
 provisioning** action on the detail page to re-run the provisioning of the
 group's dedicated database.
+
+## Lifecycle
+
+Beyond the manual actions above, a group is kept consistent automatically. A
+group must always have a **qualifying manager** — an operational account
+that holds the Manager role (or an eligible Analyst assignment) on *every*
+member. The platform reconciles each group when its members or their
+managers change:
+
+- **Suspend / resume.** If any member becomes non-operational — the member
+  customer is suspended, or its database is no longer active — the group is
+  automatically **suspended** and report generation pauses. When every member
+  is operational again, the group **resumes** and generation continues; the
+  reports for the affected period are picked up on the next cycle.
+- **Owner transfer.** If the current owner stops qualifying as a manager
+  (for example, loses the required role on one of the members) while other
+  qualifying managers remain, ownership **transfers automatically** to one of
+  them, so the group always has an owner who can manage it.
+- **Auto-delete.** If no qualifying manager remains for the group, the group
+  is **automatically and permanently deleted**, along with its dedicated
+  database. This is immediate and cannot be undone.
