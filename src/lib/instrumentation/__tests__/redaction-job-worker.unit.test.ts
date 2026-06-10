@@ -248,7 +248,7 @@ describe("redaction-job-worker helpers", () => {
     const domainsHash = (suffixes: string[]) =>
       __testables.shortDomainsHash(suffixes);
 
-    it("targetDomainsFragment isolates the domains hash, or null when absent", () => {
+    it("targetDomainsFragment isolates the domains hash, throwing when absent", () => {
       expect(
         __testables.targetDomainsFragment(
           "engine:1.0.0|ranges:abcdef012345|domains:0011223344ff",
@@ -259,10 +259,12 @@ describe("redaction-job-worker helpers", () => {
           "engine:1.0.0|ranges:empty|domains:empty",
         ),
       ).toBe("empty");
-      // Legacy version with no domains segment → null (skip validation).
-      expect(
+      // The only writer always stamps the segment (an empty set hashes to the
+      // `empty` sentinel), so a version without it is corrupt — the job fails
+      // rather than silently skipping the owned-domains drift check.
+      expect(() =>
         __testables.targetDomainsFragment("engine:1.0.0|ranges:abcdef012345"),
-      ).toBeNull();
+      ).toThrowError("domain_policy_missing");
     });
 
     it("shortDomainsHash matches the engine's empty sentinel and is stable", () => {
@@ -303,16 +305,17 @@ describe("redaction-job-worker helpers", () => {
       ).rejects.toThrowError("domain_policy_drift");
     });
 
-    it("skips validation for a legacy target with no domains segment", async () => {
+    it("throws domain_policy_missing for a target with no domains segment", async () => {
       const job = {
         customer_id: "c",
         target_policy_version: "engine:1.0.0|ranges:empty",
       };
-      const set = await __testables.loadAndValidateOwnedDomains(
-        fakeAuthClient(["customer.example"]),
-        job,
-      );
-      expect(set.normalisedSuffixes).toEqual(["customer.example"]);
+      await expect(
+        __testables.loadAndValidateOwnedDomains(
+          fakeAuthClient(["customer.example"]),
+          job,
+        ),
+      ).rejects.toThrowError("domain_policy_missing");
     });
   });
 
@@ -734,7 +737,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000010";
     const jobId = "j-recovery-happy";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const runningRow = {
       id: jobId,
       customer_id: customerId,
@@ -827,7 +830,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000002";
     const jobId = "j-empty-cancel";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const baseRow = {
       id: jobId,
       customer_id: customerId,
@@ -936,7 +939,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000099";
     const jobId = "j-zero-row-cancel";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const runningStartedAt = new Date("2026-01-01T00:00:00.000Z");
     const cancelledAt = new Date("2026-01-01T00:01:00.000Z");
     const runningRow = {
@@ -1043,7 +1046,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000003";
     const jobId = "j-mark-deferral";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const runningRow = {
       id: jobId,
       customer_id: customerId,
@@ -1174,7 +1177,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000004";
     const jobId = "j-event-lock-order";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const runningRow = {
       id: jobId,
       customer_id: customerId,
@@ -1398,7 +1401,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000097";
     const jobId = "j-referent-deleted";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     const runningRow = {
       id: jobId,
       customer_id: customerId,
@@ -1571,7 +1574,7 @@ describe("runOnceForTests orchestration", () => {
     const customerId = "c0000000-0000-0000-0000-000000000005";
     const jobId = "j-duration-completed-at";
     const { snapshot, hash } = __testables.snapshotFromCidrs([]);
-    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}`;
+    const targetPolicyVersion = `engine:1.0.0|ranges:${hash}|domains:empty`;
     // Choose timestamps with a wide gap; the audit must reflect this
     // exact gap and not a Date.now() snapshot.
     const runningStartedAt = new Date("2026-01-01T00:00:00.000Z");

@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
-import { __testables, refCustomerId } from "../report-input-builder";
+import { __testables, wireCustomerId } from "../report-input-builder";
 
 const {
   planAnalyzedAggregates,
@@ -265,13 +265,13 @@ describe("computeInputHash member customer_id canonicalization (#523)", () => {
   });
 });
 
-describe("refCustomerId degrade helper (#523)", () => {
-  it("degrades a legacy ref without customer_id to the report's own subject", () => {
-    expect(refCustomerId({}, "subject-1")).toBe("subject-1");
+describe("wireCustomerId wire-source helper (#524/#525)", () => {
+  it("resolves a single-customer wire source (no customer_id) to the report's own subject", () => {
+    expect(wireCustomerId({}, "subject-1")).toBe("subject-1");
   });
 
-  it("returns the ref's own customer_id when present", () => {
-    expect(refCustomerId({ customer_id: "member-9" }, "subject-1")).toBe(
+  it("returns the source's own customer_id when present", () => {
+    expect(wireCustomerId({ customer_id: "member-9" }, "subject-1")).toBe(
       "member-9",
     );
   });

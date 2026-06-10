@@ -231,7 +231,14 @@ async function seedCanonicalResult(
   eventKey: string,
 ): Promise<void> {
   const eventRefs = JSON.stringify([
-    { aice_id: "aice-1", event_key: eventKey, generation: 1 },
+    {
+      aice_id: "aice-1",
+      event_key: eventKey,
+      generation: 1,
+      model_name: "openai",
+      model: "gpt-4o",
+      customer_id: CUSTOMER_ID,
+    },
   ]);
   await customerPool.query(
     `INSERT INTO periodic_report_result
@@ -291,7 +298,15 @@ async function seedCanonicalResultWithStory(
   bucketDate: string,
   storyId: string,
 ): Promise<void> {
-  const storyRefs = JSON.stringify([{ story_id: storyId, generation: 1 }]);
+  const storyRefs = JSON.stringify([
+    {
+      story_id: storyId,
+      generation: 1,
+      model_name: "openai",
+      model: "gpt-4o",
+      customer_id: CUSTOMER_ID,
+    },
+  ]);
   await customerPool.query(
     `INSERT INTO periodic_report_result
        (subject_id, period, bucket_date, tz, lang, restoration_lang,

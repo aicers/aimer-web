@@ -85,9 +85,6 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      // The group subject id — distinct from either member, so a ref WITHOUT a
-      // customer_id would degrade here and (correctly) find no member pool.
-      "group-1",
       [],
       [
         // Two cited event leaves with the IDENTICAL (aice_id, event_key) but
@@ -96,12 +93,16 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-B",
         },
       ],
@@ -179,10 +180,21 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      "group-1",
       [
-        { story_id: "5001", generation: 1, customer_id: "cust-A" },
-        { story_id: "5001", generation: 1, customer_id: "cust-B" },
+        {
+          story_id: "5001",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
+          customer_id: "cust-A",
+        },
+        {
+          story_id: "5001",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
+          customer_id: "cust-B",
+        },
       ],
       [],
       [],
@@ -204,13 +216,14 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      "group-1",
       [],
       [
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-missing",
         },
       ],
@@ -277,19 +290,22 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
       () => pool as any,
-      "cust-A",
       [],
       [
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
         {
           aice_id: "aice-2",
           event_key: "9002",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
       ],

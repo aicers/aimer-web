@@ -244,23 +244,18 @@ export default async function AnalysisResultPage({
         {/* Model/prompt provenance is operator-facing detail about how the
             artifact was produced — restricted to analysts (#457/#463). A
             non-analyst keeps every analytically-meaningful field above.
-            Snapshot / prompt version are populated for every fresh analysis
-            now that aimer#480 returns them (#474); the conditional stays as
-            a defensive guard for legacy rows predating the populated path. */}
+            Snapshot / prompt version are populated on every row (aimer#480
+            returns them and the columns are NOT NULL). */}
         {data.isViewerAnalyst ? (
           <>
             <Field label={tA("fields.provider")}>{data.modelName}</Field>
             <Field label={tA("fields.model")}>{data.model}</Field>
-            {data.modelActualVersion ? (
-              <Field label={tA("fields.modelSnapshot")}>
-                {data.modelActualVersion}
-              </Field>
-            ) : null}
-            {data.promptVersion ? (
-              <Field label={tA("fields.promptVersion")}>
-                {data.promptVersion}
-              </Field>
-            ) : null}
+            <Field label={tA("fields.modelSnapshot")}>
+              {data.modelActualVersion}
+            </Field>
+            <Field label={tA("fields.promptVersion")}>
+              {data.promptVersion}
+            </Field>
             {/* `requestedBy` is NULL for an auto-baseline result (no human
                 requester); show the localized "system" label instead of an
                 empty field, mirroring the story/report pages (#493). */}

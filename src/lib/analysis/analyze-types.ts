@@ -9,8 +9,8 @@ export interface EventAnalysisResultRow {
   lang: "KOREAN" | "ENGLISH";
   model_name: string;
   model: string;
-  model_actual_version: string | null;
-  prompt_version: string | null;
+  model_actual_version: string;
+  prompt_version: string;
   severity_score: number;
   likelihood_score: number;
   priority_tier: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";

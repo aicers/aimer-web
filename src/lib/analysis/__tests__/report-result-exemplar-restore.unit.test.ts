@@ -119,10 +119,18 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
       () => pool as any,
-      "cust-1",
       [],
       // One cited event leaf → report token R1.
-      [{ aice_id: "aice-c", event_key: "6001", generation: 1 }],
+      [
+        {
+          aice_id: "aice-c",
+          event_key: "6001",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
+          customer_id: "cust-1",
+        },
+      ],
       // One exemplar leaf (distinct event) → appended after, report token R2.
       [
         {
@@ -131,6 +139,7 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
           generation: 1,
           model_name: "openai",
           model: "gpt-4o",
+          customer_id: "cust-1",
         },
       ],
       // The ROW is Korean; the exemplar must still be fetched at English.
@@ -157,7 +166,6 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
       () => pool as any,
-      "cust-1",
       [],
       [],
       [],
