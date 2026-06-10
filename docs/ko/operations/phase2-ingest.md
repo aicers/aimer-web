@@ -109,14 +109,14 @@ aimer-web의 상한을 올린다면 aice-web-next의 발신 측 상한도 함께
 3. **고객 데이터베이스**: `customers.database_status = 'active'`인지.
    `provisioning`/`failed` 상태는 고객 DB가 준비되지 않았음을
    의미하며, 경로가 풀을 얻더라도 INSERT가 실패합니다.
-4. **Phase 2 테이블**: 고객 DB에 마이그레이션 `0002`가 적용되어
-   있는지(고객 DB에서 `SELECT version FROM _migrations`). 수집에
-   필요한 다섯 테이블은 `baseline_event`, `story`, `story_member`,
-   `policy_run`, `policy_event`입니다.
-5. **JTI 재생 저장소**: 인증 DB에 마이그레이션 `0018`이 적용되어
-   있고, 런타임 역할이 `INSERT`/`DELETE` 할 수 있는지.
-   `aimer_auth`로 `SELECT 1 FROM phase2_consumed_jtis LIMIT 1`로
-   확인합니다.
+4. **Phase 2 테이블**: 고객 DB에 스키마가 적용되어 있는지(고객
+   DB에서 `SELECT version FROM _migrations`가 `0000`을 반환).
+   수집에 필요한 다섯 테이블은 `baseline_event`, `story`,
+   `story_member`, `policy_run`, `policy_event`입니다.
+5. **JTI 재생 저장소**: 인증 DB에 스키마가 적용되어 있고(`SELECT
+   version FROM _migrations`가 `0000`을 반환), 런타임 역할이
+   `INSERT`/`DELETE` 할 수 있는지. `aimer_auth`로
+   `SELECT 1 FROM phase2_consumed_jtis LIMIT 1`로 확인합니다.
 6. **프로브 배치 전송**: aice-web-next에서 이벤트 1개로 시험
    호출합니다. 200 응답에 `accepted: 1`, `duplicates_skipped: 0`이
    반환되어야 합니다. 동일 컨텍스트 토큰으로 두 번째 호출하면

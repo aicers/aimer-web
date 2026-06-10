@@ -34,41 +34,11 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    // 0000_extensions, 0001_detection_events, 0002_phase2_tables,
-    // 0003_redaction_foundation, 0004_retention_sweeper_support,
-    // 0005_drop_analysis_narrative, 0006_redaction_job_worker_grants,
-    // 0007_analysis_result_tables (RFC 0002 Phase 0, #294),
-    // 0008_event_analysis_result_generation (RFC 0002 Phase 2, #297),
-    // 0009_citation_reverse_lookup_gin (T2, #396),
-    // 0010_ioc_enrichment (RFC 0003 P1a, #361),
-    // 0011_enrichment_facts (RFC 0003 C1, #440),
-    // 0012_event_provenance_not_null (aimer#480, #474),
-    // 0013_event_ioc_enrichment (RFC 0003 consumer ④, #492),
-    // 0014_event_analysis_result_origin (RFC 0002 amendment, #493),
-    // 0015_periodic_report_result_subject_rekey (RFC 0004, #503),
-    // 0016_periodic_report_long_tail (RFC 0002 amendment, #495)
-    expect(rows.map((r) => r.version)).toEqual([
-      "0000",
-      "0001",
-      "0002",
-      "0003",
-      "0004",
-      "0005",
-      "0006",
-      "0007",
-      "0008",
-      "0009",
-      "0010",
-      "0011",
-      "0012",
-      "0013",
-      "0014",
-      "0015",
-      "0016",
-    ]);
+    // The collapsed first-version schema (#535): one 0000_init.sql.
+    expect(rows.map((r) => r.version)).toEqual(["0000"]);
   });
 
-  it("creates the five remaining Phase 2 tables (analysis_narrative dropped in 0005)", async () => {
+  it("creates the five Phase 2 tables (analysis_narrative never exists)", async () => {
     const { rows } = await pool.query(`
       SELECT table_name
       FROM information_schema.tables
@@ -92,7 +62,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     ]);
   });
 
-  it("drops analysis_narrative (RFC 0001 §'analysis_narrative retirement')", async () => {
+  it("has no analysis_narrative table (RFC 0001 §'analysis_narrative retirement')", async () => {
     const { rows } = await pool.query(
       `SELECT to_regclass('public.analysis_narrative') AS table_oid`,
     );
@@ -677,7 +647,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     ).rejects.toThrow();
   });
 
-  it("creates the sweeper-supporting indexes added by 0004", async () => {
+  it("creates the sweeper-supporting indexes", async () => {
     // Retention sweep walks each clock column on every tick and the
     // map cascade joins through source_aice_id; without these
     // indexes the sweep becomes a sequence of seq-scans.
@@ -1088,7 +1058,7 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       await rolePool.query("DELETE FROM policy_run WHERE run_id = 900");
     });
 
-    // -- Redaction-job-worker column-scoped UPDATE grants (0005) --
+    // -- Redaction-job-worker column-scoped UPDATE grants --
     //
     // The worker re-stamps stale rows by issuing UPDATE against four
     // tables under aimer_customer. Grants are column-scoped so only
@@ -1223,7 +1193,6 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
     it("cannot UPDATE the all-read-only Phase 2 tables (story, policy_run)", async () => {
       // These two were never written by the redaction job worker
       // and remain SELECT/INSERT/DELETE only via aimer_customer.
-      // analysis_narrative was dropped in 0005.
       const readOnlyForUpdate: Record<string, string> = {
         story: "source_aice_id",
         policy_run: "source_aice_id",
@@ -1263,10 +1232,9 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       );
     });
 
-    it("can DELETE on detection_events (added by 0004)", async () => {
-      // The Phase 1 grant was SELECT/INSERT only — retention sweeper
-      // requires DELETE. Without 0004 this fails with
-      // "permission denied for table detection_events".
+    it("can DELETE on detection_events", async () => {
+      // The retention sweeper requires DELETE; without the grant this
+      // fails with "permission denied for table detection_events".
       await rolePool.query(
         `INSERT INTO detection_events
            (aice_id, event_key, redacted_event, redaction_policy_version,

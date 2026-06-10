@@ -113,12 +113,12 @@ describe("jobStoryLockId2", () => {
   });
 });
 
-describe("seedRealStoryJobs — dirty/no-job post-purge case", () => {
-  // After migration 0034 deletes all dry-run jobs, a dirty state row
-  // whose only job WAS a dry-run row ends up with no default-variant
-  // job at all. The seeding pass must insert generation 1 in that
-  // case rather than treating it as max-generation-reached. The
-  // reviewer's Round-4 scenario.
+describe("seedRealStoryJobs — dirty state with no default-variant job", () => {
+  // A dirty state row can carry no default-variant job at all (e.g.
+  // the dry-run job rows were purged while the state survived). The
+  // seeding pass must insert generation 1 in that case rather than
+  // treating it as max-generation-reached. The reviewer's Round-4
+  // scenario.
   it("inserts generation 1 when a dirty state has no default-variant job", async () => {
     const actionable = [
       {

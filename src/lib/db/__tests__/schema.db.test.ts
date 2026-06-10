@@ -35,7 +35,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(54);
+    // The collapsed first-version schema (#535): one 0000_init.sql.
+    expect(rows).toHaveLength(1);
   });
 
   // -- Built-in roles --
@@ -50,19 +51,19 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       ORDER BY r.name
     `);
 
-    // Counts include the redaction-ranges and retention permission
-    // keys seeded by 0022_redaction_permissions.sql:
-    //   read keys → User, Analyst, Manager, System Administrator (+2)
-    //   write keys → Manager, System Administrator (+2)
-    // plus the owned-domains keys seeded by
-    // 0040_owned_domain_permissions.sql:
-    //   read key → User, Analyst, Manager, System Administrator (+1)
-    //   write key → Manager, System Administrator (+1)
-    // plus the analyst designation keys seeded by 0003_roles.sql (#266):
-    //   analysts:read + analysts:write → System Administrator only (+2)
-    // plus the per-customer default-model keys seeded by
-    // 0042_customer_default_model_permissions.sql (#473):
-    //   read + write keys → Analyst, System Administrator only (+2 each)
+    // Counts follow the seed section of migrations/auth/0000_init.sql:
+    // every role carries the User base (7) except System Administrator,
+    // whose 15 admin-context keys include the analyst designation pair
+    // (#266). On top of the base:
+    //   redaction-ranges + retention keys — read → User, Analyst,
+    //   Manager, System Administrator (+2); write → Manager, System
+    //   Administrator (+2)
+    //   owned-domains keys — read → User, Analyst, Manager, System
+    //   Administrator (+1); write → Manager, System Administrator (+1)
+    //   per-customer default-model keys (#473) — read + write →
+    //   Analyst, System Administrator only (+2 each)
+    //   Manager extras — customer-settings + customer-members (+4)
+    //   Analyst extras — advanced-analysis keys (+5)
     expect(rows).toEqual([
       { name: "Analyst", auth_context: "general", perm_count: 17 },
       { name: "Manager", auth_context: "general", perm_count: 17 },
@@ -692,8 +693,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         expect(checks).toContain(status);
       }
 
-      // event_count must default to 0 (added by 0030 for the
-      // delete-only envelope detection path).
+      // event_count must default to 0 (the delete-only envelope
+      // detection path relies on it).
       const { rows: ev } = await pool.query<{
         column_default: string | null;
         is_nullable: string;
@@ -766,8 +767,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("event_analysis_job has the budget-accounting DDL contract (#493)", async () => {
-      // The auto-baseline path's job lifecycle table (auth/0046). Lock in
-      // the columns the per-customer daily cap depends on for correctness.
+      // The auto-baseline path's job lifecycle table. Lock in the
+      // columns the per-customer daily cap depends on for correctness.
       const { rows: checks } = await pool.query<{
         pg_get_constraintdef: string;
       }>(
@@ -1021,7 +1022,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("customer-timezone-change trigger archives mismatched periodic_report_state rows", async () => {
-      // The migration-0030 trigger is part of the schema gate too —
+      // The tz-change archive trigger is part of the schema gate too —
       // verify it fires on a tz update.
       const { rows: cRows } = await pool.query(
         "INSERT INTO customers (external_key, name, timezone) VALUES ('rfc0002-trg', 'TZ', 'Asia/Seoul') RETURNING id",
@@ -1209,10 +1210,10 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("has pending-friendly partial indexes on the analysis state tables (round-15 review item 1)", async () => {
-      // Migration 0032 adds `WHERE status = 'pending'` partial indexes
-      // for the worker's per-tick readiness scans. Without these the
-      // pending scans had no usable index and would devolve into full
-      // table scans as state volume grew.
+      // The `WHERE status = 'pending'` partial indexes back the
+      // worker's per-tick readiness scans. Without these the pending
+      // scans have no usable index and would devolve into full table
+      // scans as state volume grew.
       const { rows } = await pool.query<{
         indexname: string;
         indexdef: string;
@@ -1258,9 +1259,9 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       // our test database. We must grant here.
       await pool.query(`GRANT CONNECT ON DATABASE ${dbName} TO aimer_auth`);
       await pool.query("GRANT USAGE ON SCHEMA public TO aimer_auth");
-      // Re-run the runtime role grants (migration 0012 already ran but
-      // on this test DB as superuser — the GRANT statements are
-      // effective because the tables were created by the superuser).
+      // The migration's own GRANT statements already ran on this test
+      // DB as superuser and are effective because the tables were
+      // created by the superuser.
 
       rolePool = createRolePool(dbName, "aimer_auth", "changeme");
     });
@@ -1294,9 +1295,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     });
 
     it("can access all granted application tables", async () => {
-      // Verify SELECT on every table granted in 0012_runtime_role.sql
-      // plus the RFC 0002 Phase 0 (#294) analysis state/job tables
-      // granted in 0028 / 0029.
+      // Verify SELECT on every CRUD-granted application table plus the
+      // RFC 0002 (#294) analysis state/job tables.
       const crudTables = [
         "system_settings",
         "customers",
@@ -1412,7 +1412,8 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
     const { rows } = await pool.query(
       "SELECT version FROM _migrations ORDER BY version",
     );
-    expect(rows).toHaveLength(3);
+    // The collapsed first-version schema (#535): one 0000_init.sql.
+    expect(rows).toHaveLength(1);
   });
 
   it("audit_logs.auth_context rejects invalid values", async () => {
@@ -1429,9 +1430,8 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
     beforeAll(async () => {
       await pool.query(`GRANT CONNECT ON DATABASE ${dbName} TO aimer_audit`);
       await pool.query("GRANT USAGE ON SCHEMA public TO aimer_audit");
-      // The audit role grants are applied by migration 0001_audit_roles.sql
-      // which grants to aimer_audit_owner and aimer_audit. Since we ran
-      // migrations as superuser, re-grant explicitly.
+      // The migration grants to aimer_audit_owner and aimer_audit.
+      // Since we ran migrations as superuser, re-grant explicitly.
       await pool.query("GRANT SELECT, INSERT ON audit_logs TO aimer_audit");
       await pool.query(
         "GRANT SELECT, INSERT ON suspicious_activity_alerts TO aimer_audit",

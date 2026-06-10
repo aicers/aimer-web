@@ -975,8 +975,8 @@ async function runNativeGeneration(args: {
     built.redaction.kind === "ok" ? built.redaction.version : "baseline-only";
 
   // Re-check the parent state immediately before the (expensive,
-  // irreversible) LLM call. The tz-change trigger archives old-tz state
-  // rows independently of this worker (migrations/auth/0030), so a state
+  // irreversible) LLM call. The schema's tz-change trigger archives
+  // old-tz state rows independently of this worker, so a state
   // archived in the claim→here window must not reach the LLM. The pickup
   // filter and the claim re-check close the pickup→claim window; this
   // closes claim→call (#297 review round 4, item 3).
@@ -1916,8 +1916,8 @@ async function writeResultRow(
 
 // True when the parent `periodic_report_state` row is archived or gone —
 // either way the job must not produce an LLM call or result row. The
-// tz-change trigger (migrations/auth/0030) archives old-tz states
-// asynchronously, so this is re-evaluated at the call and write barriers.
+// schema's tz-change trigger archives old-tz states asynchronously, so
+// this is re-evaluated at the call and write barriers.
 async function parentStateArchived(
   authPool: Pool,
   job: JobPickup,
@@ -1934,8 +1934,9 @@ async function parentStateArchived(
 
 // Return a claimed (`processing`) job to `queued` without recording
 // progress, used when the parent state archived mid-flight. The pickup
-// filter excludes archived parents, so the job is not re-picked; the
-// belt-and-braces archived-parent sweep (migrations/auth/0035) reaps it.
+// filter excludes archived parents, so the job is not re-picked: it
+// stays `queued` under its archived parent indefinitely — nothing
+// currently reaps such a row.
 async function releaseArchivedJob(
   authPool: Pool,
   job: JobPickup,

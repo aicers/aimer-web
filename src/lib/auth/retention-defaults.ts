@@ -9,10 +9,10 @@
  *
  * SCOPE: these are TS/runtime constants only. SQL migrations cannot
  * import them, so any migration column default keeps its own literal
- * with a comment cross-referencing the relevant constant here (see
- * `migrations/auth/0020_customer_retention_policy.sql` and
- * `migrations/auth/0049_customer_groups.sql`). The constants are NOT a
- * source for migration DDL — only for the runtime inserts.
+ * with a comment cross-referencing the relevant constant here (see the
+ * `customer_retention_policy` and `group_retention_policy` defaults in
+ * `migrations/auth/0000_init.sql`). The constants are NOT a source for
+ * migration DDL — only for the runtime inserts.
  */
 
 /** Default ingestion-retention window (days) at customer provisioning. */

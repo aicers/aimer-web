@@ -191,9 +191,9 @@ describe.skipIf(!hasPostgres)("lookupAnalysisForEvent", () => {
     expect(result.row.kind).toBe("from-vZZ");
   });
 
-  it("does not leak analysis_narrative — the table is dropped in migration 0005", async () => {
-    // Sanity check that the retirement migration ran: the table must not
-    // exist any more. Source of truth for the cache is event_analysis_result.
+  it("does not leak analysis_narrative — the table does not exist", async () => {
+    // Sanity check the RFC 0001 retirement: the legacy table must not
+    // exist. Source of truth for the cache is event_analysis_result.
     const { rows } = await pool.query(
       `SELECT to_regclass('public.analysis_narrative') AS table_oid`,
     );

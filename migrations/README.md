@@ -1,88 +1,62 @@
 # Database Migrations
 
-This directory contains SQL and TypeScript migration files organized by
-database scope.
+This directory contains the SQL schema files applied by the migration
+runner (`src/lib/db/migrate.ts`), organized by database scope.
 
 ## Directory Structure
 
-- `auth/` — Migrations for the auth database (shared, central)
-- `audit/` — Migrations for the audit database (shared, central)
-- `customer/` — Migrations applied to every customer database
+- `auth/` — Schema for the auth database (shared, central)
+- `audit/` — Schema for the audit database (shared, central)
+- `customer/` — Schema applied to every customer database
+- `group/` — Schema applied to every customer-group data database
+
+## Pre-release Policy: One `0000_init.sql` Per Scope
+
+aimer-web is pre-release and has never been deployed. Until the first
+release, each scope carries exactly one schema file, `0000_init.sql`,
+and schema changes are made by **editing that file in place** — no
+incremental migrations are added.
+
+The trade-off is that dev databases must be **reset** on every schema
+change (`docker compose down -v`, or drop the affected databases): the
+runner records a SHA-256 checksum for every applied file and will
+refuse to start against a database whose recorded `0000` checksum no
+longer matches the edited file. That refusal is by design — resetting
+the database is the expected response, not a workaround.
+
+After the first release this policy flips: `0000_init.sql` is frozen,
+and every schema change ships as a new numbered migration appended
+after it, starting at `0001_*.sql`. From that point on, applied files
+are never edited — the checksum validation enforces it.
 
 ## File Naming Convention
 
 Migration files must follow the pattern:
 
 ```text
-NNNN_description.sql   — DDL migration (schema changes)
-NNNN_description.ts    — DML migration (data manipulation)
+NNNN_description.sql
 ```
 
-`NNNN` is a zero-padded four-digit version number. Migrations are applied
-in lexicographic order. Examples:
+`NNNN` is a zero-padded four-digit version number. Migrations are
+applied in lexicographic order, each inside its own transaction.
 
-```text
-0001_create_users.sql
-0002_add_email_index.sql
-0003_backfill_usernames.ts
-```
+## How the Runner Applies Files
 
-## DDL vs DML Migrations
+The runner tracks applied files in a `_migrations` table (version,
+name, SHA-256 checksum, applied-at). On every run it:
 
-**DDL (.sql)** — Schema changes written in plain SQL. Each file runs inside
-a transaction by default. Add the marker comment `-- no-transaction` on any
-line to opt out of the transaction wrapper (required for statements like
-`CREATE INDEX CONCURRENTLY`).
+1. Acquires a PostgreSQL advisory lock so concurrent replicas cannot
+   apply migrations simultaneously during a rolling deploy.
+2. Skips files already recorded in `_migrations`, after verifying the
+   stored checksum still matches the file on disk (mismatch aborts).
+3. Applies each pending file inside a transaction and records it.
 
-**DML (.ts)** — Data migrations written in TypeScript. The file must
-`export default` an async function that receives a `PoolClient` and an
-optional `MigrationContext`:
-
-```ts
-import type { PoolClient } from "pg";
-import type { MigrationContext } from "@/lib/db/migrate";
-
-export default async function (client: PoolClient, context?: MigrationContext) {
-  await client.query("UPDATE users SET active = true WHERE verified = true");
-}
-```
-
-The `MigrationContext` object provides helpers that are only available for
-customer DB DML migrations. Currently planned:
-
-- `decryptDek` — Decrypt a customer's wrapped DEK via OpenBao Transit
-  (available after #52).
-
-## Expand/Contract Pattern
-
-For zero-downtime rolling deploys, use the expand/contract pattern:
-
-1. **Expand** — Add the new column/table without removing the old one.
-   Both old and new code can run against this schema.
-2. **Deploy** — Roll out the application code that writes to both old and
-   new columns and reads from the new one.
-3. **Migrate** — Backfill existing data into the new column (DML migration).
-4. **Contract** — Drop the old column/table once all replicas use the new
-   code path.
-
-Each step is a separate migration so that a failed deploy can be rolled
-forward without reverting schema changes.
-
-## Rollback Strategy
-
-Migrations are **forward-only**. To undo a change, create a new migration
-that reverses the previous one. Never edit or delete an applied migration
-file — the runner validates SHA-256 checksums and will refuse to proceed
-if an applied migration has been modified.
-
-## How to Create a New Migration
-
-1. Determine the next version number by looking at the highest existing
-   `NNNN` in the target directory.
-2. Create a file following the naming convention above.
-3. For SQL files, write idempotent DDL when possible (`IF NOT EXISTS`).
-4. Test locally by running the application (auth/audit migrations run on
-   startup) or `pnpm migrate:customers` for customer migrations.
+Auth and audit migrations run on application startup. Customer and
+group databases are migrated at provisioning time
+(`provision-customer.ts` / `provision-group.ts`), on startup for every
+active tenant, and on demand via `pnpm migrate:customers` /
+`pnpm migrate:groups` (retry / disaster-recovery paths). The backup
+tooling (`src/lib/backup/`) replays pending migrations after a restore.
 
 ## Database Roles
 
@@ -93,30 +67,26 @@ Each database uses two PostgreSQL roles to enforce least-privilege access:
 | Owner | `aimer_auth_owner` | Migration runner | Full DDL + DML (CREATE, ALTER, DROP, INSERT, UPDATE, DELETE) |
 | Runtime | `aimer_auth` | Application | Minimum required privileges (SELECT, INSERT, UPDATE, DELETE on granted tables) |
 
-For the audit database the runtime role (`audit_writer`) is restricted to
-INSERT + SELECT only — it cannot UPDATE or DELETE audit records.
+For the audit database the runtime role (`aimer_audit`) is restricted
+to INSERT + SELECT only — it cannot UPDATE or DELETE audit records.
 
 The migration runner reads `DATABASE_MIGRATION_URL` /
 `AUDIT_DATABASE_MIGRATION_URL` (falling back to `DATABASE_URL` /
 `AUDIT_DATABASE_URL` when unset). The application runtime always uses
 `DATABASE_URL` / `AUDIT_DATABASE_URL`.
 
-Customer databases share two roles across all tenants:
+Customer and group databases share two roles across all tenants:
 
 - **`aimer_customer_owner`** — Migration runner (full DDL + DML)
 - **`aimer_customer`** — Application runtime (SELECT, INSERT, UPDATE, DELETE on granted tables)
 
 These roles are created by `infra/postgres/init-databases.sql`.
 Database-level grants are applied during provisioning; table-level
-grants are applied by customer migrations.
+grants are applied by the schema files themselves.
 
 The migration runner uses `CUSTOMER_DATABASE_OWNER_URL` (template URL
 with the owner role credentials — the database name is replaced per
-customer). Customer database names follow the convention
-`customer_<uuid_without_hyphens>`, derived from `customers.id`.
-
-## Concurrency Safety
-
-The migration runner acquires a PostgreSQL advisory lock before running.
-This prevents multiple application replicas from applying migrations
-simultaneously during a rolling deploy.
+tenant). Customer database names follow the convention
+`customer_<uuid_without_hyphens>`, derived from `customers.id`; group
+database names follow `group_<uuid_without_hyphens>`, derived from
+`customer_groups.id`.

@@ -56,7 +56,7 @@ export type WithdrawalItem = z.infer<typeof withdrawalItemSchema>;
  * natural key).
  *
  * Additionally, a `policy_run` withdrawal cascades to its child
- * `policy_event` rows (FK in migrations/customer/0002). If a payload
+ * `policy_event` rows (FK in the customer schema). If a payload
  * combines `{ kind: "policy_run", run_id: R }` with any
  * `{ kind: "policy_event", run_id: R, ... }` for the same run, the
  * count attributed to the explicit policy_event withdrawal depends on
@@ -150,7 +150,7 @@ export interface WithdrawCounts {
  * Execute all DELETEs in a single per-customer transaction.
  *
  * For `policy_run`, child `policy_event` rows cascade via the FK in
- * `migrations/customer/0002_phase2_tables.sql`. For `story`,
+ * `migrations/customer/0000_init.sql`. For `story`,
  * `story_member` rows cascade likewise. Withdraw does NOT issue
  * explicit DELETEs against the child tables — the cascade is the
  * source of truth and an explicit DELETE would invite drift if the

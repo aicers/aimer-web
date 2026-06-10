@@ -176,8 +176,8 @@ rules still hold for `Mutation.analyzeEvent`:
   payloads cannot shift the rendered analysis time.
 - `lang: Language` — nullable. The BFF preserves caller-supplied
   absence end-to-end: the request body, the bridge's
-  `analyze_params_token` claim, and the PAR row (`lang TEXT`, nullable
-  after migration `0026`) all accept `null`/missing. When absent, the
+  `analyze_params_token` claim, and the PAR row (`lang TEXT`,
+  nullable) all accept `null`/missing. When absent, the
   GraphQL variable is omitted and aimer applies its server-side
   default. The cache PK falls back to `DEFAULT_LANG` so explicit
   ENGLISH and "omitted, defaulted" callers land on the same row.

@@ -2048,8 +2048,8 @@ describe.skipIf(!hasPostgres)("analysis reconcile (cross-DB)", () => {
     // Round-8 review item 2: the customer-level timezone change
     // (admin SQL path, no UI in Phase 0) must archive any existing
     // `periodic_report_state` rows whose `tz` does not match the
-    // new `customers.timezone`. The trigger added in migration
-    // 0030 fires on UPDATE OF timezone and runs the archive SET.
+    // new `customers.timezone`. The schema's tz-change trigger
+    // fires on UPDATE OF timezone and runs the archive SET.
     const customer = "00000000-0000-0000-0000-0000000000cb";
     await authPool.query(
       `INSERT INTO customers (id, external_key, name, database_status, timezone)

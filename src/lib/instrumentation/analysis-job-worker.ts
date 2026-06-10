@@ -22,8 +22,8 @@
 // enforced inside `seedRealStoryJobs` (story side); `dry_run=TRUE`
 // rows are not counted against it.
 //
-// Phase 1 (#296) deletes any leftover `dry_run=TRUE` rows in its own
-// migration before enabling LLM calls.
+// Leftover `dry_run=TRUE` rows from before real LLM calls were enabled
+// (Phase 1, #296) are swept by the queued-drain below.
 //
 // Time seam (#326): every time-dependent SQL predicate inside this
 // worker uses `$n::timestamptz` bind parameters whose value is sourced
@@ -368,9 +368,8 @@ async function tickPeriodicStates(
 // ---------------------------------------------------------------------------
 
 /**
- * Phase 1 (#296): legacy Phase 0 drain. The Phase 1 migration deletes
- * leftover `dry_run=TRUE` rows; this drain remains as a belt-and-
- * braces sweep for stale rows from rolling deploys or fixtures.
+ * Phase 1 (#296): legacy Phase 0 drain — a belt-and-braces sweep for
+ * stale `dry_run=TRUE` rows from rolling deploys or fixtures.
  *
  * Phase 0 inserts job rows directly as `status='done', dry_run=TRUE`,
  * so under normal operation no queued dry-run rows ever exist. Two

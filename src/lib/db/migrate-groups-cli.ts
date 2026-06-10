@@ -1,13 +1,6 @@
 import { join } from "node:path";
 import { Pool } from "pg";
-import { decryptDataKey, getTransitConfig } from "../crypto/transit";
-import {
-  getGroupOwnerTemplateUrl,
-  groupDbUrl,
-  groupLockId,
-  groupTransitKeyName,
-} from "./group-db";
-import type { MigrationContext } from "./migrate";
+import { getGroupOwnerTemplateUrl, groupDbUrl, groupLockId } from "./group-db";
 import { runMigrations } from "./migrate";
 
 // CLI peer of migrate-customers-cli.ts (#507). Applies pending
@@ -62,24 +55,7 @@ async function main() {
       const groupPool = new Pool({ connectionString: ownerUrl });
 
       try {
-        // Build MigrationContext with decryptDek if DEK is available
-        let context: MigrationContext | undefined;
-        if (group.wrapped_dek) {
-          const transitConfig = getTransitConfig();
-          const keyName = groupTransitKeyName(group.id);
-          const wrappedDek = group.wrapped_dek;
-          context = {
-            decryptDek: () =>
-              decryptDataKey(transitConfig, keyName, wrappedDek),
-          };
-        }
-
-        await runMigrations(
-          groupPool,
-          migrationsDir,
-          groupLockId(group.id),
-          context,
-        );
+        await runMigrations(groupPool, migrationsDir, groupLockId(group.id));
 
         // Update status to active on success (for targeted mode retries)
         if (group.database_status !== "active") {

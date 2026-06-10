@@ -851,7 +851,7 @@ async function loadCanonicalMembers(
   //
   // `baseline_event`'s PK is `(baseline_version, event_key)`, so a
   // rebaselined event survives as multiple rows
-  // (`migrations/customer/0002_phase2_tables.sql:18-26`). We therefore
+  // (`migrations/customer/0000_init.sql`). We therefore
   // dedupe to one row per `(source_aice_id, event_key)` — latest by
   // `received_at` — in the `latest_baseline` CTE BEFORE joining. Deduping
   // over the joined result instead would risk collapsing members shared
@@ -1668,14 +1668,14 @@ export async function seedRealStoryJobs(
       //      cap: emit `analysis.story_max_generation_reached` and
       //      leave the row alone (operators can still force past the
       //      cap via the regenerate endpoint).
-      //  (c) NO default-variant job exists (e.g. after the Phase 1
-      //      migration that purged Phase 0 dry-run rows): seed
+      //  (c) NO default-variant job exists (e.g. the dry-run rows
+      //      were purged while the state survived): seed
       //      generation 1, same shape as the ready branch.
       //
       // Conflating (b) and (c) — what the v1 code did — would both
-      // miss the promised first real enqueue for dirty rows after the
-      // migration AND emit a false `story_max_generation_reached`
-      // log. Probe the existing job's generation first, then dispatch.
+      // miss the promised first real enqueue for such dirty rows AND
+      // emit a false `story_max_generation_reached` log. Probe the
+      // existing job's generation first, then dispatch.
       //
       // We move the state row back to `ready` regardless — the
       // pipeline is "done" until the next dirty transition, and

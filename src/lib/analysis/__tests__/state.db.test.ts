@@ -1545,7 +1545,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   });
 
   it("customers timezone change archives all old-tz periodic_report_state rows via trigger (round-8 review item 2)", async () => {
-    // Migration 0030 adds an AFTER UPDATE OF timezone trigger on
+    // The schema ships an AFTER UPDATE OF timezone trigger on
     // customers that archives every periodic_report_state row whose
     // tz no longer matches customers.timezone. The admin SQL update
     // path is the only mutation in Phase 0; this test verifies the
