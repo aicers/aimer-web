@@ -6,12 +6,9 @@
 // rows (also auth DB). See RFC 0002 §"Readiness and scheduling" and
 // §"Dirty transitions" for the rules implemented here.
 //
-// Phase 0's worker does not call the LLM — it persists `dry_run=TRUE`
-// job rows so dirty transitions can be observed during the 48h
-// verification gate (issue #294, decision 3). The functions below are
-// shared between (a) the ingest hooks that mark state rows dirty and
-// (b) the worker tick that promotes pending → ready and enqueues new
-// jobs.
+// The functions below are shared between (a) the ingest hooks that
+// mark state rows dirty and (b) the worker tick that promotes
+// pending → ready and enqueues new jobs.
 
 import "server-only";
 
@@ -551,7 +548,7 @@ export async function recordBaselineActivity(
  * window gate (`tickPeriodicStates`) uses `updated_at` as the ingest-
  * activity proxy, so a successful refresh-window / backfill must
  * write `updated_at = NOW()` (and resync source columns) on the
- * pending bucket. Without this, the worker could promote and dry-run
+ * pending bucket. Without this, the worker could promote and enqueue
  * a pending bucket inside its quiet window even though source data
  * just changed.
  *

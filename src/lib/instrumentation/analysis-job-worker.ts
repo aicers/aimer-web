@@ -140,11 +140,10 @@ async function tickStoryStates(
   client: PoolClient,
   nowIso: string,
 ): Promise<void> {
-  // Phase 1 (#296) — real LLM seeding. Pending → ready promotion stays
-  // here (the rule is RFC 0002 §"Story readiness", independent of the
-  // dry-run vs real distinction). The "ensure a job row exists for the
-  // default variant" pass moves to `seedRealStoryJobs` so it can write
-  // `dry_run=FALSE` rows that the LLM-calling tick picks up.
+  // Pending → ready promotion lives here (RFC 0002 §"Story readiness");
+  // the "ensure a job row exists for the default variant" pass lives in
+  // `seedRealStoryJobs`, which writes the `queued` rows the LLM-calling
+  // tick picks up (#296).
   const { rows: pending } = await client.query<StoryStateRow>(
     `SELECT customer_id::text  AS customer_id,
             story_id::text     AS story_id,
@@ -176,9 +175,8 @@ async function tickStoryStates(
     );
   }
 
-  // 2. Seed real (non-dry-run) `queued` jobs for every actionable
-  //    state row. See `seedRealStoryJobs` for the same NOT-EXISTS /
-  //    SKIP-LOCKED rules previously inlined here.
+  // 2. Seed `queued` jobs for every actionable state row. See
+  //    `seedRealStoryJobs` for the NOT-EXISTS / SKIP-LOCKED rules.
   await seedRealStoryJobs(client, BATCH_SIZE, nowIso);
 }
 
@@ -210,9 +208,9 @@ async function tickPeriodicStates(
   // been no ingest activity for `ANALYSIS_IDLE_QUIET_MINUTES` (RFC 0002
   // §"Periodic report readiness"). Without this, historical buckets
   // seeded by the reconcile scan after a hook failure (round-3 review
-  // item 2) would remain `pending` forever and never produce a Phase 0
-  // dry-run job, breaking the verification gate's "no stuck-pending
-  // state rows" requirement.
+  // item 2) would remain `pending` forever and never produce a job,
+  // breaking the verification gate's "no stuck-pending state rows"
+  // requirement.
   //
   // The quiet-window gate (round-7 review item 1) uses `updated_at` as
   // the ingest-activity proxy: the ingest hooks (`recordBaselineActivity`)
@@ -220,8 +218,8 @@ async function tickPeriodicStates(
   // so a still-active backfill keeps the row from being promoted before
   // the batch settles. Without this gate, a historical bucket seeded or
   // forward-patched by a just-finished reconcile/backfill could be
-  // promoted and dry-run-jobbed immediately even though ingest activity
-  // just occurred.
+  // promoted and enqueued immediately even though ingest activity just
+  // occurred.
   //
   // Issue #295 round-2 review item 2: cursor-only advances
   // (`recordCursorWatermark` and reconcile's `patchCursorWatermark`)
@@ -344,9 +342,8 @@ async function tickPeriodicStates(
   //   1. `requeueLiveReportJobs` bumps `done` LIVE variant jobs whose
   //      per-variant `next_due_at` cadence has elapsed back to `queued`
   //      (gated by `state.status <> 'archived'`, round-14 item 5).
-  //   2. `seedRealReportJobs` ensures a real (non-dry-run) `queued` job
-  //      exists for every `ready`/`dirty` LIVE/DAILY/WEEKLY/MONTHLY
-  //      state row.
+  //   2. `seedRealReportJobs` ensures a `queued` job exists for every
+  //      `ready`/`dirty` LIVE/DAILY/WEEKLY/MONTHLY state row.
   //
   // Phase 3 (#298) lifted the LIVE/DAILY-only seeding filter: WEEKLY and
   // MONTHLY `ready`/`dirty` rows (promoted above on their 6h / 12h

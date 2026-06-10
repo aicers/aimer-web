@@ -2711,8 +2711,8 @@ export interface OnDemandVariant {
  *   - `seeded`     — no prior row; a fresh generation-1 `queued` job was created.
  *   - `coalesced`  — an existing `queued`/`processing`/`done` job satisfies the
  *                    request; left untouched (no generation bump).
- *   - `requeued`   — an existing `failed` (or leftover dry-run) row was reset to
- *                    `queued` at the SAME generation so the worker retries.
+ *   - `requeued`   — an existing `failed` row was reset to `queued` at the
+ *                    SAME generation so the worker retries.
  *   - `state_not_found`    — no parent `periodic_report_state` row exists.
  *   - `source_pending`     — the parent state is still `pending` (not yet
  *                            promoted past its settle window); no job created.
@@ -2735,8 +2735,7 @@ export type OnDemandEnqueueResult =
  * Regenerate path but WITHOUT its force-regenerate semantics: it never bumps
  * `generation` and never sets `force_requested_*`. An existing in-flight or
  * completed variant (`queued`/`processing`/`done`) coalesces — only a genuine
- * first request seeds a row. A previously `failed` variant (or a leftover
- * dry-run row that the pickup filter would otherwise ignore) is re-queued at
+ * first request seeds a row. A previously `failed` variant is re-queued at
  * the same generation so the worker can produce the report the user is now
  * actively requesting.
  *
