@@ -107,7 +107,7 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     // Leaf 1 (cust-A) → report token R1; leaf 2 (cust-B) → R2. Each restores
@@ -198,7 +198,7 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
       ],
       [],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     // Both members' distinct plaintexts appear — a mis-route would yield the
@@ -228,7 +228,7 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
     // No pool for the named member → token stays unrestored (tokenized), never
     // throws and never leaks another member's plaintext.
@@ -310,7 +310,7 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     expect(calls.leaf).toBe(1);

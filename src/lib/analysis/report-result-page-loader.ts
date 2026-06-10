@@ -806,16 +806,6 @@ export async function loadReportResultPage(
   // point at (#412 item 5). `model_name` / `model` are the canonical's on a
   // translated row (copied verbatim), so the pinned leaves resolve.
   const replayLang = row.restoration_lang ?? row.lang;
-  // `leafVariant` is the variant the cited leaves are pinned to: the replay
-  // language (canonical's for a translated row) plus the row's model. Both
-  // the token replay AND the Sources display-field fetch / link use it, so
-  // a translated report links to the correct leaf instead of the missing
-  // `row.lang` variant.
-  const leafVariant = {
-    lang: replayLang,
-    modelName: row.model_name,
-    model: row.model,
-  };
   // Member fan-out routing: map each ref's owning `customer_id` to the member
   // pool that holds its leaf + redaction maps. For a customer subject this is
   // the single result pool (every ref carries `subjectId`); for a group, the
@@ -831,7 +821,7 @@ export async function loadReportResultPage(
       storyRefs,
       eventRefs,
       exemplarRefs,
-      leafVariant,
+      replayLang,
     );
 
   // Build the report-level cited sources: each stored ref + the display
@@ -1222,7 +1212,7 @@ async function resolveReportCompareColumn(
     storyRefs,
     eventRefs,
     exemplarRefs,
-    { lang: replayLang, modelName: row.model_name, model: row.model },
+    replayLang,
   );
   const sections = restoreReportSectionsFromRow(
     row,
@@ -1358,7 +1348,7 @@ async function buildReportTokenPlaintext(
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
   exemplarRefs: ExemplarRef[],
-  variant: { lang: string; modelName: string; model: string },
+  replayLang: string,
 ): Promise<ReportLeafData> {
   const out = new Map<string, string>();
   const storyDisplays: Array<LeafDisplayRow | null> = storyRefs.map(() => null);
@@ -1430,7 +1420,7 @@ async function buildReportTokenPlaintext(
     // owned by this member are batched into ONE row-value `IN (...)` keyed by
     // `(story_id, generation, model_name, model)` (`customer_id` / `lang` are
     // constant per member query) — no per-ref round-trip.
-    const params: unknown[] = [cid, variant.lang];
+    const params: unknown[] = [cid, replayLang];
     const tuples = idxs.map((i) => {
       const ref = storyRefs[i];
       const base = params.length;
@@ -1489,7 +1479,7 @@ async function buildReportTokenPlaintext(
     // Per-ref model pin (#465 Scope 4), batched per member exactly like the
     // story leaves above. `event_analysis_result` is keyed by `aice_id` (not
     // `customer_id`), so the member identity is the pool; `lang` is constant.
-    const params: unknown[] = [variant.lang];
+    const params: unknown[] = [replayLang];
     const tuples = idxs.map((i) => {
       const ref = eventRefs[i];
       const base = params.length;
@@ -1546,7 +1536,7 @@ async function buildReportTokenPlaintext(
   // Fetch the long-tail exemplar leaves (#495), reduced to the single chosen
   // `factor` the builder fed to `buildReportTokenMap`. Exemplar refs are
   // ALWAYS replayed at the English canonical language (`ENGLISH_BASELINE`),
-  // independent of `variant.lang` — the canonical owns the exemplar set + the
+  // independent of `replayLang` — the canonical owns the exemplar set + the
   // `R{j}` numbering, so even a Korean native-pinned row's exemplar tokens
   // were minted from the English leaves.
   const exemplarLeaves: Array<{ analysis: string }> = exemplarRefs.map(() => ({

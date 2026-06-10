@@ -143,7 +143,7 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
         },
       ],
       // The ROW is Korean; the exemplar must still be fetched at English.
-      { lang: "KOREAN", modelName: "openai", model: "gpt-4o" },
+      "KOREAN",
     );
 
     // Cited event replays at the row language; the exemplar replays at the
@@ -169,7 +169,7 @@ describe("buildReportTokenPlaintext — exemplar restoration (#495)", () => {
       [],
       [],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
     expect(result.plaintextByReportToken.size).toBe(0);
     expect(pool.query).not.toHaveBeenCalled();
