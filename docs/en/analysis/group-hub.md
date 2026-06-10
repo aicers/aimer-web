@@ -5,7 +5,7 @@ surface. A customer group bundles several member customers so their
 periodic security reports can be generated and read together. In this
 version the group hub surfaces **reports only**.
 
-![Placeholder for the group hub — the single Security Reports card with no Threat Stories or Suspicious Events sections — pending a real-data recapture (the group hub requires a stack with a customer group that has generated reports, which the fixture stack cannot reproduce)](../../assets/group-hub.en.png)
+![The group hub for a customer group — a single Security Reports card, with no Threat Stories or Suspicious Events sections](../../assets/group-hub.en.png)
 
 ## Reaching the hub
 
@@ -28,13 +28,19 @@ The group hub renders a single section card:
   read the group's combined reports.
 
 There are intentionally **no** Threat Stories or Suspicious Events cards: a
-group owns periodic reports only, so those surfaces are not part of the
-group hub in this version.
+group owns periodic reports only. Group-level threat-story and
+suspicious-event summary surfaces are **deferred** — they are not generated
+in this version (v1), so the hub exposes only the combined report index.
 
 ## Reading a group report
 
-A group report is generated across the group's members and reads the same
-as a single-customer report, with two group-specific behaviors:
+A group report is generated across the group's members and reads the same as
+a single-customer report. Open the group's **Security Reports** index to see
+its report buckets, then open a bucket to read the report.
+
+![The group's periodic report index — the report buckets, each marked with its priority tier and readiness, with the language variants generated for it](../../assets/group-report-index.en.png)
+
+Two behaviors are group-specific:
 
 - **Cited sources point at the owning member.** Each cited story or event
   in a report links to the **member customer's** detail page where that
@@ -45,6 +51,8 @@ as a single-customer report, with two group-specific behaviors:
   reports are not rendered for a group report in this version; the report
   index, calendar, within-period navigation, and language switching over
   already-generated languages all work as usual.
+
+![A group report detail — the combined report generated across all members; each cited source links to the owning member customer's detail page](../../assets/group-report-detail.en.png)
 
 The report **calendar** uses the group's own retention boundary —
 `min(group retention, the shortest member retention)` — so the navigable
