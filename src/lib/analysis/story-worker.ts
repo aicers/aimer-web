@@ -432,23 +432,52 @@ export async function processStoryJob(
     opts.checkEnrichmentReady ?? defaultCheckEnrichmentReady
   )(customerPool, job.story_id, canonical.storyVersion);
   if (!enrichment.ready) {
-    await requeueForEnrichment(opts.authPool, job);
     // A hard enrichment failure persists a `failed` marker with
-    // `last_error` (RFC 0003 P1a #361). Surface it distinctly so the
-    // requeue is a diagnosable operational state, not a silent spin — the
-    // job still requeues (recoverably) so a never-stale floor is preserved.
-    const failed = enrichment.status === "failed";
+    // `last_error` (RFC 0003 P1a #361, `persistEnrichmentFailure`). Unlike
+    // the latency wait below, a persisted `failed` is a job failure, not an
+    // ordering wait: requeuing it with `requeueForEnrichment` would preserve
+    // `attempts` forever, so a persistent failure spins indefinitely (#531).
+    // Route it through `requeueWithBackoff` instead — each requeue consumes
+    // one attempt and at `MAX_ATTEMPTS` the analysis job becomes terminal
+    // `failed`. We cannot floor without a completed marker (a stale-floor
+    // hazard, the precise thing #361 guards), so failing loudly at the cap
+    // is preferable to an infinite silent requeue. Transient failures still
+    // self-heal within the cap.
+    if (enrichment.status === "failed") {
+      const nextAttempts = job.attempts + 1;
+      await requeueWithBackoff(opts.authPool, job, "enrichment_failed");
+      // Branch the log on the cap to match what `requeueWithBackoff` wrote:
+      // it re-queues only while `nextAttempts < MAX_ATTEMPTS`, and writes a
+      // terminal `failed` at the cap.
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event:
+            nextAttempts < MAX_ATTEMPTS
+              ? "analysis.story_enrichment_failed_requeued"
+              : "analysis.story_enrichment_failed_exhausted",
+          customer_id: job.customer_id,
+          story_id: job.story_id,
+          story_version: canonical.storyVersion,
+          generation: job.generation,
+          attempts: nextAttempts,
+          last_error: enrichment.lastError,
+        }),
+      );
+      return;
+    }
+    // Not yet complete (`status` null/pending). Enrichment latency is an
+    // ordering wait, not a job failure, so requeue WITHOUT consuming a retry
+    // attempt to preserve a never-stale floor.
+    await requeueForEnrichment(opts.authPool, job);
     console.warn(
       JSON.stringify({
-        level: failed ? "error" : "warn",
-        event: failed
-          ? "analysis.story_enrichment_failed_requeued"
-          : "analysis.story_enrichment_incomplete_requeued",
+        level: "warn",
+        event: "analysis.story_enrichment_incomplete_requeued",
         customer_id: job.customer_id,
         story_id: job.story_id,
         story_version: canonical.storyVersion,
         generation: job.generation,
-        ...(failed ? { last_error: enrichment.lastError } : {}),
       }),
     );
     return;
