@@ -926,7 +926,6 @@
       "title": "고객",
       "subtitle": "이 고객의 보고서와 분석입니다.",
       "empty": "이 고객에 대해 접근 가능한 섹션이 없습니다.",
-      "forbidden": "이 고객을 볼 권한이 없습니다 (403).",
       "reportsDescription": "이 고객의 정기 보고서 버킷입니다.",
       "storiesDescription": "의심 이벤트의 사전 큐레이션된 상관관계입니다.",
       "eventsDescription": "이 고객에 대해 전달된 분석된 탐지 결과입니다."
@@ -937,8 +936,10 @@
       "reportsDescription": "이 그룹에 대해 생성된 정기 보고서 버킷입니다."
     },
     "boundaries": {
-      "reportsForbidden": "이 고객의 보고서를 볼 권한이 없습니다 (403). 고객 관리자에게 <code>reports:read</code> 권한 부여를 요청하세요.",
-      "reportForbidden": "이 보고서를 볼 권한이 없습니다 (403). 고객 관리자에게 <code>reports:read</code> 권한 부여를 요청하세요."
+      "hubTitle": "분석 대상",
+      "hubForbidden": "이 분석 대상을 볼 권한이 없습니다 (403).",
+      "reportsForbidden": "이 보고서를 볼 권한이 없습니다 (403). 관리자에게 <code>reports:read</code> 권한 부여를 요청하세요.",
+      "reportForbidden": "이 보고서를 볼 권한이 없습니다 (403). 관리자에게 <code>reports:read</code> 권한 부여를 요청하세요."
     },
     "compare": {
       "selectLabel": "비교 대상",
