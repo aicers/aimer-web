@@ -85,9 +85,6 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      // The group subject id — distinct from either member, so a ref WITHOUT a
-      // customer_id would degrade here and (correctly) find no member pool.
-      "group-1",
       [],
       [
         // Two cited event leaves with the IDENTICAL (aice_id, event_key) but
@@ -96,17 +93,21 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-B",
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     // Leaf 1 (cust-A) → report token R1; leaf 2 (cust-B) → R2. Each restores
@@ -179,14 +180,25 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      "group-1",
       [
-        { story_id: "5001", generation: 1, customer_id: "cust-A" },
-        { story_id: "5001", generation: 1, customer_id: "cust-B" },
+        {
+          story_id: "5001",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
+          customer_id: "cust-A",
+        },
+        {
+          story_id: "5001",
+          generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
+          customer_id: "cust-B",
+        },
       ],
       [],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     // Both members' distinct plaintexts appear — a mis-route would yield the
@@ -204,18 +216,19 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
 
     const result = await buildReportTokenPlaintext(
       poolFor,
-      "group-1",
       [],
       [
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-missing",
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
     // No pool for the named member → token stays unrestored (tokenized), never
     // throws and never leaks another member's plaintext.
@@ -277,24 +290,27 @@ describe("buildReportTokenPlaintext — cross-member fan-out (#525)", () => {
     const result = await buildReportTokenPlaintext(
       // biome-ignore lint/suspicious/noExplicitAny: pool stub
       () => pool as any,
-      "cust-A",
       [],
       [
         {
           aice_id: "aice-1",
           event_key: "9001",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
         {
           aice_id: "aice-2",
           event_key: "9002",
           generation: 1,
+          model_name: "openai",
+          model: "gpt-4o",
           customer_id: "cust-A",
         },
       ],
       [],
-      { lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
+      "ENGLISH",
     );
 
     expect(calls.leaf).toBe(1);

@@ -100,8 +100,6 @@ export interface CandidateLeaf {
   stateStatus: StateStatus;
   /** Status of the target-variant job, or `null` when it does not exist. */
   targetStatus: JobStatus | null;
-  /** Whether the target-variant job is a leftover dry-run row. */
-  targetDryRun: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +126,7 @@ export type EnqueueCategory =
  *     double-queue against that dirty branch, so the helper neither coalesces
  *     it as current nor re-enqueues it — it reports it distinctly.
  *   - absent target variant → `seed` a fresh generation-1 queued row.
- *   - `failed`/dry-run target → `requeue` at the SAME generation (no bump).
+ *   - `failed` target → `requeue` at the SAME generation (no bump).
  *   - `queued`/`processing`/`done` target → `coalesce` (leave untouched).
  */
 export function classifyEnqueue(
@@ -144,7 +142,7 @@ export function classifyEnqueue(
   if (leaf.targetStatus === null) {
     return { category: "seeded", action: "seed" };
   }
-  if (leaf.targetStatus === "failed" || leaf.targetDryRun) {
+  if (leaf.targetStatus === "failed") {
     return { category: "requeued", action: "requeue" };
   }
   return { category: "coalesced", action: null };
@@ -183,11 +181,6 @@ export function classifyDrain(
   }
   if (leaf.targetStatus === "failed") {
     return "failed_outstanding";
-  }
-  if (leaf.targetDryRun) {
-    // A leftover dry-run row is not a real leaf — outstanding until a real
-    // analysis lands (the enqueue path requeues it).
-    return "absent";
   }
   if (leaf.targetStatus === "queued") return "queued";
   if (leaf.targetStatus === "processing") return "processing";
@@ -365,7 +358,7 @@ export interface BackfillDeps {
     modelName: string,
     model: string,
   ): Promise<void>;
-  /** Requeue a failed/dry-run target-variant job at the same generation. */
+  /** Requeue a failed target-variant job at the same generation. */
   requeueJob(
     customerId: string,
     storyId: string,
@@ -489,13 +482,11 @@ export function createBackfillDeps(
         lang: string;
         state_status: StateStatus;
         target_status: JobStatus | null;
-        target_dry_run: boolean;
       }>(
         `SELECT st.story_id::text          AS story_id,
                 $5::text                    AS lang,
                 st.status                   AS state_status,
-                tgt.status                  AS target_status,
-                COALESCE(tgt.dry_run, FALSE) AS target_dry_run
+                tgt.status                  AS target_status
            FROM story_analysis_state st
            LEFT JOIN story_analysis_job tgt
                   ON tgt.customer_id = st.customer_id
@@ -520,7 +511,6 @@ export function createBackfillDeps(
         lang: r.lang,
         stateStatus: r.state_status,
         targetStatus: r.target_status,
-        targetDryRun: r.target_dry_run,
       }));
     },
 
@@ -559,19 +549,18 @@ export function createBackfillDeps(
 
     async requeueJob(customerId, storyId, lang, modelName, model) {
       // Requeue at the SAME generation (no bump, no force). The WHERE guard
-      // keeps this idempotent under a race: only a still-failed/dry-run row
-      // is reset, so a row another writer just completed is not clobbered.
+      // keeps this idempotent under a race: only a still-failed row is
+      // reset, so a row another writer just completed is not clobbered.
       await authPool.query(
         `UPDATE story_analysis_job
             SET status = 'queued',
-                dry_run = FALSE,
                 attempts = 0,
                 last_error = NULL,
                 processing_started_at = NULL,
                 updated_at = $6::timestamptz
           WHERE customer_id = $1 AND story_id = $2::bigint
             AND lang = $3 AND model_name = $4 AND model = $5
-            AND (status = 'failed' OR dry_run = TRUE)`,
+            AND status = 'failed'`,
         [customerId, storyId, lang, modelName, model, nowIso],
       );
     },

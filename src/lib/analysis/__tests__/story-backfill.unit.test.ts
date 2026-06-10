@@ -27,7 +27,6 @@ function leaf(over: Partial<CandidateLeaf> = {}): CandidateLeaf {
     lang: "ENGLISH",
     stateStatus: "ready",
     targetStatus: null,
-    targetDryRun: false,
     ...over,
   };
 }
@@ -57,12 +56,6 @@ describe("classifyEnqueue", () => {
       category: "requeued",
       action: "requeue",
     });
-  });
-
-  it("requeues a leftover dry-run row", () => {
-    expect(
-      classifyEnqueue(leaf({ targetStatus: "done", targetDryRun: true }), true),
-    ).toEqual({ category: "requeued", action: "requeue" });
   });
 
   it.each([
@@ -140,12 +133,6 @@ describe("classifyDrain", () => {
     expect(classifyDrain(leaf({ targetStatus: "processing" }), true)).toBe(
       "processing",
     );
-  });
-
-  it("a dry-run done target is outstanding (not a real leaf)", () => {
-    expect(
-      classifyDrain(leaf({ targetStatus: "done", targetDryRun: true }), true),
-    ).toBe("absent");
   });
 
   it("archived / missing source is excluded as source_unavailable", () => {
@@ -259,7 +246,7 @@ describe("previewStoryBackfill", () => {
 });
 
 describe("runStoryBackfill", () => {
-  it("seeds absent and requeues failed/dry-run target variants", async () => {
+  it("seeds absent and requeues failed target variants", async () => {
     const deps = fakeDeps(
       [
         leaf({ storyId: "1", lang: "ENGLISH", targetStatus: null }),

@@ -164,30 +164,11 @@ export async function loadCitedByReports(
   // `report-input-builder.ts` — snake_case keys, `event_key` as a string
   // (`event_key::text` in the builder), `generation` as a number. Pinning
   // `generation` is what keeps the trail faithful: a report that cited a
-  // different generation of the same leaf must NOT appear here.
-  //
-  // Refs carry `model_name`/`model` post-#465 (Scope 4). The match is a
-  // two-branch contract, NOT a naive model-less `@>` (which over-matches: `@>`
-  // is partial-object containment, so a model-less probe ALSO matches new
-  // model-bearing refs and would re-attribute another model's leaf citation):
-  //   - model-bearing branch: exact containment of the requested leaf's model.
-  //   - legacy branch: a pre-#465 ref that genuinely LACKS `model_name` (key
-  //     absence, since a model-less `@>` over-matches) AND only when the citing
-  //     row's own `(model_name, model)` equals the requested leaf's model
-  //     (legacy refs were always written under the row's own model, so that is
-  //     the correct attribution).
-  // The two branches are unioned; neither alone is sufficient.
-  const {
-    column,
-    probe,
-    idPredicate,
-    idParams,
-  }: {
-    column: string;
-    probe: string;
-    idPredicate: string;
-    idParams: unknown[];
-  } =
+  // different generation of the same leaf must NOT appear here. The probe
+  // also pins `model_name`/`model` (#465 Scope 4): `generation` is
+  // variant-scoped, so a model-less probe would re-attribute another model's
+  // leaf citation via `@>`'s partial-object containment.
+  const { column, probe }: { column: string; probe: string } =
     input.leaf.kind === "event"
       ? {
           column: "input_event_refs",
@@ -200,13 +181,6 @@ export async function loadCitedByReports(
               model: input.leaf.model,
             },
           ]),
-          idPredicate: `elem->>'aice_id' = $5 AND elem->>'event_key' = $6
-                        AND (elem->>'generation')::int = $7`,
-          idParams: [
-            input.leaf.aiceId,
-            input.leaf.eventKey,
-            input.leaf.generation,
-          ],
         }
       : {
           column: "input_story_refs",
@@ -218,42 +192,20 @@ export async function loadCitedByReports(
               model: input.leaf.model,
             },
           ]),
-          idPredicate: `elem->>'story_id' = $5
-                        AND (elem->>'generation')::int = $6`,
-          idParams: [input.leaf.storyId, input.leaf.generation],
         };
 
   const customerPool = getCustomerRuntimePool(input.customerId);
   let rows: CitingRow[];
   try {
     const result = await customerPool.query<CitingRow>(
-      // $3/$4 = the requested leaf's model; the legacy branch only attributes a
-      // model-less ref when the citing row's own model equals it.
       `SELECT period, bucket_date::text AS bucket_date, tz, lang,
               model_name, model, generation, priority_tier, requested_at
          FROM periodic_report_result
         WHERE subject_id = $1
           AND superseded_at IS NULL
-          AND (
-            ${column} @> $2::jsonb
-            OR (
-              model_name = $3 AND model = $4
-              AND EXISTS (
-                SELECT 1
-                  FROM jsonb_array_elements(${column}) AS elem
-                 WHERE ${idPredicate}
-                   AND NOT (elem ? 'model_name')
-              )
-            )
-          )
+          AND ${column} @> $2::jsonb
         ORDER BY requested_at DESC, generation DESC`,
-      [
-        input.customerId,
-        probe,
-        input.leaf.modelName,
-        input.leaf.model,
-        ...idParams,
-      ],
+      [input.customerId, probe],
     );
     rows = result.rows;
   } catch {

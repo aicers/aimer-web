@@ -355,7 +355,7 @@ function citationSourceKey(source: unknown): string {
  * re-emits the leaf-derived sections; aimer guarantees it preserves each
  * unit's `source` and the unit count/order, but a bad or misconfigured
  * translate response could silently strip citations — drop a `source`, return
- * a legacy non-array section, or reorder units — while still passing the
+ * a non-array section, or reorder units — while still passing the
  * leaf-validity guard (which skips non-array sections and treats a missing
  * `source` as a deliberately-uncited unit). The wire field is an opaque
  * `String!`, so aimer-web is the only line of defense: compare the translated
@@ -1450,7 +1450,7 @@ async function runTranslation(args: {
   // structure — same leaf-derived array shape, unit count/order, and per-unit
   // `source`. aimer guarantees this, but the wire field is opaque `String!`,
   // so a bad/misconfigured translate response that drops a citation, returns a
-  // legacy non-array section, or reorders units would otherwise silently strip
+  // non-array section, or reorders units would otherwise silently strip
   // sentence-level provenance while the job still succeeds. Compare against the
   // canonical row (the source of truth) and refuse to persist on any drift.
   const structureMismatches = findCitationStructureMismatches(
@@ -2710,8 +2710,8 @@ export interface OnDemandVariant {
  *   - `seeded`     — no prior row; a fresh generation-1 `queued` job was created.
  *   - `coalesced`  — an existing `queued`/`processing`/`done` job satisfies the
  *                    request; left untouched (no generation bump).
- *   - `requeued`   — an existing `failed` (or leftover dry-run) row was reset to
- *                    `queued` at the SAME generation so the worker retries.
+ *   - `requeued`   — an existing `failed` row was reset to `queued` at the
+ *                    SAME generation so the worker retries.
  *   - `state_not_found`    — no parent `periodic_report_state` row exists.
  *   - `source_pending`     — the parent state is still `pending` (not yet
  *                            promoted past its settle window); no job created.
@@ -2734,8 +2734,7 @@ export type OnDemandEnqueueResult =
  * Regenerate path but WITHOUT its force-regenerate semantics: it never bumps
  * `generation` and never sets `force_requested_*`. An existing in-flight or
  * completed variant (`queued`/`processing`/`done`) coalesces — only a genuine
- * first request seeds a row. A previously `failed` variant (or a leftover
- * dry-run row that the pickup filter would otherwise ignore) is re-queued at
+ * first request seeds a row. A previously `failed` variant is re-queued at
  * the same generation so the worker can produce the report the user is now
  * actively requesting.
  *
@@ -2802,9 +2801,8 @@ export async function enqueueOnDemandReportJob(
     const existing = await client.query<{
       status: string;
       generation: number;
-      dry_run: boolean;
     }>(
-      `SELECT status, generation, dry_run FROM periodic_report_job
+      `SELECT status, generation FROM periodic_report_job
         WHERE subject_id = $1 AND period = $2
           AND bucket_date = $3::date AND tz = $4
           AND lang = $5 AND model_name = $6 AND model = $7
@@ -2834,18 +2832,16 @@ export async function enqueueOnDemandReportJob(
     }
 
     const job = existing.rows[0];
-    if (job.status === "failed" || job.dry_run) {
-      // A previously failed variant — or a leftover dry-run row the pickup
-      // filter ignores — that the user is now actively requesting: reset to
-      // `queued` at the SAME generation (no bump, no force) so the existing
-      // retry/backoff machinery produces the report.
+    if (job.status === "failed") {
+      // A previously failed variant that the user is now actively
+      // requesting: reset to `queued` at the SAME generation (no bump, no
+      // force) so the existing retry/backoff machinery produces the report.
       await client.query(
         // Reset next_due_at: an on-demand requeue is an immediate-process
         // request, so a leftover future cadence value must not stall it now
         // that the picker honors next_due_at for queued rows (#412 item 4).
         `UPDATE periodic_report_job
             SET status = 'queued',
-                dry_run = FALSE,
                 attempts = 0,
                 last_error = NULL,
                 processing_started_at = NULL,

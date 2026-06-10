@@ -97,40 +97,37 @@ export interface StoryRef {
    * The `(model_name, model)` of the leaf this ref points at (#465 Scope 3).
    * Under the never-drop fallback a default report can cite a leaf from a
    * non-report model, so each ref records its own model rather than inheriting
-   * the report row's. Optional for backward-compatible reads: a pre-#465 ref
-   * lacking these resolves as the report's own model (the only model a ref
-   * could ever have pointed at before fallback existed).
+   * the report row's.
    */
-  model_name?: string;
-  model?: string;
+  model_name: string;
+  model: string;
   /**
    * The member subject id of the customer DB this leaf lives in (#523). A
    * group report cites analyzed leaves from MEMBER customer DBs, and the same
    * `story_id` can exist in more than one member DB, so the de-redaction map
-   * cannot be routed without it. Optional for backward-compatible reads: a
-   * legacy ref lacking it resolves as the report's own `subject_id` (the
-   * single-customer case), the same degrade rule as `model_name`/`model`
-   * (see {@link refCustomerId}). Persisted refs always carry it.
+   * cannot be routed without it. On the single-customer path it equals the
+   * report's own `subject_id`. Note this is the PERSISTED shape — the hash
+   * canonical form strips a `customer_id` equal to the subject
+   * (`computeInputHash`), and the single-customer WIRE shape omits it (#524).
    */
-  customer_id?: string;
+  customer_id: string;
 }
 
 export interface EventRef {
   aice_id: string;
   event_key: string;
   generation: number;
-  /** Per-leaf model, same backward-compatible contract as `StoryRef` (#465). */
-  model_name?: string;
-  model?: string;
-  /** Member subject id, same backward-compatible contract as `StoryRef` (#523). */
-  customer_id?: string;
+  /** Per-leaf model, same contract as `StoryRef` (#465). */
+  model_name: string;
+  model: string;
+  /** Member subject id, same contract as `StoryRef` (#523). */
+  customer_id: string;
 }
 
 /**
  * Provenance ref for one long-tail exemplar representative leaf (#495). Pins
  * the exact immutable leaf the report-scope exemplar `R{j}` token was minted
- * from, exactly like {@link EventRef} pins a cited event leaf. `generation` is
- * REQUIRED (not optional as on the backward-compatible read refs): replay /
+ * from, exactly like {@link EventRef} pins a cited event leaf: replay /
  * restore must resolve the same leaf, and a later generation of the same
  * `(aice_id, event_key, lang, model)` could otherwise re-resolve the exemplar
  * token to different plaintext. Exemplar leaves are inherently English (the
@@ -142,23 +139,17 @@ export interface ExemplarRef {
   generation: number;
   model_name: string;
   model: string;
-  /**
-   * Member subject id of the leaf's customer DB (#523). Optional on all three
-   * ref types — unlike `model_name`/`model` (required here) — so the read-path
-   * degrade rule ({@link refCustomerId}) applies uniformly to legacy persisted
-   * refs that predate member identity. Persisted refs always carry it.
-   */
-  customer_id?: string;
+  /** Member subject id of the leaf's customer DB, as on {@link StoryRef}. */
+  customer_id: string;
 }
 
 /**
- * Resolve a ref's member customer id (#523), degrading a legacy ref that
- * lacks `customer_id` to the report's own `subject_id` — the single-customer
- * case, where every cited leaf lives in the subject's own customer DB. This
- * mirrors the optional `model_name`/`model` degrade and is symmetric with the
- * `computeInputHash` "omit `customer_id` when it equals the subject"
- * canonicalization: a single-customer ref and a legacy ref both normalize to
- * the subject, and only a true cross-member ref carries a distinct id.
+ * Resolve a WIRE-shaped ref's member customer id (#523/#524). The
+ * single-customer wire shape omits `customer_id` by design — only a
+ * member-qualified group citation carries it — so an absent id resolves to the
+ * report's own `subject_id`. This is symmetric with the `computeInputHash`
+ * "omit `customer_id` when it equals the subject" canonicalization. PERSISTED
+ * refs always carry `customer_id` and read it directly, never through this.
  */
 export function refCustomerId(
   ref: { customer_id?: string },
@@ -1170,6 +1161,17 @@ function stableStringify(value: unknown): string {
 }
 
 /**
+ * Hash-input ref shape: the canonical hash form (#523) STRIPS a `customer_id`
+ * equal to the subject, so the hash treats a ref that omits `customer_id` and
+ * one that carries `customer_id == subject` as the same value.
+ * `computeInputHash` therefore accepts both — deliberately looser than the
+ * persisted ref types, which always carry `customer_id`.
+ */
+type HashRef<T extends { customer_id: string }> = Omit<T, "customer_id"> & {
+  customer_id?: string;
+};
+
+/**
  * `input_hash` over the canonical input bundle. Earlier this hashed only
  * period/bucket/variant + provenance refs + baseline counts/drift, which
  * missed input-*builder* drift: a change to token rewriting, factor
@@ -1190,24 +1192,25 @@ function computeInputHash(args: {
   /**
    * The report's own subject id (#523). A ref whose `customer_id` equals it is
    * the single-customer default and is STRIPPED from the hashed bundle below,
-   * so adding `customer_id` to every ref leaves `input_hash` byte-identical for
-   * a single-customer report — only a true cross-member ref (`customer_id` !=
-   * subject, which does not occur until #524) contributes it to the hash. This
-   * mirrors the existing "omit `exemplar_refs` when empty" canonicalization.
+   * so `input_hash` is byte-identical for a single-customer report whether its
+   * refs carry `customer_id == subject` or omit it — only a true cross-member
+   * ref (`customer_id` != subject, the group path) contributes it to the hash.
+   * This mirrors the existing "omit `exemplar_refs` when empty"
+   * canonicalization.
    */
   subjectId: string;
   period: string;
   bucketDate: string;
   variant: ReportVariant;
-  storyRefs: StoryRef[];
-  eventRefs: EventRef[];
-  exemplarRefs: ExemplarRef[];
+  storyRefs: HashRef<StoryRef>[];
+  eventRefs: HashRef<EventRef>[];
+  exemplarRefs: HashRef<ExemplarRef>[];
   aimerInputs: PeriodicReportInputs;
 }): string {
   // Strip the default `customer_id` (== the report's subject) from a hash-only
   // copy of each ref — NEVER mutate the persisted refs, which always carry it.
   // `stableStringify` drops the resulting `undefined`, so a single-customer
-  // ref hashes exactly as a pre-#523 ref did.
+  // ref hashes identically whether it carries the default id or omits it.
   const omitDefaultCustomer = <T extends { customer_id?: string }>(
     ref: T,
   ): T =>
@@ -1910,13 +1913,10 @@ async function assembleReportInput(
     model: e.model,
     customer_id: e.customer_id,
   }));
-  // Exemplar refs already carry their leaf's `customer_id` (stamped in
-  // `planAnalyzedAggregates`); degrade to the subject only for a legacy/pinned
-  // ref that predates member identity.
-  const exemplarRefs: ExemplarRef[] = aggregatesPlan.exemplarRefs.map((r) => ({
-    ...r,
-    customer_id: r.customer_id ?? ctx.subjectId,
-  }));
+  // Exemplar refs already carry their leaf's `customer_id`, stamped in
+  // `planAnalyzedAggregates` (or copied verbatim from the canonical on the
+  // pinned path).
+  const exemplarRefs: ExemplarRef[] = aggregatesPlan.exemplarRefs;
 
   const inputHash = computeInputHash({
     subjectId: ctx.subjectId,
@@ -2125,11 +2125,9 @@ async function fetchStoryLeavesByRefs(
   const generations = refs.map((r) => r.generation);
   // Pin each leaf by ITS OWN ref model (#465 Scope 3), not a single report
   // variant: under the never-drop fallback a ref can point at an off-model
-  // leaf. A pre-#465 ref lacking a model resolves as the report variant's model
-  // (`variant.modelName`/`variant.model`) — the only model it could have
-  // pointed at before fallback existed. `lang` stays the variant's.
-  const refModelNames = refs.map((r) => r.model_name ?? variant.modelName);
-  const refModels = refs.map((r) => r.model ?? variant.model);
+  // leaf. `lang` stays the variant's.
+  const refModelNames = refs.map((r) => r.model_name);
+  const refModels = refs.map((r) => r.model);
   const { rows } = await customerPool.query<StoryLeafRow>(
     `WITH canonical_story AS (
        SELECT DISTINCT ON (story_id)
@@ -2161,8 +2159,7 @@ async function fetchStoryLeavesByRefs(
     rows.map((r) => ({ ...r, customer_id: customerId })),
     refs,
     (row) => `${row.story_id}|${row.generation}|${row.model_name}|${row.model}`,
-    (ref) =>
-      `${ref.story_id}|${ref.generation}|${ref.model_name ?? variant.modelName}|${ref.model ?? variant.model}`,
+    (ref) => `${ref.story_id}|${ref.generation}|${ref.model_name}|${ref.model}`,
   );
 }
 
@@ -2182,10 +2179,9 @@ async function fetchEventLeavesByRefs(
   const aiceIds = refs.map((r) => r.aice_id);
   const eventKeys = refs.map((r) => r.event_key);
   const generations = refs.map((r) => r.generation);
-  // Pin each leaf by its own ref model (#465 Scope 3), with the report
-  // variant's model as the backward-compatible default for a pre-#465 ref.
-  const refModelNames = refs.map((r) => r.model_name ?? variant.modelName);
-  const refModels = refs.map((r) => r.model ?? variant.model);
+  // Pin each leaf by its own ref model (#465 Scope 3).
+  const refModelNames = refs.map((r) => r.model_name);
+  const refModels = refs.map((r) => r.model);
   const { rows } = await customerPool.query<EventLeafRow>(
     `WITH latest_baseline AS (
        SELECT DISTINCT ON (source_aice_id, event_key)
@@ -2218,7 +2214,7 @@ async function fetchEventLeavesByRefs(
     (row) =>
       `${row.aice_id}|${row.event_key}|${row.generation}|${row.model_name}|${row.model}`,
     (ref) =>
-      `${ref.aice_id}|${ref.event_key}|${ref.generation}|${ref.model_name ?? variant.modelName}|${ref.model ?? variant.model}`,
+      `${ref.aice_id}|${ref.event_key}|${ref.generation}|${ref.model_name}|${ref.model}`,
   );
 }
 
@@ -2368,8 +2364,8 @@ const storyLeafKey = (l: {
 }): string =>
   `${l.customer_id}|${l.story_id}|${l.generation}|${l.model_name}|${l.model}`;
 
-const storyRefKeyG = (r: StoryRef, variant: ReportVariant): string =>
-  `${r.customer_id}|${r.story_id}|${r.generation}|${r.model_name ?? variant.modelName}|${r.model ?? variant.model}`;
+const storyRefKeyG = (r: StoryRef): string =>
+  `${r.customer_id}|${r.story_id}|${r.generation}|${r.model_name}|${r.model}`;
 
 const eventLeafKey = (l: {
   customer_id: string;
@@ -2381,8 +2377,8 @@ const eventLeafKey = (l: {
 }): string =>
   `${l.customer_id}|${l.aice_id}|${l.event_key}|${l.generation}|${l.model_name}|${l.model}`;
 
-const eventRefKeyG = (r: EventRef, variant: ReportVariant): string =>
-  `${r.customer_id}|${r.aice_id}|${r.event_key}|${r.generation}|${r.model_name ?? variant.modelName}|${r.model ?? variant.model}`;
+const eventRefKeyG = (r: EventRef): string =>
+  `${r.customer_id}|${r.aice_id}|${r.event_key}|${r.generation}|${r.model_name}|${r.model}`;
 
 const exemplarRefKeyG = (r: ExemplarRef): string =>
   `${r.customer_id}|${r.aice_id}|${r.event_key}|${r.generation}|${r.model_name}|${r.model}`;
@@ -2419,7 +2415,7 @@ export async function buildGroupPinnedTokenRefs(
   }
   const stories: StoryLeafRow[] = [];
   for (const r of storyRefs) {
-    const l = storyByKey.get(storyRefKeyG(r, variant));
+    const l = storyByKey.get(storyRefKeyG(r));
     if (l === undefined) return null;
     stories.push(l);
   }
@@ -2435,7 +2431,7 @@ export async function buildGroupPinnedTokenRefs(
   }
   const events: EventLeafRow[] = [];
   for (const r of eventRefs) {
-    const l = eventByKey.get(eventRefKeyG(r, variant));
+    const l = eventByKey.get(eventRefKeyG(r));
     if (l === undefined) return null;
     events.push(l);
   }
@@ -2471,16 +2467,14 @@ export async function buildGroupPinnedTokenRefs(
 }
 
 /** Group refs by their `customer_id`, preserving each member's ref order. */
-function groupRefsByCustomer<T extends { customer_id?: string }>(
+function groupRefsByCustomer<T extends { customer_id: string }>(
   refs: ReadonlyArray<T>,
 ): Map<string, T[]> {
   const out = new Map<string, T[]>();
   for (const r of refs) {
-    // A group's persisted refs always carry `customer_id`; degrade is moot.
-    const cid = r.customer_id ?? "";
-    const arr = out.get(cid);
+    const arr = out.get(r.customer_id);
     if (arr) arr.push(r);
-    else out.set(cid, [r]);
+    else out.set(r.customer_id, [r]);
   }
   return out;
 }

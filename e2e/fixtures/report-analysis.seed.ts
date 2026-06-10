@@ -34,28 +34,41 @@ const REPORT_PROMPT_VERSION = "aimer-periodic-v1";
 const REPORT_REQUESTED_AT = "2026-05-27T03:00:00Z";
 const REPORT_REDACTION_POLICY = "engine:0.0.0|ranges:none";
 
-// Keyed by aimer's real PERIODIC_SECURITY_REPORT output schema (#360):
-// `executive_summary` / `period_outlook` are strings; `story_highlights` /
-// `notable_events` / `baseline_observations` are arrays of Markdown strings.
-// The text uses real Markdown (headings, lists, inline code) so the manual
-// screenshots exercise the shared Markdown renderer (#382).
+// Keyed by aimer's real PERIODIC_SECURITY_REPORT output schema (prompt v5,
+// #449): the three leaf-derived sections (`executive_summary` /
+// `story_highlights` / `notable_events`) are arrays of citation units
+// `{ text, source? }` — uncited here, since the seed pins no input refs —
+// while `baseline_observations` stays an array of Markdown strings and
+// `period_outlook` a plain string. The text uses real Markdown (headings,
+// lists, inline code) so the manual screenshots exercise the shared
+// Markdown renderer (#382).
 const REPORT_SECTIONS = {
-  executive_summary:
-    "Activity this period was dominated by a **credential-stuffing burst** " +
-    "against the SSO endpoint that reached an initial foothold, set " +
-    "against a 31% rise in reconnaissance-category events versus the " +
-    "prior day.",
+  executive_summary: [
+    {
+      text:
+        "Activity this period was dominated by a **credential-stuffing " +
+        "burst** against the SSO endpoint that reached an initial " +
+        "foothold, set against a 31% rise in reconnaissance-category " +
+        "events versus the prior day.",
+    },
+  ],
   story_highlights: [
-    "### Account-takeover attempt (T1078, T1110.001)\n\n" +
-      "The highest-priority narrative was an account-takeover attempt:\n\n" +
-      "- 412 failed authentications in 60 seconds\n" +
-      "- a single success on a privileged service account\n" +
-      "- the session then pivoted toward a domain controller",
+    {
+      text:
+        "### Account-takeover attempt (T1078, T1110.001)\n\n" +
+        "The highest-priority narrative was an account-takeover attempt:\n\n" +
+        "- 412 failed authentications in 60 seconds\n" +
+        "- a single success on a privileged service account\n" +
+        "- the session then pivoted toward a domain controller",
+    },
   ],
   notable_events: [
-    "A single outbound C2 beacon to a newly-registered domain stood out " +
-      "from the rest of the fleet (`T1071.001`); it was not part of any " +
-      "correlated story this period.",
+    {
+      text:
+        "A single outbound C2 beacon to a newly-registered domain stood " +
+        "out from the rest of the fleet (`T1071.001`); it was not part " +
+        "of any correlated story this period.",
+    },
   ],
   baseline_observations: [
     "Reconnaissance events rose from `120` to `157` (**+31%**), clearing " +

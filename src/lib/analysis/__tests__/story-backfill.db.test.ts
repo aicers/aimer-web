@@ -108,13 +108,13 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
     modelName: string,
     model: string,
     status: string,
-    opts: { dryRun?: boolean; generation?: number } = {},
+    opts: { generation?: number } = {},
   ): Promise<void> {
     await pool.query(
       `INSERT INTO story_analysis_job
          (customer_id, story_id, lang, model_name, model,
           status, generation, dry_run)
-       VALUES ($1, $2::bigint, $3, $4, $5, $6, $7, $8)`,
+       VALUES ($1, $2::bigint, $3, $4, $5, $6, $7, FALSE)`,
       [
         CUSTOMER_ID,
         storyId,
@@ -123,7 +123,6 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
         model,
         status,
         opts.generation ?? 1,
-        opts.dryRun ?? false,
       ],
     );
   }
@@ -232,7 +231,7 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
     expect(second.rows[0]).toMatchObject({ status: "done", generation: 1 });
   });
 
-  it("requeueJob resets a failed/dry-run leaf at the same generation, leaving done untouched", async () => {
+  it("requeueJob resets a failed leaf at the same generation, leaving done untouched", async () => {
     await addState(3001, "ready", 1);
     // A failed target leaf at generation 2.
     await addJob(3001, "ENGLISH", TARGET.modelName, TARGET.model, "failed", {

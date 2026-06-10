@@ -428,12 +428,10 @@ async function isStoryDrained(
     story_id: string;
     state_status: ReportStateStatus;
     target_status: ReportJobStatus | null;
-    target_dry_run: boolean;
   }>(
     `SELECT st.story_id::text          AS story_id,
             st.status                   AS state_status,
-            tgt.status                  AS target_status,
-            COALESCE(tgt.dry_run, FALSE) AS target_dry_run
+            tgt.status                  AS target_status
        FROM story_analysis_state st
        LEFT JOIN story_analysis_job tgt
               ON tgt.customer_id = st.customer_id
@@ -460,7 +458,6 @@ async function isStoryDrained(
       lang: target.lang,
       stateStatus: r.state_status,
       targetStatus: r.target_status,
-      targetDryRun: r.target_dry_run,
     };
     const category = classifyDrain(leaf, true);
     if (category !== "drained" && category !== "source_unavailable") {
@@ -579,7 +576,6 @@ async function refreshVariant(
      DO UPDATE SET
        generation         = periodic_report_job.generation + 1,
        status             = 'queued',
-       dry_run            = FALSE,
        force_requested_at = NOW(),
        force_requested_by = EXCLUDED.force_requested_by,
        attempts           = 0,

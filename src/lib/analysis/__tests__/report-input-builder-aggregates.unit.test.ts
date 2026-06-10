@@ -227,10 +227,11 @@ describe("computeInputHash member customer_id canonicalization (#523)", () => {
   });
 
   it("is byte-identical whether a single-customer ref carries customer_id == subject or omits it", () => {
-    // The acceptance gate: a new single-customer report stamps customer_id ==
-    // subject_id on every ref, and that MUST hash exactly as a legacy ref that
-    // never carried customer_id — otherwise every single-customer row would be
-    // marked dirty by the #523 schema change alone.
+    // The #523 canonical-form gate: a single-customer report stamps
+    // customer_id == subject_id on every persisted ref, and the hash strips
+    // that default — so the hash is invariant to whether the input ref
+    // carries the default id or omits it (`computeInputHash` deliberately
+    // accepts both shapes).
     const withDefault = computeInputHash({
       ...baseSingle,
       storyRefs: [storyRef(SUBJECT)],
@@ -247,8 +248,8 @@ describe("computeInputHash member customer_id canonicalization (#523)", () => {
   });
 
   it("a cross-member ref (customer_id != subject) changes the hash", () => {
-    // Only a true cross-member ref (which does not occur until #524)
-    // contributes customer_id to the hash.
+    // Only a true cross-member ref (the group path, #524) contributes
+    // customer_id to the hash.
     const single = computeInputHash({
       ...baseSingle,
       storyRefs: [],
@@ -265,12 +266,12 @@ describe("computeInputHash member customer_id canonicalization (#523)", () => {
   });
 });
 
-describe("refCustomerId degrade helper (#523)", () => {
-  it("degrades a legacy ref without customer_id to the report's own subject", () => {
+describe("refCustomerId wire-source helper (#523/#524)", () => {
+  it("resolves a single-customer wire source (customer_id omitted by design) to the subject", () => {
     expect(refCustomerId({}, "subject-1")).toBe("subject-1");
   });
 
-  it("returns the ref's own customer_id when present", () => {
+  it("returns the wire source's own customer_id when member-qualified", () => {
     expect(refCustomerId({ customer_id: "member-9" }, "subject-1")).toBe(
       "member-9",
     );

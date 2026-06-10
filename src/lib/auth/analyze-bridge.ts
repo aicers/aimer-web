@@ -250,9 +250,9 @@ export async function expireStalePAR(pool: Pool, id: string): Promise<boolean> {
  * running). The /continue handler re-reads PAR.status on a failed
  * transition and dispatches on the new state.
  *
- * `pending` is also accepted to preserve back-compat with any code
- * path that did not claim first (no such callers exist today; kept
- * to keep the helper forgiving on partial deployments).
+ * Strictly `processing`: every caller claims first ({@link claimPAR}),
+ * so a `pending` row here means the claim was skipped — refusing the
+ * transition surfaces that bug instead of absorbing it.
  */
 export async function markPARConsumed(
   pool: Pool,
@@ -262,7 +262,7 @@ export async function markPARConsumed(
   const result = await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'consumed', view_url = $2, consumed_at = NOW()
-     WHERE id = $1 AND status IN ('pending', 'processing')`,
+     WHERE id = $1 AND status = 'processing'`,
     [id, viewUrl],
   );
   return (result.rowCount ?? 0) > 0;

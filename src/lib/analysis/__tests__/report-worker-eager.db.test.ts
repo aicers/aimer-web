@@ -7,7 +7,7 @@
 //     default-locale language is seeded eagerly even when English exists;
 //   - the on-demand enqueue helper coalesces onto any in-flight/completed
 //     job (no generation bump), seeds a fresh row only on a first request,
-//     re-queues a failed/dry-run variant, and reports source availability.
+//     re-queues a failed variant, and reports source availability.
 
 import { join } from "node:path";
 import type { Pool } from "pg";
@@ -314,32 +314,6 @@ describe.skipIf(!hasPostgres)("report worker eager seed + on-demand", () => {
       attempts: 0,
       last_error: null,
     });
-  });
-
-  it("on-demand: re-queues and activates a leftover dry-run row", async () => {
-    await seedState(authPool, "DAILY", "2026-06-14", "ready");
-    await authPool.query(
-      `INSERT INTO periodic_report_job
-         (subject_id, period, bucket_date, tz, lang, model_name, model,
-          status, generation, dry_run)
-       VALUES ($1, 'DAILY', '2026-06-14'::date, $2, 'KOREAN', 'openai', 'gpt-4o',
-               'queued', 1, TRUE)`,
-      [CUSTOMER_ID, TZ],
-    );
-
-    const res = await enqueueOnDemandReportJob(
-      authPool,
-      VARIANT({ bucketDate: "2026-06-14" }),
-    );
-
-    expect(res.action).toBe("requeued");
-    const { rows } = await authPool.query<{ dry_run: boolean; status: string }>(
-      `SELECT dry_run, status FROM periodic_report_job
-        WHERE subject_id = $1 AND period = 'DAILY'
-          AND bucket_date = '2026-06-14'::date AND tz = $2 AND lang = 'KOREAN'`,
-      [CUSTOMER_ID, TZ],
-    );
-    expect(rows[0]).toEqual({ dry_run: false, status: "queued" });
   });
 
   it("on-demand: reports state_not_found when the parent state is absent", async () => {

@@ -1,10 +1,11 @@
 // DB integration test for the reverse-citation lookup (T2, #396) against a
 // real customer database with the 0009 GIN migration applied. Validates
 // that the JSONB containment (`@>`) probes match the exact persisted ref
-// shapes (`{aice_id,event_key,generation}` for events, `{story_id,...}`
-// for stories), that superseded reports are excluded, that the trail is
-// deduped per bucket and ordered newest-first, and that the parent-story
-// reverse probe matches the camelCase `story_analysis_result` refs.
+// shapes (`{aice_id,event_key,generation,model_name,model,customer_id}`
+// for events, `{story_id,...}` for stories), that superseded reports are
+// excluded, that the trail is deduped per bucket and ordered newest-first,
+// and that the parent-story reverse probe matches the camelCase
+// `story_analysis_result` refs.
 //
 // The auth preamble (cookie / JWT / session / authorize) is covered by the
 // unit test; here those modules are stubbed to allow access so the SQL
@@ -56,6 +57,30 @@ const { loadCitedByReports } = await import("../cited-by-loader");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const CUSTOMER_LOCK_ID = 3711;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004a1";
+
+// Persisted ref fixtures in the always-populated stored shape: every ref
+// carries the cited leaf's own `(model_name, model)` (#465) and the owning
+// member `customer_id` (#523). The default-model helpers cover the common
+// case; the #465 fallback test below builds its off-model ref inline.
+function eventRef(aiceId: string, eventKey: string, generation: number) {
+  return {
+    aice_id: aiceId,
+    event_key: eventKey,
+    generation,
+    model_name: "openai",
+    model: "gpt-4o",
+    customer_id: CUSTOMER_ID,
+  };
+}
+function storyRef(storyId: string, generation: number) {
+  return {
+    story_id: storyId,
+    generation,
+    model_name: "openai",
+    model: "gpt-4o",
+    customer_id: CUSTOMER_ID,
+  };
+}
 
 describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   let customerDbName: string;
@@ -133,7 +158,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 2,
       tier: "HIGH",
       requestedAt: "2026-05-27T12:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+      eventRefs: [eventRef("aice-9", "777", 4)],
     });
     await seedReport({
       period: "DAILY",
@@ -142,7 +167,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "HIGH",
       requestedAt: "2026-05-27T11:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+      eventRefs: [eventRef("aice-9", "777", 4)],
     });
     await seedReport({
       period: "WEEKLY",
@@ -150,7 +175,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "MEDIUM",
       requestedAt: "2026-05-24T09:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+      eventRefs: [eventRef("aice-9", "777", 4)],
     });
     await seedReport({
       period: "DAILY",
@@ -158,7 +183,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "LOW",
       requestedAt: "2026-05-25T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 4 }],
+      eventRefs: [eventRef("aice-9", "777", 4)],
       superseded: true,
     });
     await seedReport({
@@ -167,7 +192,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "LOW",
       requestedAt: "2026-05-23T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-other", event_key: "111", generation: 1 }],
+      eventRefs: [eventRef("aice-other", "111", 1)],
     });
     // Cites the SAME event id but generation 3 — excluded when probing
     // generation 4, included when probing generation 3.
@@ -177,7 +202,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "LOW",
       requestedAt: "2026-05-22T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-9", event_key: "777", generation: 3 }],
+      eventRefs: [eventRef("aice-9", "777", 3)],
     });
 
     // Story 555 at generation 2 is cited by one MONTHLY report. A second
@@ -189,7 +214,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 3,
       tier: "CRITICAL",
       requestedAt: "2026-05-31T00:00:00Z",
-      storyRefs: [{ story_id: "555", generation: 2 }],
+      storyRefs: [storyRef("555", 2)],
     });
     await seedReport({
       period: "WEEKLY",
@@ -197,7 +222,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       generation: 1,
       tier: "LOW",
       requestedAt: "2026-05-17T00:00:00Z",
-      storyRefs: [{ story_id: "555", generation: 5 }],
+      storyRefs: [storyRef("555", 5)],
     });
 
     // #465 model-bearing ref: a DEFAULT (gpt-4o) report that, under the
@@ -221,33 +246,9 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
           generation: 1,
           model_name: "openai",
           model: "gpt-5.5",
+          customer_id: CUSTOMER_ID,
         },
       ],
-    });
-
-    // #465 legacy (pre-#465) ref: model-less, written under the row's own
-    // model. Matched by the legacy branch ONLY when the citing row's model
-    // equals the probed leaf's model. Two rows for the same model-less leaf id
-    // under different row models prove the row-model gate.
-    await seedReport({
-      period: "DAILY",
-      bucketDate: "2026-06-02",
-      modelName: "openai",
-      model: "gpt-4o",
-      generation: 1,
-      tier: "HIGH",
-      requestedAt: "2026-06-02T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-leg", event_key: "901", generation: 1 }],
-    });
-    await seedReport({
-      period: "DAILY",
-      bucketDate: "2026-06-03",
-      modelName: "openai",
-      model: "gpt-5.5",
-      generation: 1,
-      tier: "HIGH",
-      requestedAt: "2026-06-03T08:00:00Z",
-      eventRefs: [{ aice_id: "aice-leg", event_key: "901", generation: 1 }],
     });
   });
 
@@ -387,7 +388,7 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
 
     // A gpt-4o leaf of the SAME id/generation must NOT match: the stored ref is
     // for gpt-5.5. A naive model-less `@>` would wrongly match here — the
-    // two-branch contract (exact model-bearing + key-absence legacy) does not.
+    // model-pinned probe does not.
     const miss = await loadCitedByReports({
       customerId: CUSTOMER_ID,
       leaf: {
@@ -400,42 +401,6 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
       },
     });
     expect(miss).toEqual([]);
-  });
-
-  it("attributes a legacy (model-less) ref only to a citing row of the same model (#465)", async () => {
-    // The legacy ref lacks model_name; it is attributed to the row's own model.
-    // Probing the gpt-4o leaf surfaces only the gpt-4o row, not the gpt-5.5 one.
-    const gpt4o = await loadCitedByReports({
-      customerId: CUSTOMER_ID,
-      leaf: {
-        kind: "event",
-        aiceId: "aice-leg",
-        eventKey: "901",
-        generation: 1,
-        modelName: "openai",
-        model: "gpt-4o",
-      },
-    });
-    expect(gpt4o.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
-      "DAILY:2026-06-02",
-    ]);
-
-    // Probing the gpt-5.5 leaf surfaces only the gpt-5.5 row — the legacy
-    // branch's `citing-row model == leaf model` gate keeps the gpt-4o row out.
-    const gpt55 = await loadCitedByReports({
-      customerId: CUSTOMER_ID,
-      leaf: {
-        kind: "event",
-        aiceId: "aice-leg",
-        eventKey: "901",
-        generation: 1,
-        modelName: "openai",
-        model: "gpt-5.5",
-      },
-    });
-    expect(gpt55.map((r) => `${r.period}:${r.bucketDate}`)).toEqual([
-      "DAILY:2026-06-03",
-    ]);
   });
 
   it("created the GIN indexes the reverse lookup relies on", async () => {

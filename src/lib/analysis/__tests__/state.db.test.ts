@@ -1,7 +1,7 @@
-// RFC 0002 Phase 0 (#294) — state-transition + Phase 0 worker DB tests.
+// RFC 0002 (#294) — state-transition + analysis-job-worker DB tests.
 //
 // Covers (a) the ingest-hook state mutations, (b) the worker tick that
-// flips pending → ready and dispatches dry-run job rows, and (c) the
+// flips pending → ready and seeds queued job rows, and (c) the
 // dirty / archive / unarchive transitions surfaced by window-replace.
 
 import { join } from "node:path";
@@ -645,8 +645,8 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   });
 
   it("worker tick does not let already-jobbed ready rows starve newer ready rows (round-2 starvation regression)", async () => {
-    // Seed BATCH_SIZE+1 ready rows. Pre-create dry-run jobs for the
-    // first BATCH_SIZE so they are already done. With the old SQL
+    // Seed BATCH_SIZE+1 ready rows. Pre-create done jobs for the
+    // first BATCH_SIZE so they are already covered. With the old SQL
     // (selected every ready row), the first BATCH_SIZE filled the
     // LIMIT slot and the late row never got a first job. With the
     // `NOT EXISTS` filter, only ready rows missing a job qualify.
@@ -723,7 +723,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
       [customer],
     );
 
-    // Seed an archived row with an existing dry-run job from the
+    // Seed an archived row with an existing job from the
     // prior run.
     await pool.query(
       `INSERT INTO story_analysis_state
@@ -1740,111 +1740,6 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     expect(rows[0]?.last_event_received_at?.toISOString()).toBe(
       customerReceivedAt.toISOString(),
     );
-  });
-
-  it("recovery-orphaned queued dry-run job rows drain to done on the next tick (round-10 review item 1)", async () => {
-    // Round-10 review item 1: `runRecovery` flips orphaned `processing`
-    // job rows back to `queued`, but the state-row pickup is keyed on
-    // `NOT EXISTS (default-variant job)` — once the queued row exists,
-    // the state row is filtered out forever and the queued job stays
-    // queued. The tick's `drainQueuedDryRunJobs` pass closes that hole
-    // by completing any `queued + dry_run=TRUE` rows up front.
-    const customer = "00000000-0000-0000-0000-00000000face";
-    await pool.query(
-      `INSERT INTO customers (id, external_key, name)
-       VALUES ($1, 'ck-face', 'Face')
-       ON CONFLICT (id) DO NOTHING`,
-      [customer],
-    );
-
-    // Seed a `ready` state row with a queued+dry_run=TRUE default-variant
-    // job — the exact shape `runRecovery` produces when it flips a
-    // stuck `processing` Phase 0 row back to `queued`. The state row's
-    // `last_ready_at` is set so the row is not eligible for promotion
-    // from `pending`; this is purely the "recovered queued row" case.
-    await pool.query(
-      `INSERT INTO story_analysis_state
-         (customer_id, story_id, status, first_member_at, last_member_at,
-          last_ready_at)
-       VALUES ($1, $2::bigint, 'ready',
-               NOW() - INTERVAL '1 hour',
-               NOW() - INTERVAL '1 hour',
-               NOW() - INTERVAL '30 minutes')`,
-      [customer, "80001"],
-    );
-    await pool.query(
-      `INSERT INTO story_analysis_job
-         (customer_id, story_id, lang, model_name, model,
-          status, generation, dry_run,
-          processing_started_at, last_generated_at)
-       VALUES ($1, $2::bigint,
-               COALESCE($3, 'ENGLISH'),
-               COALESCE($4, 'openai'),
-               COALESCE($5, 'gpt-4o'),
-               'queued', 1, TRUE,
-               NULL, NULL)`,
-      [
-        customer,
-        "80001",
-        process.env.ANALYSIS_DEFAULT_LANG ?? null,
-        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
-        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
-      ],
-    );
-
-    // Similarly seed a `ready` LIVE periodic row whose default-variant
-    // job is recovered-queued.
-    await pool.query(
-      `INSERT INTO periodic_report_state
-         (subject_id, period, bucket_date, tz, status,
-          last_event_at, last_event_received_at, last_ready_at)
-       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul', 'ready',
-               NOW(), NOW(), NOW() - INTERVAL '30 minutes')`,
-      [customer],
-    );
-    await pool.query(
-      `INSERT INTO periodic_report_job
-         (subject_id, period, bucket_date, tz,
-          lang, model_name, model,
-          status, generation, dry_run,
-          processing_started_at, last_generated_at)
-       VALUES ($1, 'LIVE', DATE '1970-01-01', 'Asia/Seoul',
-               COALESCE($2, 'ENGLISH'),
-               COALESCE($3, 'openai'),
-               COALESCE($4, 'gpt-4o'),
-               'queued', 1, TRUE,
-               NULL, NULL)`,
-      [
-        customer,
-        process.env.ANALYSIS_DEFAULT_LANG ?? null,
-        process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? null,
-        process.env.ANALYSIS_DEFAULT_MODEL ?? null,
-      ],
-    );
-
-    await runAnalysisJobTickOnce(pool);
-
-    const { rows: storyJob } = await pool.query<{
-      status: string;
-      last_generated_at: Date | null;
-    }>(
-      `SELECT status, last_generated_at FROM story_analysis_job
-        WHERE customer_id = $1 AND story_id = 80001`,
-      [customer],
-    );
-    expect(storyJob[0]?.status).toBe("done");
-    expect(storyJob[0]?.last_generated_at).not.toBeNull();
-
-    const { rows: periodicJob } = await pool.query<{
-      status: string;
-      last_generated_at: Date | null;
-    }>(
-      `SELECT status, last_generated_at FROM periodic_report_job
-        WHERE subject_id = $1 AND period = 'LIVE'`,
-      [customer],
-    );
-    expect(periodicJob[0]?.status).toBe("done");
-    expect(periodicJob[0]?.last_generated_at).not.toBeNull();
   });
 });
 
