@@ -188,6 +188,80 @@ describe("CreateGroupDialog", () => {
     await waitFor(() => expect(submit.disabled).toBe(false));
   });
 
+  it("blocks submit until the cost preview resolves", async () => {
+    // Hold the preview POST pending so the manager cannot confirm before the
+    // cost preview has loaded (#512).
+    let resolvePreview: (value: GroupCostPreview) => void = () => {};
+    const previewPending = new Promise<GroupCostPreview>((resolve) => {
+      resolvePreview = resolve;
+    });
+    mockApiFetch.mockImplementation((url: string, req?: RequestInit) => {
+      const method = req?.method ?? "GET";
+      if (url === "/api/groups/eligible-members") {
+        return Promise.resolve({ customers: SEOUL_MEMBERS });
+      }
+      if (url === "/api/groups/preview" && method === "POST") {
+        return previewPending;
+      }
+      if (url === "/api/groups" && method === "POST") {
+        return Promise.resolve({});
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<CreateGroupDialog onCreated={vi.fn()} />);
+    await openDialog();
+    fireEvent.click(screen.getByLabelText(/Member One/));
+    fireEvent.click(screen.getByLabelText(/Member Two/));
+    fireEvent.change(screen.getByLabelText("nameLabel"), {
+      target: { value: "Acme" },
+    });
+    // Range, name, and (shared) tz are all valid, but the preview is still
+    // loading, so submit stays disabled and clicking it posts nothing.
+    const tz = screen.getByLabelText("timezoneLabel") as HTMLSelectElement;
+    await waitFor(() => expect(tz.value).toBe("Asia/Seoul"));
+    const submit = screen.getByText("createConfirm") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(postCalls("/api/groups").length).toBe(0);
+    // Once the preview resolves, submit unlocks.
+    resolvePreview(PREVIEW);
+    await waitFor(() => expect(submit.disabled).toBe(false));
+  });
+
+  it("blocks submit when the cost preview fails to load", async () => {
+    mockApiFetch.mockImplementation((url: string, req?: RequestInit) => {
+      const method = req?.method ?? "GET";
+      if (url === "/api/groups/eligible-members") {
+        return Promise.resolve({ customers: SEOUL_MEMBERS });
+      }
+      if (url === "/api/groups/preview" && method === "POST") {
+        return Promise.reject(new Error("preview_failed"));
+      }
+      if (url === "/api/groups" && method === "POST") {
+        return Promise.resolve({});
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<CreateGroupDialog onCreated={vi.fn()} />);
+    await openDialog();
+    fireEvent.click(screen.getByLabelText(/Member One/));
+    fireEvent.click(screen.getByLabelText(/Member Two/));
+    fireEvent.change(screen.getByLabelText("nameLabel"), {
+      target: { value: "Acme" },
+    });
+    const tz = screen.getByLabelText("timezoneLabel") as HTMLSelectElement;
+    await waitFor(() => expect(tz.value).toBe("Asia/Seoul"));
+    // The preview request settled (rejected) and the unavailable note shows, but
+    // with no successful preview submit stays disabled and posts nothing.
+    await waitFor(() =>
+      expect(screen.getByText("costPreviewUnavailable")).toBeDefined(),
+    );
+    const submit = screen.getByText("createConfirm") as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(postCalls("/api/groups").length).toBe(0);
+  });
+
   it("maps a server error code to a localized message", async () => {
     arrangeServer({
       createImpl: () =>

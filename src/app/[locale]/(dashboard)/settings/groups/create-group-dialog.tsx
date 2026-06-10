@@ -173,8 +173,18 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
     }
   }
 
+  // Require the manager to have seen a successful, non-over-cap cost preview for
+  // the current selection before confirming (#512): submit stays disabled while
+  // the preview is loading, when it failed to load (`preview` is null), or when
+  // it annotates over-cap.
   const canSubmit =
-    !submitting && withinRange && name.trim().length > 0 && tz.length > 0;
+    !submitting &&
+    !previewLoading &&
+    withinRange &&
+    preview != null &&
+    !preview.overMemberCap &&
+    name.trim().length > 0 &&
+    tz.length > 0;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
