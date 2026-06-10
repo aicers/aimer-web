@@ -5,7 +5,12 @@ import {
   assertAllMemberManagement,
   assertGroupOwner,
 } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
 import { teardownGroupDb } from "@/lib/db/teardown-group";
 import {
@@ -34,6 +39,11 @@ function extractGroupId(req: NextRequest): string | null {
 // state, member NAMES, and the retention policy — composed in one request.
 export const GET = withAuth(
   async (req: NextRequest, auth) => {
+    // Management detail is denied under a bridge — short-circuit before the
+    // all-member predicate consults the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
+
     const groupId = extractGroupId(req);
     if (!groupId) {
       return Response.json({ error: "Invalid group ID" }, { status: 400 });
@@ -101,6 +111,11 @@ export const DELETE = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Owner-only delete is denied under a bridge — short-circuit before the
+    // owner gate consults the account's real owner identity.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     const groupId = extractGroupId(req);
     if (!groupId) {

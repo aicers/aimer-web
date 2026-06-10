@@ -1,7 +1,12 @@
 import type { NextRequest } from "next/server";
 import { HttpError } from "@/lib/auth/errors";
 import { assertGroupOwner } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { provisionGroupDb } from "@/lib/db/provision-group";
 import { getGroupWithMembers } from "@/lib/groups/groups";
@@ -28,6 +33,11 @@ export const POST = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Owner-only retry is denied under a bridge — short-circuit before the
+    // owner gate consults the account's real owner identity.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     const segments = req.nextUrl.pathname.split("/");
     const groupId = segments[segments.length - 2];

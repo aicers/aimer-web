@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+let bridgeCustomerIds: string[] | null = null;
 vi.mock("@/lib/auth/guards", () => ({
   withAuth:
     (handler: (req: NextRequest, auth: unknown) => Promise<Response>) =>
@@ -17,10 +18,13 @@ vi.mock("@/lib/auth/guards", () => ({
         accountId: "acct-1",
         sessionId: "sid-1",
         iat: 0,
+        bridgeCustomerIds,
         meta: { ipAddress: "127.0.0.1" },
       }),
   verifyOrigin: () => null,
   verifyCsrf: () => null,
+  denyBridgeManagement: (b: string[] | null) =>
+    b !== null ? Response.json({ error: "Forbidden" }, { status: 403 }) : null,
 }));
 
 const fakeClient = {
@@ -82,6 +86,7 @@ const operational = (id: string, timezone: string) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bridgeCustomerIds = null;
   mockAssertManagement.mockResolvedValue(undefined);
   mockProvisionGroupDb.mockResolvedValue("active");
   mockAuditLog.mockResolvedValue(undefined);
@@ -164,6 +169,21 @@ describe("POST /api/groups — request validation", () => {
     // The cap is a request-shape check: it precedes the gate and any write.
     expect(mockAssertManagement).not.toHaveBeenCalled();
     expect(mockCreateGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/groups — bridge denial", () => {
+  it("denies a bridge session with 403 before any gate or write", async () => {
+    bridgeCustomerIds = ["c1"];
+    const res = await POST(req({ name: "G", memberIds: [A, B] }));
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Forbidden");
+    // The short-circuit precedes the management gate, member-state fetch,
+    // and the write — a bridged manager never reaches them.
+    expect(mockAssertManagement).not.toHaveBeenCalled();
+    expect(mockFetchMemberStates).not.toHaveBeenCalled();
+    expect(mockCreateGroup).not.toHaveBeenCalled();
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
   });
 });
 

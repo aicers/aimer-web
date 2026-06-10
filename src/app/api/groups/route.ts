@@ -3,7 +3,12 @@ import { auditLog } from "@/lib/audit";
 import { validateCustomerFields } from "@/lib/auth/customers";
 import { HttpError } from "@/lib/auth/errors";
 import { listManageableGroups } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { DEFAULT_ANALYSIS_RETENTION_DAYS } from "@/lib/auth/retention-defaults";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { provisionGroupDb } from "@/lib/db/provision-group";
@@ -59,6 +64,11 @@ export const POST = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Management create is denied under a bridge — short-circuit before
+    // `validateGroupMembers` reaches the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     let raw: unknown;
     try {

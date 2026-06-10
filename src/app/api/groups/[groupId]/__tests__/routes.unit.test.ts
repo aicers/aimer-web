@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+let bridgeCustomerIds: string[] | null = null;
 vi.mock("@/lib/auth/guards", () => ({
   withAuth:
     (handler: (req: NextRequest, auth: unknown) => Promise<Response>) =>
@@ -19,10 +20,13 @@ vi.mock("@/lib/auth/guards", () => ({
         accountId: "acct-1",
         sessionId: "sid-1",
         iat: 0,
+        bridgeCustomerIds,
         meta: { ipAddress: "127.0.0.1" },
       }),
   verifyOrigin: () => null,
   verifyCsrf: () => null,
+  denyBridgeManagement: (b: string[] | null) =>
+    b !== null ? Response.json({ error: "Forbidden" }, { status: 403 }) : null,
 }));
 
 const fakeClient = { query: vi.fn(), release: vi.fn() };
@@ -113,6 +117,7 @@ const loaded = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bridgeCustomerIds = null;
   mockAssertManagement.mockResolvedValue(undefined);
   mockGetGroupWithMembers.mockResolvedValue(loaded);
   mockTeardownGroupDb.mockResolvedValue(undefined);
@@ -123,6 +128,60 @@ beforeEach(() => {
     { id: M2, name: "Member Two" },
   ]);
   mockGetGroupRetention.mockResolvedValue({ analysisDays: 1095 });
+});
+
+describe("per-group routes — bridge denial", () => {
+  // A bridge session preserves the underlying account id, so the all-member /
+  // owner predicates would otherwise authorize a bridged manager/owner. Every
+  // management/detail/write endpoint must deny the bridge up front, before any
+  // group load, gate, or write collaborator is reached.
+  beforeEach(() => {
+    bridgeCustomerIds = ["c1"];
+  });
+
+  it("denies the detail GET", async () => {
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("denies DELETE", async () => {
+    const res = await DELETE(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+    expect(mockDeleteGroup).not.toHaveBeenCalled();
+  });
+
+  it("denies retry-provision", async () => {
+    const res = await RETRY_PROVISION(
+      req(`/api/groups/${GID}/retry-provision`),
+    );
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("denies the retention GET", async () => {
+    const res = await RETENTION_GET(req(`/api/groups/${GID}/retention`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("denies the retention PUT", async () => {
+    const res = await RETENTION_PUT(
+      req(`/api/groups/${GID}/retention`, { groupPolicyDays: 90 }),
+    );
+    expect(res.status).toBe(403);
+    expect(mockUpdateGroupRetention).not.toHaveBeenCalled();
+  });
+
+  it("denies the timezone PUT", async () => {
+    const res = await TIMEZONE_PUT(
+      req(`/api/groups/${GID}/timezone`, { tz: "UTC" }),
+    );
+    expect(res.status).toBe(403);
+    expect(mockUpdateGroupTimezone).not.toHaveBeenCalled();
+  });
 });
 
 describe("GET /api/groups/[groupId] — management detail", () => {
