@@ -1,11 +1,24 @@
 import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
-import { assertGroupOwner } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  assertAllMemberManagement,
+  assertGroupOwner,
+} from "@/lib/auth/group-authorization";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool, getMigrationAuditPool } from "@/lib/db/client";
 import { teardownGroupDb } from "@/lib/db/teardown-group";
-import { deleteGroup, getGroupWithMembers } from "@/lib/groups/groups";
+import {
+  deleteGroup,
+  fetchMemberNames,
+  getGroupRetention,
+  getGroupWithMembers,
+} from "@/lib/groups/groups";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -17,6 +30,68 @@ function extractGroupId(req: NextRequest): string | null {
   if (!id || !UUID_RE.test(id)) return null;
   return id;
 }
+
+// GET /api/groups/[groupId] — management-scoped single-group detail backing the
+// settings surface. Auth: the all-member management predicate (the same gate
+// the retention/timezone writes use); a bridge session holds no management
+// grant, so the predicate rejects it (no bridge-specific branch needed). Unlike
+// the view-scoped `GroupEntry`, this carries owner / created-by / provisioning
+// state, member NAMES, and the retention policy — composed in one request.
+export const GET = withAuth(
+  async (req: NextRequest, auth) => {
+    // Management detail is denied under a bridge — short-circuit before the
+    // all-member predicate consults the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
+
+    const groupId = extractGroupId(req);
+    if (!groupId) {
+      return Response.json({ error: "Invalid group ID" }, { status: 400 });
+    }
+
+    const pool = getAuthPool();
+    const client = await pool.connect();
+    try {
+      const loaded = await getGroupWithMembers(client, groupId);
+      if (!loaded) {
+        return Response.json({ error: "Group not found" }, { status: 404 });
+      }
+      // Stricter gate than #513's view list: throws HttpError(403) when the
+      // caller does not manage every member.
+      await assertAllMemberManagement(client, auth.accountId, loaded.memberIds);
+
+      const [members, retention] = await Promise.all([
+        fetchMemberNames(client, loaded.memberIds),
+        getGroupRetention(client, groupId),
+      ]);
+
+      return Response.json({
+        id: loaded.group.id,
+        name: loaded.group.name,
+        description: loaded.group.description,
+        members,
+        tz: loaded.group.tz,
+        ownerId: loaded.group.ownerId,
+        createdBy: loaded.group.createdBy,
+        databaseStatus: loaded.group.databaseStatus,
+        // The policy row is auto-created with the group; treat an absent row
+        // as "no expiry" rather than failing the whole detail read.
+        groupPolicyDays: retention?.analysisDays ?? null,
+      });
+    } catch (err) {
+      if (err instanceof HttpError) {
+        return Response.json(
+          { error: err.message },
+          { status: err.statusCode },
+        );
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+  { ctx: "general" },
+);
 
 // DELETE /api/groups/[groupId] — entity-level delete.
 //
@@ -36,6 +111,11 @@ export const DELETE = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Owner-only delete is denied under a bridge — short-circuit before the
+    // owner gate consults the account's real owner identity.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     const groupId = extractGroupId(req);
     if (!groupId) {

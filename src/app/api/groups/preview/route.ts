@@ -1,6 +1,11 @@
 import type { NextRequest } from "next/server";
 import { HttpError } from "@/lib/auth/errors";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import {
   computeCombinedRecentEventVolume,
@@ -34,6 +39,12 @@ export const POST = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // The create-flow cost preview is part of the management surface and is
+    // denied under a bridge — short-circuit before `validateGroupMembers`
+    // reaches the account's real management grants or any customer-DB reads.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     let raw: unknown;
     try {

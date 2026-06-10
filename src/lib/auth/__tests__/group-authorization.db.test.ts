@@ -8,12 +8,14 @@ import {
   hasPostgres,
 } from "../../db/__tests__/db-test-helpers";
 import { runMigrations } from "../../db/migrate";
+import { listGroupEligibleMembers } from "../../groups/eligible-members";
 import { HttpError } from "../errors";
 import {
   assertAllMemberManagement,
   hasAllMemberManagement,
   hasAllMemberReadPermission,
   listAccessibleGroups,
+  listManageableGroups,
   resolveGroupReadOutcome,
 } from "../group-authorization";
 
@@ -389,6 +391,72 @@ describe.skipIf(!hasPostgres)("group all-member predicates (DB)", () => {
         listAccessibleGroups(c, stranger.rows[0].id),
       );
       expect(groups).toEqual([]);
+    });
+
+    // The management list is a STRICTER gate than the view list above: it
+    // keeps groups manageable (Manager/Analyst) on every member, not merely
+    // readable, and carries owner / provisioning state.
+    describe("listManageableGroups (#512)", () => {
+      it("returns groups manageable on every member, with summary fields", async () => {
+        const groups = await withClient((c) =>
+          listManageableGroups(c, managerAcct),
+        );
+        const byId = new Map(groups.map((g) => [g.id, g]));
+        // Manager on c1 & c2 → the {c1,c2} group is manageable; the {c1,c3}
+        // group is not (no grant on c3).
+        expect(byId.has(groupVisible)).toBe(true);
+        expect(byId.has(groupHidden)).toBe(false);
+        const vis = byId.get(groupVisible);
+        expect(vis?.memberCount).toBe(2);
+        expect(vis?.ownerId).toBe(adminAcct);
+        expect(vis?.createdBy).toBe(adminAcct);
+        // mkGroup inserts no database_status → the DDL default applies.
+        expect(vis?.databaseStatus).toBe("provisioning");
+      });
+
+      it("returns no groups for a plain User (read != manage)", async () => {
+        const groups = await withClient((c) =>
+          listManageableGroups(c, userAcct),
+        );
+        expect(groups).toEqual([]);
+      });
+    });
+
+    describe("listGroupEligibleMembers (#512)", () => {
+      it("lists operational customers a Manager manages, excluding inaccessible ones", async () => {
+        const members = await withClient((c) =>
+          listGroupEligibleMembers(c, managerAcct),
+        );
+        const ids = members.map((m) => m.id);
+        expect(ids).toContain(c1);
+        expect(ids).toContain(c2);
+        // c3: the manager has no membership/assignment → excluded.
+        expect(ids).not.toContain(c3);
+      });
+
+      it("lists customers via an eligible analyst assignment", async () => {
+        const members = await withClient((c) =>
+          listGroupEligibleMembers(c, analystAcct),
+        );
+        const ids = members.map((m) => m.id);
+        expect(ids).toContain(c1);
+        expect(ids).toContain(c2);
+        for (const m of members) expect(m.isAnalyst).toBe(true);
+      });
+
+      it("excludes customers where the caller is only a User (not manageable)", async () => {
+        const members = await withClient((c) =>
+          listGroupEligibleMembers(c, userAcct),
+        );
+        expect(members).toEqual([]);
+      });
+
+      it("excludes a stale analyst assignment on an ineligible account", async () => {
+        const members = await withClient((c) =>
+          listGroupEligibleMembers(c, ineligibleAnalystAcct),
+        );
+        expect(members).toEqual([]);
+      });
     });
   });
 });

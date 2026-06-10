@@ -299,6 +299,32 @@ export function verifyOrigin(req: NextRequest): Response | null {
 }
 
 /**
+ * Deny a request that arrives under a bridge session.
+ *
+ * The customer-group MANAGEMENT surface (create / detail / retention /
+ * timezone / delete / retry-provision / preview) is never offered in a
+ * bridge: a bridge token grants a scoped, read-oriented view of specific
+ * customers and carries no management authority. The all-member predicates
+ * (`assertAllMemberManagement` / `assertGroupOwner`) authorize off the
+ * underlying account id, which `withAuth` preserves verbatim for a bridged
+ * session — so without this short-circuit a user who is a qualifying
+ * manager/owner OUTSIDE the bridge could still drive these write/detail
+ * endpoints by calling them directly while bridged. Mirror the view-side and
+ * list/eligible-member short-circuit: deny before touching any DB/write
+ * collaborator. A non-null `bridgeCustomerIds` is the bridge marker.
+ *
+ * Returns a 403 Response under a bridge, or null otherwise.
+ */
+export function denyBridgeManagement(
+  bridgeCustomerIds: string[] | null,
+): Response | null {
+  if (bridgeCustomerIds !== null) {
+    return Response.json({ error: "Forbidden" }, { status: 403 });
+  }
+  return null;
+}
+
+/**
  * Verify the CSRF token from the request header.
  * Returns a 403 Response on failure, or null if valid.
  */

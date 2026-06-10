@@ -2,7 +2,12 @@ import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import {
   getGroupRetention,
@@ -27,6 +32,11 @@ function extractGroupId(req: NextRequest): string | null {
 // Auth: the all-member management predicate.
 export const GET = withAuth(
   async (req: NextRequest, auth) => {
+    // Management read is denied under a bridge — short-circuit before the
+    // all-member predicate consults the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
+
     const groupId = extractGroupId(req);
     if (!groupId) {
       return Response.json({ error: "Invalid group ID" }, { status: 400 });
@@ -98,6 +108,11 @@ export const PUT = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Management write is denied under a bridge — short-circuit before the
+    // all-member predicate consults the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     const groupId = extractGroupId(req);
     if (!groupId) {

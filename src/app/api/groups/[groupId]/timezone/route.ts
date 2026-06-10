@@ -2,7 +2,12 @@ import type { NextRequest } from "next/server";
 import { auditLog } from "@/lib/audit";
 import { HttpError } from "@/lib/auth/errors";
 import { assertAllMemberManagement } from "@/lib/auth/group-authorization";
-import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
+import {
+  denyBridgeManagement,
+  verifyCsrf,
+  verifyOrigin,
+  withAuth,
+} from "@/lib/auth/guards";
 import { getAuthPool } from "@/lib/db/client";
 import { getGroupWithMembers, updateGroupTimezone } from "@/lib/groups/groups";
 import { isValidTimeZone } from "@/lib/groups/timezone";
@@ -32,6 +37,11 @@ export const PUT = withAuth(
       iat: auth.iat,
     });
     if (csrfErr) return csrfErr;
+
+    // Management write is denied under a bridge — short-circuit before the
+    // all-member predicate consults the account's real management grants.
+    const bridgeErr = denyBridgeManagement(auth.bridgeCustomerIds);
+    if (bridgeErr) return bridgeErr;
 
     const groupId = extractGroupId(req);
     if (!groupId) {

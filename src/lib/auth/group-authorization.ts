@@ -217,3 +217,71 @@ export async function listAccessibleGroups(
   }
   return visible;
 }
+
+// ---------------------------------------------------------------------------
+// Account-manageable group listing (#512)
+// ---------------------------------------------------------------------------
+
+/**
+ * One group the account may MANAGE, projected for the management settings
+ * list. Carries owner / provisioning state the view-scoped {@link
+ * AccessibleGroup} intentionally omits, and a member COUNT rather than the
+ * member id list (the list view needs only the count; the detail GET loads
+ * members with names).
+ */
+export interface ManageableGroup {
+  id: string;
+  name: string;
+  memberCount: number;
+  databaseStatus: string;
+  ownerId: string;
+  createdBy: string;
+}
+
+/**
+ * List the groups `accountId` may MANAGE: the all-member management predicate
+ * (`assertAllMemberManagement` — **Manager** membership role OR eligible
+ * **Analyst** on EVERY member) lifted to a list. This is a STRICTER gate than
+ * {@link listAccessibleGroups} (which only requires `reports:read`): a group
+ * the account can view but not manage is dropped here.
+ *
+ * Computed without per-group fan-out, mirroring {@link listAccessibleGroups}:
+ * load every group with its members, resolve the caller's per-customer access
+ * over the union of member ids in a single {@link computeMemberAccess} call,
+ * and keep the groups whose every member grants Manager/Analyst. A member-less
+ * group never qualifies.
+ *
+ * Bridge handling is the caller's: the `GET /api/groups` route short-circuits a
+ * bridge session to `{ groups: [] }` before calling this (a bridge holds no
+ * management grant anyway), the same short-circuit the view list applies — no
+ * bridge-specific logic here.
+ */
+export async function listManageableGroups(
+  client: PoolClient,
+  accountId: string,
+): Promise<ManageableGroup[]> {
+  const groups = await listGroupsWithMembers(client);
+  if (groups.length === 0) return [];
+
+  const allMemberIds = [...new Set(groups.flatMap((g) => g.memberIds))];
+  const access = await computeMemberAccess(client, accountId, allMemberIds);
+
+  const manageable: ManageableGroup[] = [];
+  for (const { group, memberIds } of groups) {
+    if (memberIds.length === 0) continue;
+    const canManage = memberIds.every((id) => {
+      const a = access.get(id);
+      return a !== undefined && (a.role === "Manager" || a.isAnalyst);
+    });
+    if (!canManage) continue;
+    manageable.push({
+      id: group.id,
+      name: group.name,
+      memberCount: memberIds.length,
+      databaseStatus: group.databaseStatus,
+      ownerId: group.ownerId,
+      createdBy: group.createdBy,
+    });
+  }
+  return manageable;
+}

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+let bridgeCustomerIds: string[] | null = null;
 vi.mock("@/lib/auth/guards", () => ({
   withAuth:
     (handler: (req: NextRequest, auth: unknown) => Promise<Response>) =>
@@ -19,10 +20,13 @@ vi.mock("@/lib/auth/guards", () => ({
         accountId: "acct-1",
         sessionId: "sid-1",
         iat: 0,
+        bridgeCustomerIds,
         meta: { ipAddress: "127.0.0.1" },
       }),
   verifyOrigin: () => null,
   verifyCsrf: () => null,
+  denyBridgeManagement: (b: string[] | null) =>
+    b !== null ? Response.json({ error: "Forbidden" }, { status: 403 }) : null,
 }));
 
 const fakeClient = { query: vi.fn(), release: vi.fn() };
@@ -60,12 +64,14 @@ const mockDeleteGroup = vi.fn();
 const mockGetGroupRetention = vi.fn();
 const mockUpdateGroupRetention = vi.fn();
 const mockUpdateGroupTimezone = vi.fn();
+const mockFetchMemberNames = vi.fn();
 vi.mock("@/lib/groups/groups", () => ({
   getGroupWithMembers: (...a: unknown[]) => mockGetGroupWithMembers(...a),
   deleteGroup: (...a: unknown[]) => mockDeleteGroup(...a),
   getGroupRetention: (...a: unknown[]) => mockGetGroupRetention(...a),
   updateGroupRetention: (...a: unknown[]) => mockUpdateGroupRetention(...a),
   updateGroupTimezone: (...a: unknown[]) => mockUpdateGroupTimezone(...a),
+  fetchMemberNames: (...a: unknown[]) => mockFetchMemberNames(...a),
 }));
 
 const mockProvisionGroupDb = vi.fn();
@@ -73,7 +79,7 @@ vi.mock("@/lib/db/provision-group", () => ({
   provisionGroupDb: (...a: unknown[]) => mockProvisionGroupDb(...a),
 }));
 
-const { DELETE } = await import("../route");
+const { DELETE, GET: DETAIL_GET } = await import("../route");
 const { GET: RETENTION_GET, PUT: RETENTION_PUT } = await import(
   "../retention/route"
 );
@@ -104,17 +110,125 @@ const loaded = {
     createdBy: "acct-1",
     createdAt: "2026-01-01T00:00:00.000Z",
     tz: "Asia/Seoul",
+    databaseStatus: "active",
   },
   memberIds: [M1, M2],
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bridgeCustomerIds = null;
   mockAssertManagement.mockResolvedValue(undefined);
   mockGetGroupWithMembers.mockResolvedValue(loaded);
   mockTeardownGroupDb.mockResolvedValue(undefined);
   mockAuditLog.mockResolvedValue(undefined);
   mockProvisionGroupDb.mockResolvedValue("active");
+  mockFetchMemberNames.mockResolvedValue([
+    { id: M1, name: "Member One" },
+    { id: M2, name: "Member Two" },
+  ]);
+  mockGetGroupRetention.mockResolvedValue({ analysisDays: 1095 });
+});
+
+describe("per-group routes — bridge denial", () => {
+  // A bridge session preserves the underlying account id, so the all-member /
+  // owner predicates would otherwise authorize a bridged manager/owner. Every
+  // management/detail/write endpoint must deny the bridge up front, before any
+  // group load, gate, or write collaborator is reached.
+  beforeEach(() => {
+    bridgeCustomerIds = ["c1"];
+  });
+
+  it("denies the detail GET", async () => {
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("denies DELETE", async () => {
+    const res = await DELETE(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+    expect(mockDeleteGroup).not.toHaveBeenCalled();
+  });
+
+  it("denies retry-provision", async () => {
+    const res = await RETRY_PROVISION(
+      req(`/api/groups/${GID}/retry-provision`),
+    );
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+    expect(mockProvisionGroupDb).not.toHaveBeenCalled();
+  });
+
+  it("denies the retention GET", async () => {
+    const res = await RETENTION_GET(req(`/api/groups/${GID}/retention`));
+    expect(res.status).toBe(403);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("denies the retention PUT", async () => {
+    const res = await RETENTION_PUT(
+      req(`/api/groups/${GID}/retention`, { groupPolicyDays: 90 }),
+    );
+    expect(res.status).toBe(403);
+    expect(mockUpdateGroupRetention).not.toHaveBeenCalled();
+  });
+
+  it("denies the timezone PUT", async () => {
+    const res = await TIMEZONE_PUT(
+      req(`/api/groups/${GID}/timezone`, { tz: "UTC" }),
+    );
+    expect(res.status).toBe(403);
+    expect(mockUpdateGroupTimezone).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/groups/[groupId] — management detail", () => {
+  it("returns 400 for a non-UUID id", async () => {
+    const res = await DETAIL_GET(req("/api/groups/not-a-uuid"));
+    expect(res.status).toBe(400);
+    expect(mockGetGroupWithMembers).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the group does not exist", async () => {
+    mockGetGroupWithMembers.mockResolvedValue(null);
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(404);
+    expect(mockAssertManagement).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the caller does not manage every member", async () => {
+    mockAssertManagement.mockRejectedValue(new HttpError("Forbidden", 403));
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(403);
+    expect(mockFetchMemberNames).not.toHaveBeenCalled();
+  });
+
+  it("returns owner, members with names, db status, and retention", async () => {
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({
+      id: GID,
+      tz: "Asia/Seoul",
+      ownerId: "acct-1",
+      createdBy: "acct-1",
+      databaseStatus: "active",
+      groupPolicyDays: 1095,
+    });
+    expect(body.members).toEqual([
+      { id: M1, name: "Member One" },
+      { id: M2, name: "Member Two" },
+    ]);
+  });
+
+  it("treats a missing retention policy row as no-expiry (null)", async () => {
+    mockGetGroupRetention.mockResolvedValue(undefined);
+    const res = await DETAIL_GET(req(`/api/groups/${GID}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).groupPolicyDays).toBeNull();
+  });
 });
 
 describe("DELETE /api/groups/[groupId]", () => {

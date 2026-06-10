@@ -12,6 +12,7 @@ import { runMigrations } from "../../db/migrate";
 import {
   createGroup,
   deleteGroup,
+  fetchMemberNames,
   fetchMemberStates,
   getGroupRetention,
   getGroupWithMembers,
@@ -142,6 +143,9 @@ describe.skipIf(!hasPostgres)("customer-group persistence (DB)", () => {
     const loaded = await withClient((c) => getGroupWithMembers(c, gid));
     expect(loaded?.group.id).toBe(gid);
     expect(loaded?.memberIds.sort()).toEqual([c1, c2].sort());
+    // The provisioning status is projected for the management surfaces (#512);
+    // a freshly created group starts at the DDL default.
+    expect(loaded?.group.databaseStatus).toBe("provisioning");
 
     const missing = await withClient((c) =>
       getGroupWithMembers(c, "00000000-0000-0000-0000-000000000000"),
@@ -149,6 +153,18 @@ describe.skipIf(!hasPostgres)("customer-group persistence (DB)", () => {
     expect(missing).toBeNull();
 
     await pool.query("DELETE FROM subjects WHERE id = $1", [gid]);
+  });
+
+  it("fetchMemberNames returns names in the requested order, dropping unknown ids", async () => {
+    const missing = "00000000-0000-0000-0000-000000000000";
+    const names = await withClient((c) =>
+      fetchMemberNames(c, [c2, c1, missing]),
+    );
+    expect(names).toEqual([
+      { id: c2, name: "gc-c2" },
+      { id: c1, name: "gc-c1" },
+    ]);
+    expect(await withClient((c) => fetchMemberNames(c, []))).toEqual([]);
   });
 
   it("deleteGroup cascades and returns false for a non-group id", async () => {

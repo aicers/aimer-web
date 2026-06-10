@@ -76,7 +76,18 @@ function useNavItems(): NavItem[] {
   const t = useTranslations("nav");
   const locale = useLocale();
   const permissions = usePermissions();
-  const { singleCustomerId, scope } = useCustomerContext();
+  const { customers, singleCustomerId, scope, isBridgeSession } =
+    useCustomerContext();
+
+  // Group settings is a management surface, not single-customer scoped: it
+  // lists the groups the caller can manage and lets them create one. Offer it
+  // whenever the account manages at least one customer (Manager or eligible
+  // Analyst) and is not bridged — the same management capability the
+  // group-create gate requires. A bridge session holds no management grant, so
+  // the surface is never offered under one (mirrors the API short-circuits).
+  const canManageGroups =
+    !isBridgeSession &&
+    customers.some((c) => c.role === "Manager" || c.isAnalyst);
 
   // Members and Customer Settings render against a single customer. They are
   // reachable only when the active scope resolves to exactly one customer;
@@ -139,6 +150,14 @@ function useNavItems(): NavItem[] {
       icon: Settings,
       visible: singleScope && permissions.canViewCustomerSettings,
       query: scopeQuery,
+    },
+    {
+      // Not scope-gated: the page lists every manageable group, so it carries
+      // no `?scope=` (clicking it must not narrow the ephemeral filter).
+      href: `/${locale}/settings/groups`,
+      label: t("groupSettings"),
+      icon: Boxes,
+      visible: canManageGroups,
     },
   ];
 }
