@@ -49,6 +49,18 @@ const SEOUL_MEMBERS: GroupEligibleMember[] = [
   },
 ];
 
+const THREE_SEOUL_MEMBERS: GroupEligibleMember[] = [
+  ...SEOUL_MEMBERS,
+  {
+    id: "m3",
+    name: "Member Three",
+    externalKey: "k3",
+    timezone: "Asia/Seoul",
+    role: "Manager",
+    isAnalyst: false,
+  },
+];
+
 const PREVIEW: GroupCostPreview = {
   memberCount: 2,
   maxMembers: 10,
@@ -260,6 +272,63 @@ describe("CreateGroupDialog", () => {
     expect(submit.disabled).toBe(true);
     fireEvent.click(submit);
     expect(postCalls("/api/groups").length).toBe(0);
+  });
+
+  it("blocks submit on a stale preview when the selection changes mid-flight", async () => {
+    // First preview (members A+B) resolves; the second (A+B+C) is held pending
+    // so the still-loaded A+B preview cannot back a create for A+B+C (#512).
+    let resolveSecondPreview: (value: GroupCostPreview) => void = () => {};
+    const secondPreviewPending = new Promise<GroupCostPreview>((resolve) => {
+      resolveSecondPreview = resolve;
+    });
+    let previewCalls = 0;
+    mockApiFetch.mockImplementation((url: string, req?: RequestInit) => {
+      const method = req?.method ?? "GET";
+      if (url === "/api/groups/eligible-members") {
+        return Promise.resolve({ customers: THREE_SEOUL_MEMBERS });
+      }
+      if (url === "/api/groups/preview" && method === "POST") {
+        previewCalls += 1;
+        return previewCalls === 1
+          ? Promise.resolve(PREVIEW)
+          : secondPreviewPending;
+      }
+      if (url === "/api/groups" && method === "POST") {
+        return Promise.resolve({});
+      }
+      return Promise.resolve(undefined);
+    });
+    render(<CreateGroupDialog onCreated={vi.fn()} />);
+    await openDialog();
+    fireEvent.click(screen.getByLabelText(/Member One/));
+    fireEvent.click(screen.getByLabelText(/Member Two/));
+    fireEvent.change(screen.getByLabelText("nameLabel"), {
+      target: { value: "Acme" },
+    });
+    // Preview for A+B resolved → submit is enabled.
+    const submit = screen.getByText("createConfirm") as HTMLButtonElement;
+    await waitFor(() => expect(submit.disabled).toBe(false));
+
+    // Add a third member: the A+B preview is now stale and the A+B+C preview is
+    // still pending, so submit must lock again and clicking it posts nothing.
+    fireEvent.click(screen.getByLabelText(/Member Three/));
+    await waitFor(() =>
+      expect(postCalls("/api/groups/preview").length).toBe(2),
+    );
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(postCalls("/api/groups").length).toBe(0);
+
+    // Once the A+B+C preview resolves, submit unlocks and posts all three.
+    resolveSecondPreview(PREVIEW);
+    await waitFor(() => expect(submit.disabled).toBe(false));
+    fireEvent.click(submit);
+    await waitFor(() => expect(postCalls("/api/groups").length).toBe(1));
+    expect(JSON.parse(postCalls("/api/groups")[0][1].body as string)).toEqual({
+      name: "Acme",
+      memberIds: ["m1", "m2", "m3"],
+      tz: "Asia/Seoul",
+    });
   });
 
   it("maps a server error code to a localized message", async () => {

@@ -54,6 +54,10 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
 
   const [preview, setPreview] = useState<GroupCostPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // Signature of the member set the current `preview` was loaded for. Submit is
+  // gated on this matching the live selection so a preview that resolved for an
+  // earlier selection cannot back a create for a different one.
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -65,6 +69,7 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
     setTz("");
     setTzTouched(false);
     setPreview(null);
+    setPreviewKey(null);
     setSubmitError(null);
   }, []);
 
@@ -97,6 +102,7 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
   }, [open, t]);
 
   const selectedIds = useMemo(() => [...selected].sort(), [selected]);
+  const selectionKey = useMemo(() => selectedIds.join(","), [selectedIds]);
   const count = selectedIds.length;
   const overCap = count > GROUP_MAX_MEMBERS;
   const withinRange = count >= GROUP_MIN_MEMBERS && count <= GROUP_MAX_MEMBERS;
@@ -116,8 +122,12 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
   useEffect(() => {
     if (!open || !withinRange) {
       setPreview(null);
+      setPreviewKey(null);
       return;
     }
+    // The selection this request is for; stamped onto `previewKey` on success so
+    // submit can confirm the resolved preview matches the live selection.
+    const requestKey = selectedIds.join(",");
     let cancelled = false;
     setPreviewLoading(true);
     (async () => {
@@ -126,9 +136,15 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
           method: "POST",
           body: JSON.stringify({ memberIds: selectedIds }),
         });
-        if (!cancelled) setPreview(data);
+        if (!cancelled) {
+          setPreview(data);
+          setPreviewKey(requestKey);
+        }
       } catch {
-        if (!cancelled) setPreview(null);
+        if (!cancelled) {
+          setPreview(null);
+          setPreviewKey(null);
+        }
       } finally {
         if (!cancelled) setPreviewLoading(false);
       }
@@ -175,13 +191,16 @@ export function CreateGroupDialog({ onCreated }: CreateGroupDialogProps) {
 
   // Require the manager to have seen a successful, non-over-cap cost preview for
   // the current selection before confirming (#512): submit stays disabled while
-  // the preview is loading, when it failed to load (`preview` is null), or when
-  // it annotates over-cap.
+  // the preview is loading, when it failed to load (`preview` is null), when it
+  // annotates over-cap, or when the loaded preview belongs to an earlier
+  // selection (`previewKey` lags the live `selectionKey` until the new preview
+  // resolves).
   const canSubmit =
     !submitting &&
     !previewLoading &&
     withinRange &&
     preview != null &&
+    previewKey === selectionKey &&
     !preview.overMemberCap &&
     name.trim().length > 0 &&
     tz.length > 0;
