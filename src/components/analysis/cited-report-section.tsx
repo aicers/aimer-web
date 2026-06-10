@@ -25,14 +25,12 @@ export function CitedReportSection({
   title,
   units,
   locale,
-  customerId,
   testid,
   t,
 }: {
   title: string;
   units: CitationUnit[];
   locale: string;
-  customerId: string;
   testid: string;
   t: AnalysisTranslations;
 }) {
@@ -55,7 +53,6 @@ export function CitedReportSection({
                 key={i}
                 unit={unit}
                 locale={locale}
-                customerId={customerId}
                 t={t}
               />
             ))}
@@ -67,12 +64,10 @@ export function CitedReportSection({
 function CitedUnit({
   unit,
   locale,
-  customerId,
   t,
 }: {
   unit: CitationUnit;
   locale: string;
-  customerId: string;
   t: AnalysisTranslations;
 }) {
   return (
@@ -84,12 +79,7 @@ function CitedUnit({
         // sibling below the paragraph (#449 review round 1).
         citation={
           unit.source ? (
-            <CitationLink
-              source={unit.source}
-              locale={locale}
-              customerId={customerId}
-              t={t}
-            />
+            <CitationLink source={unit.source} locale={locale} t={t} />
           ) : undefined
         }
       />
@@ -100,25 +90,25 @@ function CitedUnit({
 function CitationLink({
   source,
   locale,
-  customerId,
   t,
 }: {
   source: NonNullable<CitationUnit["source"]>;
   locale: string;
-  customerId: string;
   t: AnalysisTranslations;
 }) {
   const query = pinQuery(source.variant);
+  // Link to the OWNING MEMBER customer's leaf detail (#513), carried on the
+  // source — for a group report the leaf lives in a member DB, not the group.
   const href =
     source.sourceType === "story"
       ? `${subjectPages.story(
           locale,
-          customerId,
+          source.customerId,
           encodeURIComponent(source.storyId),
         )}?${query}`
       : `${subjectPages.eventAnalysis(
           locale,
-          customerId,
+          source.customerId,
           encodeURIComponent(source.aiceId),
           encodeURIComponent(source.eventKey),
         )}?${query}`;

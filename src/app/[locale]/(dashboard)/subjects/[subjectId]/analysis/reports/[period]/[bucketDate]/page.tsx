@@ -25,8 +25,14 @@ import {
   loadReportResultPage,
   type ReportSections,
 } from "@/lib/analysis/report-result-page-loader";
+import {
+  createGroupRetentionProvider,
+  type SubjectRetentionProvider,
+} from "@/lib/analysis/subject-retention-provider";
 import { getAuthPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
+import { getGroupRuntimePool } from "@/lib/db/group-runtime-pool";
+import { getSubjectKind } from "@/lib/db/subject-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import {
   mergeQuery,
@@ -113,6 +119,14 @@ export default async function ReportDetailPage({
   const customerId = subjectId;
   const sp = (await searchParams) ?? {};
 
+  // Resolve the subject kind (#513): a `group` reads the result from the group
+  // DB, fans de-redaction out across member DBs (loader), uses the group
+  // retention boundary for prev/next, and hides generation actions. An unknown
+  // subject 404s.
+  const subjectKind = await getSubjectKind(getAuthPool(), subjectId);
+  if (subjectKind === null) notFound();
+  const isGroup = subjectKind === "group";
+
   if (!PERIODS.has(period)) notFound();
   // Calendar-valid check (not just the YYYY-MM-DD shape) so an impossible
   // date like 2026-02-31 is a 404 here rather than a 500 from the loader's
@@ -154,6 +168,7 @@ export default async function ReportDetailPage({
 
   const outcome = await loadReportResultPage({
     customerId,
+    subject: { kind: subjectKind, id: subjectId },
     period,
     bucketDate,
     locale,
@@ -254,12 +269,22 @@ export default async function ReportDetailPage({
   // neighbor read is best-effort (own try/catch), so it never fails the page.
   let temporalNav: React.ReactNode = null;
   if (period !== "LIVE") {
+    // For a group, read neighbor buckets from the group result DB and clamp the
+    // older side with the GROUP retention boundary (B4); a customer keeps the
+    // customer pool + default (customer) provider.
+    const neighborPool = isGroup
+      ? getGroupRuntimePool(subjectId)
+      : getCustomerRuntimePool(customerId);
+    const neighborProvider: SubjectRetentionProvider | undefined = isGroup
+      ? createGroupRetentionProvider(subjectId, getAuthPool())
+      : undefined;
     const neighbors = await loadReportNeighbors({
       authPool: getAuthPool(),
-      customerPool: getCustomerRuntimePool(customerId),
+      customerPool: neighborPool,
       subjectId: customerId,
       period: period as PeriodKind,
       bucketDate,
+      provider: neighborProvider,
     });
     temporalNav = (
       <ReportTemporalNav
@@ -554,7 +579,6 @@ export default async function ReportDetailPage({
             title={tA("reportDetail.sectionExecutiveSummary")}
             units={data.sections.executive_summary}
             locale={locale}
-            customerId={customerId}
             testid="section-executive_summary"
             t={tA}
           />
@@ -562,7 +586,6 @@ export default async function ReportDetailPage({
             title={tA("reportDetail.sectionStoryHighlights")}
             units={data.sections.story_highlights}
             locale={locale}
-            customerId={customerId}
             testid="section-story_highlights"
             t={tA}
           />
@@ -570,7 +593,6 @@ export default async function ReportDetailPage({
             title={tA("reportDetail.sectionNotableEvents")}
             units={data.sections.notable_events}
             locale={locale}
-            customerId={customerId}
             testid="section-notable_events"
             t={tA}
           />
@@ -580,12 +602,7 @@ export default async function ReportDetailPage({
               before the suspicious-event trends section, which is the
               drill-down's deliberate stopping point and gets no Sources panel
               (#395). */}
-          <SourcesPanel
-            locale={locale}
-            customerId={customerId}
-            sources={data.citedSources}
-            t={tA}
-          />
+          <SourcesPanel locale={locale} sources={data.citedSources} t={tA} />
 
           <ReportSection
             title={tA("reportDetail.sectionSuspiciousEventTrends")}
@@ -603,8 +620,12 @@ export default async function ReportDetailPage({
       {/* Force-regenerate is an analyst-only action (the endpoint authorizes
           `reports:create`). Gate the button so the UI matches that server
           authorization — bridge reads never reach this page, so the
-          analyst flag alone suffices here (#457). */}
-      {data.isViewerAnalyst ? (
+          analyst flag alone suffices here (#457). Also hidden for a `group`
+          subject (#513): there is no group regenerate backend in v1, so the
+          action is not rendered rather than wired to a new group API. (The
+          group path already forces `isViewerAnalyst` false, so this `!isGroup`
+          is an explicit belt-and-suspenders, not the only gate.) */}
+      {!isGroup && data.isViewerAnalyst ? (
         <section className="mt-8">
           <ReportRegenerateButton
             customerId={data.customerId}

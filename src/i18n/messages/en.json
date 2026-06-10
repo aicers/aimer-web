@@ -119,7 +119,12 @@
   },
   "sidebar": {
     "scopeLabel": "Customer scope",
-    "summarySubjectsLabel": "Customers",
+    "summarySubjectsLabel": "Subjects",
+    "subjectsCustomersLabel": "Customers",
+    "subjectsGroupsLabel": "Groups",
+    "scopePresetsLabel": "Group presets",
+    "scopePresetsHint": "Selecting a group fills the customer scope above with its members.",
+    "scopePresetApply": "Apply {name} members to scope",
     "scopeAll": "All customers",
     "scopeSelected": "{count} of {total} customers",
     "bridgeLocked": "Locked to bridge session",
@@ -921,14 +926,20 @@
       "title": "Customer",
       "subtitle": "Reports and analysis for this customer.",
       "empty": "You do not have access to any sections for this customer.",
-      "forbidden": "You do not have permission to view this customer (403).",
       "reportsDescription": "Periodic report buckets for this customer.",
       "storiesDescription": "Pre-curated correlations of suspicious events.",
       "eventsDescription": "Analyzed detections forwarded for this customer."
     },
+    "groupHub": {
+      "title": "Customer group",
+      "subtitle": "Combined periodic reports across this group's members.",
+      "reportsDescription": "Periodic report buckets generated for this group."
+    },
     "boundaries": {
-      "reportsForbidden": "You do not have permission to view reports for this customer (403). Ask a customer administrator to grant the <code>reports:read</code> permission.",
-      "reportForbidden": "You do not have permission to view this report (403). Ask a customer administrator to grant the <code>reports:read</code> permission."
+      "hubTitle": "Subject",
+      "hubForbidden": "You do not have permission to view this subject (403).",
+      "reportsForbidden": "You do not have permission to view these reports (403). Ask an administrator to grant the <code>reports:read</code> permission.",
+      "reportForbidden": "You do not have permission to view this report (403). Ask an administrator to grant the <code>reports:read</code> permission."
     },
     "compare": {
       "selectLabel": "Compare with",

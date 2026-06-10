@@ -47,12 +47,10 @@ export function pinQuery(variant: CitedLeafVariant): string {
 
 export function SourcesPanel({
   locale,
-  customerId,
   sources,
   t,
 }: {
   locale: string;
-  customerId: string;
   sources: { stories: CitedStorySource[]; events: CitedEventSource[] };
   t: AnalysisTranslations;
 }) {
@@ -77,18 +75,16 @@ export function SourcesPanel({
       <ul className="space-y-2">
         {sources.stories.map((s) => (
           <StorySourceCard
-            key={`story-${s.storyId}-${s.variant.generation}`}
+            key={`story-${s.customerId}-${s.storyId}-${s.variant.generation}`}
             locale={locale}
-            customerId={customerId}
             source={s}
             t={t}
           />
         ))}
         {sources.events.map((e) => (
           <EventSourceCard
-            key={`event-${e.aiceId}-${e.eventKey}-${e.variant.generation}`}
+            key={`event-${e.customerId}-${e.aiceId}-${e.eventKey}-${e.variant.generation}`}
             locale={locale}
-            customerId={customerId}
             source={e}
             t={t}
           />
@@ -100,18 +96,19 @@ export function SourcesPanel({
 
 function StorySourceCard({
   locale,
-  customerId,
   source,
   t,
 }: {
   locale: string;
-  customerId: string;
   source: CitedStorySource;
   t: AnalysisTranslations;
 }) {
+  // Link to the OWNING MEMBER customer's detail (#513), carried on the source —
+  // not the report subject, which for a group is the group, not where the leaf
+  // lives. Degrades to the report's own customer id for a single-customer report.
   const href = `${subjectPages.story(
     locale,
-    customerId,
+    source.customerId,
     encodeURIComponent(source.storyId),
   )}?${pinQuery(source.variant)}`;
   return (
@@ -157,18 +154,17 @@ function StorySourceCard({
 
 function EventSourceCard({
   locale,
-  customerId,
   source,
   t,
 }: {
   locale: string;
-  customerId: string;
   source: CitedEventSource;
   t: AnalysisTranslations;
 }) {
+  // Link to the owning member customer's event detail (#513) — see StorySourceCard.
   const href = `${subjectPages.eventAnalysis(
     locale,
-    customerId,
+    source.customerId,
     encodeURIComponent(source.aiceId),
     encodeURIComponent(source.eventKey),
   )}?${pinQuery(source.variant)}`;

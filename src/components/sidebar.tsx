@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Boxes,
   Building2,
   FileText,
   LayoutDashboard,
@@ -144,7 +145,8 @@ function useNavItems(): NavItem[] {
 
 function ScopeSelector({ collapsed }: { collapsed: boolean }) {
   const tSidebar = useTranslations("sidebar");
-  const { customers, scope, setScope, isBridgeSession } = useCustomerContext();
+  const { customers, groups, scope, setScope, isBridgeSession } =
+    useCustomerContext();
 
   if (collapsed) return null;
 
@@ -214,31 +216,68 @@ function ScopeSelector({ collapsed }: { collapsed: boolean }) {
               total: customers.length,
             })}
       </p>
+
+      {/* Group presets (#513): a defined group expands into its member customer
+          ids in the ephemeral scope filter. This is a pure VIEW filter — it
+          populates the multi-select above and never navigates to the group
+          hub or produces an artifact (that is the SummarySubjects link's job).
+          Rendered as buttons (not checkboxes) and captioned so the distinction
+          from opening a group is visible. */}
+      {groups.length > 0 && (
+        <div className="mt-3 border-t border-[var(--sidebar-border)] pt-3">
+          <div
+            id="scope-presets-label"
+            className="mb-1 text-xs font-medium text-[var(--sidebar-muted)]"
+          >
+            {tSidebar("scopePresetsLabel")}
+          </div>
+          <ul aria-labelledby="scope-presets-label" className="space-y-1">
+            {groups.map((g) => (
+              <li key={g.id}>
+                <button
+                  type="button"
+                  onClick={() => setScope(g.memberIds)}
+                  title={tSidebar("scopePresetApply", { name: g.name })}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-[var(--sidebar-fg)] transition-colors hover:bg-[var(--sidebar-account-bg)]"
+                >
+                  <Boxes className="h-3.5 w-3.5 shrink-0 text-[var(--sidebar-muted)]" />
+                  <span className="truncate">{g.name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-[var(--sidebar-muted)]">
+            {tSidebar("scopePresetsHint")}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
 
 /**
- * Persistent links to each accessible customer's analysis hub
- * (`subjectPages.hub` → `/subjects/[subjectId]`). This is the summary-subjects
- * navigation introduced by RFC 0004 (#504): it closes the orphaned-hub gap so
- * a customer's hub is reachable directly from the sidebar instead of only via
- * a detail-page breadcrumb.
+ * Persistent links to each accessible summary subject's analysis hub
+ * (`subjectPages.hub` → `/subjects/[subjectId]`). Introduced for customers by
+ * RFC 0004 (#504) to close the orphaned-hub gap; #513 (C2) extends it to also
+ * list accessible customer **groups**, splitting the section into two
+ * visually-distinct labelled sub-sections (a building icon for customers, a
+ * boxes icon for groups) and renaming the umbrella label from "Customers" to a
+ * subjects label now that both kinds appear.
  *
  * Deliberately separate from {@link useNavItems}: those cross-customer browse
  * items append the active scope query (`?scope=`), whereas subject links must
- * NOT — clicking a subject opens its own hub and never mutates the ephemeral
- * scope filter driven by {@link ScopeSelector}. The two customer lists stay
- * visibly distinct controls with different jobs.
+ * NOT — clicking a subject (customer OR group) opens its own hub and never
+ * mutates the ephemeral scope filter driven by {@link ScopeSelector}. A group
+ * link is therefore distinct from a group SCOPE PRESET (in ScopeSelector):
+ * the link opens the group hub; the preset expands the group into member ids
+ * in `?scope=`.
  *
- * Bridge sessions are omitted entirely. Although `useCustomerContext().customers`
- * is already filtered to the bridge scope server-side (`/api/auth/customers`),
- * the hub route itself forbids in-scope bridge sessions
- * (`resolveCustomerReadAccess` passes `allowInBridge: false`, so the hub page
- * 403s via its `forbidden.tsx` boundary). Rendering hub links for a bridge
- * session would therefore produce a list where every entry dead-ends at a 403,
- * so the section short-circuits — mirroring how {@link ScopeSelector}
- * short-circuits for bridge sessions.
+ * Bridge sessions are omitted entirely. Although the accessible customer set is
+ * already bridge-scoped server-side (`/api/auth/customers`), the hub route
+ * itself forbids in-scope bridge sessions (`allowInBridge: false`, so the hub
+ * 403s via its `forbidden.tsx` boundary), and `/api/auth/groups` returns no
+ * groups under a bridge — so rendering either list would dead-end at a 403.
+ * The section short-circuits, mirroring {@link ScopeSelector}.
  */
 function SummarySubjects({
   collapsed,
@@ -250,22 +289,26 @@ function SummarySubjects({
   const tSidebar = useTranslations("sidebar");
   const locale = useLocale();
   const pathname = usePathname();
-  const { customers, isBridgeSession } = useCustomerContext();
+  const { customers, groups, isBridgeSession } = useCustomerContext();
 
   // Bridge sessions cannot read any analysis hub (see the component doc), so
   // there is nothing navigable to list — omit the section rather than render
   // links that all resolve to a 403.
-  if (isBridgeSession || customers.length === 0) return null;
+  if (isBridgeSession || (customers.length === 0 && groups.length === 0)) {
+    return null;
+  }
 
   const label = tSidebar("summarySubjectsLabel");
 
-  const items = customers.map((c) => {
-    const href = subjectPages.hub(locale, c.id);
+  const toItem = (id: string, name: string) => {
+    const href = subjectPages.hub(locale, id);
     // Match the hub path or anything nested under it (reports / story /
     // events), but not a sibling whose id is a prefix of this one.
     const isActive = pathname === href || pathname.startsWith(`${href}/`);
-    return { id: c.id, name: c.name, href, isActive };
-  });
+    return { id, name, href, isActive };
+  };
+  const customerItems = customers.map((c) => toItem(c.id, c.name));
+  const groupItems = groups.map((g) => toItem(g.id, g.name));
 
   const linkClass = (isActive: boolean) =>
     cn(
@@ -277,6 +320,39 @@ function SummarySubjects({
         ? "bg-[var(--sidebar-active)] text-white"
         : "text-[var(--sidebar-fg)] hover:bg-[var(--sidebar-account-bg)] hover:text-[var(--sidebar-fg)]",
     );
+
+  const renderItem = (
+    item: { id: string; name: string; href: string; isActive: boolean },
+    Icon: React.ComponentType<{ className?: string }>,
+  ) => {
+    const link = (
+      <Link
+        href={item.href}
+        onClick={onNavigate ?? undefined}
+        aria-current={item.isActive ? "page" : undefined}
+        className={linkClass(item.isActive)}
+      >
+        <Icon className="h-4 w-4 shrink-0" />
+        {collapsed ? (
+          <span className="w-full truncate text-center">{item.name}</span>
+        ) : (
+          <span className="truncate">{item.name}</span>
+        )}
+      </Link>
+    );
+
+    if (collapsed) {
+      return (
+        <li key={item.id}>
+          <Tooltip>
+            <TooltipTrigger asChild>{link}</TooltipTrigger>
+            <TooltipContent side="right">{item.name}</TooltipContent>
+          </Tooltip>
+        </li>
+      );
+    }
+    return <li key={item.id}>{link}</li>;
+  };
 
   return (
     <nav
@@ -291,38 +367,30 @@ function SummarySubjects({
           {label}
         </div>
       )}
-      <ul className="space-y-1">
-        {items.map((item) => {
-          const link = (
-            <Link
-              href={item.href}
-              onClick={onNavigate ?? undefined}
-              aria-current={item.isActive ? "page" : undefined}
-              className={linkClass(item.isActive)}
-            >
-              <Building2 className="h-4 w-4 shrink-0" />
-              {collapsed ? (
-                <span className="w-full truncate text-center">{item.name}</span>
-              ) : (
-                <span className="truncate">{item.name}</span>
-              )}
-            </Link>
-          );
-
-          if (collapsed) {
-            return (
-              <li key={item.id}>
-                <Tooltip>
-                  <TooltipTrigger asChild>{link}</TooltipTrigger>
-                  <TooltipContent side="right">{item.name}</TooltipContent>
-                </Tooltip>
-              </li>
-            );
-          }
-
-          return <li key={item.id}>{link}</li>;
-        })}
-      </ul>
+      {customerItems.length > 0 && (
+        <div data-testid="summary-subjects-customers">
+          {!collapsed && (
+            <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--sidebar-muted)]">
+              {tSidebar("subjectsCustomersLabel")}
+            </div>
+          )}
+          <ul className="space-y-1">
+            {customerItems.map((item) => renderItem(item, Building2))}
+          </ul>
+        </div>
+      )}
+      {groupItems.length > 0 && (
+        <div data-testid="summary-subjects-groups" className="mt-2">
+          {!collapsed && (
+            <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--sidebar-muted)]">
+              {tSidebar("subjectsGroupsLabel")}
+            </div>
+          )}
+          <ul className="space-y-1">
+            {groupItems.map((item) => renderItem(item, Boxes))}
+          </ul>
+        </div>
+      )}
     </nav>
   );
 }

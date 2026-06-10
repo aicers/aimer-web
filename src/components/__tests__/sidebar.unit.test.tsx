@@ -36,7 +36,11 @@ vi.mock("next-intl", () => {
   };
   const sidebarMap: Record<string, string> = {
     scopeLabel: "Customer scope",
-    summarySubjectsLabel: "Customers",
+    summarySubjectsLabel: "Subjects",
+    subjectsCustomersLabel: "Customers",
+    subjectsGroupsLabel: "Groups",
+    scopePresetsLabel: "Group presets",
+    scopePresetsHint: "Selecting a group fills the customer scope above.",
     scopeAll: "All customers",
     bridgeLocked: "Locked to bridge session",
     expandSidebar: "Expand sidebar",
@@ -51,6 +55,7 @@ vi.mock("next-intl", () => {
         return (key: string, vars?: Record<string, unknown>) => {
           if (key === "scopeSelected")
             return `${vars?.count} of ${vars?.total} customers`;
+          if (key === "scopePresetApply") return `Apply ${vars?.name} to scope`;
           return sidebarMap[key] ?? key;
         };
       return (key: string) => key;
@@ -137,6 +142,16 @@ const CUSTOMERS = [
   },
 ];
 
+const GROUPS = [
+  {
+    id: "g1",
+    name: "East Region",
+    description: null,
+    memberIds: ["c1", "c2"],
+    tz: "UTC",
+  },
+];
+
 function mockDefaults(
   overrides?: Partial<ReturnType<typeof useCustomerContext>>,
 ) {
@@ -155,6 +170,7 @@ function mockDefaults(
       memberships: [],
     },
     customers: CUSTOMERS,
+    groups: [],
     scope: { isAll: true, customerIds: ["c1", "c2"], canonical: "all" },
     singleCustomerId: null,
     setScope: vi.fn(),
@@ -390,7 +406,7 @@ describe("Sidebar summary subjects", () => {
   });
 
   function subjectsNav(container: HTMLElement) {
-    return container.querySelector('nav[aria-label="Customers"]');
+    return container.querySelector('nav[aria-label="Subjects"]');
   }
 
   it("renders a hub link per accessible customer", () => {
@@ -479,6 +495,57 @@ describe("Sidebar summary subjects", () => {
     assertDefined(nav);
     expect(nav.querySelectorAll("a").length).toBe(2);
   });
+
+  it("lists groups in a distinct sub-section with unscoped hub links (#513)", () => {
+    mockDefaults({ groups: GROUPS });
+    const { container } = render(<Sidebar collapsed={false} />);
+    const nav = subjectsNav(container);
+    assertDefined(nav);
+
+    const customers = nav.querySelector(
+      '[data-testid="summary-subjects-customers"]',
+    );
+    const groups = nav.querySelector('[data-testid="summary-subjects-groups"]');
+    assertDefined(customers);
+    assertDefined(groups);
+
+    const groupLink = [...groups.querySelectorAll("a")].find((a) =>
+      a.textContent?.includes("East Region"),
+    );
+    assertDefined(groupLink);
+    // Group hub link targets the group's /subjects hub, with no ?scope=.
+    expect(groupLink.getAttribute("href")).toBe("/en/subjects/g1");
+    expect(groupLink.getAttribute("href")).not.toContain("scope=");
+  });
+});
+
+describe("Sidebar group scope presets (#513)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockedUsePathname.mockReturnValue("/en");
+    setup();
+  });
+
+  it("renders a preset button per group and expands it to member ids on click", () => {
+    const setScope = vi.fn();
+    mockDefaults({ groups: GROUPS, setScope });
+
+    const { container } = render(<Sidebar collapsed={false} />);
+    const presetBtn = [...container.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("East Region"),
+    );
+    assertDefined(presetBtn);
+
+    fireEvent.click(presetBtn);
+    // The preset is a pure view filter: it expands the group into its member
+    // customer ids in the scope, NOT a navigation.
+    expect(setScope).toHaveBeenCalledWith(["c1", "c2"]);
+  });
+
+  it("renders no group presets when there are no groups", () => {
+    const { container } = render(<Sidebar collapsed={false} />);
+    expect(container.textContent).not.toContain("Group presets");
+  });
 });
 
 describe("MobileSidebarTrigger", () => {
@@ -548,7 +615,7 @@ describe("MobileSidebarTrigger", () => {
     assertDefined(sheetContent);
 
     const subjectLink = sheetContent.querySelector(
-      'nav[aria-label="Customers"] a',
+      'nav[aria-label="Subjects"] a',
     );
     assertDefined(subjectLink);
     // Subject links carry the same `onNavigate` close handler the nav links

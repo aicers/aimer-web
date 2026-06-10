@@ -13,7 +13,7 @@ import {
 
 import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { ApiError, apiFetch } from "@/lib/api/client";
-import type { CustomerEntry, MeResponse } from "@/lib/api/types";
+import type { CustomerEntry, GroupEntry, MeResponse } from "@/lib/api/types";
 import { mergeQuery } from "@/lib/navigation/query";
 import {
   type NormalizedScope,
@@ -25,6 +25,13 @@ interface CustomerContextValue {
   me: MeResponse | null;
   /** Ambient set: the customers this account can access. */
   customers: CustomerEntry[];
+  /**
+   * The customer groups this account can surface as summary subjects (#513):
+   * those where the viewer holds `reports:read` on every member. Drives the
+   * sidebar group navigation and the scope-filter presets. Empty for a bridge
+   * session (the endpoint short-circuits to `[]`).
+   */
+  groups: GroupEntry[];
   /**
    * Active customer scope, derived from the URL `scope` param against the
    * ambient set. `all` (default) ⇒ the full accessible set; `c1,c2` ⇒ that
@@ -52,6 +59,7 @@ const CustomerContext = createContext<CustomerContextValue | null>(null);
 export function CustomerContextProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [customers, setCustomers] = useState<CustomerEntry[]>([]);
+  const [groups, setGroups] = useState<GroupEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const router = useRouter();
@@ -89,22 +97,26 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
     [accessibleIds, isBridgeSession, pathname, router, searchParams],
   );
 
-  // Fetch /api/auth/me and /api/auth/customers in parallel on mount. The
-  // accessible customer set is the ambient set the scope normalizes against.
+  // Fetch /api/auth/me, /api/auth/customers, and /api/auth/groups in parallel
+  // on mount. The accessible customer set is the ambient set the scope
+  // normalizes against; the group set (#513) feeds the sidebar group
+  // navigation and the scope-filter presets (empty for a bridge session).
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
-        const [meData, customersData] = await Promise.all([
+        const [meData, customersData, groupsData] = await Promise.all([
           apiFetch<MeResponse>("/api/auth/me"),
           apiFetch<{ customers: CustomerEntry[] }>("/api/auth/customers"),
+          apiFetch<{ groups: GroupEntry[] }>("/api/auth/groups"),
         ]);
 
         if (cancelled) return;
 
         setMe(meData);
         setCustomers(customersData.customers);
+        setGroups(groupsData.groups);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           window.location.href = "/api/auth/sign-in";
@@ -124,6 +136,7 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
     () => ({
       me,
       customers,
+      groups,
       scope,
       singleCustomerId,
       setScope,
@@ -133,6 +146,7 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
     [
       me,
       customers,
+      groups,
       scope,
       singleCustomerId,
       setScope,

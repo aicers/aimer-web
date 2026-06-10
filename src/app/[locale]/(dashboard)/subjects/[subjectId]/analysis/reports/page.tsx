@@ -12,6 +12,8 @@ import {
   type ReportBucketItem,
   type ReportPeriodGroup,
 } from "@/lib/analysis/report-index-page-loader";
+import { getAuthPool } from "@/lib/db/client";
+import { getSubjectKind } from "@/lib/db/subject-runtime-pool";
 import { subjectPages } from "@/lib/navigation/routes";
 
 type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
@@ -31,10 +33,19 @@ interface PageProps {
 export default async function ReportIndexPage({ params }: PageProps) {
   const { locale, subjectId } = await params;
 
+  // Resolve the subject kind so a group's index reads from the group result DB
+  // with all-member authorization (#513); an unknown subject 404s.
+  const kind = await getSubjectKind(getAuthPool(), subjectId);
+  if (kind === null) notFound();
+
   // Pass the viewer's locale so each bucket's metadata resolves to the
   // viewer's language (viewer → English → any), never silently showing an
   // English tier where the viewer's language exists (#388).
-  const outcome = await loadReportIndexPage({ customerId: subjectId, locale });
+  const outcome = await loadReportIndexPage({
+    customerId: subjectId,
+    subject: { kind, id: subjectId },
+    locale,
+  });
 
   // Same status mapping as the detail page: non-member / non-existent → 404
   // (existence-hiding); permission- or bridge-denied → real 403 via the

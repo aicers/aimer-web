@@ -21,6 +21,13 @@ vi.mock("@/lib/analysis/report-calendar-loader", () => ({
   loadReportCalendarPage: () => mockLoad(),
 }));
 
+// The calendar resolves the subject kind (#513) before loading; stub it to
+// `"customer"` and the auth pool so the page does not open a real `pg` pool.
+vi.mock("@/lib/db/client", () => ({ getAuthPool: () => ({}) }));
+vi.mock("@/lib/db/subject-runtime-pool", () => ({
+  getSubjectKind: async () => "customer",
+}));
+
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");

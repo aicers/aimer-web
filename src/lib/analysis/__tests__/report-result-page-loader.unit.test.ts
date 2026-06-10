@@ -364,6 +364,7 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     expect(outcome.data.citedSources.stories).toEqual([
       {
         storyId: "555",
+        customerId: CUSTOMER_ID,
         variant: {
           generation: 2,
           lang: "ENGLISH",
@@ -383,6 +384,7 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       {
         aiceId: "aice-9",
         eventKey: "777",
+        customerId: CUSTOMER_ID,
         variant: {
           generation: 4,
           lang: "ENGLISH",
@@ -503,6 +505,7 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
       source: {
         sourceType: "story",
         storyId: "555",
+        customerId: CUSTOMER_ID,
         variant: {
           generation: 2,
           lang: "ENGLISH",
@@ -521,6 +524,7 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
         sourceType: "event",
         aiceId: "aice-9",
         eventKey: "777",
+        customerId: CUSTOMER_ID,
         variant: {
           generation: 4,
           lang: "ENGLISH",

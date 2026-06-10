@@ -105,11 +105,26 @@ function chooseExemplarFactor(
  * event key (or vice versa).
  */
 export type CitedUnitSource =
-  | { sourceType: "story"; storyId: string; variant: CitedLeafVariant }
+  | {
+      sourceType: "story";
+      storyId: string;
+      /**
+       * The owning member's customer id (#513): for a group report a cited
+       * leaf lives in a MEMBER customer DB, and its detail page is the
+       * member-customer detail, not the group subject. Provenance links are
+       * built against this id. For a single-customer report it is the report's
+       * own customer id (`refCustomerId` degrades to `subjectId`), so links are
+       * unchanged.
+       */
+      customerId: string;
+      variant: CitedLeafVariant;
+    }
   | {
       sourceType: "event";
       aiceId: string;
       eventKey: string;
+      /** Owning member customer id — see the story variant. */
+      customerId: string;
       variant: CitedLeafVariant;
     };
 
@@ -167,6 +182,14 @@ export interface CitedLeafVariant {
  */
 export interface CitedStorySource {
   storyId: string;
+  /**
+   * The owning member's customer id (#513): for a group report the cited leaf
+   * lives in a MEMBER customer DB, so its Sources-card link targets the
+   * member-customer detail, not the group subject. For a single-customer report
+   * it degrades to the report's own customer id (`refCustomerId`), so the link
+   * is byte-identical to the pre-#513 behavior.
+   */
+  customerId: string;
   variant: CitedLeafVariant;
   display: {
     priorityTier: PriorityTier;
@@ -179,6 +202,8 @@ export interface CitedStorySource {
 export interface CitedEventSource {
   aiceId: string;
   eventKey: string;
+  /** Owning member customer id — see {@link CitedStorySource.customerId}. */
+  customerId: string;
   variant: CitedLeafVariant;
   display: {
     priorityTier: PriorityTier;
@@ -822,6 +847,9 @@ export async function loadReportResultPage(
       const d = storyDisplays[i];
       return {
         storyId: ref.story_id,
+        // The owning member customer id (#513): degrades to `subjectId` for a
+        // single-customer / legacy ref, so the link is unchanged there.
+        customerId: refCustomerId(ref, subjectId),
         variant: {
           generation: ref.generation,
           lang: replayLang,
@@ -850,6 +878,7 @@ export async function loadReportResultPage(
       return {
         aiceId: ref.aice_id,
         eventKey: ref.event_key,
+        customerId: refCustomerId(ref, subjectId),
         variant: {
           generation: ref.generation,
           lang: replayLang,
@@ -1080,6 +1109,9 @@ function restoreReportSectionsFromRow(
       return {
         sourceType: "story",
         storyId: ref.story_id,
+        // Owning member customer id (#513) — the source key's resolved member,
+        // degrading to `subjectId` for a single-customer / legacy source.
+        customerId: sourceCustomerId,
         variant: {
           generation: ref.generation,
           lang: replayLang,
@@ -1101,6 +1133,7 @@ function restoreReportSectionsFromRow(
         sourceType: "event",
         aiceId: ref.aice_id,
         eventKey: ref.event_key,
+        customerId: sourceCustomerId,
         variant: {
           generation: ref.generation,
           lang: replayLang,

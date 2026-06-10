@@ -29,6 +29,7 @@ plugins:
             - Usage: usage.md
             - Analysis Result: analysis-result.md
             - Customer Hub: analysis/customer-hub.md
+            - Group Hub: analysis/group-hub.md
             - Story Analysis: analysis/story.md
             - Threat Stories: analysis/threat-stories.md
             - Suspicious Events: analysis/suspicious-events.md
@@ -62,6 +63,7 @@ plugins:
             - Usage: usage.md
             - Analysis Result: analysis-result.md
             - Customer Hub: analysis/customer-hub.md
+            - Group Hub: analysis/group-hub.md
             - Story Analysis: analysis/story.md
             - Threat Stories: analysis/threat-stories.md
             - Suspicious Events: analysis/suspicious-events.md
@@ -92,6 +94,7 @@ plugins:
             Usage: 사용법
             Analysis Result: 분석 결과
             Customer Hub: 고객 허브
+            Group Hub: 그룹 허브
             Story Analysis: 스토리 분석
             Threat Stories: 위협 스토리
             Suspicious Events: 의심 이벤트

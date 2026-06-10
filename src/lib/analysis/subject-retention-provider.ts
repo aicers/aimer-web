@@ -100,3 +100,81 @@ export function createCustomerRetentionProvider(
     },
   };
 }
+
+/**
+ * The B4 group retention bound (in DAYS): `min(group_policy_days,
+ * min_over_members(H_c))`, where `group_policy_days` is the group's own
+ * `analysis_days` and each `H_c` is a member's `analysis_days` retention
+ * horizon. A `null` input is "unbounded" and does NOT constrain the min, so the
+ * effective bound is the minimum over all NON-null inputs; when every input is
+ * null (group and all members unbounded) the result is `null` — unbounded, no
+ * lower bound.
+ *
+ * This is the SINGLE shared helper the display-time navigation boundary (#513,
+ * here) and the write-side reaper (#509) must both consume so the two never
+ * diverge — whichever lands first introduces it; the other imports it.
+ */
+export function computeGroupRetentionBoundDays(
+  groupPolicyDays: number | null,
+  memberAnalysisDays: ReadonlyArray<number | null>,
+): number | null {
+  const bounded = [groupPolicyDays, ...memberAnalysisDays].filter(
+    (d): d is number => d != null,
+  );
+  if (bounded.length === 0) return null;
+  return Math.min(...bounded);
+}
+
+interface GroupTzRow {
+  tz: string | null;
+  group_days: number | null;
+}
+
+/**
+ * The group retention provider (#513, B4 read-side). A group's navigable
+ * boundary is `today − min(group_policy_days, min_over_members(H_c))`
+ * ({@link computeGroupRetentionBoundDays}), read in the GROUP's timezone
+ * (`customer_groups.tz`). The group policy comes from `group_retention_policy`;
+ * each member horizon from that member's `customer_retention_policy`. A missing
+ * group / policy row, or a member without a policy row, is treated as unbounded
+ * (NULL) — exactly as the customer provider treats a missing policy.
+ *
+ * Like the customer provider the bound is period-independent in v1 (the B4
+ * formula carries no period term); `period` is accepted and ignored so callers
+ * stay subject-generic.
+ */
+export function createGroupRetentionProvider(
+  subjectId: string,
+  authPool: Pool,
+  now: () => Date = getCurrentTimestamp,
+): SubjectRetentionProvider {
+  return {
+    async resolveBoundary(_period: PeriodKind): Promise<RetentionBoundary> {
+      const groupRes = await authPool.query<GroupTzRow>(
+        `SELECT g.tz, grp.analysis_days AS group_days
+           FROM customer_groups g
+           LEFT JOIN group_retention_policy grp ON grp.subject_id = g.id
+          WHERE g.id = $1`,
+        [subjectId],
+      );
+      const tz = groupRes.rows[0]?.tz ?? "UTC";
+      const groupDays = groupRes.rows[0]?.group_days ?? null;
+
+      const memberRes = await authPool.query<{ analysis_days: number | null }>(
+        `SELECT crp.analysis_days
+           FROM customer_group_members m
+           LEFT JOIN customer_retention_policy crp
+             ON crp.customer_id = m.customer_id
+          WHERE m.group_id = $1`,
+        [subjectId],
+      );
+      const memberDays = memberRes.rows.map((r) => r.analysis_days);
+
+      const boundDays = computeGroupRetentionBoundDays(groupDays, memberDays);
+      const today = formatDayInTz(now(), tz);
+      const oldestNavigableDate =
+        boundDays == null ? null : computeBoundaryDate(today, boundDays);
+      return { oldestNavigableDate, today };
+    },
+  };
+}

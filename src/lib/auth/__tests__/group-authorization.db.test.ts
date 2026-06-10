@@ -13,6 +13,7 @@ import {
   assertAllMemberManagement,
   hasAllMemberManagement,
   hasAllMemberReadPermission,
+  listAccessibleGroups,
   resolveGroupReadOutcome,
 } from "../group-authorization";
 
@@ -323,6 +324,71 @@ describe.skipIf(!hasPostgres)("group all-member predicates (DB)", () => {
         resolveGroupReadOutcome(c, managerAcct, [], "reports:read"),
       );
       expect(outcome).toBe("not_found");
+    });
+  });
+
+  describe("listAccessibleGroups (#513)", () => {
+    // A third customer the User account has NO access to, so a group that
+    // includes it must be hidden from that account.
+    let c3: string;
+    let groupVisible: string; // members {c1, c2}
+    let groupHidden: string; // members {c1, c3}
+
+    async function mkGroup(name: string, members: string[]): Promise<string> {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO subjects (id, kind) VALUES (gen_random_uuid(), 'group')
+         RETURNING id`,
+      );
+      const id = rows[0].id;
+      await pool.query(
+        `INSERT INTO customer_groups (id, kind, name, description, created_by, owner_id, tz)
+         VALUES ($1, 'group', $2, NULL, $3, $3, 'UTC')`,
+        [id, name, adminAcct],
+      );
+      for (const m of members) {
+        await pool.query(
+          `INSERT INTO customer_group_members (group_id, customer_id) VALUES ($1, $2)`,
+          [id, m],
+        );
+      }
+      return id;
+    }
+
+    beforeAll(async () => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO customers (external_key, name, status, database_status)
+         VALUES ('ga-c3', 'ga-c3', 'active', 'active') RETURNING id`,
+      );
+      c3 = rows[0].id;
+      groupVisible = await mkGroup("Visible Group", [c1, c2]);
+      groupHidden = await mkGroup("Hidden Group", [c1, c3]);
+    });
+
+    it("returns only groups where reports:read is held on every member", async () => {
+      const groups = await withClient((c) => listAccessibleGroups(c, userAcct));
+      const ids = groups.map((g) => g.id);
+      // The User holds reports:read on c1 and c2 (visible group) but has no
+      // relationship with c3 (hidden group).
+      expect(ids).toContain(groupVisible);
+      expect(ids).not.toContain(groupHidden);
+
+      const vis = groups.find((g) => g.id === groupVisible);
+      expect(vis).toBeDefined();
+      expect(vis?.name).toBe("Visible Group");
+      expect(vis?.tz).toBe("UTC");
+      expect([...(vis?.memberIds ?? [])].sort()).toEqual([c1, c2].sort());
+    });
+
+    it("returns no groups for an account with no member access", async () => {
+      const stranger = await pool.query<{ id: string }>(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('test-issuer', 'gal-stranger', 'gal-stranger', 'gal-stranger')
+         RETURNING id`,
+      );
+      const groups = await withClient((c) =>
+        listAccessibleGroups(c, stranger.rows[0].id),
+      );
+      expect(groups).toEqual([]);
     });
   });
 });
