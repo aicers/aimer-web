@@ -147,9 +147,9 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
          (aice_id, event_key, lang, model_name, model,
           model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
-          analysis_text, redaction_policy_version)
+          analysis_text, event_time, redaction_policy_version)
        VALUES ($1, $2::numeric, $3, $4, $5, 'mv', 'pv',
-               0.5, 0.5, 'LOW', 'x', 'engine:1.0.0|ranges:empty')`,
+               0.5, 0.5, 'LOW', 'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty')`,
       [AICE_ID, eventKey, LANG, MODEL_NAME, MODEL],
     );
   }

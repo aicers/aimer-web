@@ -202,6 +202,8 @@ function okFixture(): ReportResultPageOutcome {
               modelName: "openai",
               model: "gpt-4o",
             },
+            eventTime: new Date("2026-05-20T00:00:00Z"),
+            kind: "HttpThreat",
             display: {
               priorityTier: "MEDIUM",
               severityScore: 0.4,
@@ -373,7 +375,15 @@ describe("report detail page", () => {
       "1 story · 1 event",
     );
     expect(screen.getByTestId("source-story-555")).toBeTruthy();
-    expect(screen.getByTestId("source-event-aice-9-777")).toBeTruthy();
+    const eventCard = screen.getByTestId("source-event-aice-9-777");
+    expect(eventCard).toBeTruthy();
+    // Title is the kind display name (#552), not the raw event_key; aiceId
+    // moves to a provenance meta line beneath the title.
+    expect(eventCard.textContent).toContain("HTTP Threat");
+    expect(eventCard.textContent).toContain("aice-9");
+    expect(eventCard.querySelector(".font-medium")?.textContent).not.toContain(
+      "777",
+    );
   });
 
   it("pins each Sources link to the cited variant (generation + lang + model)", async () => {

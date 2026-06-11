@@ -2,6 +2,7 @@ import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
+import { EventTitle } from "@/components/analysis/event-title";
 import { ListFilterBar } from "@/components/analysis/list-filter-bar";
 import { filterBarLabels } from "@/components/analysis/list-filter-labels";
 import {
@@ -160,7 +161,11 @@ function EventRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          {t("lists.eventLabel", { eventKey: item.eventKey })}
+          <EventTitle
+            eventTime={item.eventTime}
+            kind={item.kind}
+            fallbackLabel={t("lists.eventLabel")}
+          />
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
           {t("lists.eventRowMeta", {

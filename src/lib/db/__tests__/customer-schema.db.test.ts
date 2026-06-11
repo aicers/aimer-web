@@ -411,14 +411,14 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
-          analysis_text, redaction_policy_version,
+          analysis_text, event_time, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 1,
                0.5, 0.4,
                '["s1"]'::jsonb, '["l1"]'::jsonb, '["T1078"]'::jsonb,
                'LOW',
-               'first', 'engine:1.0.0|ranges:empty',
+               'first', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
 
@@ -436,14 +436,14 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
-          analysis_text, redaction_policy_version,
+          analysis_text, event_time, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 2,
                0.9, 0.85,
                '["s2"]'::jsonb, '["l2"]'::jsonb, '["T1110"]'::jsonb,
                'CRITICAL',
-               'second', 'engine:1.0.0|ranges:empty',
+               'second', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
 
@@ -493,14 +493,14 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier,
-          analysis_text, redaction_policy_version,
+          analysis_text, event_time, redaction_policy_version,
           requested_by)
        VALUES ('aice-r1', 1, 'ENGLISH', 'openai', 'gpt-5',
                'mv', 'pv', 1,
                0.1, 0.1,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
                'LOW',
-               'gpt5', 'engine:1.0.0|ranges:empty',
+               'gpt5', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
     const { rows: count } = await pool.query<{ c: number }>(
@@ -547,12 +547,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
          (aice_id, event_key, lang, model_name, model,
           model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
-          analysis_text, redaction_policy_version,
+          analysis_text, event_time, redaction_policy_version,
           requested_by)
        VALUES ('aice-defaults', 1, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv',
                0.5, 0.5, 'LOW',
-               'x', 'engine:1.0.0|ranges:empty',
+               'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                gen_random_uuid())`,
     );
     const { rows: types } = await pool.query<{
@@ -596,11 +596,11 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
          (aice_id, event_key, lang, model_name, model,
           model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
-          analysis_text, redaction_policy_version,
+          analysis_text, event_time, redaction_policy_version,
           requested_by, origin)
        VALUES ('aice-auto', 1, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 0.5, 0.5, 'LOW',
-               'x', 'engine:1.0.0|ranges:empty',
+               'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                NULL, 'auto_baseline')`,
     );
     const { rows: stored } = await pool.query<{
@@ -619,12 +619,85 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
            (aice_id, event_key, lang, model_name, model,
             model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
-            analysis_text, redaction_policy_version,
+            analysis_text, event_time, redaction_policy_version,
             requested_by, origin)
          VALUES ('aice-bad-origin', 1, 'ENGLISH', 'openai', 'gpt-4o',
                  'mv', 'pv', 0.5, 0.5, 'LOW',
-                 'x', 'engine:1.0.0|ranges:empty',
+                 'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                  NULL, 'bogus')`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("event_analysis_result has NOT NULL event_time + nullable kind (#552)", async () => {
+    // #552 persists the upstream event time + kind so the user-facing lists
+    // title rows by `{event time} · {kind}` instead of the opaque event_key.
+    const { rows } = await pool.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+    }>(
+      `SELECT column_name, data_type, is_nullable
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'event_analysis_result'
+         AND column_name IN ('event_time', 'kind')
+       ORDER BY column_name`,
+    );
+    const byName = new Map(rows.map((r) => [r.column_name, r]));
+    // event_time: always available at write time, so NOT NULL.
+    expect(byName.get("event_time")?.data_type).toBe(
+      "timestamp with time zone",
+    );
+    expect(byName.get("event_time")?.is_nullable).toBe("NO");
+    // kind: reliably present only on the auto-baseline path, so nullable.
+    expect(byName.get("kind")?.data_type).toBe("text");
+    expect(byName.get("kind")?.is_nullable).toBe("YES");
+
+    // A manual-style row omits kind (NULL) but must supply event_time; an
+    // auto-baseline-style row carries both.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, event_time, kind, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-evt', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 0.5, 0.5, 'LOW',
+               'x', '2026-05-20T00:00:00Z'::timestamptz, NULL,
+               'engine:1.0.0|ranges:empty', gen_random_uuid()),
+              ('aice-evt', 2, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 0.5, 0.5, 'LOW',
+               'x', '2026-05-21T03:04:00Z'::timestamptz, 'HttpThreat',
+               'engine:1.0.0|ranges:empty', gen_random_uuid())`,
+    );
+    const { rows: stored } = await pool.query<{
+      event_key: string;
+      event_time: Date;
+      kind: string | null;
+    }>(
+      `SELECT event_key::text AS event_key, event_time, kind
+         FROM event_analysis_result
+        WHERE aice_id = 'aice-evt'
+        ORDER BY event_key`,
+    );
+    expect(stored).toHaveLength(2);
+    expect(stored[0].kind).toBeNull();
+    expect(stored[0].event_time).toBeInstanceOf(Date);
+    expect(stored[1].kind).toBe("HttpThreat");
+
+    // event_time is NOT NULL: omitting it is rejected.
+    await expect(
+      pool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, redaction_policy_version, requested_by)
+         VALUES ('aice-evt-bad', 1, 'ENGLISH', 'openai', 'gpt-4o',
+                 'mv', 'pv', 0.5, 0.5, 'LOW',
+                 'x', 'engine:1.0.0|ranges:empty', gen_random_uuid())`,
       ),
     ).rejects.toThrow();
   });
@@ -636,12 +709,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
            (aice_id, event_key, lang, model_name, model,
             model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
-            analysis_text, redaction_policy_version,
+            analysis_text, event_time, redaction_policy_version,
             requested_by)
          VALUES ('aice-r-check', 1, 'ENGLISH', 'openai', 'gpt-4o',
                  'mv', 'pv',
                  0.5, 0.5, 'EXTREME',
-                 'x', 'engine:1.0.0|ranges:empty',
+                 'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                  gen_random_uuid())`,
       ),
     ).rejects.toThrow();
@@ -1257,12 +1330,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
            (aice_id, event_key, lang, model_name, model,
             model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
-            analysis_text, redaction_policy_version,
+            analysis_text, event_time, redaction_policy_version,
             requested_by)
          VALUES ('aice-ar', 1, 'ENGLISH', 'openai', 'gpt-4o',
                  'mv', 'pv',
                  0.5, 0.5, 'LOW',
-                 'narr', 'engine:1.0.0|ranges:empty',
+                 'narr', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                  gen_random_uuid())`,
       );
 

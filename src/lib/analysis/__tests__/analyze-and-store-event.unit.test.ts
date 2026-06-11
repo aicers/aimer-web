@@ -125,18 +125,36 @@ describe("analyzeAndStoreEventResult", () => {
     expect(insert).toBeDefined();
     // Column order: aice_id, event_key, lang, model_name, model,
     // model_actual_version (param 6), prompt_version (7), generation (8),
-    // ... redaction_policy_version (16), requested_by (17), origin (18).
-    // Zero-indexed: provenance at [5]/[6], generation at [7], policy at
-    // [15], requested_by at [16], origin at [17].
+    // ... analysis_text (15), event_time (16), kind (17),
+    // redaction_policy_version (18), requested_by (19), origin (20).
+    // Zero-indexed: provenance at [5]/[6], generation at [7], event_time at
+    // [15], kind at [16], policy at [17], requested_by at [18], origin at [19].
     expect(insert?.params?.[5]).toBe("gpt-4o-2026-05-01");
     expect(insert?.params?.[6]).toBe("v7");
     expect(insert?.params?.[7]).toBe(4);
-    expect(insert?.params?.[15]).toBe("policy-v7");
-    expect(insert?.params?.[16]).toBe("acc-1");
-    expect(insert?.params?.[17]).toBe("manual");
+    expect(insert?.params?.[15]).toBe(EVENT_TIME);
+    // Manual params default eventKind to null (no kind in the wire contract).
+    expect(insert?.params?.[16]).toBeNull();
+    expect(insert?.params?.[17]).toBe("policy-v7");
+    expect(insert?.params?.[18]).toBe("acc-1");
+    expect(insert?.params?.[19]).toBe("manual");
     // The whole supersede+insert runs inside one transaction.
     expect(writeCalls[0].sql).toBe("BEGIN");
     expect(writeCalls.at(-1)?.sql).toBe("COMMIT");
+  });
+
+  it("persists event_time and the supplied kind (#552)", async () => {
+    await analyzeAndStoreEventResult({
+      ...baseParams(),
+      eventKind: "HttpThreat",
+    });
+    const insert = writeCalls.find((c) =>
+      c.sql.includes("INSERT INTO event_analysis_result"),
+    );
+    expect(insert).toBeDefined();
+    // event_time at [15], kind at [16] (see column-order note above).
+    expect(insert?.params?.[15]).toBe(EVENT_TIME);
+    expect(insert?.params?.[16]).toBe("HttpThreat");
   });
 
   it("omits the GraphQL lang variable when lang is undefined", async () => {

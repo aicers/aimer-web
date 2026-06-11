@@ -540,13 +540,17 @@ Each cited analysis renders as a card:
 - **Threat-story cards** are labelled `Story {story_id}` and show the
   priority tier, severity and likelihood scores, and MITRE ATT&CK
   technique chips of the cited analysis.
-- **Suspicious-event cards** are labelled `Event {aice_id} · {event_key}`
-  and show the priority tier and the severity and likelihood scores.
+- **Suspicious-event cards** are titled by the event's time and kind —
+  `{event time} · {kind}` (for example, `6/3, 2:05 PM · HTTP Threat`), the
+  same label used on the Suspicious Events lists — with the originating
+  `aice_id` shown on a meta line beneath the title for provenance. They show
+  the priority tier and the severity and likelihood scores. When the event
+  time is unavailable the card falls back to a plain `Event` label; the
+  opaque `event_key` is never shown as a title.
 
-There is no human-readable title for a story or event, so the cards are
-labelled by ID — the same convention as the Threat Stories and
-Suspicious Events lists. For a story, the technique chips double as the
-human-readable descriptor.
+A story has no human-readable title, so its card is labelled by ID and its
+technique chips double as the human-readable descriptor — the same
+convention as the Threat Stories list.
 
 Each card links to its detail page **pinned to the exact variant the
 report consumed** — the cited `generation` together with the language,

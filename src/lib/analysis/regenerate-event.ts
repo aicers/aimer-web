@@ -105,6 +105,19 @@ export async function regenerateEventLeaf(
   const { redacted_event: redactedEvent, redaction_policy_version } =
     sourceRow.rows[0];
 
+  // Carry forward the event-level `kind` (#552). `detection_events` does not
+  // store it, so recover it from the most recent prior analysis row for this
+  // event; kind is event-level (variant-independent), so any generation is a
+  // valid source. `null` when no prior row carried one (manual events).
+  const kindRow = await customerPool.query<{ kind: string | null }>(
+    `SELECT kind FROM event_analysis_result
+      WHERE aice_id = $1 AND event_key = $2::numeric
+      ORDER BY generation DESC
+      LIMIT 1`,
+    [aiceId, eventKey],
+  );
+  const eventKind = kindRow.rows[0]?.kind ?? null;
+
   // 2. Recover `event_time` from the stored redacted event (the same
   //    cache-poisoning guard the analyze flow uses).
   const eventTimeForAimer =
@@ -153,6 +166,8 @@ export async function regenerateEventLeaf(
     eventKey,
     redactedEvent,
     eventTimeForAimer,
+    // Preserve the event-level kind across re-analysis (#552).
+    eventKind,
     // Regenerate the exact target variant: pass the concrete lang as both
     // the GraphQL variable and the storage PK component.
     lang: params.lang,

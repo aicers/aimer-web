@@ -41,6 +41,14 @@ vi.mock("next/link", () => ({
   ),
 }));
 
+// `<Timestamp>` (the row title since #552) reads the active locale via
+// `useLocale()`; this page test renders it outside a `NextIntlClientProvider`,
+// so supply a fixed locale while keeping the rest of next-intl real.
+vi.mock("next-intl", async () => {
+  const actual = await vi.importActual<typeof import("next-intl")>("next-intl");
+  return { ...actual, useLocale: () => "en" };
+});
+
 vi.mock("next-intl/server", async () => {
   const { createTranslator } = await import("next-intl");
   const messages = (await import("@/i18n/messages/en.json")).default;
@@ -70,6 +78,8 @@ function okPage(nextCursor: string | null) {
           severityScore: 0.9,
           likelihoodScore: 0.8,
           requestedAt: new Date("2026-05-27T12:00:00Z"),
+          eventTime: new Date("2026-05-20T00:00:00Z"),
+          kind: "HttpThreat",
         },
       ],
       nextCursor,
@@ -102,6 +112,17 @@ describe("suspicious events list page", () => {
       .getAttribute("href");
     expect(href).toBe(
       `/en/subjects/${CUSTOMER_ID}/aice/aice-1/events/123456789/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o`,
+    );
+  });
+
+  it("titles the row by kind display name, never the raw event_key (#552)", async () => {
+    await renderPage();
+    const link = screen.getByTestId("event-link-aice-1-123456789");
+    // Friendly kind name from the ported map (`HttpThreat` → "HTTP Threat").
+    expect(link.textContent).toContain("HTTP Threat");
+    // The raw event_key never titles the row (it remains only in the link).
+    expect(link.querySelector(".font-medium")?.textContent).not.toContain(
+      "123456789",
     );
   });
 

@@ -155,7 +155,7 @@ export default async function OverviewPage({
               <EventRow
                 row={row}
                 locale={locale}
-                label={tA("overview.eventLabel", { eventKey: row.eventKey })}
+                fallbackLabel={tA("overview.eventLabel")}
                 scoreLabel={scoreLabel(row.severityScore, row.likelihoodScore)}
               />
             </li>

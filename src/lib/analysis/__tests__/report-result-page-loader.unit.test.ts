@@ -338,6 +338,8 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       superseded_at: null,
       aice_id: "aice-9",
       event_key: "777",
+      event_time: new Date("2026-05-20T00:00:00Z"),
+      kind: "HttpThreat",
       generation: 4,
       model_name: "openai",
       model: "gpt-4o",
@@ -406,6 +408,9 @@ describe("loadReportResultPage — cited sources (T1)", () => {
           modelName: "openai",
           model: "gpt-4o",
         },
+        // Event-level fields read off the resolved leaf row (#552).
+        eventTime: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
         display: {
           priorityTier: "MEDIUM",
           severityScore: 0.4,

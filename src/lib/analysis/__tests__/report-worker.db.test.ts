@@ -167,12 +167,12 @@ async function seedEventLeaf(
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
-        priority_tier, analysis_text, redaction_policy_version, requested_by)
+        priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
      VALUES ('aice-1', $1::numeric, 'ENGLISH', 'openai', 'gpt-4o',
              'mv', 'pv', 1,
              0.6, 0.6,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
-             'MEDIUM', $2, $3, gen_random_uuid())`,
+             'MEDIUM', $2, '2026-05-20T00:00:00Z'::timestamptz, $3, gen_random_uuid())`,
     [eventKey, analysis, redactionPolicyVersion],
   );
 }
@@ -211,12 +211,12 @@ async function seedEventLeafLang(
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
-        priority_tier, analysis_text, redaction_policy_version, requested_by)
+        priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
      VALUES ('aice-1', $1::numeric, $2, 'openai', 'gpt-4o',
              'mv', 'pv', 1,
              0.6, 0.6,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
-             'MEDIUM', $3, $4, gen_random_uuid())`,
+             'MEDIUM', $3, '2026-05-20T00:00:00Z'::timestamptz, $4, gen_random_uuid())`,
     [eventKey, lang, analysis, redactionPolicyVersion],
   );
 }

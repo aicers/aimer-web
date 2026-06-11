@@ -117,8 +117,9 @@ export async function analyzeBaselineEventLeaf(
     raw_event: unknown;
     redaction_policy_version: string;
     event_time: Date;
+    kind: string | null;
   }>(
-    `SELECT raw_event, redaction_policy_version, event_time
+    `SELECT raw_event, redaction_policy_version, event_time, kind
        FROM baseline_event
       WHERE source_aice_id = $1 AND event_key = $2::numeric
         AND baseline_version = $3`,
@@ -131,6 +132,7 @@ export async function analyzeBaselineEventLeaf(
     raw_event: redactedEvent,
     redaction_policy_version,
     event_time,
+    kind: eventKind,
   } = sourceRow.rows[0];
 
   // 2. Recover `event_time`, preferring the stored redacted payload's
@@ -176,6 +178,8 @@ export async function analyzeBaselineEventLeaf(
     eventKey,
     redactedEvent,
     eventTimeForAimer,
+    // Auto-baseline path carries the upstream kind first-class (#552).
+    eventKind,
     lang: params.lang,
     langForStorage: params.lang,
     modelName: params.modelName,

@@ -135,12 +135,12 @@ async function seedEventResult(
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
-        priority_tier, analysis_text, redaction_policy_version, requested_by)
+        priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
      VALUES ($7, $1::numeric, $2, $3, $4,
              'mv', 'pv', 1,
              0.6, 0.6,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
-             $5, $6, 'policy-A', gen_random_uuid())`,
+             $5, $6, '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid())`,
     [
       eventKey,
       variant.lang,
@@ -549,12 +549,12 @@ describe.skipIf(!hasPostgres)("#494 event-leaf citation cut", () => {
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
-          priority_tier, analysis_text, redaction_policy_version, requested_by)
+          priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
        VALUES ('aice-1', $1::numeric, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 1,
                $2, $3,
                '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
-               $4, $5, 'policy-A', gen_random_uuid())`,
+               $4, $5, '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid())`,
       [eventKey, severity, likelihood, tier, `event ${eventKey}`],
     );
   }

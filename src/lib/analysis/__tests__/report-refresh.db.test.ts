@@ -106,12 +106,12 @@ describe.skipIf(!hasPostgres)("report-variant refresh (db)", () => {
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
-          priority_tier, analysis_text, redaction_policy_version,
+          priority_tier, analysis_text, event_time, redaction_policy_version,
           requested_by, superseded_at)
        VALUES ($1, $2::numeric, 'ENGLISH', 'openai', 'gpt-4o',
                'mv', 'pv', 1, 0.5, 0.5,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-               'MEDIUM', 'text', 'policy-A', gen_random_uuid(), NULL)`,
+               'MEDIUM', 'text', '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid(), NULL)`,
       [AICE, eventKey],
     );
     await custPool.query(
@@ -439,12 +439,12 @@ describe.skipIf(!hasPostgres)(
             model_actual_version, prompt_version, generation,
             severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
-            priority_tier, analysis_text, redaction_policy_version,
+            priority_tier, analysis_text, event_time, redaction_policy_version,
             requested_by, superseded_at)
          VALUES ($1, $2::numeric, 'ENGLISH', 'openai', 'gpt-4o',
                  'mv', 'pv', 1, 0.5, 0.5,
                  '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-                 'MEDIUM', 'text', 'policy-A', gen_random_uuid(), NULL)`,
+                 'MEDIUM', 'text', '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid(), NULL)`,
         [AICE2, eventKey],
       );
       await custPool.query(

@@ -260,6 +260,8 @@ CREATE TABLE event_analysis_result (
     priority_tier            TEXT NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT           NOT NULL,
+    event_time               TIMESTAMPTZ    NOT NULL,    -- upstream event instant (analyze input / baseline_event.event_time); titles the event on user-facing lists (#552)
+    kind                     TEXT,                       -- upstream event kind (__typename); present on the auto-baseline path (baseline_event.kind), NULL on the manual path (#552)
     redaction_policy_version TEXT           NOT NULL,
     requested_by             UUID,
     requested_at             TIMESTAMPTZ    NOT NULL DEFAULT NOW(),

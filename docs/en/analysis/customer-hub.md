@@ -25,7 +25,8 @@ The hub renders up to three section cards, each linking into a list:
 - **Threat Stories** — the customer-scoped [threat stories
   list](threat-stories.md).
 - **Suspicious Events** — the customer-scoped [suspicious events
-  list](suspicious-events.md).
+  list](suspicious-events.md), where each event is titled by its time and
+  kind (`{event time} · {kind}`) rather than the raw `event_key`.
 
 ## Access control
 

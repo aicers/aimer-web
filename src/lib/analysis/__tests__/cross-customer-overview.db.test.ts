@@ -77,6 +77,8 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     severity?: number;
     likelihood?: number;
     superseded?: boolean;
+    eventTime?: string;
+    kind?: string | null;
   }): Promise<void> {
     await customerPool.query(
       `INSERT INTO event_analysis_result
@@ -84,13 +86,14 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
           model_actual_version, prompt_version,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
-          priority_tier, analysis_text, redaction_policy_version,
+          priority_tier, analysis_text, event_time, kind,
+          redaction_policy_version,
           requested_by, generation, superseded_at)
        VALUES ($1, $2::numeric, $3, $4, $5,
                'mv', 'pv',
                $6, $7,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-               $8, 'text', 'baseline-only',
+               $8, 'text', $11::timestamptz, $12, 'baseline-only',
                '00000000-0000-0000-0000-0000000000aa'::uuid, $9,
                CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
       [
@@ -104,6 +107,8 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
         args.tier,
         args.generation,
         args.superseded ?? false,
+        args.eventTime ?? "2026-05-20T00:00:00Z",
+        args.kind ?? null,
       ],
     );
   }
@@ -269,6 +274,8 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
       eventKey: "1",
       generation: 2,
       tier: "CRITICAL",
+      eventTime: "2026-05-21T08:00:00Z",
+      kind: "HttpThreat",
     });
     // Non-default KOREAN variant for the same event — must be ignored.
     await seedEvent({
@@ -466,6 +473,12 @@ describe.skipIf(!hasPostgres)("cross-customer overview fetchers", () => {
     ]);
     // CRITICAL (the live gen2) ranks before MEDIUM, not the superseded LOW.
     expect(rows.map((r) => r.priorityTier)).toEqual(["CRITICAL", "MEDIUM"]);
+    // #552: the loader returns event_time + kind off the canonical row. The
+    // live gen2 of (aice1, ev1) carries the seeded kind; (aice2, ev2) omits it.
+    expect(rows[0].eventTime).toBeInstanceOf(Date);
+    expect(rows[0].eventTime.toISOString()).toBe("2026-05-21T08:00:00.000Z");
+    expect(rows[0].kind).toBe("HttpThreat");
+    expect(rows[1].kind).toBeNull();
   });
 
   it("stories: excludes archived + pending, enriches ready/dirty, tier-ranked", async () => {

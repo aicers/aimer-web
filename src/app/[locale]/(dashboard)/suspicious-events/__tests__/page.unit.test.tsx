@@ -31,6 +31,13 @@ vi.mock("next/navigation", () => ({
   redirect: (t: string) => redirectMock(t),
   forbidden: () => forbiddenMock(),
 }));
+// `<Timestamp>` (the event-row title since #552) reads the active locale via
+// `useLocale()`; this page test renders it outside a `NextIntlClientProvider`,
+// so supply a fixed locale while keeping the rest of next-intl real.
+vi.mock("next-intl", async () => {
+  const actual = await vi.importActual<typeof import("next-intl")>("next-intl");
+  return { ...actual, useLocale: () => "en" };
+});
 vi.mock("next-intl/server", async () => {
   const { createTranslator } = await import("next-intl");
   const messages = (await import("@/i18n/messages/en.json")).default;
@@ -92,6 +99,8 @@ describe("suspicious events overview page", () => {
             severityScore: 0.91,
             likelihoodScore: 0.77,
             requestedAt: new Date("2026-06-01T00:00:00Z"),
+            eventTime: new Date("2026-05-20T00:00:00Z"),
+            kind: "HttpThreat",
             lang: "ENGLISH",
             modelName: "openai",
             model: "gpt-4o",
@@ -154,6 +163,8 @@ describe("suspicious events overview page", () => {
             severityScore: 0.5,
             likelihoodScore: 0.5,
             requestedAt: new Date("2026-06-01T00:00:00Z"),
+            eventTime: new Date("2026-05-20T00:00:00Z"),
+            kind: null,
             lang: "ENGLISH",
             modelName: "openai",
             model: "gpt-4o",
