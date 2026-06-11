@@ -9,7 +9,10 @@
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
-import { afterEach, describe, expect, it } from "vitest";
+import { act } from "react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import {
   formatDateTime,
@@ -22,17 +25,24 @@ afterEach(() => cleanup());
 
 const instant = new Date("2026-06-03T05:05:30Z");
 
-function renderTimestamp(
+function withProviders(
   ui: React.ReactElement,
   { timezone = "Asia/Seoul", locale = "en" } = {},
 ) {
-  return render(
+  return (
     <NextIntlClientProvider locale={locale} messages={{}}>
       <AccountTimezoneProvider timezone={timezone}>
         {ui}
       </AccountTimezoneProvider>
-    </NextIntlClientProvider>,
+    </NextIntlClientProvider>
   );
+}
+
+function renderTimestamp(
+  ui: React.ReactElement,
+  opts: { timezone?: string; locale?: string } = {},
+) {
+  return render(withProviders(ui, opts));
 }
 
 describe("Timestamp", () => {
@@ -63,12 +73,60 @@ describe("Timestamp", () => {
     expect(screen.queryByText(/2026/)).toBeNull();
   });
 
-  it("renders the deterministic pre-mount value identically to the server", () => {
-    // react-testing-library mounts synchronously, but the first paint (before
-    // the effect resolves the zone) must equal the fixed-locale UTC value so
-    // server and client agree. Verify the helper the component renders.
+  it("pins the deterministic pre-mount helper to fixed-locale UTC strings", () => {
+    // The pre-mount value must be byte-identical on server and client, so it
+    // is a fixed-locale (`en-US`) UTC render regardless of browser/app locale.
     expect(formatDateTimePremount(instant)).toBe("6/3/2026, 5:05:30 AM");
     expect(formatDateTimePremount(instant, true)).toBe("6/3, 5:05 AM");
+  });
+
+  it("renders the pre-mount value on the server, then hydrates without a mismatch and settles", async () => {
+    // Exercise the bridge at the component boundary, not just the helper:
+    // the *server* render must emit the deterministic pre-mount value (never
+    // the browser-locale formatter), the first client paint must match it
+    // byte-for-byte (so hydration warns nothing), and only after mount may it
+    // settle to the resolved timezone/locale value.
+    const ui = withProviders(<Timestamp at={instant} />, {
+      timezone: "Asia/Seoul",
+    });
+
+    const serverHtml = renderToString(ui);
+    expect(serverHtml).toContain(formatDateTimePremount(instant));
+    // The browser-locale formatter renders in Asia/Seoul, which the server
+    // cannot know; it must NOT leak into server output.
+    expect(serverHtml).not.toContain(formatDateTime(instant, "Asia/Seoul"));
+
+    const container = document.createElement("div");
+    container.innerHTML = serverHtml;
+    document.body.appendChild(container);
+    const time = container.querySelector("time");
+    // First client paint (the DOM React hydrates onto) equals the server's.
+    expect(time?.textContent).toBe(formatDateTimePremount(instant));
+
+    const errors: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args);
+      });
+    let root: ReturnType<typeof hydrateRoot> | undefined;
+    await act(async () => {
+      root = hydrateRoot(container, ui);
+    });
+    spy.mockRestore();
+
+    // No hydration-mismatch warning surfaced during hydration.
+    expect(
+      errors.some((args) => args.some((a) => /hydrat/i.test(String(a)))),
+    ).toBe(false);
+
+    // After mount it settles to the resolved timezone value.
+    await waitFor(() => {
+      expect(time?.textContent).toBe(formatDateTime(instant, "Asia/Seoul"));
+    });
+
+    act(() => root?.unmount());
+    container.remove();
   });
 
   it("accepts an RFC 3339 string", () => {
