@@ -138,9 +138,9 @@ describe.skipIf(!hasPostgres)(
          (aice_id, event_key, lang, model_name, model,
           model_actual_version, prompt_version,
           severity_score, likelihood_score, priority_tier,
-          analysis_text, redaction_policy_version, origin)
+          analysis_text, event_time, redaction_policy_version, origin)
        VALUES ($1, $2::numeric, $3, $4, $5, 'mv', 'pv',
-               0.5, 0.5, 'LOW', 'manual', 'engine:1.0.0|ranges:empty',
+               0.5, 0.5, 'LOW', 'manual', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
                'manual')`,
         [AICE_ID, eventKey, LANG, MODEL_NAME, MODEL],
       );
@@ -264,6 +264,26 @@ describe.skipIf(!hasPostgres)(
       expect(out.kind).toBe("analyzed");
       expect(await autoLeafCount(eventKey)).toBe(1);
       expect(await liveLeafCount(eventKey)).toBe(1);
+    });
+
+    it("persists event_time + kind from baseline_event on the auto leaf (#552)", async () => {
+      const eventKey = "5004";
+      await seedBaselineEvent(eventKey);
+      const out = await analyze(eventKey);
+      expect(out.kind).toBe("analyzed");
+      const { rows } = await customerPool.query<{
+        event_time: Date;
+        kind: string | null;
+      }>(
+        `SELECT event_time, kind FROM event_analysis_result
+          WHERE aice_id = $1 AND event_key = $2::numeric`,
+        [AICE_ID, eventKey],
+      );
+      expect(rows).toHaveLength(1);
+      // kind comes straight from baseline_event.kind ('conn' in the seed).
+      expect(rows[0].kind).toBe("conn");
+      expect(rows[0].event_time).toBeInstanceOf(Date);
+      expect(rows[0].event_time.toISOString()).toBe("2026-05-01T00:00:00.000Z");
     });
   },
 );

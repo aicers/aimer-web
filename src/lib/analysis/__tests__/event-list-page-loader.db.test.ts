@@ -48,16 +48,19 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
     generation?: number;
     lang?: string;
     superseded?: boolean;
+    eventTime?: string;
+    kind?: string | null;
   }): Promise<void> {
     await pool.query(
       `INSERT INTO event_analysis_result
          (aice_id, event_key, lang, model_name, model,
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score, priority_tier, analysis_text,
+          event_time, kind,
           redaction_policy_version, requested_by, requested_at, superseded_at)
        VALUES ($1, $2::numeric, $3, 'openai', 'gpt-4o',
                'mv', 'pv', $4,
-               $5, $6, $7, 'text', 'v1', $8::uuid, $9::timestamptz,
+               $5, $6, $7, 'text', $11::timestamptz, $12, 'v1', $8::uuid, $9::timestamptz,
                CASE WHEN $10::boolean THEN NOW() ELSE NULL END)`,
       [
         args.aiceId,
@@ -70,6 +73,8 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
         REQUESTER,
         args.requestedAt,
         args.superseded ?? false,
+        args.eventTime ?? "2026-05-20T00:00:00Z",
+        args.kind ?? null,
       ],
     );
   }
@@ -100,6 +105,8 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
       lik: 0.9,
       requestedAt: "2026-05-27T00:00:00Z",
       generation: 2,
+      eventTime: "2026-05-21T09:30:00Z",
+      kind: "HttpThreat",
     });
     await seed({
       aiceId: "aiceA",
@@ -187,6 +194,11 @@ describe.skipIf(!hasPostgres)("event list loader (customer-DB keyset)", () => {
     expect(page.items[0].priorityTier).toBe("CRITICAL");
     // KOREAN variant is excluded.
     expect(page.items.map(key)).not.toContain("aiceA:5000");
+    // #552: the loader returns event_time + kind off the canonical row.
+    const top = page.items[0];
+    expect(top.eventTime).toBeInstanceOf(Date);
+    expect(top.eventTime.toISOString()).toBe("2026-05-21T09:30:00.000Z");
+    expect(top.kind).toBe("HttpThreat");
   });
 
   it("returns the default variant for detail links", async () => {

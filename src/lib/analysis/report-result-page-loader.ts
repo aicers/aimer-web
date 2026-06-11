@@ -204,6 +204,15 @@ export interface CitedEventSource {
   /** Owning member customer id — see {@link CitedStorySource.customerId}. */
   customerId: string;
   variant: CitedLeafVariant;
+  /**
+   * Event-level fields (#552) used to title the card `{event time} · {kind
+   * display name}`. Read off the resolved leaf row even when superseded since
+   * they are variant-independent; `eventTime` null (no row at all) falls back
+   * to the static label. NOT inside `display` (which is null when the pinned
+   * row is superseded) — the title should survive that case.
+   */
+  eventTime: Date | null;
+  kind: string | null;
   display: {
     priorityTier: PriorityTier;
     severityScore: number;
@@ -869,6 +878,10 @@ export async function loadReportResultPage(
           modelName: ref.model_name,
           model: ref.model,
         },
+        // Event-level (#552): surfaced off the resolved row even when
+        // superseded; `null` only when no row exists at the pinned variant.
+        eventTime: d?.eventTime ?? null,
+        kind: d?.kind ?? null,
         display:
           d && !d.superseded
             ? {
@@ -1305,6 +1318,13 @@ interface LeafDisplayRow {
   likelihoodScore: number;
   ttpTags: string[];
   superseded: boolean;
+  /**
+   * Event-level fields (#552), populated for event leaves only (story leaf
+   * SELECTs do not select them, so they stay `null`). Read off the resolved
+   * row regardless of `superseded` since they are variant-independent.
+   */
+  eventTime: Date | null;
+  kind: string | null;
 }
 
 /**
@@ -1500,6 +1520,7 @@ async function buildReportTokenPlaintext(
     const { rows } = await pool.query(
       `SELECT analysis_text, severity_factors, likelihood_factors,
               priority_tier, severity_score, likelihood_score, ttp_tags,
+              event_time, kind,
               superseded_at, aice_id, event_key::text AS event_key,
               generation, model_name, model
          FROM event_analysis_result
@@ -1744,6 +1765,8 @@ function toLeafDisplay(
     likelihoodScore: row.likelihood_score,
     ttpTags: Array.isArray(row.ttp_tags) ? row.ttp_tags : [],
     superseded: row.superseded_at != null,
+    eventTime: row.event_time ?? null,
+    kind: row.kind ?? null,
   };
 }
 

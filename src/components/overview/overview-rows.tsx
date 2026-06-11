@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 import type { useTranslations } from "next-intl";
+import { EventTitle } from "@/components/analysis/event-title";
 import type {
   EventOverviewRow,
   FailedCustomer,
@@ -126,13 +127,16 @@ export function StoryRow({
 export function EventRow({
   row,
   locale,
-  label,
+  fallbackLabel,
   scoreLabel,
 }: {
   row: EventOverviewRow;
   locale: string;
-  /** Translated row title (`Event {key}`). */
-  label: string;
+  /**
+   * Static localized fallback (`Event` / `이벤트`) shown only when the row's
+   * `eventTime` is absent; the title is otherwise `{time} · {kind}` (#552).
+   */
+  fallbackLabel: string;
   /** Translated abbreviated severity/likelihood pair. */
   scoreLabel: string;
 }) {
@@ -165,7 +169,11 @@ export function EventRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">
-          {label}
+          <EventTitle
+            eventTime={row.eventTime}
+            kind={row.kind}
+            fallbackLabel={fallbackLabel}
+          />
         </div>
         <div className="truncate text-xs text-muted-foreground">
           {row.aiceId} • {row.customerName}

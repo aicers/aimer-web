@@ -29,6 +29,17 @@ Each row resolves to a single canonical variant per event: the latest
 generation of the default language/model that is not superseded, so an
 event never appears twice.
 
+### Row label
+
+Each row is titled by the event's **time and kind** — `{event time} · {kind}`
+(for example, `6/3, 2:05 PM · HTTP Threat`) — the meaningful identifiers an
+operator expects, shown in your account timezone. The event time always
+appears; the kind is appended when it is known (it comes from the upstream
+detection and is shown using the same friendly names as aice-web-next, e.g.
+`HttpThreat` → "HTTP Threat"). When an event's time is unavailable the row
+falls back to a plain `Event` label. The opaque `event_key` is never shown as
+a title — it remains only in the row's detail link.
+
 ### Detail links carry the variant
 
 Each row links to the **canonical analyzed variant** of the event (its

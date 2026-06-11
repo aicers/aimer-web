@@ -507,9 +507,21 @@ export interface AnalyzeAndStoreEventParams {
   redactedEvent: unknown;
   /**
    * RFC 3339 `event_time` for the `analyzeEvent` call, already recovered
-   * (preferring the stored `redacted_event.event_time`).
+   * (preferring the stored `redacted_event.event_time`). Also persisted on
+   * `event_analysis_result.event_time` so the user-facing lists title the
+   * event by its instant instead of the opaque `event_key` (#552).
    */
   eventTimeForAimer: string;
+  /**
+   * Upstream event kind (`baseline_event.kind`, the raw `__typename`),
+   * persisted on `event_analysis_result.kind` (#552). Present on the
+   * auto-baseline path; `null`/omitted on the manual path, whose wire
+   * contract (`inspectEventData`: `event_key`, `event_time`,
+   * `schema_version`) carries no kind field. The regenerate path carries
+   * forward the prior row's kind since kind is event-level
+   * (variant-independent).
+   */
+  eventKind?: string | null;
   /**
    * SDL `Language` variable (nullable). `undefined` omits it so aimer
    * applies its server default; {@link langForStorage} is the concrete
@@ -795,15 +807,17 @@ export async function analyzeAndStoreEventResult(
             severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
             priority_tier,
-            analysis_text, redaction_policy_version, requested_by,
+            analysis_text, event_time, kind,
+            redaction_policy_version, requested_by,
             origin)
          VALUES ($1, $2::numeric, $3, $4, $5,
                  $6, $7, $8,
                  $9, $10,
                  $11::jsonb, $12::jsonb, $13::jsonb,
                  $14,
-                 $15, $16, $17::uuid,
-                 $18)`,
+                 $15, $16::timestamptz, $17,
+                 $18, $19::uuid,
+                 $20)`,
         [
           params.aiceId,
           params.eventKey,
@@ -820,6 +834,8 @@ export async function analyzeAndStoreEventResult(
           JSON.stringify(ttpResult.valid),
           priorityTier,
           scan.scanned,
+          params.eventTimeForAimer,
+          params.eventKind ?? null,
           params.redactionPolicyVersion,
           params.requestedBy,
           params.origin,
@@ -1085,6 +1101,8 @@ export async function runAnalyzeFlow(
     eventKey: params.eventKey,
     redactedEvent,
     eventTimeForAimer,
+    // Manual wire contract carries no kind field (see `inspectEventData`).
+    eventKind: null,
     lang: params.lang,
     langForStorage,
     modelName: params.modelName,

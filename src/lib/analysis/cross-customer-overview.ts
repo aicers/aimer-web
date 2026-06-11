@@ -145,6 +145,10 @@ export interface EventOverviewRow {
   severityScore: number;
   likelihoodScore: number;
   requestedAt: Date;
+  /** Upstream event instant — titles the row (#552). */
+  eventTime: Date;
+  /** Raw upstream event kind (`__typename`), or `null` (manual path). */
+  kind: string | null;
   /** Canonical variant — pinned on the link so the detail page resolves. */
   lang: string;
   modelName: string;
@@ -435,6 +439,8 @@ export async function fetchCustomerEvents(
     severity_score: number;
     likelihood_score: number;
     requested_at: Date;
+    event_time: Date;
+    kind: string | null;
     lang: string;
     model_name: string;
     model: string;
@@ -445,6 +451,7 @@ export async function fetchCustomerEvents(
               aice_id::text AS aice_id,
               event_key::text AS event_key,
               priority_tier, severity_score, likelihood_score, requested_at,
+              event_time, kind,
               lang, model_name, model
          FROM event_analysis_result
         WHERE lang = $1 AND model_name = $2 AND model = $3
@@ -453,6 +460,7 @@ export async function fetchCustomerEvents(
      )
      SELECT aice_id, event_key, priority_tier,
             severity_score, likelihood_score, requested_at,
+            event_time, kind,
             lang, model_name, model,
             COUNT(*) OVER () AS total_count
        FROM canonical
@@ -472,6 +480,8 @@ export async function fetchCustomerEvents(
     severityScore: r.severity_score,
     likelihoodScore: r.likelihood_score,
     requestedAt: r.requested_at,
+    eventTime: r.event_time,
+    kind: r.kind,
     lang: r.lang,
     modelName: r.model_name,
     model: r.model,

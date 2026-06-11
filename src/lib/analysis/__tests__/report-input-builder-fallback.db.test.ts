@@ -134,12 +134,12 @@ async function seedEventResult(
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
         severity_factors, likelihood_factors, ttp_tags,
-        priority_tier, analysis_text, redaction_policy_version, requested_by)
+        priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
      VALUES ('aice-1', $1::numeric, 'ENGLISH', 'openai', $2,
              'mv', 'pv', 1,
              $3, $4,
              '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
-             $5, $6, 'policy-A', gen_random_uuid())`,
+             $5, $6, '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid())`,
     [eventKey, model, severity, likelihood, tier, `event ${eventKey} ${model}`],
   );
 }

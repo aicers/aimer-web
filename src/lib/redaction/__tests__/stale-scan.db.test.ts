@@ -189,8 +189,8 @@ describe.skipIf(!hasPostgres)(
            (aice_id, event_key, lang, model_name, model,
             model_actual_version, prompt_version,
             severity_score, likelihood_score, priority_tier,
-            analysis_text, redaction_policy_version, requested_by)
-         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 'mv', 'pv', 0.5, 0.5, 'LOW', '', $3, $4)`,
+            analysis_text, event_time, redaction_policy_version, requested_by)
+         VALUES ($1, $2, 'en', 'gpt-x', 'gpt-x-v1', 'mv', 'pv', 0.5, 0.5, 'LOW', '', '2026-05-20T00:00:00Z'::timestamptz, $3, $4)`,
           [aice, key, policy, INGESTED_BY],
         );
       }

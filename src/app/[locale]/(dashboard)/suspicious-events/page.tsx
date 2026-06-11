@@ -76,7 +76,7 @@ export default async function SuspiciousEventsPage({
               <EventRow
                 row={row}
                 locale={locale}
-                label={tA("overview.eventLabel", { eventKey: row.eventKey })}
+                fallbackLabel={tA("overview.eventLabel")}
                 scoreLabel={tA("overview.scorePair", {
                   severity: row.severityScore.toFixed(2),
                   likelihood: row.likelihoodScore.toFixed(2),

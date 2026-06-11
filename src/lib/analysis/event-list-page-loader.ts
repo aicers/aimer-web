@@ -46,6 +46,10 @@ export interface EventListItem {
   severityScore: number;
   likelihoodScore: number;
   requestedAt: Date;
+  /** Upstream event instant — titles the row (#552). */
+  eventTime: Date;
+  /** Raw upstream event kind (`__typename`), or `null` (manual path). */
+  kind: string | null;
 }
 
 export interface EventListPage {
@@ -205,7 +209,9 @@ export async function queryEventListPage(
               priority_tier,
               severity_score,
               likelihood_score,
-              requested_at
+              requested_at,
+              event_time,
+              kind
          FROM event_analysis_result
         WHERE lang = ${lang} AND model_name = ${modelName} AND model = ${model}
           AND superseded_at IS NULL
@@ -218,6 +224,8 @@ export async function queryEventListPage(
               severity_score,
               likelihood_score,
               requested_at,
+              event_time,
+              kind,
               ${rankCase} AS priority_rank
          FROM canonical
        ${rankedWhere}
@@ -228,6 +236,8 @@ export async function queryEventListPage(
             severity_score,
             likelihood_score,
             requested_at::text AS requested_at,
+            event_time,
+            kind,
             priority_rank
        FROM ranked
      ${keyset}
@@ -242,6 +252,8 @@ export async function queryEventListPage(
     severity_score: number;
     likelihood_score: number;
     requested_at: string;
+    event_time: Date;
+    kind: string | null;
     priority_rank: number;
   }>(sql, params);
 
@@ -256,6 +268,8 @@ export async function queryEventListPage(
     severityScore: r.severity_score,
     likelihoodScore: r.likelihood_score,
     requestedAt: new Date(r.requested_at),
+    eventTime: r.event_time,
+    kind: r.kind,
   }));
 
   let nextCursor: string | null = null;

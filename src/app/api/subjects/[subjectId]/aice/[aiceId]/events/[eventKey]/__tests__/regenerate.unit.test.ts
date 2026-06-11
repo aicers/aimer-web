@@ -105,7 +105,8 @@ beforeEach(() => {
     authorized: true,
     permissions: new Set(["analyses:configure"]),
   });
-  // detection_events row, then event_redaction_map row.
+  // detection_events row, then the prior-kind lookup (#552), then the
+  // event_redaction_map row.
   mockCustomerPoolQuery
     .mockResolvedValueOnce({
       rows: [
@@ -115,6 +116,7 @@ beforeEach(() => {
         },
       ],
     })
+    .mockResolvedValueOnce({ rows: [{ kind: "HttpThreat" }] })
     .mockResolvedValueOnce({
       rows: [{ ciphertext: Buffer.from("ct"), wrapped_dek: "dek" }],
     });
@@ -167,6 +169,8 @@ describe("event regenerate", () => {
         redactionPolicyVersion: "policy-v7",
         accountId: SELF,
         force: true,
+        // Carries forward the event-level kind from the prior leaf (#552).
+        eventKind: "HttpThreat",
       }),
     );
   });

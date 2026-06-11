@@ -62,12 +62,12 @@ describe.skipIf(!hasPostgres)("event-leaf backfill universe (db)", () => {
           model_actual_version, prompt_version, generation,
           severity_score, likelihood_score,
           severity_factors, likelihood_factors, ttp_tags,
-          priority_tier, analysis_text, redaction_policy_version,
+          priority_tier, analysis_text, event_time, redaction_policy_version,
           requested_by, superseded_at)
        VALUES ($1, $2::numeric, $6, 'openai', $3,
                'mv', 'pv', $4, 0.5, 0.5,
                '[]'::jsonb, '[]'::jsonb, '[]'::jsonb,
-               'MEDIUM', 'text', 'policy-A', gen_random_uuid(),
+               'MEDIUM', 'text', '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid(),
                $5::timestamptz)`,
       [
         AICE,

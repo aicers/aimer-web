@@ -11,6 +11,7 @@
 
 import Link from "next/link";
 import type { useTranslations } from "next-intl";
+import { EventTitle } from "@/components/analysis/event-title";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CitedEventSource,
@@ -178,10 +179,16 @@ function EventSourceCard({
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-foreground">
-              {t("sources.eventLabel", {
-                aiceId: source.aiceId,
-                eventKey: source.eventKey,
-              })}
+              <EventTitle
+                eventTime={source.eventTime}
+                kind={source.kind}
+                fallbackLabel={t("sources.eventLabel")}
+              />
+            </div>
+            {/* `aice_id` moved off the title (#552): it identifies the source
+                host/customer for provenance, so it lives on a meta line. */}
+            <div className="truncate text-xs text-muted-foreground">
+              {source.aiceId}
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               {t("common.generation", {

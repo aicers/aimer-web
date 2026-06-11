@@ -48,6 +48,13 @@ Reports show the **priority tier only**; the numeric aggregate score that
 participates in ordering is intentionally not displayed. Threat-story and
 suspicious-event rows may show their severity and likelihood scores.
 
+Suspicious-event rows are titled by the event's **time and kind** —
+`{event time} · {kind}` (for example, `6/3, 2:05 PM · HTTP Threat`), shown
+in your account timezone — falling back to the time alone when the kind is
+unknown, or to a plain `Event` label when the time is unavailable. The kind
+uses the same friendly names as aice-web-next (e.g. `HttpThreat` → "HTTP
+Threat"). The opaque `event_key` is never shown as a title.
+
 Archived and not-yet-analyzed threat stories are excluded from the Threat
 Stories surface. The Reports surface likewise excludes archived and
 not-yet-generated report buckets, so every listed row links to a report
