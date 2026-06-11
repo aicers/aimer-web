@@ -82,6 +82,15 @@ vi.mock("next/navigation", () => ({
 // Server-component translations: resolve against the real English catalog
 // so the migrated chrome renders its actual copy (and ICU placeholders
 // interpolate) the way it does at runtime.
+// `<Timestamp>` reads the active locale via `useLocale()`; this page test
+// renders it outside a `NextIntlClientProvider`, so supply a fixed locale
+// while keeping the rest of next-intl real (the server mock below still
+// resolves the real `createTranslator`).
+vi.mock("next-intl", async () => {
+  const actual = await vi.importActual<typeof import("next-intl")>("next-intl");
+  return { ...actual, useLocale: () => "en" };
+});
+
 vi.mock("next-intl/server", async () => {
   const { createTranslator } = await import("next-intl");
   const messages = (await import("@/i18n/messages/en.json")).default;

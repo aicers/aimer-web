@@ -590,8 +590,8 @@ and aggregate scores. The remaining fields are **model/prompt provenance**
 [Analyst-only fields](#analyst-only-fields) below): the provider / model,
 the provider-reported model snapshot, the prompt version, the account that
 triggered the latest generation (or `system` for a regular worker tick),
-and the request timestamp — shown in your timezone with an explicit
-timezone label (see
+and the request timestamp — shown in your timezone following your
+browser's locale conventions (see
 [Account Preferences → Timezone](../account-preferences.md#timezone)).
 The header line also names the period, the bucket (or "now" for LIVE),
 the customer timezone, and the generation. The **customer timezone** in

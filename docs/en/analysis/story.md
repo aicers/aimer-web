@@ -198,7 +198,7 @@ was produced — and are restricted to analysts (see
   generation, or `system` if the analysis was produced by the regular
   worker tick rather than a force-regenerate.
 - **Requested at** — when the analysis was requested, shown in your
-  timezone with an explicit timezone label. See
+  timezone following your browser's locale conventions. See
   [Account Preferences → Timezone](../account-preferences.md#timezone)
   for the resolution order (saved → browser → UTC).
 

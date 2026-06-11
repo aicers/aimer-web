@@ -58,51 +58,91 @@ export function resolveDisplayTimeZone(
 }
 
 /**
- * Format a UTC instant in an already-resolved display `timeZone` as
- * `YYYY-MM-DD HH:mm <TZ>` (24-hour, with an explicit timezone label, e.g.
- * `2026-06-03 14:05 GMT+9`). Resolution (`resolveDisplayTimeZone`) is kept
- * separate so the `<Timestamp>` component can resolve once on the client
- * and render a deterministic UTC value on the server / first paint.
+ * Format a UTC instant in an already-resolved display `timeZone` as a
+ * general, locale-aware date-time. Ported verbatim from aice-web-next's
+ * `formatDateTime` (`src/lib/format-date.ts`) so the two products produce
+ * byte-identical strings for the same `(instant, timezone)`: it follows the
+ * **browser** locale (`undefined`), includes seconds, is 12-hour where the
+ * locale dictates, and carries no timezone label — e.g. EN `6/3/2026,
+ * 2:05:30 PM`, KO `2026. 6. 3. 오후 2:05:30`.
  *
- * A malformed `timeZone` makes `Intl.DateTimeFormat` throw `RangeError`;
- * swallow it and fall back to UTC so a bad zone cannot crash a render. An
- * invalid `Date` yields an empty string.
+ * The deliberate `undefined` locale must NOT be "fixed" to the app locale:
+ * that asymmetry vs {@link formatDateTimeCompact} is what keeps parity with
+ * aice-web-next. Because the result depends on the browser locale (unknown
+ * on the server), the `<Timestamp>` component renders {@link
+ * formatDateTimePremount} pre-mount and switches to this only after mount.
  */
-export function formatTimestamp(
-  instant: Date | string,
-  timeZone: string,
+export function formatDateTime(
+  date: string | Date,
+  timezone?: string | null,
 ): string {
-  const date = typeof instant === "string" ? new Date(instant) : instant;
-  if (Number.isNaN(date.getTime())) return "";
-
-  const opts: Intl.DateTimeFormatOptions = {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleString(undefined, {
+    timeZone: timezone ?? undefined,
     year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZoneName: "short",
-  };
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+  });
+}
 
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      ...opts,
-    }).formatToParts(date);
-  } catch {
-    parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "UTC",
-      ...opts,
-    }).formatToParts(date);
-  }
+/**
+ * Format a UTC instant in an already-resolved display `timeZone` as a
+ * compact date-time for tight surfaces (breadcrumbs, event rows). Ported
+ * verbatim from aice-web-next's `formatDateTimeCompact`: it follows the
+ * **active app** `locale` and drops year and seconds — e.g. EN `6/3, 2:05
+ * PM`, KO `6. 3. 오후 2:05`.
+ *
+ * Unlike {@link formatDateTime}, the locale is passed in explicitly (the
+ * caller supplies next-intl's `useLocale()`); preserve that asymmetry for
+ * exact parity with aice-web-next.
+ */
+export function formatDateTimeCompact(
+  date: string | Date,
+  timezone?: string | null,
+  locale?: string | null,
+): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleString(locale ?? undefined, {
+    timeZone: timezone ?? undefined,
+    month: "numeric",
+    day: "numeric",
+    hour: "numeric",
+    minute: "numeric",
+  });
+}
 
-  const get = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((p) => p.type === type)?.value ?? "";
-
-  const date_ = `${get("year")}-${get("month")}-${get("day")}`;
-  const time = `${get("hour")}:${get("minute")}`;
-  const tzLabel = get("timeZoneName");
-  return tzLabel ? `${date_} ${time} ${tzLabel}` : `${date_} ${time}`;
+/**
+ * Deterministic pre-mount value for `<Timestamp>` (server + first client
+ * paint). It uses the SAME `Intl` option shape as {@link formatDateTime}
+ * (or {@link formatDateTimeCompact} when `compact`), but pins a **fixed
+ * locale** (`en-US`) in **UTC** so the server output and the first client
+ * output are byte-identical — no hydration mismatch. After mount the
+ * component re-renders through the browser-/app-locale formatters.
+ */
+export function formatDateTimePremount(
+  date: string | Date,
+  compact = false,
+): string {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleString("en-US", {
+    timeZone: "UTC",
+    ...(compact
+      ? {
+          month: "numeric",
+          day: "numeric",
+          hour: "numeric",
+          minute: "numeric",
+        }
+      : {
+          year: "numeric",
+          month: "numeric",
+          day: "numeric",
+          hour: "numeric",
+          minute: "numeric",
+          second: "numeric",
+        }),
+  });
 }
