@@ -29,8 +29,7 @@ import { runMigrations } from "@/lib/db/migrate";
 
 vi.mock("server-only", () => ({}));
 
-const { buildPeriodicReportInput, buildCanonicalPinnedReportInput } =
-  await import("../report-input-builder");
+const { buildPeriodicReportInput } = await import("../report-input-builder");
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
@@ -332,47 +331,6 @@ describe.skipIf(!hasPostgres)("#465 never-drop + hybrid scoring (db)", () => {
     expect(a.storyRefs).toEqual(b.storyRefs);
     expect(a.eventRefs).toEqual(b.eventRefs);
     expect(a.inputHash).toBe(b.inputHash);
-  });
-
-  it("reads legacy (model-less) refs back at the report model", async () => {
-    // Simulate a pre-#465 canonical whose refs carry no model. The pinned
-    // build must resolve each leaf at the report variant's own model and
-    // surface that model on the rebuilt refs.
-    const pinned = await buildCanonicalPinnedReportInput({
-      customerPool,
-      customerId: CUSTOMER_ID,
-      period: "DAILY",
-      bucketDate: BUCKET,
-      variant: DEFAULT_VARIANT,
-      nowIso: NOW,
-      storyRefs: [{ story_id: "8001", generation: 1 }],
-      eventRefs: [{ aice_id: "aice-1", event_key: "9001", generation: 1 }],
-      exemplarRefs: [],
-      analyzedEventAggregates: null,
-    });
-    expect(pinned.complete).toBe(true);
-    if (!pinned.complete) return;
-    // Rebuilt refs now carry the member `customer_id` (#523); on this
-    // single-customer pinned path it is the report's own subject.
-    expect(pinned.built.storyRefs).toEqual([
-      {
-        story_id: "8001",
-        generation: 1,
-        model_name: "openai",
-        model: "gpt-4o",
-        customer_id: CUSTOMER_ID,
-      },
-    ]);
-    expect(pinned.built.eventRefs).toEqual([
-      {
-        aice_id: "aice-1",
-        event_key: "9001",
-        generation: 1,
-        model_name: "openai",
-        model: "gpt-4o",
-        customer_id: CUSTOMER_ID,
-      },
-    ]);
   });
 
   // #494 cross-model guardrail. Seeded last so the same-key event cannot bleed

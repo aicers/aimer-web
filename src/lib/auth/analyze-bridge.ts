@@ -244,15 +244,12 @@ export async function expireStalePAR(pool: Pool, id: string): Promise<boolean> {
 }
 
 /**
- * Transition `processing` → `consumed` and store the `view_url`.
- * Returns false when the row was not in `processing` state (e.g. the
- * cleanup sweep flipped it to `expired` while `runAnalyzeFlow` was
- * running). The /continue handler re-reads PAR.status on a failed
- * transition and dispatches on the new state.
- *
- * `pending` is also accepted to preserve back-compat with any code
- * path that did not claim first (no such callers exist today; kept
- * to keep the helper forgiving on partial deployments).
+ * Transition `processing` → `consumed` and store the `view_url`. Every
+ * caller claims the row (`pending` → `processing`) first, so only a
+ * `processing` row may be consumed. Returns false when the row was not
+ * in `processing` state (e.g. the cleanup sweep flipped it to `expired`
+ * while `runAnalyzeFlow` was running). The /continue handler re-reads
+ * PAR.status on a failed transition and dispatches on the new state.
  */
 export async function markPARConsumed(
   pool: Pool,
@@ -262,7 +259,7 @@ export async function markPARConsumed(
   const result = await pool.query(
     `UPDATE pending_analysis_requests
      SET status = 'consumed', view_url = $2, consumed_at = NOW()
-     WHERE id = $1 AND status IN ('pending', 'processing')`,
+     WHERE id = $1 AND status = 'processing'`,
     [id, viewUrl],
   );
   return (result.rowCount ?? 0) > 0;

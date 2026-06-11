@@ -282,14 +282,15 @@ function targetHashFragment(targetPolicyVersion: string): string {
   return nextPipe === -1 ? after : after.slice(0, nextPipe);
 }
 
-// Isolate the `domains:` hash from a target policy version. Returns
-// `null` for a version with no `|domains:` segment — i.e. one stamped
-// before RFC 0001 Amendment A.2 — so the worker can fall back to "no
-// domain validation" for legacy jobs rather than treating the absence
-// as a drift.
-function targetDomainsFragment(targetPolicyVersion: string): string | null {
+// Isolate the `domains:` hash from a target policy version. The segment
+// is REQUIRED: the only writer (`computePolicyVersion`) always stamps it
+// — an empty owned-domain set hashes to the `empty` sentinel, never an
+// omitted segment — so a version without it is corrupt and the job must
+// fail before any row is re-redacted rather than silently skipping the
+// owned-domains drift check (RFC 0001 Amendment A.2).
+function targetDomainsFragment(targetPolicyVersion: string): string {
   const idx = targetPolicyVersion.indexOf("|domains:");
-  if (idx === -1) return null;
+  if (idx === -1) throw new SnapshotError("domain_policy_missing");
   const after = targetPolicyVersion.slice(idx + "|domains:".length);
   const nextPipe = after.indexOf("|");
   return nextPipe === -1 ? after : after.slice(0, nextPipe);
@@ -339,8 +340,7 @@ class SnapshotError extends Error {
 // `substituteTokens` may pass back through as plaintext. Failing the job
 // on drift — before processing any item — keeps the live set used for
 // re-redaction consistent with the stamped version and prevents the
-// leak. Legacy targets with no `|domains:` segment skip validation and
-// use the live set as-is (additive, pre-Amendment-A.2 behaviour).
+// leak.
 async function loadAndValidateOwnedDomains(
   authClient: PoolClient,
   job: Pick<JobRow, "customer_id" | "target_policy_version">,
@@ -355,10 +355,7 @@ async function loadAndValidateOwnedDomains(
     res.rows.map((r) => r.owned_domain_suffix),
   );
   const target = targetDomainsFragment(job.target_policy_version);
-  if (
-    target !== null &&
-    shortDomainsHash(ownedDomains.normalisedSuffixes) !== target
-  ) {
+  if (shortDomainsHash(ownedDomains.normalisedSuffixes) !== target) {
     throw new SnapshotError("domain_policy_drift");
   }
   return ownedDomains;

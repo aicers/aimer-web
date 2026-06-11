@@ -40,7 +40,7 @@ import {
 } from "./default-model";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
-import { refCustomerId } from "./report-input-builder";
+import { wireCustomerId } from "./report-input-builder";
 import { buildReportTokenMap } from "./report-token";
 import { restoreReportAnalysisTokens } from "./report-token-restore";
 import { enqueueOnDemandReportJob } from "./report-worker";
@@ -113,8 +113,7 @@ export type CitedUnitSource =
        * leaf lives in a MEMBER customer DB, and its detail page is the
        * member-customer detail, not the group subject. Provenance links are
        * built against this id. For a single-customer report it is the report's
-       * own customer id (`refCustomerId` degrades to `subjectId`), so links are
-       * unchanged.
+       * own customer id, so links are unchanged.
        */
       customerId: string;
       variant: CitedLeafVariant;
@@ -186,8 +185,8 @@ export interface CitedStorySource {
    * The owning member's customer id (#513): for a group report the cited leaf
    * lives in a MEMBER customer DB, so its Sources-card link targets the
    * member-customer detail, not the group subject. For a single-customer report
-   * it degrades to the report's own customer id (`refCustomerId`), so the link
-   * is byte-identical to the pre-#513 behavior.
+   * it is the report's own customer id, so the link is byte-identical to the
+   * pre-#513 behavior.
    */
   customerId: string;
   variant: CitedLeafVariant;
@@ -408,44 +407,39 @@ export interface ReportResultPageInput {
   };
 }
 
-// Stored `input_*_refs` shapes. `model_name`/`model` are present on refs
-// written post-#465 (the leaf's own model, which under the never-drop fallback
-// can differ from the report row's); a pre-#465 ref lacks them and is read back
-// as the report row's own model (the only model it could have pointed at before
-// fallback existed).
+// Stored `input_*_refs` shapes. `model_name`/`model` are the leaf's OWN model
+// (#465) — under the never-drop fallback it can differ from the report row's.
 interface StoryRef {
   story_id: string;
   generation: number;
-  model_name?: string;
-  model?: string;
+  model_name: string;
+  model: string;
   // Member subject id of the customer DB this leaf lives in (#523). A group
   // report cites leaves from MEMBER DBs and the same `story_id` can exist in
-  // more than one, so de-redaction routes by it. Absent on legacy / single-
-  // customer rows, where it degrades to the report's own subject id
-  // (`refCustomerId`).
-  customer_id?: string;
+  // more than one, so de-redaction routes by it. On a single-customer report
+  // it equals the report's own subject id.
+  customer_id: string;
 }
 interface EventRef {
   aice_id: string;
   event_key: string;
   generation: number;
-  model_name?: string;
-  model?: string;
-  // Member subject id, same backward-compatible contract as `StoryRef` (#523).
-  customer_id?: string;
+  model_name: string;
+  model: string;
+  // Member subject id, same contract as `StoryRef` (#523).
+  customer_id: string;
 }
-// Long-tail exemplar leaf ref (#495). Unlike the cited refs, `model_name` /
-// `model` are REQUIRED (this is a new column with no pre-#465 legacy form),
-// and there is no `lang` — exemplar leaves are always replayed at the English
-// canonical language regardless of the row's `lang` / `restoration_lang`.
+// Long-tail exemplar leaf ref (#495). There is no `lang` — exemplar leaves are
+// always replayed at the English canonical language regardless of the row's
+// `lang` / `restoration_lang`.
 interface ExemplarRef {
   aice_id: string;
   event_key: string;
   generation: number;
   model_name: string;
   model: string;
-  // Member subject id, same backward-compatible contract as `StoryRef` (#523).
-  customer_id?: string;
+  // Member subject id, same contract as `StoryRef` (#523).
+  customer_id: string;
 }
 
 // Wire form of a citation `source` as aimer emits it inside `sections_jsonb`
@@ -456,9 +450,10 @@ interface ExemplarRef {
 //
 // `customer_id` is the optional member identity of a group citation (#525):
 // the same `story_id` / `(aice_id, event_key)` can exist in more than one
-// member DB, so the input-ref lookup is keyed by `(customer_id, …)`. Absent on
-// a single-customer source, where it degrades to the report's own subject id
-// (`refCustomerId`) — byte-identical to the pre-#525 single-key behavior.
+// member DB, so the input-ref lookup is keyed by `(customer_id, …)`. The
+// single-customer wire shape omits it by design, resolving to the report's own
+// subject id (`wireCustomerId`) — byte-identical to the pre-#525 single-key
+// behavior.
 type WireUnitSource =
   | { type: "story"; story_id: string; customer_id?: string }
   | { type: "event"; event_ref: string; customer_id?: string };
@@ -469,9 +464,10 @@ interface WireCitationUnit {
   source?: unknown;
 }
 
-// Raw `sections_jsonb` as stored from aimer's JSON (tolerant of legacy shapes;
-// see `restoreUnits` / `restoreJoined`). Typed loosely because pre-v5 rows
-// may still carry plain strings / string arrays for the leaf-derived keys.
+// Raw `sections_jsonb` as stored from aimer's JSON. Typed loosely because the
+// column is untyped JSON and the native path persists `parseReportSections`
+// output after a top-level-object check only — per-section shapes are guarded
+// at read time (see `restoreUnits` / `restoreJoined`).
 interface RawReportSections {
   executive_summary?: unknown;
   story_highlights?: unknown;
@@ -810,19 +806,9 @@ export async function loadReportResultPage(
   // point at (#412 item 5). `model_name` / `model` are the canonical's on a
   // translated row (copied verbatim), so the pinned leaves resolve.
   const replayLang = row.restoration_lang ?? row.lang;
-  // `leafVariant` is the variant the cited leaves are pinned to: the replay
-  // language (canonical's for a translated row) plus the row's model. Both
-  // the token replay AND the Sources display-field fetch / link use it, so
-  // a translated report links to the correct leaf instead of the missing
-  // `row.lang` variant.
-  const leafVariant = {
-    lang: replayLang,
-    modelName: row.model_name,
-    model: row.model,
-  };
   // Member fan-out routing: map each ref's owning `customer_id` to the member
   // pool that holds its leaf + redaction maps. For a customer subject this is
-  // the single result pool (all refs degrade to `subjectId`); for a group, the
+  // the single result pool (every ref carries `subjectId`); for a group, the
   // per-member pools resolved above. A ref naming a non-member id resolves to
   // `undefined` and degrades (its tokens stay tokenized rather than 500ing).
   const memberPoolById = new Map(
@@ -832,11 +818,10 @@ export async function loadReportResultPage(
   const { plaintextByReportToken, storyDisplays, eventDisplays } =
     await buildReportTokenPlaintext(
       poolFor,
-      subjectId,
       storyRefs,
       eventRefs,
       exemplarRefs,
-      leafVariant,
+      replayLang,
     );
 
   // Build the report-level cited sources: each stored ref + the display
@@ -847,17 +832,16 @@ export async function loadReportResultPage(
       const d = storyDisplays[i];
       return {
         storyId: ref.story_id,
-        // The owning member customer id (#513): degrades to `subjectId` for a
-        // single-customer / legacy ref, so the link is unchanged there.
-        customerId: refCustomerId(ref, subjectId),
+        // The owning member customer id (#513): equals `subjectId` for a
+        // single-customer ref, so the link is unchanged there.
+        customerId: ref.customer_id,
         variant: {
           generation: ref.generation,
           lang: replayLang,
           // Each citation resolves to its ref's OWN model (#465 Scope 4): a
           // fallback leaf lives under a different model than the report row.
-          // A pre-#465 ref lacking a model falls back to the row's model.
-          modelName: ref.model_name ?? row.model_name,
-          model: ref.model ?? row.model,
+          modelName: ref.model_name,
+          model: ref.model,
         },
         display:
           d && !d.superseded
@@ -878,12 +862,12 @@ export async function loadReportResultPage(
       return {
         aiceId: ref.aice_id,
         eventKey: ref.event_key,
-        customerId: refCustomerId(ref, subjectId),
+        customerId: ref.customer_id,
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: ref.model_name ?? row.model_name,
-          model: ref.model ?? row.model,
+          modelName: ref.model_name,
+          model: ref.model,
         },
         display:
           d && !d.superseded
@@ -907,18 +891,15 @@ export async function loadReportResultPage(
   );
 
   // Coverage indicator (#465 Scope 6): count cited leaves on the report's own
-  // model vs the total. A ref lacking a model (pre-#465) resolves as the report
-  // model, so legacy rows report full coverage. Counts only — never the
-  // score-combination method (#386).
-  const allRefs: Array<{ model_name?: string; model?: string }> = [
+  // model vs the total. Counts only — never the score-combination method
+  // (#386).
+  const allRefs: Array<{ model_name: string; model: string }> = [
     ...storyRefs,
     ...eventRefs,
   ];
   const leafCoverage = {
     reportModel: allRefs.filter(
-      (r) =>
-        (r.model_name ?? row.model_name) === row.model_name &&
-        (r.model ?? row.model) === row.model,
+      (r) => r.model_name === row.model_name && r.model === row.model,
     ).length,
     total: allRefs.length,
   };
@@ -1048,7 +1029,7 @@ function memberKey(customerId: string, rest: string): string {
  * by the primary render and the read-only compare column (#458).
  */
 function restoreReportSectionsFromRow(
-  row: Pick<ReportResultRow, "sections_jsonb" | "model_name" | "model">,
+  row: Pick<ReportResultRow, "sections_jsonb">,
   replayLang: string,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
@@ -1060,10 +1041,13 @@ function restoreReportSectionsFromRow(
       typeof s === "string" ? s : "",
       plaintextByReportToken,
     );
-  // `baseline_observations` (an array of Markdown strings) and `period_outlook`
-  // (a plain string) are NOT leaf-derived and carry no citations: restore each
-  // entry and join into one display block. Tolerate either shape so a legacy
-  // row still renders.
+  // `baseline_observations` (canonically an array of Markdown strings) and
+  // `period_outlook` (canonically a plain string) are NOT leaf-derived and
+  // carry no citations: restore each entry and join into one display block.
+  // The write path validates neither field (both sit outside
+  // `LEAF_DERIVED_SECTION_KEYS` and `parseReportSections` checks only the top
+  // level), so a minimal type guard handles either shape rather than trusting
+  // the canonical one.
   const restoreJoined = (v: unknown) =>
     Array.isArray(v)
       ? v
@@ -1079,27 +1063,24 @@ function restoreReportSectionsFromRow(
   //
   // Keyed by `(customer_id, …)` (#525): the same `story_id` / `(aice_id,
   // event_key)` can exist in more than one member DB for a group report, so a
-  // bare key collides and mis-routes. The member id is `refCustomerId(ref,
-  // subjectId)` for the input refs and the wire source's optional `customer_id`
-  // (degrading to `subjectId`) for the citation — so a single-customer report,
-  // where every ref and source degrades to `subjectId`, keys identically to the
+  // bare key collides and mis-routes. The member id is the input ref's own
+  // `customer_id`, and `wireCustomerId(wire, subjectId)` for the citation —
+  // the single-customer wire shape omits `customer_id` by design and resolves
+  // to `subjectId`, so a single-customer report keys identically to the
   // pre-#525 bare-key behavior.
   const storyRefByKey = new Map(
-    storyRefs.map((r) => [
-      memberKey(refCustomerId(r, subjectId), r.story_id),
-      r,
-    ]),
+    storyRefs.map((r) => [memberKey(r.customer_id, r.story_id), r]),
   );
   const eventRefByKey = new Map(
     eventRefs.map((r) => [
-      memberKey(refCustomerId(r, subjectId), `${r.aice_id}:${r.event_key}`),
+      memberKey(r.customer_id, `${r.aice_id}:${r.event_key}`),
       r,
     ]),
   );
   const decodeSource = (raw: unknown): CitedUnitSource | undefined => {
     if (raw === null || typeof raw !== "object") return undefined;
     const wire = raw as Partial<WireUnitSource>;
-    const sourceCustomerId = refCustomerId(wire, subjectId);
+    const sourceCustomerId = wireCustomerId(wire, subjectId);
     if (wire.type === "story" && typeof wire.story_id === "string") {
       const ref = storyRefByKey.get(memberKey(sourceCustomerId, wire.story_id));
       // Drop a citation whose leaf is not in the input bundle rather than
@@ -1110,14 +1091,14 @@ function restoreReportSectionsFromRow(
         sourceType: "story",
         storyId: ref.story_id,
         // Owning member customer id (#513) — the source key's resolved member,
-        // degrading to `subjectId` for a single-customer / legacy source.
+        // `subjectId` for a single-customer source.
         customerId: sourceCustomerId,
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          // Per-ref model (#465 Scope 4), row model as the pre-#465 fallback.
-          modelName: ref.model_name ?? row.model_name,
-          model: ref.model ?? row.model,
+          // Per-ref model (#465 Scope 4).
+          modelName: ref.model_name,
+          model: ref.model,
         },
       };
     }
@@ -1137,8 +1118,8 @@ function restoreReportSectionsFromRow(
         variant: {
           generation: ref.generation,
           lang: replayLang,
-          modelName: ref.model_name ?? row.model_name,
-          model: ref.model ?? row.model,
+          modelName: ref.model_name,
+          model: ref.model,
         },
       };
     }
@@ -1146,18 +1127,14 @@ function restoreReportSectionsFromRow(
   };
   // The three leaf-derived sections are arrays of `{ text, source? }` units
   // (prompt v5). Restore each unit's text and decode its source, preserving
-  // per-unit boundaries so a citation can anchor to one. Tolerate a legacy
-  // plain-string / string-array section by wrapping each string as an
-  // uncited unit, so a pre-v5 row still renders.
+  // per-unit boundaries so a citation can anchor to one. `sections_jsonb` is
+  // untyped JSON and the native path enforces no per-section shape, so a
+  // minimal type guard remains: a non-array section (or a non-object entry)
+  // yields no units rather than throwing.
   const restoreUnits = (v: unknown): CitationUnit[] => {
-    const items = Array.isArray(v) ? v : [v];
+    if (!Array.isArray(v)) return [];
     const units: CitationUnit[] = [];
-    for (const item of items) {
-      if (typeof item === "string") {
-        const text = restoreOne(item);
-        if (text.length > 0) units.push({ text });
-        continue;
-      }
+    for (const item of v) {
       if (item === null || typeof item !== "object") continue;
       const unit = item as WireCitationUnit;
       const text = restoreOne(unit.text);
@@ -1228,15 +1205,19 @@ async function resolveReportCompareColumn(
   const replayLang = row.restoration_lang ?? row.lang;
   // The compare column is customer-only (disabled for groups in v1, #525), so
   // the member fan-out collapses to the single customer pool: every ref
-  // degrades to `customerId` and routes back to `customerPool`.
-  const poolFor = () => customerPool as Pool;
+  // carries the customer's own id. Enforce that the same way the primary
+  // path does — any other id resolves no pool and the ref degrades to an
+  // empty leaf — rather than routing every key to `customerPool`, which
+  // would let a malformed ref reach the event/exemplar leaf queries (they
+  // carry no customer_id predicate; the member identity IS the pool).
+  const poolFor = (cid: string): Pool | undefined =>
+    cid === customerId ? (customerPool as Pool) : undefined;
   const { plaintextByReportToken } = await buildReportTokenPlaintext(
     poolFor,
-    customerId,
     storyRefs,
     eventRefs,
     exemplarRefs,
-    { lang: replayLang, modelName: row.model_name, model: row.model },
+    replayLang,
   );
   const sections = restoreReportSectionsFromRow(
     row,
@@ -1345,9 +1326,9 @@ interface ReportLeafData {
  * token string so `restoreReportAnalysisTokens` can substitute directly.
  *
  * Member fan-out (#525): each cited story / event / exemplar ref names the
- * owning member `customer_id` (degrading to `subjectId` for a legacy / single-
- * customer ref via `refCustomerId`). The leaf and its `event_redaction_map`
- * live in that member's DB, so refs are GROUPED by owning member and BOTH the
+ * owning member `customer_id` (the subject's own id on the single-customer
+ * path). The leaf and its `event_redaction_map` live in that member's DB, so
+ * refs are GROUPED by owning member and BOTH the
  * leaf reads AND the redaction-map decrypt run ONE batched query per member
  * pool — the leaf reads via a row-value `IN (...)` over each member's pinned
  * `(story_id|aice_id+event_key, generation, model_name, model)` tuples, the
@@ -1357,9 +1338,9 @@ interface ReportLeafData {
  * same `(aice_id, event_key)` in two member DBs routes to the right member's
  * plaintext. A story ref's member-event redaction lookups use the SAME member
  * DB as the story leaf (the story leaf and its member-event maps co-reside).
- * For a `customer` subject every ref degrades to `subjectId` and `poolFor`
- * returns the single result pool, so this collapses to one batched leaf read
- * plus one decrypt against that pool.
+ * For a `customer` subject every ref carries the subject's own id and
+ * `poolFor` returns the single result pool, so this collapses to one batched
+ * leaf read plus one decrypt against that pool.
  *
  * The same batched leaf SELECTs also return the Sources-panel display fields
  * (tier / scores / TTP / `superseded_at`) at the pinned variant (T1), so
@@ -1369,11 +1350,10 @@ interface ReportLeafData {
  */
 async function buildReportTokenPlaintext(
   poolFor: (customerId: string) => Pool | undefined,
-  subjectId: string,
   storyRefs: StoryRef[],
   eventRefs: EventRef[],
   exemplarRefs: ExemplarRef[],
-  variant: { lang: string; modelName: string; model: string },
+  replayLang: string,
 ): Promise<ReportLeafData> {
   const out = new Map<string, string>();
   const storyDisplays: Array<LeafDisplayRow | null> = storyRefs.map(() => null);
@@ -1387,12 +1367,10 @@ async function buildReportTokenPlaintext(
   }
 
   // Per-leaf owning member customer id (#523/#525), aligned positionally with
-  // each ref array. A legacy / single-customer ref degrades to `subjectId`.
-  const storyCustomerIds = storyRefs.map((r) => refCustomerId(r, subjectId));
-  const eventCustomerIds = eventRefs.map((r) => refCustomerId(r, subjectId));
-  const exemplarCustomerIds = exemplarRefs.map((r) =>
-    refCustomerId(r, subjectId),
-  );
+  // each ref array. A single-customer ref carries the subject's own id.
+  const storyCustomerIds = storyRefs.map((r) => r.customer_id);
+  const eventCustomerIds = eventRefs.map((r) => r.customer_id);
+  const exemplarCustomerIds = exemplarRefs.map((r) => r.customer_id);
 
   // Group ref positions by owning member so each member pool's leaf rows are
   // read with ONE batched query (#525) — the same per-member batching as the
@@ -1443,21 +1421,15 @@ async function buildReportTokenPlaintext(
     if (!pool) continue;
     // Pin each leaf by ITS OWN ref model (#465 Scope 4): a fallback leaf lives
     // under a different model than the report row, so a row-model pin would
-    // return no row and leave report tokens unrestored / visible. A pre-#465
-    // ref lacking a model falls back to the report variant's model. All refs
+    // return no row and leave report tokens unrestored / visible. All refs
     // owned by this member are batched into ONE row-value `IN (...)` keyed by
     // `(story_id, generation, model_name, model)` (`customer_id` / `lang` are
     // constant per member query) — no per-ref round-trip.
-    const params: unknown[] = [cid, variant.lang];
+    const params: unknown[] = [cid, replayLang];
     const tuples = idxs.map((i) => {
       const ref = storyRefs[i];
       const base = params.length;
-      params.push(
-        ref.story_id,
-        ref.generation,
-        ref.model_name ?? variant.modelName,
-        ref.model ?? variant.model,
-      );
+      params.push(ref.story_id, ref.generation, ref.model_name, ref.model);
       return `($${base + 1}::bigint, $${base + 2}::int, $${base + 3}::text, $${base + 4}::text)`;
     });
     const { rows } = await pool.query(
@@ -1477,12 +1449,7 @@ async function buildReportTokenPlaintext(
     for (const i of idxs) {
       const ref = storyRefs[i];
       const row = byKey.get(
-        leafKey(
-          ref.story_id,
-          ref.generation,
-          ref.model_name ?? variant.modelName,
-          ref.model ?? variant.model,
-        ),
+        leafKey(ref.story_id, ref.generation, ref.model_name, ref.model),
       );
       storyLeaves[i] = {
         analysis: row?.analysis_text ?? "",
@@ -1517,7 +1484,7 @@ async function buildReportTokenPlaintext(
     // Per-ref model pin (#465 Scope 4), batched per member exactly like the
     // story leaves above. `event_analysis_result` is keyed by `aice_id` (not
     // `customer_id`), so the member identity is the pool; `lang` is constant.
-    const params: unknown[] = [variant.lang];
+    const params: unknown[] = [replayLang];
     const tuples = idxs.map((i) => {
       const ref = eventRefs[i];
       const base = params.length;
@@ -1525,8 +1492,8 @@ async function buildReportTokenPlaintext(
         ref.aice_id,
         ref.event_key,
         ref.generation,
-        ref.model_name ?? variant.modelName,
-        ref.model ?? variant.model,
+        ref.model_name,
+        ref.model,
       );
       return `($${base + 1}::text, $${base + 2}::numeric, $${base + 3}::int, $${base + 4}::text, $${base + 5}::text)`;
     });
@@ -1554,8 +1521,8 @@ async function buildReportTokenPlaintext(
           ref.aice_id,
           ref.event_key,
           ref.generation,
-          ref.model_name ?? variant.modelName,
-          ref.model ?? variant.model,
+          ref.model_name,
+          ref.model,
         ),
       );
       eventLeaves[i] = {
@@ -1574,10 +1541,9 @@ async function buildReportTokenPlaintext(
   // Fetch the long-tail exemplar leaves (#495), reduced to the single chosen
   // `factor` the builder fed to `buildReportTokenMap`. Exemplar refs are
   // ALWAYS replayed at the English canonical language (`ENGLISH_BASELINE`),
-  // independent of `variant.lang` — the canonical owns the exemplar set + the
+  // independent of `replayLang` — the canonical owns the exemplar set + the
   // `R{j}` numbering, so even a Korean native-pinned row's exemplar tokens
-  // were minted from the English leaves. `model_name` / `model` are required
-  // on an exemplar ref (no pre-#465 legacy form).
+  // were minted from the English leaves.
   const exemplarLeaves: Array<{ analysis: string }> = exemplarRefs.map(() => ({
     analysis: chooseExemplarFactor(undefined),
   }));

@@ -1,29 +1,21 @@
-// RFC 0002 Phase 0 (#294) — analysis job worker skeleton.
+// RFC 0002 (#294/#296/#298) — analysis job worker.
 //
-// Modeled on `redaction-job-worker.ts` but intentionally minimal.
-// Phase 0 is a no-LLM skeleton — the worker only:
+// Modeled on `redaction-job-worker.ts`. Each tick the worker:
 //
 //   1. Walks `story_analysis_state` rows in `pending` and flips them to
 //      `ready` once the RFC 0002 §"Story readiness" rule holds.
-//   2. For every `ready` or `dirty` state row, ensures a
+//   2. For every `ready` or `dirty` state row, ensures a queued
 //      `story_analysis_job` row exists for the default
-//      `(lang, model_name, model)` variant. The job row is inserted as
-//      `status='queued', dry_run=TRUE, generation=1` (or generation++
-//      for an existing dirty re-queue), then immediately flipped to
-//      `done` with `last_generated_at=NOW()` — no LLM call.
-//   3. Same for `periodic_report_state` LIVE rows (DAILY/WEEKLY/MONTHLY
-//      seeding lands in Phase 2 / 3 alongside the real workers).
-//   4. Boot-time recovery flips any orphaned `processing` jobs back to
+//      `(lang, model_name, model)` variant.
+//   3. Same for `periodic_report_state` rows (all four periods).
+//   4. Dispatches queued story / event / report jobs to the LLM workers.
+//   5. Boot-time recovery flips any orphaned `processing` jobs back to
 //      `queued`.
 //
 // Persisting real `*_analysis_job` rows lets the 48h verification gate
 // observe dirty transitions (issue #294 decision 3). The
 // `ANALYSIS_MAX_GENERATION` cap on automatic dirty re-queues is
-// enforced inside `seedRealStoryJobs` (story side); `dry_run=TRUE`
-// rows are not counted against it.
-//
-// Leftover `dry_run=TRUE` rows from before real LLM calls were enabled
-// (Phase 1, #296) are swept by the queued-drain below.
+// enforced inside `seedRealStoryJobs` (story side).
 //
 // Time seam (#326): every time-dependent SQL predicate inside this
 // worker uses `$n::timestamptz` bind parameters whose value is sourced
@@ -148,11 +140,10 @@ async function tickStoryStates(
   client: PoolClient,
   nowIso: string,
 ): Promise<void> {
-  // Phase 1 (#296) — real LLM seeding. Pending → ready promotion stays
-  // here (the rule is RFC 0002 §"Story readiness", independent of the
-  // dry-run vs real distinction). The "ensure a job row exists for the
-  // default variant" pass moves to `seedRealStoryJobs` so it can write
-  // `dry_run=FALSE` rows that the LLM-calling tick picks up.
+  // Pending → ready promotion lives here (RFC 0002 §"Story readiness");
+  // the "ensure a job row exists for the default variant" pass lives in
+  // `seedRealStoryJobs`, which writes the `queued` rows the LLM-calling
+  // tick picks up (#296).
   const { rows: pending } = await client.query<StoryStateRow>(
     `SELECT customer_id::text  AS customer_id,
             story_id::text     AS story_id,
@@ -184,9 +175,8 @@ async function tickStoryStates(
     );
   }
 
-  // 2. Seed real (non-dry-run) `queued` jobs for every actionable
-  //    state row. See `seedRealStoryJobs` for the same NOT-EXISTS /
-  //    SKIP-LOCKED rules previously inlined here.
+  // 2. Seed `queued` jobs for every actionable state row. See
+  //    `seedRealStoryJobs` for the NOT-EXISTS / SKIP-LOCKED rules.
   await seedRealStoryJobs(client, BATCH_SIZE, nowIso);
 }
 
@@ -218,9 +208,9 @@ async function tickPeriodicStates(
   // been no ingest activity for `ANALYSIS_IDLE_QUIET_MINUTES` (RFC 0002
   // §"Periodic report readiness"). Without this, historical buckets
   // seeded by the reconcile scan after a hook failure (round-3 review
-  // item 2) would remain `pending` forever and never produce a Phase 0
-  // dry-run job, breaking the verification gate's "no stuck-pending
-  // state rows" requirement.
+  // item 2) would remain `pending` forever and never produce a job,
+  // breaking the verification gate's "no stuck-pending state rows"
+  // requirement.
   //
   // The quiet-window gate (round-7 review item 1) uses `updated_at` as
   // the ingest-activity proxy: the ingest hooks (`recordBaselineActivity`)
@@ -228,8 +218,8 @@ async function tickPeriodicStates(
   // so a still-active backfill keeps the row from being promoted before
   // the batch settles. Without this gate, a historical bucket seeded or
   // forward-patched by a just-finished reconcile/backfill could be
-  // promoted and dry-run-jobbed immediately even though ingest activity
-  // just occurred.
+  // promoted and enqueued immediately even though ingest activity just
+  // occurred.
   //
   // Issue #295 round-2 review item 2: cursor-only advances
   // (`recordCursorWatermark` and reconcile's `patchCursorWatermark`)
@@ -352,9 +342,8 @@ async function tickPeriodicStates(
   //   1. `requeueLiveReportJobs` bumps `done` LIVE variant jobs whose
   //      per-variant `next_due_at` cadence has elapsed back to `queued`
   //      (gated by `state.status <> 'archived'`, round-14 item 5).
-  //   2. `seedRealReportJobs` ensures a real (non-dry-run) `queued` job
-  //      exists for every `ready`/`dirty` LIVE/DAILY/WEEKLY/MONTHLY
-  //      state row.
+  //   2. `seedRealReportJobs` ensures a `queued` job exists for every
+  //      `ready`/`dirty` LIVE/DAILY/WEEKLY/MONTHLY state row.
   //
   // Phase 3 (#298) lifted the LIVE/DAILY-only seeding filter: WEEKLY and
   // MONTHLY `ready`/`dirty` rows (promoted above on their 6h / 12h
@@ -364,69 +353,14 @@ async function tickPeriodicStates(
 }
 
 // ---------------------------------------------------------------------------
-// Boot-time recovery + queued-drain
+// Boot-time recovery
 // ---------------------------------------------------------------------------
 
 /**
- * Phase 1 (#296): legacy Phase 0 drain — a belt-and-braces sweep for
- * stale `dry_run=TRUE` rows from rolling deploys or fixtures.
- *
- * Phase 0 inserts job rows directly as `status='done', dry_run=TRUE`,
- * so under normal operation no queued dry-run rows ever exist. Two
- * paths can still produce them:
- *
- *   (a) Boot-time recovery flips orphaned `processing` rows back to
- *       `queued` (matches the redaction-worker pattern so the Phase 1
- *       worker has a working recovery path from day one). The normal
- *       state-row pickup is keyed on `NOT EXISTS (default-variant
- *       job)`, so a recovered queued row blocks its state row from
- *       ever being re-selected — the queued row would stay queued
- *       forever (round-10 review item 1).
- *   (b) Any out-of-band write (test fixture, manual DB edit, leftover
- *       row from a prior deployment).
- *
- * The drain is dry-run-only — Phase 1 (#296) will have its own real
- * queued-job dispatcher and must not see Phase 0's drain step touch
- * its rows.
- */
-async function drainQueuedDryRunJobs(
-  client: PoolClient,
-  nowIso: string,
-): Promise<void> {
-  await client.query(
-    `UPDATE story_analysis_job
-        SET status = 'done',
-            processing_started_at = COALESCE(processing_started_at, $1::timestamptz),
-            last_generated_at = $1::timestamptz,
-            last_error = NULL,
-            updated_at = $1::timestamptz
-      WHERE status = 'queued'
-        AND dry_run = TRUE`,
-    [nowIso],
-  );
-  await client.query(
-    `UPDATE periodic_report_job
-        SET status = 'done',
-            processing_started_at = COALESCE(processing_started_at, $1::timestamptz),
-            last_generated_at = $1::timestamptz,
-            last_error = NULL,
-            updated_at = $1::timestamptz
-      WHERE status = 'queued'
-        AND dry_run = TRUE`,
-    [nowIso],
-  );
-}
-
-/**
- * Flip any `processing` job rows back to `queued`. The Phase 0 worker
- * does not actually run in `processing` (it transitions queued → done
- * inline), but recovery is harmless and matches the redaction-worker
- * pattern so the Phase 1 worker has a working recovery path from day
- * one. The tick's `drainQueuedDryRunJobs` pass then completes any
- * `dry_run=TRUE` rows recovery just re-queued, so a stuck-processing
- * Phase 0 row drains to `done` in the very next tick rather than
- * stalling forever behind the state-row pickup's `NOT EXISTS` filter
- * (round-10 review item 1).
+ * Flip any `processing` job rows back to `queued`, matching the
+ * redaction-worker recovery pattern: a worker that died mid-job leaves
+ * its row in `processing`, and the dispatchers only pick `queued` rows,
+ * so without this the job would stall forever.
  */
 async function runRecovery(authPool: Pool): Promise<void> {
   // Recovery runs on its own pool outside the tick transaction, so it
@@ -497,7 +431,6 @@ export async function runAnalysisJobTickOnce(authPool?: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await drainQueuedDryRunJobs(client, nowIso);
     await tickStoryStates(client, nowIso);
     await tickPeriodicStates(client, nowIso);
     await client.query("COMMIT");
@@ -605,7 +538,6 @@ export function uninstallAnalysisJobWorker(): void {
 }
 
 export const __testables = {
-  drainQueuedDryRunJobs,
   runRecovery,
   tickStoryStates,
   tickPeriodicStates,

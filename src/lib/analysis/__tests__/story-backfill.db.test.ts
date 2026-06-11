@@ -232,7 +232,7 @@ describe.skipIf(!hasPostgres)("story-backfill SQL deps (DB)", () => {
     expect(second.rows[0]).toMatchObject({ status: "done", generation: 1 });
   });
 
-  it("requeueJob resets a failed/dry-run leaf at the same generation, leaving done untouched", async () => {
+  it("requeueJob resets a failed leaf at the same generation, leaving done untouched", async () => {
     await addState(3001, "ready", 1);
     // A failed target leaf at generation 2.
     await addJob(3001, "ENGLISH", TARGET.modelName, TARGET.model, "failed", {

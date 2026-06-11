@@ -350,9 +350,24 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     resultRows = [
       {
         ...resultRow("ENGLISH"),
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [
-          { aice_id: "aice-9", event_key: "777", generation: 4 },
+          {
+            aice_id: "aice-9",
+            event_key: "777",
+            generation: 4,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
         ],
       },
     ];
@@ -405,7 +420,15 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     resultRows = [
       {
         ...resultRow("ENGLISH"),
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [],
       },
     ];
@@ -425,7 +448,15 @@ describe("loadReportResultPage — cited sources (T1)", () => {
     resultRows = [
       {
         ...resultRow("ENGLISH"),
-        input_story_refs: [{ story_id: "555", generation: 9 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 9,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [],
       },
     ];
@@ -446,7 +477,15 @@ describe("loadReportResultPage — cited sources (T1)", () => {
       {
         ...resultRow("KOREAN"),
         restoration_lang: "ENGLISH",
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [],
       },
     ];
@@ -471,9 +510,24 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
     resultRows = [
       {
         ...resultRow("ENGLISH"),
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [
-          { aice_id: "aice-9", event_key: "777", generation: 4 },
+          {
+            aice_id: "aice-9",
+            event_key: "777",
+            generation: 4,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
         ],
         sections_jsonb: {
           executive_summary: [
@@ -540,7 +594,15 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
     resultRows = [
       {
         ...resultRow("ENGLISH"),
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [],
         sections_jsonb: {
           executive_summary: [
@@ -572,7 +634,15 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
       {
         ...resultRow("KOREAN"),
         restoration_lang: "ENGLISH",
-        input_story_refs: [{ story_id: "555", generation: 2 }],
+        input_story_refs: [
+          {
+            story_id: "555",
+            generation: 2,
+            model_name: "openai",
+            model: "gpt-4o",
+            customer_id: CUSTOMER_ID,
+          },
+        ],
         input_event_refs: [],
         sections_jsonb: {
           executive_summary: [
@@ -592,14 +662,17 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
     expect(source?.variant.lang).toBe("ENGLISH");
   });
 
-  it("tolerates a legacy plain-string section as a single uncited unit", async () => {
+  it("yields no units for a malformed (non-citation-unit) leaf-derived section", async () => {
+    // Strict prompt-v5 shape: a leaf-derived section is an array of
+    // `{ text, source? }` units. A non-array value or a non-object entry is
+    // malformed and yields no units — it is not reconstructed into prose.
     availRows = [{ lang: "ENGLISH" }];
     resultRows = [
       {
         ...resultRow("ENGLISH"),
         sections_jsonb: {
-          executive_summary: "legacy prose",
-          story_highlights: ["legacy entry"],
+          executive_summary: "plain prose",
+          story_highlights: ["plain entry"],
           notable_events: [],
           baseline_observations: [],
           period_outlook: "y",
@@ -609,12 +682,8 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
 
     const outcome = await callLoader({ locale: "en" });
     if (outcome.kind !== "ok") throw new Error("expected ok");
-    expect(outcome.data.sections.executive_summary).toEqual([
-      { text: "legacy prose" },
-    ]);
-    expect(outcome.data.sections.story_highlights).toEqual([
-      { text: "legacy entry" },
-    ]);
+    expect(outcome.data.sections.executive_summary).toEqual([]);
+    expect(outcome.data.sections.story_highlights).toEqual([]);
   });
 });
 
@@ -730,6 +799,59 @@ describe("loadReportResultPage — analyst compare column (#458)", () => {
     // Regression guard: the read-only compare path must never enqueue a job,
     // unlike the primary loader's language-fallback path.
     expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("degrades a compare ref naming a foreign customer_id to an empty leaf", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    // Two compare event refs: one carrying the customer's own id, one naming
+    // a foreign id — a malformed persisted ref on the customer-only compare
+    // path, where every ref carries the subject's own id.
+    compareResultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        model_name: "anthropic",
+        model: COMPARE_MODEL,
+        generation: 7,
+        input_event_refs: [
+          {
+            aice_id: "aice-9",
+            event_key: "777",
+            generation: 4,
+            model_name: "anthropic",
+            model: COMPARE_MODEL,
+            customer_id: CUSTOMER_ID,
+          },
+          {
+            aice_id: "aice-9",
+            event_key: "888",
+            generation: 4,
+            model_name: "anthropic",
+            model: COMPARE_MODEL,
+            customer_id: "b0000000-0000-0000-0000-000000000002",
+          },
+        ],
+      },
+    ];
+
+    const outcome = await callLoader({
+      locale: "en",
+      compare: { model_name: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare?.kind).toBe("ok");
+    // Exactly one batched event-leaf read: the own-id group. The foreign-id
+    // ref must resolve no pool and degrade to an empty leaf — the primary
+    // path's contract — never reach the event leaf query, which carries no
+    // customer_id predicate (the member identity IS the pool).
+    const leafCalls = customerPool.query.mock.calls.filter((c) =>
+      String(c[0]).includes("FROM event_analysis_result"),
+    );
+    expect(leafCalls).toHaveLength(1);
+    expect(leafCalls[0]?.[1]).toContain("777");
+    expect(leafCalls[0]?.[1]).not.toContain("888");
   });
 
   it("ignores the compare variant for a non-analyst viewer", async () => {

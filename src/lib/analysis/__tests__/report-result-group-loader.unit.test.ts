@@ -264,8 +264,20 @@ describe("loadReportResultPage — group citation member-disambiguation (#525)",
     availRows = [{ lang: "ENGLISH" }];
     const row = resultRow("ENGLISH");
     row.input_story_refs = [
-      { story_id: "555", generation: 7, customer_id: MEMBER_A },
-      { story_id: "555", generation: 9, customer_id: MEMBER_B },
+      {
+        story_id: "555",
+        generation: 7,
+        model_name: "openai",
+        model: "gpt-4o",
+        customer_id: MEMBER_A,
+      },
+      {
+        story_id: "555",
+        generation: 9,
+        model_name: "openai",
+        model: "gpt-4o",
+        customer_id: MEMBER_B,
+      },
     ];
     row.sections_jsonb = {
       executive_summary: [

@@ -61,8 +61,8 @@ export type ResultPageOutcome =
 export interface EventCompareColumn {
   modelName: string;
   model: string;
-  modelActualVersion: string | null;
-  promptVersion: string | null;
+  modelActualVersion: string;
+  promptVersion: string;
   generation: number;
   lang: "KOREAN" | "ENGLISH";
   severityScore: number;
@@ -99,8 +99,8 @@ export interface AnalysisResultPageData {
    * parent #386 exact-evidence contract).
    */
   generation: number;
-  modelActualVersion: string | null;
-  promptVersion: string | null;
+  modelActualVersion: string;
+  promptVersion: string;
   severityScore: number;
   likelihoodScore: number;
   priorityTier: PriorityTier;
@@ -322,8 +322,8 @@ export async function loadAnalysisResultPage(
     likelihood_factors: string[];
     ttp_tags: string[];
     analysis_text: string;
-    model_actual_version: string | null;
-    prompt_version: string | null;
+    model_actual_version: string;
+    prompt_version: string;
     generation: number;
     superseded_at: Date | null;
     requested_by: string | null;
@@ -603,8 +603,8 @@ async function resolveEventCompareColumn(
     likelihood_factors: string[];
     ttp_tags: string[];
     analysis_text: string;
-    model_actual_version: string | null;
-    prompt_version: string | null;
+    model_actual_version: string;
+    prompt_version: string;
     generation: number;
   };
   return {

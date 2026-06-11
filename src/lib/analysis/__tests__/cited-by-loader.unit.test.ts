@@ -132,13 +132,11 @@ describe("loadCitedByReports — query + shaping", () => {
       model: "gpt-4o",
     });
     const [sql, params] = customerPool.query.mock.calls[0];
-    // Model-bearing branch: exact containment including model_name/model.
+    // Single containment branch: exact match of the requested leaf's
+    // generation-and-model-pinned ref shape.
     expect(String(sql)).toContain("input_event_refs @> $2::jsonb");
-    // Legacy branch: key-absence + citing-row model == leaf model, NOT a naive
-    // model-less @> (which would over-match a different model's leaf).
-    expect(String(sql)).toContain("NOT (elem ? 'model_name')");
-    expect(String(sql)).toContain("model_name = $3 AND model = $4");
     expect(params?.[0]).toBe(CUSTOMER_ID);
+    expect(params).toHaveLength(2);
     // The probe pins `generation` AND the leaf's model so the trail only
     // matches reports that cited THIS generation of THIS model's leaf.
     expect(JSON.parse(String(params?.[1]))).toEqual([
@@ -150,9 +148,6 @@ describe("loadCitedByReports — query + shaping", () => {
         model: "gpt-4o",
       },
     ]);
-    // The legacy branch's model gate uses the requested leaf's model.
-    expect(params?.[2]).toBe("openai");
-    expect(params?.[3]).toBe("gpt-4o");
   });
 
   it("probes input_story_refs with the generation + model pin for a story leaf", async () => {

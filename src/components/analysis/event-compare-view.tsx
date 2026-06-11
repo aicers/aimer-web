@@ -22,8 +22,8 @@ type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 interface EventColumn {
   modelName: string;
   model: string;
-  modelActualVersion: string | null;
-  promptVersion: string | null;
+  modelActualVersion: string;
+  promptVersion: string;
   generation: number;
   severityScore: number;
   likelihoodScore: number;
@@ -152,10 +152,10 @@ function Provenance({
         {t("fields.model")}: {col.model}
       </div>
       <div>
-        {t("fields.modelSnapshot")}: {col.modelActualVersion ?? "—"}
+        {t("fields.modelSnapshot")}: {col.modelActualVersion}
       </div>
       <div>
-        {t("fields.promptVersion")}: {col.promptVersion ?? "—"}
+        {t("fields.promptVersion")}: {col.promptVersion}
       </div>
       <div>{t("common.generation", { generation: col.generation })}</div>
     </div>

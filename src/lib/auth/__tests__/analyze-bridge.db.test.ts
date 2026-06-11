@@ -307,6 +307,32 @@ describe.skipIf(!hasPostgres)(
         expect(row.rows[0].view_url).toBe("http://example/view");
       });
 
+      it("pending row is NOT consumable (claim-first contract, #536)", async () => {
+        // Every caller claims (`pending` → `processing`) before consuming;
+        // the predicate no longer accepts `pending`, so an unclaimed row
+        // stays untouched and the helper reports the failed transition.
+        const cid = await insertConnection({
+          jti: "jti-consume-pending",
+          expiresInterval: "1 hour",
+        });
+        const parId = await insertPAR({
+          connectionId: cid,
+          status: "pending",
+          expiresInterval: "1 hour",
+        });
+        const ok = await markPARConsumed(pool, parId, "http://example/view");
+        expect(ok).toBe(false);
+        const row = await pool.query<{
+          status: string;
+          view_url: string | null;
+        }>(
+          `SELECT status, view_url FROM pending_analysis_requests WHERE id = $1`,
+          [parId],
+        );
+        expect(row.rows[0].status).toBe("pending");
+        expect(row.rows[0].view_url).toBeNull();
+      });
+
       it("processing → failed via markPARFailed", async () => {
         const cid = await insertConnection({
           jti: "jti-fail-1",
