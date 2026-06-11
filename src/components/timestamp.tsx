@@ -16,8 +16,21 @@ import {
  * layout shift when the placeholder is swapped for the real value. The
  * general format carries the year + seconds, the compact form drops both,
  * so each mode reserves its own width.
+ *
+ * Sizing is driven by the *widest* representative output — `ko`/`Asia/Seoul`
+ * at the worst-case fields (two-digit month/day, 12-hour PM), e.g. general
+ * `2026. 12. 31. 오후 11:59:59` and compact `12. 31. 오후 11:59`. Korean's
+ * `오전`/`오후` AM/PM marker is full-width — roughly 2× a digit, which is what
+ * `1ch` measures — so a naive character count undercounts it. The reservation
+ * budgets each CJK/Hangul glyph as `2ch` and every other glyph as `1ch` (an
+ * overestimate for the narrow `.`/`:`/space separators, leaving headroom),
+ * giving a worst-case footprint of 27ch (general) / 18ch (compact); we reserve
+ * one extra `ch` of margin. The `en` worst cases (`12/31/2026, 11:59:59 PM` /
+ * `12/31, 11:59 PM`) are narrower and fit comfortably. The "reserves enough
+ * width for the representative en/ko worst-case values" test pins this so an
+ * undersized reservation fails CI.
  */
-const RESERVED_WIDTH = { general: "24ch", compact: "17ch" } as const;
+const RESERVED_WIDTH = { general: "28ch", compact: "19ch" } as const;
 
 /**
  * A representative pre-mount placeholder string. It is never announced

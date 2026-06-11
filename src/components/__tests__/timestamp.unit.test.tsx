@@ -25,6 +25,31 @@ afterEach(() => cleanup());
 
 const instant = new Date("2026-06-03T05:05:30Z");
 
+// A string's horizontal footprint in `ch`. `1ch` is the advance of "0", so a
+// digit is exactly `1ch`; a Korean `오전`/`오후` marker is full-width (~2× a
+// digit), so CJK/Hangul glyphs count as 2 and everything else as 1 — the same
+// conservative basis the component uses to size its reserved slot (narrow
+// `.`/`:`/space separators counting as a full `1ch` only adds headroom).
+function footprintCh(value: string): number {
+  let width = 0;
+  for (const ch of value) {
+    width += /[ᄀ-ᇿ　-〿㄰-㆏一-鿿가-힯＀-￯]/u.test(ch) ? 2 : 1;
+  }
+  return width;
+}
+
+// Same field set as `formatDateTime` (general): includes year + seconds. Used
+// to build the representative ko general output directly, since
+// `formatDateTime` hard-codes the (unknown-in-test) browser locale.
+const GENERAL_FIELDS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+};
+
 function withProviders(
   ui: React.ReactElement,
   { timezone = "Asia/Seoul", locale = "en" } = {},
@@ -121,6 +146,43 @@ describe("Timestamp", () => {
     expect(time?.style.minWidth).toBe(reserved);
     // The busy marker is cleared once the real value is shown.
     expect(time?.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("reserves enough width for the representative en/ko worst-case values", () => {
+    // Matching `min-width` pre/post (above) is necessary but not sufficient:
+    // if the reservation is *undersized*, the <time> box still grows when the
+    // wider real value replaces the hidden placeholder, reintroducing the
+    // layout shift. Guard the actual sizing against the representative en/ko
+    // worst case the issue calls out — two-digit month/day and 12-hour PM,
+    // where ko's full-width 오전/오후 marker pushes the value past a naive count.
+    const worst = new Date("2026-12-31T14:59:59Z"); // 23:59:59 in Asia/Seoul
+    const tz = "Asia/Seoul";
+
+    const reservedCh = (compact: boolean) => {
+      const html = renderToString(
+        withProviders(<Timestamp at={worst} compact={compact} />, {
+          timezone: tz,
+        }),
+      );
+      const ch = html.match(/min-width:\s*([\d.]+)ch/)?.[1];
+      expect(ch).toBeTruthy();
+      return Number(ch);
+    };
+    const generalReserved = reservedCh(false);
+    const compactReserved = reservedCh(true);
+
+    for (const locale of ["en-US", "ko"]) {
+      // General follows the browser locale; build the representative output
+      // for each locale directly (the formatter hard-codes the browser one).
+      const general = worst.toLocaleString(locale, {
+        timeZone: tz,
+        ...GENERAL_FIELDS,
+      });
+      expect(footprintCh(general)).toBeLessThanOrEqual(generalReserved);
+      // Compact takes an explicit locale, so the formatter covers it directly.
+      const compact = formatDateTimeCompact(worst, tz, locale);
+      expect(footprintCh(compact)).toBeLessThanOrEqual(compactReserved);
+    }
   });
 
   it("hydrates the placeholder without a mismatch, then settles", async () => {
