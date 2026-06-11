@@ -200,7 +200,7 @@ each key:
     listed but bridge calls signed with it are denied.
 
 The concrete expiry timestamp shown alongside each status is rendered in
-your timezone with an explicit timezone label (see
+your timezone, following your browser's locale conventions (see
 [Account Preferences → Timezone](account-preferences.md#timezone) for the
 resolution order: saved → browser → UTC).
 

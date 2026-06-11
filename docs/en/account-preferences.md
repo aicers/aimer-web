@@ -48,8 +48,9 @@ specific IANA timezone (for example `Asia/Seoul`). Only valid IANA
 timezones are accepted.
 
 This preference controls how user-facing timestamps are *displayed*.
-Each timestamp is shown in your chosen zone with an explicit timezone
-label (for example `2026-06-03 14:05 GMT+9`). The underlying instant is
+Each timestamp is shown in your chosen zone, following your browser's
+locale and date/time conventions (for example `6/3/2026, 2:05:30 PM` in
+English) — there is no separate timezone label. The underlying instant is
 always stored in UTC; only the display is localized.
 
 ### How the app decides which timezone to show

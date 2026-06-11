@@ -84,7 +84,7 @@ fields](#analyst-only-fields) below):
   stored on the analysis row. For a result produced by the baseline-event
   auto-analysis worker (no human requester), this reads **system**.
 - **Requested at** — when the analysis was requested, shown in your
-  timezone with an explicit timezone label. See
+  timezone following your browser's locale conventions. See
   [Account Preferences → Timezone](account-preferences.md#timezone) for
   the resolution order (saved → browser → UTC).
 

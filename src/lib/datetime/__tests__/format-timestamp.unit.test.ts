@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  formatTimestamp,
+  formatDateTime,
+  formatDateTimeCompact,
+  formatDateTimePremount,
   isValidTimeZone,
   resolveDisplayTimeZone,
 } from "../format-timestamp";
@@ -50,44 +52,97 @@ describe("resolveDisplayTimeZone", () => {
   });
 });
 
-describe("formatTimestamp", () => {
-  const instant = new Date("2026-06-03T05:05:00Z");
+// The instant carries non-zero seconds so the "seconds present / absent"
+// distinction between the general and compact formats is observable.
+const instant = new Date("2026-06-03T05:05:30Z");
 
-  it("formats in the given zone with a tz label", () => {
-    // 05:05 UTC is 14:05 in Asia/Seoul (UTC+9).
-    expect(formatTimestamp(instant, "Asia/Seoul")).toBe(
-      "2026-06-03 14:05 GMT+9",
+describe("formatDateTime (general)", () => {
+  // The general format follows the *browser* locale (`undefined`), so the
+  // exact separators are environment-dependent. Assert parity by
+  // construction against aice-web-next's exact `toLocaleString` call, then
+  // pin the locale-independent essentials.
+  const reference = (tz: string): string =>
+    instant.toLocaleString(undefined, {
+      timeZone: tz,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+
+  it("matches aice-web-next's formatDateTime construction byte-for-byte", () => {
+    for (const tz of ["Asia/Seoul", "UTC", "America/New_York"]) {
+      expect(formatDateTime(instant, tz)).toBe(reference(tz));
+    }
+  });
+
+  it("includes the year and the seconds", () => {
+    const out = formatDateTime(instant, "UTC");
+    expect(out).toContain("2026");
+    expect(out).toContain("30"); // the seconds component
+  });
+
+  it("carries no timezone label", () => {
+    const out = formatDateTime(instant, "Asia/Seoul");
+    expect(out).not.toMatch(/GMT|UTC|KST/);
+  });
+
+  it("honours the timezone (Seoul is UTC+9, ahead of UTC)", () => {
+    // 05:05 UTC is 14:05 in Asia/Seoul — the rendered hour must differ.
+    expect(formatDateTime(instant, "Asia/Seoul")).not.toBe(
+      formatDateTime(instant, "UTC"),
     );
   });
 
-  it("formats in UTC", () => {
-    expect(formatTimestamp(instant, "UTC")).toBe("2026-06-03 05:05 UTC");
+  it("accepts an RFC 3339 string equivalently to a Date", () => {
+    expect(formatDateTime("2026-06-03T05:05:30Z", "UTC")).toBe(
+      formatDateTime(instant, "UTC"),
+    );
   });
+});
 
-  it("shifts the calendar day across the date boundary", () => {
-    // 05:05 UTC is the previous evening in America/New_York (EDT, UTC-4).
-    expect(formatTimestamp(instant, "America/New_York")).toBe(
-      "2026-06-03 01:05 EDT",
+describe("formatDateTimeCompact (compact)", () => {
+  it("follows the explicit locale and drops year + seconds", () => {
+    // Explicit locale ⇒ stable, environment-independent strings.
+    // 05:05:30 UTC is 14:05 in Asia/Seoul.
+    expect(formatDateTimeCompact(instant, "Asia/Seoul", "en")).toBe(
+      "6/3, 2:05 PM",
+    );
+    expect(formatDateTimeCompact(instant, "Asia/Seoul", "ko")).toBe(
+      "6. 3. 오후 2:05",
     );
   });
 
-  it("accepts an RFC 3339 string", () => {
-    expect(formatTimestamp("2026-06-03T05:05:00Z", "UTC")).toBe(
-      "2026-06-03 05:05 UTC",
+  it("omits the year and the seconds", () => {
+    const out = formatDateTimeCompact(instant, "UTC", "en");
+    expect(out).not.toContain("2026");
+    expect(out).not.toContain("30"); // no seconds
+  });
+
+  it("honours the locale (en differs from ko)", () => {
+    expect(formatDateTimeCompact(instant, "Asia/Seoul", "en")).not.toBe(
+      formatDateTimeCompact(instant, "Asia/Seoul", "ko"),
     );
   });
 
-  it("pads midnight as 00:00 (24-hour clock)", () => {
-    expect(formatTimestamp("2026-06-03T00:00:00Z", "UTC")).toBe(
-      "2026-06-03 00:00 UTC",
+  it("honours the timezone", () => {
+    expect(formatDateTimeCompact(instant, "Asia/Seoul", "en")).not.toBe(
+      formatDateTimeCompact(instant, "UTC", "en"),
+    );
+  });
+});
+
+describe("formatDateTimePremount (deterministic first paint)", () => {
+  it("renders a fixed en-US/UTC general value regardless of host locale", () => {
+    expect(formatDateTimePremount(instant)).toBe("6/3/2026, 5:05:30 AM");
+    expect(formatDateTimePremount("2026-06-03T05:05:30Z")).toBe(
+      "6/3/2026, 5:05:30 AM",
     );
   });
 
-  it("falls back to UTC for a malformed timezone instead of throwing", () => {
-    expect(formatTimestamp(instant, "Not/AZone")).toBe("2026-06-03 05:05 UTC");
-  });
-
-  it("returns an empty string for an invalid date", () => {
-    expect(formatTimestamp("not-a-date", "UTC")).toBe("");
+  it("renders a fixed en-US/UTC compact value when compact", () => {
+    expect(formatDateTimePremount(instant, true)).toBe("6/3, 5:05 AM");
   });
 });
