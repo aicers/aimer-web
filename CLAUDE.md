@@ -41,6 +41,27 @@
 - Before pushing or opening a PR, ensure the full CI pipeline passes locally
   (all checks, tests, and builds).
 
+## Schema and migrations
+
+Schema and migration rules live in `migrations/README.md`; read it before
+touching the schema. Two rules are easy to get wrong:
+
+- **Before the first tagged release**, do NOT add new migration files for a
+  schema change. Edit the schema in place — the single `0000_init.sql` file
+  in each `migrations/<scope>/` stream (`auth`, `audit`, `customer`,
+  `group`). The pre-release history stays squashed into that clean v1 schema,
+  so amend it rather than stacking incremental migrations on top. Resetting
+  dev databases after the edit is the expected response to the runner's
+  checksum mismatch, not a workaround.
+- **Once a tagged release exists**, `0000_init.sql` is frozen: never edit an
+  already-released migration file (the checksum check aborts anyway). Add a
+  new numbered migration (`0001_*.sql` onward) for the change. Its baseline is
+  the schema of the **immediately preceding released (tagged) version — NOT
+  the previous commit / `HEAD~1`**. Production runs the last released schema,
+  so the migration must upgrade cleanly from there. Unreleased migrations
+  added since that tag belong to the in-progress release and may still be
+  reworked, but the last *released* schema is never edited.
+
 ## Manual documentation
 
 - A feature is not done until its manual page is written.
