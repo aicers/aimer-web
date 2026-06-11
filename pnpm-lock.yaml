@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@graphql-typed-document-node/core':
         specifier: ^3.2.0
-        version: 3.2.0(graphql@16.14.0)
+        version: 3.2.0(graphql@16.14.2)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -18,11 +18,11 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       graphql:
-        specifier: ^16.14.0
-        version: 16.14.0
+        specifier: ^16.14.2
+        version: 16.14.2
       graphql-request:
         specifier: ^7.4.0
-        version: 7.4.0(graphql@16.14.0)
+        version: 7.4.0(graphql@16.14.2)
       ipaddr.js:
         specifier: ^2.4.0
         version: 2.4.0
@@ -725,8 +725,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@napi-rs/wasm-runtime@1.1.4':
-    resolution: {integrity: sha512-3NQNNgA1YSlJb/kMH1ildASP9HW7/7kYnRI2szWJaofaS1hWmbGI4H+d3+22aGzXXN9IJ+n+GiFVcGipJP18ow==}
+  '@napi-rs/wasm-runtime@1.1.5':
+    resolution: {integrity: sha512-AWPoBRJ9tsnVhor4sjO7rkni+7p+2IAEFj6cx06UgP10jkQHqay/36uRV/bFkgrh18D9vb4cr8Q0Pthskgzy+Q==}
     peerDependencies:
       '@emnapi/core': ^1.7.1
       '@emnapi/runtime': ^1.7.1
@@ -2144,8 +2144,8 @@ packages:
     peerDependencies:
       graphql: 14 - 16
 
-  graphql@16.14.0:
-    resolution: {integrity: sha512-BBvQ/406p+4CZbTpCbVPSxfzrZrbnuWSP1ELYgyS6B+hNeKzgrdB4JczCa5VZUBQrDa9hUngm0KnexY6pJRN5Q==}
+  graphql@16.14.2:
+    resolution: {integrity: sha512-Chq1s4CY7jmh8gO2qvLIJyfCDIN+EHLFW/9iShnp1z8FjBQMoodWP1kDC36VAMXXIvAjj4ARa7ntfAV2BrjsbA==}
     engines: {node: ^12.22.0 || ^14.16.0 || ^16.0.0 || >=17.0.0}
 
   hast-util-to-jsx-runtime@2.3.6:
@@ -3228,9 +3228,9 @@ snapshots:
     dependencies:
       '@formatjs/fast-memoize': 3.1.5
 
-  '@graphql-typed-document-node/core@3.2.0(graphql@16.14.0)':
+  '@graphql-typed-document-node/core@3.2.0(graphql@16.14.2)':
     dependencies:
-      graphql: 16.14.0
+      graphql: 16.14.2
 
   '@img/colour@1.1.0':
     optional: true
@@ -3348,7 +3348,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@napi-rs/wasm-runtime@1.1.4(@emnapi/core@1.9.1)(@emnapi/runtime@1.10.0)':
+  '@napi-rs/wasm-runtime@1.1.5(@emnapi/core@1.9.1)(@emnapi/runtime@1.10.0)':
     dependencies:
       '@emnapi/core': 1.9.1
       '@emnapi/runtime': 1.10.0
@@ -4232,7 +4232,7 @@ snapshots:
 
   '@rolldown/binding-wasm32-wasi@1.0.0-rc.10(@emnapi/core@1.9.1)(@emnapi/runtime@1.10.0)':
     dependencies:
-      '@napi-rs/wasm-runtime': 1.1.4(@emnapi/core@1.9.1)(@emnapi/runtime@1.10.0)
+      '@napi-rs/wasm-runtime': 1.1.5(@emnapi/core@1.9.1)(@emnapi/runtime@1.10.0)
     transitivePeerDependencies:
       - '@emnapi/core'
       - '@emnapi/runtime'
@@ -4683,12 +4683,12 @@ snapshots:
 
   graceful-fs@4.2.11: {}
 
-  graphql-request@7.4.0(graphql@16.14.0):
+  graphql-request@7.4.0(graphql@16.14.2):
     dependencies:
-      '@graphql-typed-document-node/core': 3.2.0(graphql@16.14.0)
-      graphql: 16.14.0
+      '@graphql-typed-document-node/core': 3.2.0(graphql@16.14.2)
+      graphql: 16.14.2
 
-  graphql@16.14.0: {}
+  graphql@16.14.2: {}
 
   hast-util-to-jsx-runtime@2.3.6:
     dependencies:
