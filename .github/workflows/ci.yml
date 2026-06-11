@@ -252,6 +252,148 @@ jobs:
           path: e2e/playwright-report/
           retention-days: 7
 
+  e2e-oidc:
+    name: E2E OIDC
+    needs: check
+    # Full-flow analyst invitation E2E (#452): real Keycloak OIDC + real
+    # Mailpit email link. These specs are tagged @oidc and run here, on every
+    # PR, concurrently with the `e2e` job — so they add no critical-path
+    # wall-clock while giving each PR full-flow coverage.
+    runs-on: ubuntu-latest
+    env:
+      E2E_USER_PASSWORD: e2e-Passw0rd!
+    services:
+      postgres:
+        image: postgres:18-trixie
+        env:
+          POSTGRES_DB: auth_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      openbao:
+        image: openbao/openbao:latest
+        env:
+          BAO_DEV_ROOT_TOKEN_ID: e2e-root-token
+          BAO_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+        ports:
+          - 8200:8200
+        options: >-
+          --health-cmd "wget -q --spider http://127.0.0.1:8200/v1/sys/health || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      mailpit:
+        image: axllent/mailpit:latest
+        ports:
+          - 1025:1025
+          - 8025:8025
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:8025/api/v1/info || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Create databases and roles
+        run: psql "postgres://postgres:postgres@localhost:5432/auth_db" -f infra/postgres/init-databases.sql
+
+      - name: Configure OpenBao Transit
+        run: |
+          curl -sf -X POST http://localhost:8200/v1/sys/mounts/transit \
+            -H "X-Vault-Token: e2e-root-token" \
+            -d '{"type": "transit"}'
+          curl -sf -X POST http://localhost:8200/v1/transit/keys/staging-events \
+            -H "X-Vault-Token: e2e-root-token"
+
+      # Keycloak runs as a docker step (not a service container) so it can mount
+      # the realm export from the checked-out workspace — service containers
+      # start before checkout and cannot see repo files.
+      - name: Start Keycloak
+        run: |
+          docker run -d --name keycloak \
+            -p 8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "${{ github.workspace }}/infra/keycloak/realm-export.json:/opt/keycloak/data/import/aimer-realm.json:ro" \
+            -v "${{ github.workspace }}/infra/keycloak/themes/aimer:/opt/keycloak/themes/aimer:ro" \
+            quay.io/keycloak/keycloak:26.0 \
+            start-dev --import-realm
+
+      - name: Wait for Keycloak
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8080/realms/aimer/.well-known/openid-configuration >/dev/null; then
+              echo "Keycloak ready"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Keycloak did not become ready" >&2
+          docker logs keycloak || true
+          exit 1
+
+      - name: Seed Keycloak test users
+        run: bash infra/keycloak/seed-test-users.sh
+        env:
+          KEYCLOAK_URL: http://localhost:8080
+          KEYCLOAK_REALM: aimer
+          KEYCLOAK_ADMIN: admin
+          KEYCLOAK_ADMIN_PASSWORD: admin
+
+      - name: Enable corepack
+        run: corepack enable pnpm
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run OIDC E2E
+        run: pnpm test:e2e:oidc
+        env:
+          CI: "true"
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          DATABASE_MIGRATION_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          AUDIT_DATABASE_URL: postgres://postgres:postgres@localhost:5432/audit_db
+          CUSTOMER_DATABASE_OWNER_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          CUSTOMER_DATABASE_URL: postgres://postgres:postgres@localhost:5432/auth_db
+          CSRF_SECRET: e2e-test-csrf-secret
+          BAO_ADDR: http://localhost:8200
+          BAO_TOKEN: e2e-root-token
+          KEYCLOAK_URL: http://localhost:8080
+          KEYCLOAK_REALM: aimer
+          OIDC_GENERAL_CLIENT_ID: aimer-web
+          OIDC_GENERAL_CLIENT_SECRET: changeme-general-secret
+          SMTP_HOST: localhost
+          SMTP_PORT: "1025"
+          EMAIL_FROM: e2e@aimer-web.test
+          MAILPIT_API_URL: http://localhost:8025
+          BASE_URL: http://localhost:3000
+
+      - name: Dump Keycloak logs on failure
+        if: ${{ failure() }}
+        run: docker logs keycloak || true
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-oidc
+          # Playwright resolves these relative to the repo root (cwd), not the
+          # config dir, so the report and traces/screenshots land here.
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: warn
+
   image-build:
     name: Image Build
     needs: unit

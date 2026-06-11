@@ -7,7 +7,7 @@ import {
 } from "../fixtures/mailpit";
 
 // ---------------------------------------------------------------------------
-// Tier-2 full-flow E2E — Discussion #9 item 42-1 (#452).
+// OIDC full-flow E2E — Discussion #9 item 42-1 (#452).
 //
 // Email-mismatch path: an invitation issued for one email is opened, but the
 // user signs in with a DIFFERENT account. Acceptance must be denied, no
@@ -15,7 +15,7 @@ import {
 // (email_mismatch is a retryable reason — see
 // src/lib/auth/analyst-invitations.ts).
 //
-// See invitation-flow.spec.ts for the @tier2 / boundary rationale.
+// See invitation-flow.spec.ts for the @oidc / boundary rationale.
 // ---------------------------------------------------------------------------
 
 const ORIGIN = process.env.BASE_URL ?? "http://localhost:3000";
@@ -47,7 +47,7 @@ async function cleanup(emails: string[]): Promise<void> {
   }
 }
 
-test.describe("@tier2 Analyst invitation email mismatch — 42-1", () => {
+test.describe("@oidc Analyst invitation email mismatch — 42-1", () => {
   test("signing in with a non-matching account is denied; invitation stays pending", async ({
     adminPage,
     page,
