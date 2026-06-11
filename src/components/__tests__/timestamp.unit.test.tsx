@@ -3,9 +3,10 @@
 // `<Timestamp>` renders a UTC instant in the account's display timezone
 // (#400) using aice-web-next's time format (#553), resolving
 // `accounts.timezone` (from the provider) → browser tz → UTC. The server /
-// first client paint render a deterministic fixed-locale UTC value; after
-// mount it re-renders through the real formatters. The machine-readable ISO
-// is always exposed via `<time dateTime>`.
+// first client paint render a deterministic, layout-stable placeholder —
+// never a real-looking UTC value (#555); after mount it re-renders through
+// the real formatters. The machine-readable ISO is always exposed via
+// `<time dateTime>`.
 
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
@@ -17,13 +18,37 @@ import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import {
   formatDateTime,
   formatDateTimeCompact,
-  formatDateTimePremount,
 } from "@/lib/datetime/format-timestamp";
 import { Timestamp } from "../timestamp";
 
 afterEach(() => cleanup());
 
 const instant = new Date("2026-06-03T05:05:30Z");
+
+// A string's horizontal footprint in `ch`. `1ch` is the advance of "0", so a
+// digit is exactly `1ch`; a Korean `오전`/`오후` marker is full-width (~2× a
+// digit), so CJK/Hangul glyphs count as 2 and everything else as 1 — the same
+// conservative basis the component uses to size its reserved slot (narrow
+// `.`/`:`/space separators counting as a full `1ch` only adds headroom).
+function footprintCh(value: string): number {
+  let width = 0;
+  for (const ch of value) {
+    width += /[ᄀ-ᇿ　-〿㄰-㆏一-鿿가-힯＀-￯]/u.test(ch) ? 2 : 1;
+  }
+  return width;
+}
+
+// Same field set as `formatDateTime` (general): includes year + seconds. Used
+// to build the representative ko general output directly, since
+// `formatDateTime` hard-codes the (unknown-in-test) browser locale.
+const GENERAL_FIELDS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+};
 
 function withProviders(
   ui: React.ReactElement,
@@ -73,35 +98,108 @@ describe("Timestamp", () => {
     expect(screen.queryByText(/2026/)).toBeNull();
   });
 
-  it("pins the deterministic pre-mount helper to fixed-locale UTC strings", () => {
-    // The pre-mount value must be byte-identical on server and client, so it
-    // is a fixed-locale (`en-US`) UTC render regardless of browser/app locale.
-    expect(formatDateTimePremount(instant)).toBe("6/3/2026, 5:05:30 AM");
-    expect(formatDateTimePremount(instant, true)).toBe("6/3, 5:05 AM");
+  it("renders a layout-stable placeholder pre-mount, never a human-readable value", () => {
+    // The *server* render must emit a deterministic placeholder, never the
+    // browser-locale formatter: no real time value appears in the visible
+    // text, but the machine-readable ISO and the busy marker do.
+    const serverHtml = renderToString(
+      withProviders(<Timestamp at={instant} />, { timezone: "Asia/Seoul" }),
+    );
+
+    // The browser-locale formatter renders in Asia/Seoul, which the server
+    // cannot know; it must NOT leak into server output. Nor must any other
+    // human-readable time value (e.g. the old UTC pre-mount string) — the
+    // year is a reliable tell, and it must not surface in the visible text.
+    expect(serverHtml).not.toContain(formatDateTime(instant, "Asia/Seoul"));
+    expect(serverHtml).toContain('aria-busy="true"');
+    expect(serverHtml).toContain('aria-hidden="true"');
+    // The slot reserves a fixed `ch` footprint rather than collapsing.
+    expect(serverHtml).toMatch(/min-width:\s*\d/);
+
+    const container = document.createElement("div");
+    container.innerHTML = serverHtml;
+    const time = container.querySelector("time");
+    // The machine-readable ISO stays exposed throughout.
+    expect(time?.getAttribute("datetime")).toBe("2026-06-03T05:05:30.000Z");
+    // No real time value (the year is a reliable tell) in the visible text.
+    expect(time?.textContent).not.toMatch(/2026/);
   });
 
-  it("renders the pre-mount value on the server, then hydrates without a mismatch and settles", async () => {
-    // Exercise the bridge at the component boundary, not just the helper:
-    // the *server* render must emit the deterministic pre-mount value (never
-    // the browser-locale formatter), the first client paint must match it
-    // byte-for-byte (so hydration warns nothing), and only after mount may it
-    // settle to the resolved timezone/locale value.
+  it("reserves the same fixed width for the placeholder and the resolved value", async () => {
+    // The placeholder min-width (pre-mount) and the resolved value's min-width
+    // (post-mount) must match so swapping in the real value shifts nothing.
+    const serverHtml = renderToString(
+      withProviders(<Timestamp at={instant} />, { timezone: "Asia/Seoul" }),
+    );
+    const reserved = serverHtml.match(/min-width:\s*([\d.]+ch)/)?.[1];
+    expect(reserved).toBeTruthy();
+
+    const { container } = renderTimestamp(<Timestamp at={instant} />, {
+      timezone: "Asia/Seoul",
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(formatDateTime(instant, "Asia/Seoul")),
+      ).toBeTruthy();
+    });
+    const time = container.querySelector("time");
+    expect(time?.style.minWidth).toBe(reserved);
+    // The busy marker is cleared once the real value is shown.
+    expect(time?.getAttribute("aria-busy")).toBeNull();
+  });
+
+  it("reserves enough width for the representative en/ko worst-case values", () => {
+    // Matching `min-width` pre/post (above) is necessary but not sufficient:
+    // if the reservation is *undersized*, the <time> box still grows when the
+    // wider real value replaces the hidden placeholder, reintroducing the
+    // layout shift. Guard the actual sizing against the representative en/ko
+    // worst case the issue calls out — two-digit month/day and 12-hour PM,
+    // where ko's full-width 오전/오후 marker pushes the value past a naive count.
+    const worst = new Date("2026-12-31T14:59:59Z"); // 23:59:59 in Asia/Seoul
+    const tz = "Asia/Seoul";
+
+    const reservedCh = (compact: boolean) => {
+      const html = renderToString(
+        withProviders(<Timestamp at={worst} compact={compact} />, {
+          timezone: tz,
+        }),
+      );
+      const ch = html.match(/min-width:\s*([\d.]+)ch/)?.[1];
+      expect(ch).toBeTruthy();
+      return Number(ch);
+    };
+    const generalReserved = reservedCh(false);
+    const compactReserved = reservedCh(true);
+
+    for (const locale of ["en-US", "ko"]) {
+      // General follows the browser locale; build the representative output
+      // for each locale directly (the formatter hard-codes the browser one).
+      const general = worst.toLocaleString(locale, {
+        timeZone: tz,
+        ...GENERAL_FIELDS,
+      });
+      expect(footprintCh(general)).toBeLessThanOrEqual(generalReserved);
+      // Compact takes an explicit locale, so the formatter covers it directly.
+      const compact = formatDateTimeCompact(worst, tz, locale);
+      expect(footprintCh(compact)).toBeLessThanOrEqual(compactReserved);
+    }
+  });
+
+  it("hydrates the placeholder without a mismatch, then settles", async () => {
+    // The first client paint (the DOM React hydrates onto) must match the
+    // server's byte-for-byte (so hydration warns nothing), and only after
+    // mount may it settle to the resolved timezone/locale value.
     const ui = withProviders(<Timestamp at={instant} />, {
       timezone: "Asia/Seoul",
     });
 
     const serverHtml = renderToString(ui);
-    expect(serverHtml).toContain(formatDateTimePremount(instant));
-    // The browser-locale formatter renders in Asia/Seoul, which the server
-    // cannot know; it must NOT leak into server output.
-    expect(serverHtml).not.toContain(formatDateTime(instant, "Asia/Seoul"));
-
     const container = document.createElement("div");
     container.innerHTML = serverHtml;
     document.body.appendChild(container);
     const time = container.querySelector("time");
-    // First client paint (the DOM React hydrates onto) equals the server's.
-    expect(time?.textContent).toBe(formatDateTimePremount(instant));
+    // Pre-mount the placeholder shows no real value.
+    expect(time?.textContent).not.toMatch(/2026/);
 
     const errors: unknown[][] = [];
     const spy = vi
