@@ -1,4 +1,4 @@
-// Mailpit HTTP API helper for Tier-2 E2E (#452).
+// Mailpit HTTP API helper for OIDC E2E (#452).
 //
 // The analyst invitation email is sent from a deferred Next.js `after()`
 // callback (src/app/api/admin/analysts/invitations/route.ts), so it lags the

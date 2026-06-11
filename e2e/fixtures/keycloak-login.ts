@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-// Real Keycloak login for Tier-2 E2E (#452).
+// Real Keycloak login for OIDC E2E (#452).
 //
 // This deliberately drives the actual Keycloak login UI + OIDC
 // redirect/callback instead of the JWT cookie-injection shortcut used by the

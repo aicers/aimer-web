@@ -7,15 +7,16 @@ import {
 } from "../fixtures/mailpit";
 
 // ---------------------------------------------------------------------------
-// Tier-2 full-flow E2E — Discussion #9 item 42 (#452).
+// OIDC full-flow E2E — Discussion #9 item 42 (#452).
 //
 // Exercises the REAL analyst invitation acceptance path end to end:
 //   admin sends → invited user clicks the email link → real Keycloak OIDC
 //   sign-in → analyst designation.
 //
-// Tagged @tier2 so the per-PR `pnpm test:e2e` (chromium project, grepInvert
-// /@tier2/) skips it. It runs only via `pnpm test:e2e:tier2` in the nightly
-// workflow, which provides Keycloak + Mailpit alongside Postgres + OpenBao.
+// Tagged @oidc so the per-PR `pnpm test:e2e` (chromium project, grepInvert
+// /@oidc/) skips it. It runs via `pnpm test:e2e:oidc` in the dedicated
+// `E2E OIDC` CI job, which provides Keycloak + Mailpit alongside Postgres +
+// OpenBao.
 //
 // Boundary: invitation CREATION by the admin is setup (cookie-injected admin
 // context, the only allowed shortcut). The acceptance step under test goes
@@ -48,7 +49,7 @@ async function cleanupInvited(email: string): Promise<void> {
   );
 }
 
-test.describe("@tier2 Analyst invitation full flow — 42", () => {
+test.describe("@oidc Analyst invitation full flow — 42", () => {
   test("send → email link → real OIDC sign-in → designation", async ({
     adminPage,
     page,
