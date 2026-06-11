@@ -1,7 +1,7 @@
-// RFC 0002 Phase 0 (#294) — state-transition + Phase 0 worker DB tests.
+// RFC 0002 (#294) — state-transition + analysis-job-worker DB tests.
 //
 // Covers (a) the ingest-hook state mutations, (b) the worker tick that
-// flips pending → ready and dispatches dry-run job rows, and (c) the
+// flips pending → ready and seeds real queued job rows, and (c) the
 // dirty / archive / unarchive transitions surfaced by window-replace.
 
 import { join } from "node:path";
@@ -903,9 +903,9 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
   it("worker promotes pending DAILY/WEEKLY/MONTHLY rows whose settle window has elapsed (round-3 review item 2a)", async () => {
     // Reconcile seeds historical buckets as `pending`. Without the
     // worker's DAILY/WEEKLY/MONTHLY promotion SQL, those rows would
-    // remain pending forever and never receive a Phase 0 dry-run job
-    // — breaking the verification gate's "no stuck-pending state
-    // rows" requirement.
+    // remain pending forever and never receive a queued report job —
+    // breaking the verification gate's "no stuck-pending state rows"
+    // requirement.
     const customer = "00000000-0000-0000-0000-0000000000f0";
     await pool.query(
       `INSERT INTO customers (id, external_key, name)
@@ -949,7 +949,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     const settled = new Map(
       rows.map((r) => [`${r.period}|${r.bucket_date}`, r.status]),
     );
-    // Old buckets must be ready + jobbed (one dry-run job each).
+    // Old buckets must be ready + jobbed (one real queued job each).
     expect(settled.get("DAILY|2024-01-15")).toBe("ready");
     expect(settled.get("WEEKLY|2024-01-15")).toBe("ready");
     expect(settled.get("MONTHLY|2024-01-01")).toBe("ready");
@@ -985,7 +985,7 @@ describe.skipIf(!hasPostgres)("analysis state transitions (auth DB)", () => {
     // RFC 0002 §"Periodic report readiness" requires the quiet-window
     // signal in addition to bucket-end + settle. A historical bucket
     // seeded or forward-patched by a just-finished reconcile/backfill
-    // must NOT be promoted and dry-run-jobbed while the row's
+    // must NOT be promoted and job-seeded while the row's
     // `updated_at` is still inside the quiet window.
     const customer = "00000000-0000-0000-0000-0000000000f5";
     await pool.query(
