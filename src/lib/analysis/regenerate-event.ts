@@ -72,6 +72,34 @@ export interface RegenerateEventParams {
 }
 
 /**
+ * Recover the event-level `kind` to carry forward onto a regenerated row
+ * (#552). `detection_events` does not store the kind, so it is recovered from
+ * the most recent prior `event_analysis_result` row that actually carried one.
+ *
+ * `kind` is event-level (variant-independent), but manual-path rows store
+ * `kind = NULL`, and a newer / higher-`generation` manual or regenerated row
+ * can shadow an older auto-baseline row that did carry a kind. Filtering on
+ * `kind IS NOT NULL` ensures those newer NULL rows never mask an earlier real
+ * kind; ordering by `requested_at DESC, generation DESC` is a deterministic
+ * recency tiebreak. Returns `null` only when no prior row ever carried a kind
+ * (e.g. manual-only events).
+ */
+export async function recoverCarriedForwardKind(
+  customerPool: Pool,
+  aiceId: string,
+  eventKey: string,
+): Promise<string | null> {
+  const kindRow = await customerPool.query<{ kind: string | null }>(
+    `SELECT kind FROM event_analysis_result
+      WHERE aice_id = $1 AND event_key = $2::numeric AND kind IS NOT NULL
+      ORDER BY requested_at DESC, generation DESC
+      LIMIT 1`,
+    [aiceId, eventKey],
+  );
+  return kindRow.rows[0]?.kind ?? null;
+}
+
+/**
  * Re-analyze a single event leaf under the target variant, sourcing the
  * event from storage (never the request / raw payload). Shared by the
  * #463 single-event endpoint and the #470 bulk backfill worker so the two
@@ -105,18 +133,12 @@ export async function regenerateEventLeaf(
   const { redacted_event: redactedEvent, redaction_policy_version } =
     sourceRow.rows[0];
 
-  // Carry forward the event-level `kind` (#552). `detection_events` does not
-  // store it, so recover it from the most recent prior analysis row for this
-  // event; kind is event-level (variant-independent), so any generation is a
-  // valid source. `null` when no prior row carried one (manual events).
-  const kindRow = await customerPool.query<{ kind: string | null }>(
-    `SELECT kind FROM event_analysis_result
-      WHERE aice_id = $1 AND event_key = $2::numeric
-      ORDER BY generation DESC
-      LIMIT 1`,
-    [aiceId, eventKey],
+  // Carry forward the event-level `kind` (#552).
+  const eventKind = await recoverCarriedForwardKind(
+    customerPool,
+    aiceId,
+    eventKey,
   );
-  const eventKind = kindRow.rows[0]?.kind ?? null;
 
   // 2. Recover `event_time` from the stored redacted event (the same
   //    cache-poisoning guard the analyze flow uses).
