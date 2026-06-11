@@ -801,6 +801,59 @@ describe("loadReportResultPage — analyst compare column (#458)", () => {
     expect(mockEnqueue).not.toHaveBeenCalled();
   });
 
+  it("degrades a compare ref naming a foreign customer_id to an empty leaf", async () => {
+    mockIsAnalyst.mockResolvedValue(true);
+    availRows = [{ lang: "ENGLISH" }];
+    resultRows = [resultRow("ENGLISH")];
+    // Two compare event refs: one carrying the customer's own id, one naming
+    // a foreign id — a malformed persisted ref on the customer-only compare
+    // path, where every ref carries the subject's own id.
+    compareResultRows = [
+      {
+        ...resultRow("ENGLISH"),
+        model_name: "anthropic",
+        model: COMPARE_MODEL,
+        generation: 7,
+        input_event_refs: [
+          {
+            aice_id: "aice-9",
+            event_key: "777",
+            generation: 4,
+            model_name: "anthropic",
+            model: COMPARE_MODEL,
+            customer_id: CUSTOMER_ID,
+          },
+          {
+            aice_id: "aice-9",
+            event_key: "888",
+            generation: 4,
+            model_name: "anthropic",
+            model: COMPARE_MODEL,
+            customer_id: "b0000000-0000-0000-0000-000000000002",
+          },
+        ],
+      },
+    ];
+
+    const outcome = await callLoader({
+      locale: "en",
+      compare: { model_name: "anthropic", model: COMPARE_MODEL },
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.compare?.kind).toBe("ok");
+    // Exactly one batched event-leaf read: the own-id group. The foreign-id
+    // ref must resolve no pool and degrade to an empty leaf — the primary
+    // path's contract — never reach the event leaf query, which carries no
+    // customer_id predicate (the member identity IS the pool).
+    const leafCalls = customerPool.query.mock.calls.filter((c) =>
+      String(c[0]).includes("FROM event_analysis_result"),
+    );
+    expect(leafCalls).toHaveLength(1);
+    expect(leafCalls[0]?.[1]).toContain("777");
+    expect(leafCalls[0]?.[1]).not.toContain("888");
+  });
+
   it("ignores the compare variant for a non-analyst viewer", async () => {
     mockIsAnalyst.mockResolvedValue(false);
     availRows = [{ lang: "ENGLISH" }];

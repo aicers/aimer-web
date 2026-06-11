@@ -1205,8 +1205,13 @@ async function resolveReportCompareColumn(
   const replayLang = row.restoration_lang ?? row.lang;
   // The compare column is customer-only (disabled for groups in v1, #525), so
   // the member fan-out collapses to the single customer pool: every ref
-  // carries the customer's own id and routes back to `customerPool`.
-  const poolFor = () => customerPool as Pool;
+  // carries the customer's own id. Enforce that the same way the primary
+  // path does — any other id resolves no pool and the ref degrades to an
+  // empty leaf — rather than routing every key to `customerPool`, which
+  // would let a malformed ref reach the event/exemplar leaf queries (they
+  // carry no customer_id predicate; the member identity IS the pool).
+  const poolFor = (cid: string): Pool | undefined =>
+    cid === customerId ? (customerPool as Pool) : undefined;
   const { plaintextByReportToken } = await buildReportTokenPlaintext(
     poolFor,
     storyRefs,
