@@ -7,9 +7,28 @@ import { useAccountTimezone } from "@/hooks/use-account-timezone";
 import {
   formatDateTime,
   formatDateTimeCompact,
-  formatDateTimePremount,
   resolveDisplayTimeZone,
 } from "@/lib/datetime/format-timestamp";
+
+/**
+ * A representative fixed footprint reserved for the slot before the value
+ * resolves, sized (in `ch`) so the common `en`/`ko` values fit without a
+ * layout shift when the placeholder is swapped for the real value. The
+ * general format carries the year + seconds, the compact form drops both,
+ * so each mode reserves its own width.
+ */
+const RESERVED_WIDTH = { general: "24ch", compact: "17ch" } as const;
+
+/**
+ * A representative pre-mount placeholder string. It is never announced
+ * (`aria-hidden`) and never shown (`visibility: hidden`); it exists only to
+ * give the reserved slot a real text baseline/height so the swap to the
+ * resolved value does not nudge the line.
+ */
+const PLACEHOLDER = {
+  general: "0000. 00. 00. 00:00:00",
+  compact: "00. 00. 00:00",
+} as const;
 
 /**
  * Render a UTC instant in the user's display timezone (#400), matching
@@ -27,12 +46,17 @@ import {
  * - `compact` → {@link formatDateTimeCompact}: follows the active app locale
  *   (`useLocale()`) and drops year + seconds; for tight surfaces.
  *
- * Hydration: neither the browser locale nor the browser timezone is knowable
- * on the server, so the server (and the first client paint) render the
- * deterministic {@link formatDateTimePremount} value (fixed `en-US`, UTC).
- * Because that value is byte-identical on both sides there is no mismatch;
- * after mount the timezone resolves and the value re-renders through the
- * real formatters. `suppressHydrationWarning` is kept only defensively.
+ * Pre-mount (server + first client paint): neither the browser locale nor the
+ * browser timezone is knowable on the server, so rather than render a
+ * real-looking but wrong UTC value that then flashes to the resolved local
+ * value (#555), we render a deterministic, layout-stable **placeholder** — a
+ * fixed-width slot whose text is `aria-hidden` and `visibility: hidden`, under
+ * `aria-busy="true"`. Because the placeholder is a static constant the server
+ * and first client paint are byte-identical, so there is no hydration
+ * mismatch. After mount the timezone resolves and the real value renders
+ * through the formatters, clearing `aria-busy`. The machine-readable
+ * `<time dateTime>` ISO is exposed in both phases. `suppressHydrationWarning`
+ * is kept only defensively.
  */
 export function Timestamp({
   at,
@@ -48,7 +72,7 @@ export function Timestamp({
   const accountTimezone = useAccountTimezone();
   const locale = useLocale();
   // `null` until mounted ⇒ server / first paint render the deterministic
-  // pre-mount value, avoiding a hydration mismatch against the browser.
+  // placeholder, avoiding a hydration mismatch against the browser.
   const [timeZone, setTimeZone] = useState<string | null>(null);
 
   useEffect(() => {
@@ -56,18 +80,35 @@ export function Timestamp({
   }, [accountTimezone]);
 
   const iso = typeof at === "string" ? at : at.toISOString();
+  const mode = compact ? "compact" : "general";
 
-  let text: string;
   if (timeZone === null) {
-    text = formatDateTimePremount(at, compact);
-  } else if (compact) {
-    text = formatDateTimeCompact(at, timeZone, locale);
-  } else {
-    text = formatDateTime(at, timeZone);
+    return (
+      <time
+        dateTime={iso}
+        className={className}
+        aria-busy="true"
+        style={{ display: "inline-block", minWidth: RESERVED_WIDTH[mode] }}
+        suppressHydrationWarning
+      >
+        <span aria-hidden="true" style={{ visibility: "hidden" }}>
+          {PLACEHOLDER[mode]}
+        </span>
+      </time>
+    );
   }
 
+  const text = compact
+    ? formatDateTimeCompact(at, timeZone, locale)
+    : formatDateTime(at, timeZone);
+
   return (
-    <time dateTime={iso} className={className} suppressHydrationWarning>
+    <time
+      dateTime={iso}
+      className={className}
+      style={{ display: "inline-block", minWidth: RESERVED_WIDTH[mode] }}
+      suppressHydrationWarning
+    >
       {text}
     </time>
   );

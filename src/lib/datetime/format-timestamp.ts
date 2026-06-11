@@ -69,8 +69,8 @@ export function resolveDisplayTimeZone(
  * The deliberate `undefined` locale must NOT be "fixed" to the app locale:
  * that asymmetry vs {@link formatDateTimeCompact} is what keeps parity with
  * aice-web-next. Because the result depends on the browser locale (unknown
- * on the server), the `<Timestamp>` component renders {@link
- * formatDateTimePremount} pre-mount and switches to this only after mount.
+ * on the server), the `<Timestamp>` component renders a deterministic
+ * placeholder pre-mount and switches to this only after mount (#555).
  */
 export function formatDateTime(
   date: string | Date,
@@ -111,38 +111,5 @@ export function formatDateTimeCompact(
     day: "numeric",
     hour: "numeric",
     minute: "numeric",
-  });
-}
-
-/**
- * Deterministic pre-mount value for `<Timestamp>` (server + first client
- * paint). It uses the SAME `Intl` option shape as {@link formatDateTime}
- * (or {@link formatDateTimeCompact} when `compact`), but pins a **fixed
- * locale** (`en-US`) in **UTC** so the server output and the first client
- * output are byte-identical — no hydration mismatch. After mount the
- * component re-renders through the browser-/app-locale formatters.
- */
-export function formatDateTimePremount(
-  date: string | Date,
-  compact = false,
-): string {
-  const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleString("en-US", {
-    timeZone: "UTC",
-    ...(compact
-      ? {
-          month: "numeric",
-          day: "numeric",
-          hour: "numeric",
-          minute: "numeric",
-        }
-      : {
-          year: "numeric",
-          month: "numeric",
-          day: "numeric",
-          hour: "numeric",
-          minute: "numeric",
-          second: "numeric",
-        }),
   });
 }

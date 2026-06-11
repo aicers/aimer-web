@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   formatDateTime,
   formatDateTimeCompact,
-  formatDateTimePremount,
   isValidTimeZone,
   resolveDisplayTimeZone,
 } from "../format-timestamp";
@@ -131,18 +130,5 @@ describe("formatDateTimeCompact (compact)", () => {
     expect(formatDateTimeCompact(instant, "Asia/Seoul", "en")).not.toBe(
       formatDateTimeCompact(instant, "UTC", "en"),
     );
-  });
-});
-
-describe("formatDateTimePremount (deterministic first paint)", () => {
-  it("renders a fixed en-US/UTC general value regardless of host locale", () => {
-    expect(formatDateTimePremount(instant)).toBe("6/3/2026, 5:05:30 AM");
-    expect(formatDateTimePremount("2026-06-03T05:05:30Z")).toBe(
-      "6/3/2026, 5:05:30 AM",
-    );
-  });
-
-  it("renders a fixed en-US/UTC compact value when compact", () => {
-    expect(formatDateTimePremount(instant, true)).toBe("6/3, 5:05 AM");
   });
 });
