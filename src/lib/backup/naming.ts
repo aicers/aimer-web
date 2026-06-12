@@ -37,8 +37,8 @@ export function parseBackupDirName(
   return { date, label: match[2] };
 }
 
-/** Filename for auth_db or audit_db dump. */
-export function dbDumpFileName(target: "auth" | "audit"): string {
+/** Filename for an auth_db / audit_db / feed_db dump. */
+export function dbDumpFileName(target: "auth" | "audit" | "feed"): string {
   return `${target}_db.dump`;
 }
 

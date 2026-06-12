@@ -18,6 +18,7 @@ import "server-only";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
+import { TIER1_FEED_SOURCES } from "./feed-catalog";
 import { importFromFeedSource } from "./feed-import";
 import {
   type FeedParseKind,
@@ -46,49 +47,39 @@ interface FixtureFeedSpec {
   classification?: string;
 }
 
-/** Manifest of the committed Tier-1 fixtures and how to import each. */
-export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = [
-  {
-    sourcePolicyId: "abuse.ch/feodo",
-    file: "feodo-ipblocklist.txt",
-    parse: "ip-blocklist",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "c2",
+/** The committed fixture file for each Tier-1 source (keyed by policy id). */
+const FIXTURE_FILES: Readonly<Record<string, string>> = {
+  "abuse.ch/feodo": "feodo-ipblocklist.txt",
+  "abuse.ch/urlhaus": "urlhaus.csv",
+  "abuse.ch/urlhaus-payloads": "urlhaus-payloads.csv",
+  "spamhaus/drop": "spamhaus-drop.txt",
+  "spamhaus/edrop": "spamhaus-edrop.txt",
+};
+
+/**
+ * Manifest of the committed Tier-1 fixtures and how to import each. Derived
+ * from the shared `TIER1_FEED_SOURCES` catalog (re-attaching each fixture
+ * `file`) so the `sourcePolicyId → parse/entityType/hitType/classification`
+ * mapping is defined once and the upload feature reads the same manifest.
+ */
+export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = TIER1_FEED_SOURCES.map(
+  (source) => {
+    const file = FIXTURE_FILES[source.sourcePolicyId];
+    if (!file) {
+      throw new Error(
+        `No fixture file mapped for source "${source.sourcePolicyId}"`,
+      );
+    }
+    return {
+      sourcePolicyId: source.sourcePolicyId,
+      file,
+      parse: source.parse,
+      entityType: source.entityType,
+      hitType: source.hitType,
+      classification: source.classification,
+    };
   },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus",
-    file: "urlhaus.csv",
-    parse: "urlhaus-csv",
-    entityType: "URL",
-    hitType: "deterministic_ioc",
-    classification: "malware_url",
-  },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus-payloads",
-    file: "urlhaus-payloads.csv",
-    parse: "urlhaus-payloads-csv",
-    entityType: "HASH",
-    hitType: "deterministic_ioc",
-    classification: "malware_payload",
-  },
-  {
-    sourcePolicyId: "spamhaus/drop",
-    file: "spamhaus-drop.txt",
-    parse: "spamhaus-drop",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "drop",
-  },
-  {
-    sourcePolicyId: "spamhaus/edrop",
-    file: "spamhaus-edrop.txt",
-    parse: "spamhaus-drop",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "edrop",
-  },
-];
+);
 
 /** Options stamping fixture provenance (freshness drives stale coverage). */
 export interface FixtureFeedSourceOptions {

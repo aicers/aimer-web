@@ -13,6 +13,7 @@ import {
   restoreAudit,
   restoreAuth,
   restoreCustomer,
+  restoreFeed,
   restoreFull,
   restoreOpenBaoStorage,
 } from "./restore";
@@ -22,7 +23,13 @@ import { LocalStorageBackend } from "./storage";
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 
-type RestoreTarget = "auth" | "audit" | "customer" | "openbao" | "full";
+type RestoreTarget =
+  | "auth"
+  | "audit"
+  | "feed"
+  | "customer"
+  | "openbao"
+  | "full";
 
 interface CliArgs {
   target: RestoreTarget;
@@ -45,9 +52,13 @@ function parseArgs(argv: string[]): CliArgs {
   const targetVal = args.get("target");
   if (
     !targetVal ||
-    !["auth", "audit", "customer", "openbao", "full"].includes(targetVal)
+    !["auth", "audit", "feed", "customer", "openbao", "full"].includes(
+      targetVal,
+    )
   ) {
-    console.error("--target is required (auth|audit|customer|openbao|full)");
+    console.error(
+      "--target is required (auth|audit|feed|customer|openbao|full)",
+    );
     process.exit(2);
   }
 
@@ -100,6 +111,7 @@ async function main() {
       const targetMap: Record<string, BackupTarget> = {
         auth: "auth",
         audit: "audit",
+        feed: "feed",
         customer: "customers",
         openbao: "openbao",
       };
@@ -113,7 +125,7 @@ async function main() {
   const { backupFile, backupDir, customerId } = args;
 
   // Check pg tools for DB restores
-  if (["auth", "audit", "customer", "full"].includes(args.target)) {
+  if (["auth", "audit", "feed", "customer", "full"].includes(args.target)) {
     await checkPgToolsAvailable();
   }
 
@@ -181,6 +193,24 @@ async function main() {
       break;
     }
 
+    case "feed": {
+      if (!backupFile) break;
+      await restoreFeed(backupFile, config);
+      if (!args.skipMigrations) {
+        const pool = new Pool({ connectionString: config.feedDbUrl });
+        try {
+          await runMigrations(
+            pool,
+            join(process.cwd(), "migrations", "feed"),
+            1002,
+          );
+        } finally {
+          await pool.end();
+        }
+      }
+      break;
+    }
+
     case "customer": {
       if (!backupFile || !customerId) break;
       const adminPool = new Pool({ connectionString: config.adminDbUrl });
@@ -210,6 +240,7 @@ async function main() {
       const needed: BackupTarget[] = [];
       if (manifest.targets.auth_db) needed.push("auth");
       if (manifest.targets.audit_db) needed.push("audit");
+      if (manifest.targets.feed_db) needed.push("feed");
       if (manifest.targets.customers?.length) needed.push("customers");
       if (manifest.targets.openbao) needed.push("openbao");
       for (const t of needed) {

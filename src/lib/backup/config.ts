@@ -8,6 +8,7 @@ export interface BackupConfig {
   auditRetentionDays: number;
   authDbUrl: string;
   auditDbUrl: string;
+  feedDbUrl: string;
   adminDbUrl: string;
   customerOwnerTemplateUrl: string;
   baoDataDir: string;
@@ -49,6 +50,9 @@ export function loadBackupConfig(): BackupConfig {
     auditDbUrl:
       process.env.AUDIT_DATABASE_MIGRATION_URL ??
       optionalEnv("AUDIT_DATABASE_URL", ""),
+    feedDbUrl:
+      process.env.FEED_DATABASE_MIGRATION_URL ??
+      optionalEnv("FEED_DATABASE_URL", ""),
     adminDbUrl:
       process.env.DATABASE_ADMIN_URL ?? optionalEnv("DATABASE_URL", ""),
     customerOwnerTemplateUrl: optionalEnv("CUSTOMER_DATABASE_OWNER_URL", ""),
@@ -58,13 +62,13 @@ export function loadBackupConfig(): BackupConfig {
   };
 }
 
-// The feed DB (`FEED_DATABASE_URL`, #564) is deliberately absent here: in
-// part 1 of the TI feed series it holds no non-reproducible data (no
-// fetch/refresh worker, schema from `migrations/feed/`, rows re-seeded from
-// committed fixtures), so there is nothing to back up. It becomes a target
-// when the self-fetch / managed supply parts introduce fetched feed state.
+// The feed DB (`FEED_DATABASE_URL`, #564) becomes a backup target with the
+// manual-upload supply mode (#566): an operator-uploaded snapshot is NOT
+// re-derivable from committed fixtures, so the feed DB now holds
+// non-reproducible data and must be backed up like the other databases. (In
+// part 1 it held only fixture-reproducible rows, hence its earlier absence.)
 // See `migrations/README.md`.
-export type BackupTarget = "auth" | "audit" | "customers" | "openbao";
+export type BackupTarget = "auth" | "audit" | "feed" | "customers" | "openbao";
 
 /**
  * Validate that the loaded config has the fields needed for a given target.
@@ -75,7 +79,9 @@ export function validateForTarget(
   target: BackupTarget | "all",
 ): void {
   const targets: BackupTarget[] =
-    target === "all" ? ["auth", "audit", "customers", "openbao"] : [target];
+    target === "all"
+      ? ["auth", "audit", "feed", "customers", "openbao"]
+      : [target];
 
   for (const t of targets) {
     switch (t) {
@@ -89,6 +95,12 @@ export function validateForTarget(
         if (!config.auditDbUrl)
           throw new Error(
             "AUDIT_DATABASE_MIGRATION_URL or AUDIT_DATABASE_URL is required for audit backup",
+          );
+        break;
+      case "feed":
+        if (!config.feedDbUrl)
+          throw new Error(
+            "FEED_DATABASE_MIGRATION_URL or FEED_DATABASE_URL is required for feed backup",
           );
         break;
       case "customers":

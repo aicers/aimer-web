@@ -14,6 +14,9 @@ describe("loadBackupConfig", () => {
     process.env.AUDIT_DATABASE_URL = "postgres://u:p@localhost/audit_db";
     process.env.AUDIT_DATABASE_MIGRATION_URL =
       "postgres://owner:p@localhost/audit_db";
+    process.env.FEED_DATABASE_URL = "postgres://u:p@localhost/feed_db";
+    process.env.FEED_DATABASE_MIGRATION_URL =
+      "postgres://owner:p@localhost/feed_db";
     process.env.DATABASE_ADMIN_URL = "postgres://admin:p@localhost/postgres";
     process.env.CUSTOMER_DATABASE_OWNER_URL =
       "postgres://owner:p@localhost/template1";
@@ -60,6 +63,11 @@ describe("loadBackupConfig", () => {
     expect(cfg.authDbUrl).toBe("postgres://owner:p@localhost/auth_db");
   });
 
+  it("reads the feed DB URL (migration URL preferred)", () => {
+    const cfg = loadBackupConfig();
+    expect(cfg.feedDbUrl).toBe("postgres://owner:p@localhost/feed_db");
+  });
+
   it("falls back to runtime URL when migration URL is absent", () => {
     delete process.env.DATABASE_MIGRATION_URL;
     const cfg = loadBackupConfig();
@@ -94,6 +102,7 @@ describe("validateForTarget", () => {
       auditRetentionDays: 365,
       authDbUrl: "postgres://u:p@localhost/auth_db",
       auditDbUrl: "postgres://u:p@localhost/audit_db",
+      feedDbUrl: "postgres://u:p@localhost/feed_db",
       adminDbUrl: "postgres://admin:p@localhost/postgres",
       customerOwnerTemplateUrl: "postgres://owner:p@localhost/template1",
       baoDataDir: "/bao/data",
@@ -117,6 +126,18 @@ describe("validateForTarget", () => {
     expect(() =>
       validateForTarget(makeConfig({ auditDbUrl: "" }), "audit"),
     ).toThrow("AUDIT_DATABASE");
+  });
+
+  it("throws when feedDbUrl is empty for feed target", () => {
+    expect(() =>
+      validateForTarget(makeConfig({ feedDbUrl: "" }), "feed"),
+    ).toThrow("FEED_DATABASE");
+  });
+
+  it("requires the feed URL when target is all", () => {
+    expect(() =>
+      validateForTarget(makeConfig({ feedDbUrl: "" }), "all"),
+    ).toThrow("FEED_DATABASE");
   });
 
   it("throws when customerOwnerTemplateUrl is empty for customers target", () => {

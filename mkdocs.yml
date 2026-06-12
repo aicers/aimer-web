@@ -50,6 +50,7 @@ plugins:
             - Audit Logs: audit-logs.md
             - Account Anomalies: account-anomalies.md
             - Backup & Restore: backup-restore.md
+            - Threat Feeds: threat-feeds.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
             - Retention Sweeper: operations/retention-sweeper.md
@@ -85,6 +86,7 @@ plugins:
             - Audit Logs: audit-logs.md
             - Account Anomalies: account-anomalies.md
             - Backup & Restore: backup-restore.md
+            - Threat Feeds: threat-feeds.md
             - Phase 2 Ingest: operations/phase2-ingest.md
             - mTLS: operations/mtls.md
             - Retention Sweeper: operations/retention-sweeper.md
@@ -117,6 +119,7 @@ plugins:
             Environment Management: 환경 관리
             Audit Logs: 감사 로그
             Backup & Restore: 백업 및 복원
+            Threat Feeds: 위협 피드
             Phase 2 Ingest: Phase 2 수집
             Retention Sweeper: 보존 스위퍼
             Analysis Worker: 분석 워커

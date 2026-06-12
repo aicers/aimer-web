@@ -70,6 +70,7 @@
     "trustRegistry": "Trust Registry",
     "auditLog": "Audit Log",
     "suspiciousActivity": "Account Anomalies",
+    "tiFeeds": "Threat Feeds",
     "settings": "Settings"
   },
   "events": {
@@ -462,6 +463,26 @@
     "noEligibleAccounts": "No eligible accounts available.",
     "errorLoading": "Failed to load admins. Please try again.",
     "adminCount": "{count} of {max} admin slots used"
+  },
+  "adminTiFeeds": {
+    "title": "Threat Feeds",
+    "description": "Upload Tier-1 threat-intelligence feed files for local indicator matching. Each upload replaces the snapshot for its source.",
+    "source": "Source",
+    "rowCount": "Entries",
+    "lastUpdated": "Last Updated",
+    "freshness": "Freshness",
+    "actions": "Actions",
+    "fresh": "Fresh",
+    "stale": "Stale",
+    "notUploaded": "Not uploaded",
+    "never": "Never",
+    "upload": "Upload",
+    "uploadTitle": "Upload Feed File",
+    "uploadDescription": "Select a feed file for {source}. Importing replaces the current snapshot for this source.",
+    "selectFile": "Select file",
+    "uploadSuccess": "Imported {count} entries.",
+    "uploadError": "Upload failed. Please try again.",
+    "errorLoading": "Failed to load feed status. Please try again."
   },
   "validation": {
     "required": "This field is required",

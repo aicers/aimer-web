@@ -72,6 +72,24 @@ export interface BackupCustomerDbsResult {
   errors: Array<{ target: string; error: string }>;
 }
 
+export async function backupFeedDb(
+  config: BackupConfig,
+  backupDir: string,
+  storage: StorageBackend,
+): Promise<BackupManifest["targets"]["feed_db"]> {
+  const fileName = dbDumpFileName("feed");
+  const outputPath = storage.getAbsolutePath(backupDir, fileName);
+
+  log("Backing up feed_db...");
+  const result = await pgDump({
+    connectionUrl: config.feedDbUrl,
+    outputPath,
+  });
+  log(`feed_db: ${result.sizeBytes} bytes in ${result.durationMs}ms`);
+
+  return { file: fileName, ...result };
+}
+
 export async function backupCustomerDbs(
   opts: BackupCustomerDbsOptions,
 ): Promise<BackupCustomerDbsResult> {
@@ -216,6 +234,13 @@ export async function runBackup(
           break;
         case "audit":
           manifest.targets.audit_db = await backupAuditDb(
+            config,
+            backupDir,
+            storage,
+          );
+          break;
+        case "feed":
+          manifest.targets.feed_db = await backupFeedDb(
             config,
             backupDir,
             storage,

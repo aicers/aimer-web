@@ -75,6 +75,10 @@ describe("dbDumpFileName", () => {
   it("returns audit_db.dump for audit", () => {
     expect(dbDumpFileName("audit")).toBe("audit_db.dump");
   });
+
+  it("returns feed_db.dump for feed", () => {
+    expect(dbDumpFileName("feed")).toBe("feed_db.dump");
+  });
 });
 
 describe("customerDumpFileName", () => {

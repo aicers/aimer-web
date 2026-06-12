@@ -30,7 +30,10 @@ export const TI_FEED_MODES: readonly TiFeedMode[] = [
 ];
 
 /** Supply modes implemented in this part of the series. */
-export const SUPPORTED_TI_FEED_MODES: readonly TiFeedMode[] = ["fixture"];
+export const SUPPORTED_TI_FEED_MODES: readonly TiFeedMode[] = [
+  "fixture",
+  "manual-upload",
+];
 
 /** Default mode when `TI_FEED_MODE` is unset. */
 export const DEFAULT_TI_FEED_MODE: TiFeedMode = "fixture";

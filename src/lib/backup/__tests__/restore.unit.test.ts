@@ -47,6 +47,7 @@ function makeConfig(overrides?: Partial<BackupConfig>): BackupConfig {
     auditRetentionDays: 365,
     authDbUrl: "postgres://u:p@localhost/auth_db",
     auditDbUrl: "postgres://u:p@localhost/audit_db",
+    feedDbUrl: "postgres://u:p@localhost/feed_db",
     adminDbUrl: "postgres://admin:p@localhost/postgres",
     customerOwnerTemplateUrl: "postgres://owner:p@localhost/template1",
     baoDataDir: "/bao/data",
@@ -288,6 +289,43 @@ describe("restoreFullFromManifest", () => {
     // Only auth restored, no openbao/audit/customer
     expect(restoreOpenBao).not.toHaveBeenCalled();
     expect(pgRestore).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores feed_db when present in the manifest", async () => {
+    const { pgRestore } = await import("../dump");
+    const { runMigrations } = await import("../../db/migrate");
+    const { restoreFullFromManifest } = await import("../restore");
+
+    vi.mocked(pgRestore).mockClear();
+    vi.mocked(runMigrations).mockClear();
+
+    const manifest = makeManifest({
+      targets: {
+        feed_db: { file: "feed_db.dump", sizeBytes: 256, durationMs: 20 },
+      },
+    });
+
+    await restoreFullFromManifest(
+      manifest,
+      "/backups/2026-04-02",
+      makeConfig(),
+      true,
+      false,
+    );
+
+    expect(pgRestore).toHaveBeenCalledTimes(1);
+    expect(pgRestore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionUrl: "postgres://u:p@localhost/feed_db",
+        inputPath: "/backups/2026-04-02/feed_db.dump",
+      }),
+    );
+    // Feed migrations ran (lock id 1002).
+    expect(runMigrations).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining("feed"),
+      1002,
+    );
   });
 
   it("skips post-cleanup when skipPostCleanup is true", async () => {

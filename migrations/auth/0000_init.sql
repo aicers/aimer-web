@@ -1388,7 +1388,8 @@ LATERAL (VALUES
   ('customer-redaction-ranges:read'), ('customer-redaction-ranges:write'),
   ('customer-retention:read'), ('customer-retention:write'),
   ('customer-owned-domains:read'), ('customer-owned-domains:write'),
-  ('customer-default-model:read'), ('customer-default-model:write')
+  ('customer-default-model:read'), ('customer-default-model:write'),
+  ('ti-feed:read'), ('ti-feed:write')
 ) AS p(permission)
 WHERE r.name = 'System Administrator';
 

@@ -26,6 +26,10 @@ describe("resolveTiFeedMode", () => {
     expect(resolveTiFeedMode("fixture")).toBe("fixture");
   });
 
+  it("accepts the supported `manual-upload` mode (#566)", () => {
+    expect(resolveTiFeedMode("manual-upload")).toBe("manual-upload");
+  });
+
   it("throws on an unknown value (typo / bad config)", () => {
     expect(() => resolveTiFeedMode("bogus")).toThrow(/Unknown TI_FEED_MODE/);
   });
@@ -48,7 +52,7 @@ describe("resolveTiFeedMode", () => {
       "self-fetch",
       "managed",
     ]);
-    expect(SUPPORTED_TI_FEED_MODES).toEqual(["fixture"]);
+    expect(SUPPORTED_TI_FEED_MODES).toEqual(["fixture", "manual-upload"]);
   });
 });
 

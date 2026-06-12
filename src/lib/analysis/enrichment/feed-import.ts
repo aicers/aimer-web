@@ -261,10 +261,27 @@ export interface ImportFeedParams {
 }
 
 /**
+ * Map a `source_policy_id` to a stable signed 64-bit advisory-lock key.
+ * Different sources get (effectively) distinct keys so they stay concurrent;
+ * the same source always maps to the same key so its imports serialize.
+ */
+export function feedSourceLockKey(sourcePolicyId: string): string {
+  const digest = createHash("sha256").update(sourcePolicyId).digest();
+  // First 8 bytes → signed 64-bit, the domain of pg_advisory_xact_lock(bigint).
+  return BigInt.asIntN(64, digest.readBigUInt64BE(0)).toString();
+}
+
+/**
  * Replace the snapshot for one source in a single transaction: DELETE all
  * existing rows for the `source_policy_id`, then INSERT the new rows
  * stamped with the source/feed provenance. Returns the row count and the
  * feed hash actually stored (audit). Empty `rows` clears the source.
+ *
+ * A source-scoped `pg_advisory_xact_lock` is taken FIRST, inside this same
+ * transaction, so two concurrent imports of the SAME source serialize:
+ * under READ COMMITTED their DELETE+INSERT pairs could otherwise interleave
+ * and break the replace-not-append guarantee. Different sources lock on
+ * different keys and stay concurrent.
  */
 export async function importFeedSnapshot(
   pool: Pool,
@@ -274,6 +291,9 @@ export async function importFeedSnapshot(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [
+      feedSourceLockKey(params.sourcePolicyId),
+    ]);
     await client.query(
       `DELETE FROM ioc_feed_snapshot WHERE source_policy_id = $1`,
       [params.sourcePolicyId],
