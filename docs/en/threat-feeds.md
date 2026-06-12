@@ -161,11 +161,7 @@ By default the instance only fetches when an operator clicks **Fetch Now**. The
 **Scheduled refresh** panel at the top of the page turns on a background worker
 that refreshes the feeds automatically on a timer.
 
-<!-- Screenshot placeholder: the Scheduled refresh panel — the "Enable
-background refresh" checkbox (off), the "Refresh interval (minutes)" input, and
-the Save schedule button — pending a real-data recapture from a self-fetch
-stack with feed-fetch state loaded (the fixture stack cannot reproduce the
-per-source Next Fetch times). -->
+![Scheduled refresh panel, disabled by default](../assets/admin-ti-feeds-selffetch-schedule.png)
 
 - **Disabled by default — on purpose.** Fleet / SaaS deployments refresh
     indicators through the central mirror, not by each instance fetching
