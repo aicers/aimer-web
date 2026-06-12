@@ -19,11 +19,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { importFromFeedSource } from "./feed-import";
-import type {
-  FeedParseKind,
-  FeedSource,
-  RawFeedPayload,
-  TiFeedMode,
+import {
+  type FeedParseKind,
+  type FeedSource,
+  type RawFeedPayload,
+  resolveTiFeedMode,
+  type TiFeedMode,
 } from "./feed-source";
 import type { EntityType, HitType } from "./types";
 
@@ -141,4 +142,49 @@ export async function seedFixtureFeeds(
   options: FixtureFeedSourceOptions,
 ): Promise<void> {
   await importFromFeedSource(pool, new FixtureFeedSource(options));
+}
+
+/**
+ * Resolve the deployment's configured `FeedSource` from `TI_FEED_MODE`.
+ *
+ * This is the single mode→source dispatch point: parts 2-4 add their case
+ * here (returning their `FeedSource` for `manual-upload` / `self-fetch` /
+ * `managed`) instead of teaching every import caller a new mode. Callers
+ * go through this seam rather than constructing a `FeedSource` directly, so
+ * the env actually selects the supply mode.
+ *
+ * `resolveTiFeedMode()` already fails fast on unknown or not-yet
+ * -implemented modes; the `default` branch only guards against a mode being
+ * promoted into `SUPPORTED_TI_FEED_MODES` without a case wired here.
+ *
+ * (Lives here, not in `feed-source.ts`, to avoid a cycle: this module
+ * already depends on the source types and the concrete `FixtureFeedSource`.)
+ */
+export function resolveConfiguredFeedSource(
+  options: FixtureFeedSourceOptions,
+  modeValue: string | undefined = process.env.TI_FEED_MODE,
+): FeedSource {
+  // Validate + narrow through the resolver so an explicit override gets the
+  // same fail-fast treatment (unknown / reserved-unimplemented) as the env.
+  const mode = resolveTiFeedMode(modeValue);
+  switch (mode) {
+    case "fixture":
+      return new FixtureFeedSource(options);
+    default:
+      throw new Error(`No FeedSource wired for TI_FEED_MODE "${mode}" yet`);
+  }
+}
+
+/**
+ * Import the deployment's configured feed source (selected by
+ * `TI_FEED_MODE`) into `ioc_feed_snapshot`. The mode-independent
+ * `seedFixtureFeeds` stays the deterministic test/dev fixture path; this is
+ * the env-driven entry that parts 2-4 extend via
+ * `resolveConfiguredFeedSource`.
+ */
+export async function importConfiguredFeed(
+  pool: Pool,
+  options: FixtureFeedSourceOptions,
+): Promise<void> {
+  await importFromFeedSource(pool, resolveConfiguredFeedSource(options));
 }

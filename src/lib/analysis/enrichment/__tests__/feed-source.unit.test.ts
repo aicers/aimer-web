@@ -91,3 +91,39 @@ describe("FixtureFeedSource", () => {
     }
   });
 });
+
+describe("resolveConfiguredFeedSource", () => {
+  const options = { sourceUpdatedAt: "2024-01-01T00:00:00.000Z" };
+
+  it("returns a FixtureFeedSource for the fixture mode", async () => {
+    const { resolveConfiguredFeedSource, FixtureFeedSource } = await import(
+      "../fixture-feeds"
+    );
+    const source = resolveConfiguredFeedSource(options, "fixture");
+    expect(source).toBeInstanceOf(FixtureFeedSource);
+    expect(source.mode).toBe("fixture");
+  });
+
+  it("resolves the mode from TI_FEED_MODE when not passed explicitly", async () => {
+    const { resolveConfiguredFeedSource } = await import("../fixture-feeds");
+    const prev = process.env.TI_FEED_MODE;
+    process.env.TI_FEED_MODE = "fixture";
+    try {
+      expect(resolveConfiguredFeedSource(options).mode).toBe("fixture");
+    } finally {
+      if (prev === undefined) delete process.env.TI_FEED_MODE;
+      else process.env.TI_FEED_MODE = prev;
+    }
+  });
+
+  it("fails fast for reserved, not-yet-implemented modes", async () => {
+    const { resolveConfiguredFeedSource } = await import("../fixture-feeds");
+    for (const mode of TI_FEED_MODES) {
+      if (SUPPORTED_TI_FEED_MODES.includes(mode)) continue;
+      // resolveTiFeedMode rejects the reserved modes before dispatch.
+      expect(() => resolveConfiguredFeedSource(options, mode)).toThrow(
+        /not yet implemented/,
+      );
+    }
+  });
+});

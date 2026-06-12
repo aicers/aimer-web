@@ -52,12 +52,21 @@ name, SHA-256 checksum, applied-at). On every run it:
    stored checksum still matches the file on disk (mismatch aborts).
 3. Applies each pending file inside a transaction and records it.
 
-Auth and audit migrations run on application startup. Customer and
+Auth, audit, and feed migrations run on application startup. Customer and
 group databases are migrated at provisioning time
 (`provision-customer.ts` / `provision-group.ts`), on startup for every
 active tenant, and on demand via `pnpm migrate:customers` /
 `pnpm migrate:groups` (retry / disaster-recovery paths). The backup
 tooling (`src/lib/backup/`) replays pending migrations after a restore.
+
+The feed database is intentionally **not** a backup/restore target yet.
+In this part of the TI feed series it holds no non-reproducible data:
+production has no fetch/refresh worker, so `ioc_feed_snapshot` is empty
+until a supply mode populates it, and its only contents are reproducible
+(schema from `migrations/feed/` on startup, rows re-seeded from the
+committed `feeds/*` fixtures). Backup/restore/verify integration lands
+with the supply part that introduces fetched, non-reproducible feed data
+(self-fetch / managed), where there is finally state worth preserving.
 
 ## Database Roles
 
