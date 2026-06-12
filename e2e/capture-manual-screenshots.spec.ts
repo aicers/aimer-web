@@ -479,6 +479,54 @@ base.describe.serial("Manual screenshots", () => {
   });
 
   // =========================================================================
+  // Account preferences — docs/{en,ko}/account-preferences.md
+  // =========================================================================
+
+  // The dashboard shell is `h-screen` with the page body in an inner
+  // `overflow-y-auto` <main>, so the document never grows past the viewport
+  // and `fullPage` cannot reach below-the-fold content. The preferences page
+  // (language + timezone + four format controls + live preview + Save) runs
+  // taller than 720 px, so bump the viewport height for these two captures —
+  // width stays 1280 so layout flow is unchanged. Same per-shot override
+  // pattern as the story-detail captures.
+  const PREFS_VIEWPORT = { width: 1280, height: 1340 };
+
+  base("account-preferences.en.png", async () => {
+    await mgrPage.setViewportSize(PREFS_VIEWPORT);
+    await mgrPage.goto("/en/settings/account");
+    await settle(mgrPage);
+    await expect(
+      mgrPage.getByRole("heading", { name: "Account Settings", level: 1 }),
+    ).toBeVisible();
+    // The live format preview renders only after the client resolves prefs.
+    // Exact match: the section description text also contains "preview".
+    await expect(mgrPage.getByText("Preview", { exact: true })).toBeVisible();
+
+    await mgrPage.screenshot({
+      path: resolve(ASSETS, "account-preferences.en.png"),
+      fullPage: true,
+    });
+    await mgrPage.setViewportSize(VIEWPORT);
+  });
+
+  base("account-preferences.ko.png", async () => {
+    await mgrPage.setViewportSize(PREFS_VIEWPORT);
+    await mgrPage.goto("/ko/settings/account");
+    await settle(mgrPage);
+    await expect(
+      mgrPage.getByRole("heading", { name: "계정 설정", level: 1 }),
+    ).toBeVisible();
+    // Exact match: the section description text also contains "미리보기".
+    await expect(mgrPage.getByText("미리보기", { exact: true })).toBeVisible();
+
+    await mgrPage.screenshot({
+      path: resolve(ASSETS, "account-preferences.ko.png"),
+      fullPage: true,
+    });
+    await mgrPage.setViewportSize(VIEWPORT);
+  });
+
+  // =========================================================================
   // Account management — docs/{en,ko}/account-management.md
   // =========================================================================
 

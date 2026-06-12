@@ -3,45 +3,25 @@
 import { useLocale } from "next-intl";
 import { useEffect, useState } from "react";
 
+import { useAccountTimeFormat } from "@/hooks/use-account-time-format";
 import { useAccountTimezone } from "@/hooks/use-account-timezone";
 import {
   formatDateTime,
   formatDateTimeCompact,
+  reservedWidthCh,
   resolveDisplayTimeZone,
 } from "@/lib/datetime/format-timestamp";
 
 /**
- * A representative fixed footprint reserved for the slot before the value
- * resolves, sized (in `ch`) so the common `en`/`ko` values fit without a
- * layout shift when the placeholder is swapped for the real value. The
- * general format carries the year + seconds, the compact form drops both,
- * so each mode reserves its own width.
- *
- * Sizing is driven by the *widest* representative output — `ko`/`Asia/Seoul`
- * at the worst-case fields (two-digit month/day, 12-hour PM), e.g. general
- * `2026. 12. 31. 오후 11:59:59` and compact `12. 31. 오후 11:59`. Korean's
- * `오전`/`오후` AM/PM marker is full-width — roughly 2× a digit, which is what
- * `1ch` measures — so a naive character count undercounts it. The reservation
- * budgets each CJK/Hangul glyph as `2ch` and every other glyph as `1ch` (an
- * overestimate for the narrow `.`/`:`/space separators, leaving headroom),
- * giving a worst-case footprint of 27ch (general) / 18ch (compact); we reserve
- * one extra `ch` of margin. The `en` worst cases (`12/31/2026, 11:59:59 PM` /
- * `12/31, 11:59 PM`) are narrower and fit comfortably. The "reserves enough
- * width for the representative en/ko worst-case values" test pins this so an
- * undersized reservation fails CI.
+ * A short pre-mount placeholder string. It is never announced (`aria-hidden`)
+ * and never shown (`visibility: hidden`); it exists only to give the reserved
+ * slot a real text baseline/height so the swap to the resolved value does not
+ * nudge the line. It is deliberately narrower than the slimmest possible
+ * resolved value, so the slot's `min-width` (computed from the resolved
+ * options, see {@link reservedWidthCh}) — never this string — drives the
+ * reserved width in both phases, leaving no room for a layout shift.
  */
-const RESERVED_WIDTH = { general: "28ch", compact: "19ch" } as const;
-
-/**
- * A representative pre-mount placeholder string. It is never announced
- * (`aria-hidden`) and never shown (`visibility: hidden`); it exists only to
- * give the reserved slot a real text baseline/height so the swap to the
- * resolved value does not nudge the line.
- */
-const PLACEHOLDER = {
-  general: "0000. 00. 00. 00:00:00",
-  compact: "00. 00. 00:00",
-} as const;
+const PLACEHOLDER = "00:00";
 
 /**
  * Render a UTC instant in the user's display timezone (#400), matching
@@ -55,9 +35,13 @@ const PLACEHOLDER = {
  *
  * Format:
  * - Default (general) → {@link formatDateTime}: follows the browser locale,
- *   includes seconds, no timezone label.
+ *   includes seconds, no timezone label. The account's display-format
+ *   preference (#556), resolved by {@link useAccountTimeFormat}, overrides
+ *   these defaults — locale, hour cycle, seconds, and timezone label.
  * - `compact` → {@link formatDateTimeCompact}: follows the active app locale
- *   (`useLocale()`) and drops year + seconds; for tight surfaces.
+ *   (`useLocale()`) and drops year + seconds; for tight surfaces. The
+ *   preference applies only its locale and hour cycle here — seconds and the
+ *   timezone label are always omitted in compact (#556).
  *
  * Pre-mount (server + first client paint): neither the browser locale nor the
  * browser timezone is knowable on the server, so rather than render a
@@ -83,6 +67,7 @@ export function Timestamp({
   compact?: boolean;
 }) {
   const accountTimezone = useAccountTimezone();
+  const timeFormat = useAccountTimeFormat();
   const locale = useLocale();
   // `null` until mounted ⇒ server / first paint render the deterministic
   // placeholder, avoiding a hydration mismatch against the browser.
@@ -94,6 +79,11 @@ export function Timestamp({
 
   const iso = typeof at === "string" ? at : at.toISOString();
   const mode = compact ? "compact" : "general";
+  // Recompute the reserved width from the resolved options: the chosen format
+  // changes the worst case (24-hour + seconds + tz label is widest), so a
+  // fixed reservation would either shift or over-reserve. Identical pre- and
+  // post-mount (the options are stable across the swap), so no layout shift.
+  const minWidth = `${reservedWidthCh(mode, timeFormat)}ch`;
 
   if (timeZone === null) {
     return (
@@ -101,25 +91,27 @@ export function Timestamp({
         dateTime={iso}
         className={className}
         aria-busy="true"
-        style={{ display: "inline-block", minWidth: RESERVED_WIDTH[mode] }}
+        style={{ display: "inline-block", minWidth }}
         suppressHydrationWarning
       >
         <span aria-hidden="true" style={{ visibility: "hidden" }}>
-          {PLACEHOLDER[mode]}
+          {PLACEHOLDER}
         </span>
       </time>
     );
   }
 
   const text = compact
-    ? formatDateTimeCompact(at, timeZone, locale)
-    : formatDateTime(at, timeZone);
+    ? formatDateTimeCompact(at, timeZone, timeFormat.locale ?? locale, {
+        hourCycle: timeFormat.hourCycle,
+      })
+    : formatDateTime(at, timeZone, timeFormat);
 
   return (
     <time
       dateTime={iso}
       className={className}
-      style={{ display: "inline-block", minWidth: RESERVED_WIDTH[mode] }}
+      style={{ display: "inline-block", minWidth }}
       suppressHydrationWarning
     >
       {text}

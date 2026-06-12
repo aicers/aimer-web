@@ -7,6 +7,15 @@ export interface MeResponse {
   email: string | null;
   locale: string | null;
   timezone: string | null;
+  /**
+   * Date/time display-format preference (#556). Each field is nullable; `null`
+   * means "use the app default" (see `accounts.time_format_*`). `timeFormatLocale`
+   * is `null` (browser) / `'app'` (app locale) / a curated BCP-47 tag.
+   */
+  timeFormatLocale: string | null;
+  timeFormatHourCycle: "h12" | "h23" | null;
+  timeFormatSeconds: boolean | null;
+  timeFormatTzLabel: boolean | null;
   analystEligible: boolean;
   bridge: {
     active: boolean;

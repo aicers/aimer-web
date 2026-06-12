@@ -11,6 +11,7 @@ import {
   useState,
 } from "react";
 
+import { AccountTimeFormatProvider } from "@/hooks/use-account-time-format";
 import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { ApiError, apiFetch } from "@/lib/api/client";
 import type { CustomerEntry, GroupEntry, MeResponse } from "@/lib/api/types";
@@ -158,7 +159,20 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
   return (
     <CustomerContext.Provider value={value}>
       <AccountTimezoneProvider timezone={me?.timezone ?? null}>
-        {children}
+        <AccountTimeFormatProvider
+          timeFormat={
+            me
+              ? {
+                  locale: me.timeFormatLocale,
+                  hourCycle: me.timeFormatHourCycle,
+                  seconds: me.timeFormatSeconds,
+                  tzLabel: me.timeFormatTzLabel,
+                }
+              : null
+          }
+        >
+          {children}
+        </AccountTimeFormatProvider>
       </AccountTimezoneProvider>
     </CustomerContext.Provider>
   );

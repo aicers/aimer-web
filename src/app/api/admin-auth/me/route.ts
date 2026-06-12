@@ -10,9 +10,15 @@ export const GET = withAuth(
       email: string | null;
       locale: string | null;
       timezone: string | null;
+      time_format_locale: string | null;
+      time_format_hour_cycle: "h12" | "h23" | null;
+      time_format_seconds: boolean | null;
+      time_format_tz_label: boolean | null;
     }>(
       getAuthPool(),
-      `SELECT username, display_name, email, locale, timezone
+      `SELECT username, display_name, email, locale, timezone,
+              time_format_locale, time_format_hour_cycle,
+              time_format_seconds, time_format_tz_label
        FROM accounts WHERE id = $1`,
       [auth.accountId],
     );
@@ -31,6 +37,10 @@ export const GET = withAuth(
       email: account.email,
       locale: account.locale,
       timezone: account.timezone,
+      timeFormatLocale: account.time_format_locale,
+      timeFormatHourCycle: account.time_format_hour_cycle,
+      timeFormatSeconds: account.time_format_seconds,
+      timeFormatTzLabel: account.time_format_tz_label,
     });
   },
   { ctx: "admin" },

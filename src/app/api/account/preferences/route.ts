@@ -15,12 +15,17 @@ import {
   verifyOrigin,
   withAuth,
 } from "@/lib/auth/guards";
+import {
+  isTimeFormatLocale,
+  type TimeFormatHourCycle,
+} from "@/lib/datetime/format-timestamp";
 import { getAuthPool, query } from "@/lib/db/client";
 
 /**
  * Self-service account preferences (#387). Writes `accounts.locale` /
- * `accounts.timezone` for the *current* session — distinct from the
- * admin-only `/api/admin/accounts/[accountId]` route.
+ * `accounts.timezone` and the date/time display-format preference
+ * (`accounts.time_format_*`, #556) for the *current* session — distinct from
+ * the admin-only `/api/admin/accounts/[accountId]` route.
  *
  * The preference is a single account-level value shared by the regular
  * and admin sessions of the same account (both `me` endpoints expose it;
@@ -60,7 +65,18 @@ async function handlePreferences(
   const body = raw as Record<string, unknown>;
   const hasLocale = "locale" in body;
   const hasTimezone = "timezone" in body;
-  if (!hasLocale && !hasTimezone) {
+  const hasTfLocale = "timeFormatLocale" in body;
+  const hasTfHourCycle = "timeFormatHourCycle" in body;
+  const hasTfSeconds = "timeFormatSeconds" in body;
+  const hasTfTzLabel = "timeFormatTzLabel" in body;
+  if (
+    !hasLocale &&
+    !hasTimezone &&
+    !hasTfLocale &&
+    !hasTfHourCycle &&
+    !hasTfSeconds &&
+    !hasTfTzLabel
+  ) {
     return Response.json(
       { error: "No updatable fields provided" },
       { status: 400 },
@@ -97,6 +113,65 @@ async function handlePreferences(
     }
   }
 
+  // Display-format preference (#556). Each field is independently nullable;
+  // `null` resets to the app default. Validation rejects out-of-list locale
+  // values and unknown hour-cycle values rather than silently storing them.
+  let nextTfLocale: string | null = null;
+  if (hasTfLocale) {
+    const value = body.timeFormatLocale;
+    if (value === null) {
+      nextTfLocale = null;
+    } else if (isTimeFormatLocale(value)) {
+      nextTfLocale = value as string;
+    } else {
+      return Response.json(
+        { error: "timeFormatLocale must be 'app' or a supported BCP-47 tag" },
+        { status: 400 },
+      );
+    }
+  }
+
+  let nextTfHourCycle: TimeFormatHourCycle | null = null;
+  if (hasTfHourCycle) {
+    const value = body.timeFormatHourCycle;
+    if (value === null) {
+      nextTfHourCycle = null;
+    } else if (value === "h12" || value === "h23") {
+      nextTfHourCycle = value;
+    } else {
+      return Response.json(
+        { error: "timeFormatHourCycle must be 'h12' or 'h23'" },
+        { status: 400 },
+      );
+    }
+  }
+
+  let nextTfSeconds: boolean | null = null;
+  if (hasTfSeconds) {
+    const value = body.timeFormatSeconds;
+    if (value === null || typeof value === "boolean") {
+      nextTfSeconds = value;
+    } else {
+      return Response.json(
+        { error: "timeFormatSeconds must be a boolean or null" },
+        { status: 400 },
+      );
+    }
+  }
+
+  let nextTfTzLabel: boolean | null = null;
+  if (hasTfTzLabel) {
+    const value = body.timeFormatTzLabel;
+    if (value === null || typeof value === "boolean") {
+      nextTfTzLabel = value;
+    } else {
+      return Response.json(
+        { error: "timeFormatTzLabel must be a boolean or null" },
+        { status: 400 },
+      );
+    }
+  }
+
   const sets: string[] = [];
   const params: unknown[] = [];
   let i = 1;
@@ -108,16 +183,37 @@ async function handlePreferences(
     sets.push(`timezone = $${i++}`);
     params.push(nextTimezone);
   }
+  if (hasTfLocale) {
+    sets.push(`time_format_locale = $${i++}`);
+    params.push(nextTfLocale);
+  }
+  if (hasTfHourCycle) {
+    sets.push(`time_format_hour_cycle = $${i++}`);
+    params.push(nextTfHourCycle);
+  }
+  if (hasTfSeconds) {
+    sets.push(`time_format_seconds = $${i++}`);
+    params.push(nextTfSeconds);
+  }
+  if (hasTfTzLabel) {
+    sets.push(`time_format_tz_label = $${i++}`);
+    params.push(nextTfTzLabel);
+  }
   params.push(auth.accountId);
 
   const rows = await query<{
     locale: string | null;
     timezone: string | null;
+    time_format_locale: string | null;
+    time_format_hour_cycle: TimeFormatHourCycle | null;
+    time_format_seconds: boolean | null;
+    time_format_tz_label: boolean | null;
   }>(
     getAuthPool(),
     `UPDATE accounts SET ${sets.join(", ")}, updated_at = NOW()
      WHERE id = $${i}
-     RETURNING locale, timezone`,
+     RETURNING locale, timezone, time_format_locale, time_format_hour_cycle,
+               time_format_seconds, time_format_tz_label`,
     params,
   );
   if (rows.length === 0) {
@@ -138,11 +234,19 @@ async function handlePreferences(
   auth.audit.details = {
     ...(hasLocale ? { locale: nextLocale } : {}),
     ...(hasTimezone ? { timezone: nextTimezone } : {}),
+    ...(hasTfLocale ? { timeFormatLocale: nextTfLocale } : {}),
+    ...(hasTfHourCycle ? { timeFormatHourCycle: nextTfHourCycle } : {}),
+    ...(hasTfSeconds ? { timeFormatSeconds: nextTfSeconds } : {}),
+    ...(hasTfTzLabel ? { timeFormatTzLabel: nextTfTzLabel } : {}),
   };
 
   return Response.json({
     locale: rows[0].locale,
     timezone: rows[0].timezone,
+    timeFormatLocale: rows[0].time_format_locale,
+    timeFormatHourCycle: rows[0].time_format_hour_cycle,
+    timeFormatSeconds: rows[0].time_format_seconds,
+    timeFormatTzLabel: rows[0].time_format_tz_label,
   });
 }
 

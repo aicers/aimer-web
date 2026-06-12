@@ -23,8 +23,10 @@ import {
 } from "@/components/sidebar";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AccountTimeFormatProvider } from "@/hooks/use-account-time-format";
 import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { adminFetch, getAdminCsrfToken } from "@/lib/api/admin-client";
+import type { StoredTimeFormat } from "@/lib/datetime/format-timestamp";
 
 function useAdminNavItems(): NavItem[] {
   const t = useTranslations("admin");
@@ -119,6 +121,10 @@ export default function AdminLayout({
     displayName: string;
     email?: string | null;
     timezone?: string | null;
+    timeFormatLocale?: string | null;
+    timeFormatHourCycle?: "h12" | "h23" | null;
+    timeFormatSeconds?: boolean | null;
+    timeFormatTzLabel?: boolean | null;
   } | null>(null);
 
   useEffect(() => {
@@ -127,6 +133,10 @@ export default function AdminLayout({
       displayName: string;
       email: string | null;
       timezone: string | null;
+      timeFormatLocale: string | null;
+      timeFormatHourCycle: "h12" | "h23" | null;
+      timeFormatSeconds: boolean | null;
+      timeFormatTzLabel: boolean | null;
     }>("/api/admin-auth/me")
       .then((data) => {
         if (!cancelled) setAdminUser(data);
@@ -136,6 +146,15 @@ export default function AdminLayout({
       cancelled = true;
     };
   }, []);
+
+  const adminTimeFormat: StoredTimeFormat | null = adminUser
+    ? {
+        locale: adminUser.timeFormatLocale ?? null,
+        hourCycle: adminUser.timeFormatHourCycle ?? null,
+        seconds: adminUser.timeFormatSeconds ?? null,
+        tzLabel: adminUser.timeFormatTzLabel ?? null,
+      }
+    : null;
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -175,7 +194,9 @@ export default function AdminLayout({
         </SidebarShell>
         <main id="main-content" className="flex-1 overflow-y-auto">
           <AccountTimezoneProvider timezone={adminUser?.timezone ?? null}>
-            {children}
+            <AccountTimeFormatProvider timeFormat={adminTimeFormat}>
+              {children}
+            </AccountTimeFormatProvider>
           </AccountTimezoneProvider>
         </main>
       </div>

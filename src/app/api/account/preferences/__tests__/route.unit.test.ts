@@ -226,4 +226,101 @@ describe("PATCH /api/account/preferences", () => {
     expect(mockVerifyCsrf).toHaveBeenCalledWith("general");
     expect(mockVerifyCsrf).not.toHaveBeenCalledWith("admin");
   });
+
+  // -------------------------------------------------------------------------
+  // Display-format preference (#556)
+  // -------------------------------------------------------------------------
+
+  it("rejects a timeFormatLocale outside the curated list", async () => {
+    const res = await (await loadPatch())(patch({ timeFormatLocale: "xx-YY" }));
+    expect(res.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare app-locale as timeFormatLocale (must be a tag or 'app')", async () => {
+    const res = await (await loadPatch())(patch({ timeFormatLocale: "en" }));
+    expect(res.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown timeFormatHourCycle", async () => {
+    const res = await (await loadPatch())(
+      patch({ timeFormatHourCycle: "h24" }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-boolean timeFormatSeconds", async () => {
+    const res = await (await loadPatch())(patch({ timeFormatSeconds: "yes" }));
+    expect(res.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-boolean timeFormatTzLabel", async () => {
+    const res = await (await loadPatch())(patch({ timeFormatTzLabel: 1 }));
+    expect(res.status).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it("persists the four display-format fields together", async () => {
+    mockQuery.mockResolvedValue([
+      {
+        locale: null,
+        timezone: null,
+        time_format_locale: "en-GB",
+        time_format_hour_cycle: "h23",
+        time_format_seconds: false,
+        time_format_tz_label: true,
+      },
+    ]);
+    const res = await (await loadPatch())(
+      patch({
+        timeFormatLocale: "en-GB",
+        timeFormatHourCycle: "h23",
+        timeFormatSeconds: false,
+        timeFormatTzLabel: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      locale: null,
+      timezone: null,
+      timeFormatLocale: "en-GB",
+      timeFormatHourCycle: "h23",
+      timeFormatSeconds: false,
+      timeFormatTzLabel: true,
+    });
+    const [, sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain("time_format_locale = $1");
+    expect(sql).toContain("time_format_hour_cycle = $2");
+    expect(sql).toContain("time_format_seconds = $3");
+    expect(sql).toContain("time_format_tz_label = $4");
+    expect(params).toEqual(["en-GB", "h23", false, true, ACCOUNT_ID]);
+    expect(mockSetCookie).not.toHaveBeenCalled();
+  });
+
+  it("accepts the 'app' locale sentinel and null resets", async () => {
+    mockQuery.mockResolvedValue([
+      {
+        locale: null,
+        timezone: null,
+        time_format_locale: "app",
+        time_format_hour_cycle: null,
+        time_format_seconds: null,
+        time_format_tz_label: null,
+      },
+    ]);
+    const res = await (await loadPatch())(
+      patch({
+        timeFormatLocale: "app",
+        timeFormatHourCycle: null,
+        timeFormatSeconds: null,
+        timeFormatTzLabel: null,
+      }),
+    );
+    expect(res.status).toBe(200);
+    const [, , params] = mockQuery.mock.calls[0];
+    expect(params).toEqual(["app", null, null, null, ACCOUNT_ID]);
+  });
 });

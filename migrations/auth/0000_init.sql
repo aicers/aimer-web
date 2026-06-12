@@ -90,6 +90,19 @@ CREATE TABLE role_permissions (
 -- `timezone` is deliberately unconstrained at the DB level — the IANA
 -- zone set is large and runtime-dependent, so it is validated in the
 -- application layer (`isValidTimeZone`) instead.
+--
+-- The four `time_format_*` columns are the per-account date/time DISPLAY
+-- format preference (#556). They are intentionally nullable with no SQL
+-- `DEFAULT`, so `NULL` uniformly means "use the app default" and stays
+-- distinguishable from any explicit choice:
+--   * `time_format_locale`     — NULL = follow the browser locale; the
+--     literal sentinel `'app'` = follow the active app locale; any other
+--     value = an explicit BCP-47 tag from the curated list (the curated
+--     set is validated in the application layer, like `timezone`).
+--   * `time_format_hour_cycle` — NULL = follow the locale's default; the
+--     CHECK pins explicit values to `'h12'` (12-hour) / `'h23'` (24-hour).
+--   * `time_format_seconds`    — NULL = default (show seconds).
+--   * `time_format_tz_label`   — NULL = default (hide the timezone label).
 CREATE TABLE accounts (
   id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   oidc_issuer      TEXT        NOT NULL,
@@ -104,13 +117,20 @@ CREATE TABLE accounts (
   token_version    INTEGER     NOT NULL DEFAULT 0,
   locale           TEXT,
   timezone         TEXT,
+  time_format_locale     TEXT,
+  time_format_hour_cycle TEXT,
+  time_format_seconds    BOOLEAN,
+  time_format_tz_label   BOOLEAN,
   last_sign_in_at  TIMESTAMPTZ,
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   admin_eligible_at TIMESTAMPTZ,
   UNIQUE (oidc_issuer, oidc_subject),
   CONSTRAINT accounts_locale_check
-      CHECK (locale IS NULL OR locale IN ('en', 'ko'))
+      CHECK (locale IS NULL OR locale IN ('en', 'ko')),
+  CONSTRAINT accounts_time_format_hour_cycle_check
+      CHECK (time_format_hour_cycle IS NULL
+             OR time_format_hour_cycle IN ('h12', 'h23'))
 );
 
 -- ---------------------------------------------------------------
