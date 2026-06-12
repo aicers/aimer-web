@@ -278,6 +278,55 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       ).resolves.toBeDefined();
     });
 
+    it("accounts.time_format_hour_cycle rejects an unknown value (#556)", async () => {
+      await expect(
+        pool.query(
+          "INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name, time_format_hour_cycle) VALUES ('i', 'tf_hc_bad', 'u', 'd', 'h24')",
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("accounts.time_format_* accept their values and NULL (#556)", async () => {
+      // All four columns are nullable with no SQL default; hour_cycle is the
+      // only CHECK-constrained one ('h12'/'h23').
+      await expect(
+        pool.query(
+          `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name,
+             time_format_locale, time_format_hour_cycle, time_format_seconds, time_format_tz_label)
+           VALUES ('i', 'tf_set', 'u', 'd', 'en-GB', 'h23', false, true)`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name,
+             time_format_locale, time_format_hour_cycle, time_format_seconds, time_format_tz_label)
+           VALUES ('i', 'tf_app', 'u', 'd', 'app', 'h12', true, false)`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name,
+             time_format_locale, time_format_hour_cycle, time_format_seconds, time_format_tz_label)
+           VALUES ('i', 'tf_null', 'u', 'd', NULL, NULL, NULL, NULL)`,
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it("accounts.time_format_* default to NULL when unspecified (#556)", async () => {
+      const { rows } = await pool.query(
+        `INSERT INTO accounts (oidc_issuer, oidc_subject, username, display_name)
+         VALUES ('i', 'tf_default', 'u', 'd')
+         RETURNING time_format_locale, time_format_hour_cycle,
+                   time_format_seconds, time_format_tz_label`,
+      );
+      expect(rows[0]).toEqual({
+        time_format_locale: null,
+        time_format_hour_cycle: null,
+        time_format_seconds: null,
+        time_format_tz_label: null,
+      });
+    });
+
     it("pending_connections.status", async () => {
       await expect(
         pool.query(

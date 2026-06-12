@@ -14,10 +14,12 @@ import { act } from "react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AccountTimeFormatProvider } from "@/hooks/use-account-time-format";
 import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import {
   formatDateTime,
   formatDateTimeCompact,
+  type StoredTimeFormat,
 } from "@/lib/datetime/format-timestamp";
 import { Timestamp } from "../timestamp";
 
@@ -52,12 +54,22 @@ const GENERAL_FIELDS: Intl.DateTimeFormatOptions = {
 
 function withProviders(
   ui: React.ReactElement,
-  { timezone = "Asia/Seoul", locale = "en" } = {},
+  {
+    timezone = "Asia/Seoul",
+    locale = "en",
+    timeFormat = null,
+  }: {
+    timezone?: string;
+    locale?: string;
+    timeFormat?: StoredTimeFormat | null;
+  } = {},
 ) {
   return (
     <NextIntlClientProvider locale={locale} messages={{}}>
       <AccountTimezoneProvider timezone={timezone}>
-        {ui}
+        <AccountTimeFormatProvider timeFormat={timeFormat}>
+          {ui}
+        </AccountTimeFormatProvider>
       </AccountTimezoneProvider>
     </NextIntlClientProvider>
   );
@@ -65,7 +77,11 @@ function withProviders(
 
 function renderTimestamp(
   ui: React.ReactElement,
-  opts: { timezone?: string; locale?: string } = {},
+  opts: {
+    timezone?: string;
+    locale?: string;
+    timeFormat?: StoredTimeFormat | null;
+  } = {},
 ) {
   return render(withProviders(ui, opts));
 }
@@ -233,5 +249,128 @@ describe("Timestamp", () => {
     });
     const el = screen.getByText(formatDateTime("2026-06-03T05:05:30Z", "UTC"));
     expect(el.getAttribute("datetime")).toBe("2026-06-03T05:05:30Z");
+  });
+
+  // -------------------------------------------------------------------------
+  // User-selectable display format (#556)
+  // -------------------------------------------------------------------------
+
+  it("renders the general format per the account preference after mount", async () => {
+    const timeFormat: StoredTimeFormat = {
+      locale: "en-US",
+      hourCycle: "h23",
+      seconds: false,
+      tzLabel: true,
+    };
+    renderTimestamp(<Timestamp at={instant} />, {
+      timezone: "Asia/Seoul",
+      timeFormat,
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          formatDateTime(instant, "Asia/Seoul", {
+            locale: "en-US",
+            hourCycle: "h23",
+            seconds: false,
+            tzLabel: true,
+          }),
+        ),
+      ).toBeTruthy();
+    });
+    // 24-hour, no seconds, with the GMT-offset label.
+    const el = screen.getByText(/GMT\+9/);
+    expect(el.textContent).toContain("14:05");
+    expect(el.textContent).not.toContain(":30"); // seconds hidden
+    expect(el.textContent).not.toMatch(/AM|PM/); // 24-hour
+  });
+
+  it("applies only locale + hour cycle to the compact form (seconds/tz-label ignored)", async () => {
+    // Seconds + tz-label prefs are set but compact must ignore them; only the
+    // hour cycle (and locale) reach the compact formatter.
+    const timeFormat: StoredTimeFormat = {
+      locale: "en-US",
+      hourCycle: "h23",
+      seconds: true,
+      tzLabel: true,
+    };
+    renderTimestamp(<Timestamp at={instant} compact />, {
+      timezone: "Asia/Seoul",
+      locale: "ko",
+      timeFormat,
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          formatDateTimeCompact(instant, "Asia/Seoul", "en-US", {
+            hourCycle: "h23",
+          }),
+        ),
+      ).toBeTruthy();
+    });
+    const el = screen.getByText(/14:05/);
+    expect(el.textContent).not.toMatch(/GMT/); // tz label never in compact
+    expect(el.textContent).not.toContain(":30"); // seconds never in compact
+    expect(el.textContent).not.toMatch(/2026/); // year never in compact
+  });
+
+  it("widens the reserved slot for a wider chosen format (tz label)", () => {
+    const widthFor = (timeFormat: StoredTimeFormat | null) => {
+      const html = renderToString(
+        withProviders(<Timestamp at={instant} />, {
+          timezone: "Asia/Seoul",
+          timeFormat,
+        }),
+      );
+      return Number(html.match(/min-width:\s*([\d.]+)ch/)?.[1]);
+    };
+    const labelled = widthFor({
+      locale: null,
+      hourCycle: "h23",
+      seconds: true,
+      tzLabel: true,
+    });
+    const plain = widthFor(null);
+    expect(labelled).toBeGreaterThan(plain);
+  });
+
+  it("keeps the placeholder and the resolved value the same width under a preference", async () => {
+    const timeFormat: StoredTimeFormat = {
+      locale: "ko-KR",
+      hourCycle: "h23",
+      seconds: true,
+      tzLabel: true,
+    };
+    const serverHtml = renderToString(
+      withProviders(<Timestamp at={instant} />, {
+        timezone: "Asia/Seoul",
+        timeFormat,
+      }),
+    );
+    const reserved = serverHtml.match(/min-width:\s*([\d.]+ch)/)?.[1];
+    expect(reserved).toBeTruthy();
+
+    const { container } = renderTimestamp(<Timestamp at={instant} />, {
+      timezone: "Asia/Seoul",
+      timeFormat,
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          formatDateTime(instant, "Asia/Seoul", {
+            locale: "ko-KR",
+            hourCycle: "h23",
+            seconds: true,
+            tzLabel: true,
+          }),
+        ),
+      ).toBeTruthy();
+    });
+    const time = container.querySelector("time");
+    // The resolved value must fit within the reserved slot (no shift).
+    expect(time?.style.minWidth).toBe(reserved);
+    expect(footprintCh(time?.textContent ?? "")).toBeLessThanOrEqual(
+      Number(reserved?.replace("ch", "")),
+    );
   });
 });
