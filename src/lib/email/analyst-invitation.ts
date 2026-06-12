@@ -1,5 +1,6 @@
 import "server-only";
 
+import { escapeHtml, formatEmailTimestamp } from "./format";
 import { buildInvitationLink } from "./invitation";
 import { sendMail } from "./transport";
 
@@ -27,26 +28,6 @@ export interface AnalystInvitationEmailParams {
 // Template helpers
 // ---------------------------------------------------------------------------
 
-function formatDate(date: Date): string {
-  return date.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 function formatCustomerList(names: string[]): string {
   return names.length > 0 ? names.join(", ") : "your assigned organizations";
 }
@@ -59,7 +40,7 @@ export function buildAnalystInvitationText(
   params: AnalystInvitationEmailParams,
 ): string {
   const link = buildInvitationLink(params.baseUrl, params.token);
-  const expiry = formatDate(params.expiresAt);
+  const expiry = formatEmailTimestamp(params.expiresAt);
   const customers = formatCustomerList(params.customerNames);
 
   return [
@@ -79,7 +60,7 @@ export function buildAnalystInvitationHtml(
   params: AnalystInvitationEmailParams,
 ): string {
   const link = buildInvitationLink(params.baseUrl, params.token);
-  const expiry = formatDate(params.expiresAt);
+  const expiry = formatEmailTimestamp(params.expiresAt);
   const customers = formatCustomerList(params.customerNames);
 
   return `<!DOCTYPE html>
