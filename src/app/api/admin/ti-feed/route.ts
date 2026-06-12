@@ -10,6 +10,16 @@ import { getAuthPool, getFeedPool } from "@/lib/db/client";
 // ---------------------------------------------------------------------------
 // GET /api/admin/ti-feed — per-source Tier-1 feed status (manual-upload mode)
 // ---------------------------------------------------------------------------
+//
+// Auth: session-gated via `withAuth({ ctx: "admin" })` and authorized with the
+// read permission `ti-feed:read`. `verifyOrigin`/`verifyCsrf` are intentionally
+// NOT applied here: GET is a safe, read-only method with no side effects, so a
+// CSRF token adds no protection (a forged cross-site GET cannot read the
+// response under the same-origin policy). This mirrors the admin-route
+// convention — every admin GET handler (incl. the `admin/admins` precedent the
+// issue points to) reserves origin/CSRF for the mutating verbs. The mutating
+// `POST /api/admin/ti-feed/upload` runs the full origin + CSRF + `ti-feed:write`
+// gate.
 
 export const GET = withAuth(
   async (_req, auth) => {
