@@ -827,8 +827,9 @@
       "pendingBanner": "Analysis is in progress (state: {status}). The page refreshes automatically once the result is ready.",
       "memberEventsHeading": "Member suspicious events",
       "memberEventsDescription": "The suspicious events correlated into this story, in order.",
-      "memberUnavailable": "Event analysis not available at the default variant.",
-      "memberEventLabel": "Event {aiceId} · {eventKey}"
+      "memberUnavailableMeta": "{aiceId} • Event analysis not available at the default variant.",
+      "memberEventLabel": "Event",
+      "memberEventMeta": "{aiceId} • severity {severity} • likelihood {likelihood}"
     },
     "coverage": {
       "incompleteBadge": "Threat-intel coverage incomplete",
@@ -836,8 +837,9 @@
     },
     "eventAnalysis": {
       "title": "AI Analysis",
-      "subtitle": "Event {eventKey} • {aiceId}",
-      "subtitlePinned": "Event {eventKey} • {aiceId} • generation {generation}",
+      "subtitleFallback": "Event",
+      "subtitleMeta": " • {aiceId}",
+      "subtitlePinnedMeta": " • {aiceId} • generation {generation}",
       "retentionBanner": "Source event removed by retention; analysis result preserved.",
       "partOfThreat": "{count, plural, one {Part of threat story} other {Part of threat stories}}",
       "storyLabel": "Story {storyId}",
@@ -900,7 +902,7 @@
     "citations": {
       "ariaLabel": "Cited evidence for this sentence",
       "storyLink": "Story {storyId}",
-      "eventLink": "Event {aiceId} · {eventKey}"
+      "eventLink": "Event"
     },
     "citedBy": {
       "heading": "Cited by",

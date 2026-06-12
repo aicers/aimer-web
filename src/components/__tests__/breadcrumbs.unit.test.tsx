@@ -253,15 +253,17 @@ describe("Breadcrumbs", () => {
   });
 
   it("renders an event-analysis leaf with the aice prefix collapsed", () => {
-    // The `aice/<id>/events/<key>` prefix carries no crumbs; only the
-    // `Event · <short-key>` leaf and the customer hub remain.
+    // The `aice/<id>/events/<key>` prefix carries no crumbs; only the event
+    // leaf and the customer hub remain. The static client fallback is the bare
+    // `Event` term (#559) — never the opaque `event_key`; the page registers
+    // the richer `{event time} · {kind}` label once mounted.
     mockedUsePathname.mockReturnValue(
       "/en/subjects/c1/aice/a1/events/evkey123456/analysis",
     );
 
     const { container } = render(<Breadcrumbs />);
 
-    expect(linkTexts(container)).toEqual(["Acme Corp", "Event · evkey123…"]);
+    expect(linkTexts(container)).toEqual(["Acme Corp", "Event"]);
     expect(hasTextCrumb(container, "Customers")).toBe(true);
     expect(container.textContent).not.toContain("aice");
   });

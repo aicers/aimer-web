@@ -498,6 +498,8 @@ describe("report detail page", () => {
                   modelName: "openai",
                   model: "gpt-4o",
                 },
+                eventTime: new Date("2026-05-20T00:00:00Z"),
+                kind: "HttpThreat",
               },
             },
           ],
@@ -516,11 +518,15 @@ describe("report detail page", () => {
     expect(storyHref).toContain("model=gpt-4o");
 
     // The event-cited unit links to the event analysis page, pinned likewise.
-    const eventHref = screen
-      .getByTestId("citation-event-aice-9-777")
-      .getAttribute("href");
+    const eventCite = screen.getByTestId("citation-event-aice-9-777");
+    const eventHref = eventCite.getAttribute("href");
     expect(eventHref).toContain("/aice/aice-9/events/777/analysis");
     expect(eventHref).toContain("generation=4");
+    // The chip is titled `{event time} · {kind}` (#559): the friendly kind
+    // name shows and the opaque `event_key` / `aice_id` are not chip text.
+    expect(eventCite.textContent).toContain("HTTP Threat");
+    expect(eventCite.textContent).not.toContain("777");
+    expect(eventCite.textContent).not.toContain("aice-9");
 
     // The uncited unit renders its text but no dangling citation link.
     const summary = screen.getByTestId("section-executive_summary");

@@ -137,7 +137,11 @@ describe("AnalysisResultPage — generation pin", () => {
   });
 
   it("shows the evidence-unavailable notice for a pin_unavailable outcome", async () => {
-    mockLoad.mockResolvedValueOnce({ kind: "pin_unavailable", generation: 5 });
+    mockLoad.mockResolvedValueOnce({
+      kind: "pin_unavailable",
+      generation: 5,
+      eventTitle: { eventTime: null, kind: null },
+    });
     await renderPage({ ...VARIANT, generation: "5" });
     expect(screen.getByTestId("pin-unavailable-banner")).toBeTruthy();
     expect(screen.getByTestId("pin-unavailable-banner").textContent).toContain(
@@ -182,6 +186,10 @@ function okOutcome(
       generation: 1,
       modelActualVersion: "2026-05-01",
       promptVersion: "v3",
+      eventTitle: {
+        eventTime: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
+      },
       severityScore: 0.42,
       likelihoodScore: 0.81,
       priorityTier: "HIGH",
@@ -217,6 +225,17 @@ describe("AnalysisResultPage — analyst gating + in-app regenerate (#463)", () 
     expect(screen.getByText("2026-05-01")).toBeTruthy();
     expect(screen.getByText("v3")).toBeTruthy();
     expect(screen.getByTestId("event-regenerate-button")).toBeTruthy();
+  });
+
+  it("titles the subtitle `{event time} · {kind}` with aice_id as trailing meta (#559)", async () => {
+    mockLoad.mockResolvedValueOnce(okOutcome({ isViewerAnalyst: true }));
+    await renderPage(VARIANT);
+    // The subtitle sits in the header beside the `AI Analysis` title.
+    const header = screen.getByText("AI Analysis").parentElement;
+    expect(header?.textContent).toContain("HTTP Threat"); // friendly kind
+    expect(header?.textContent).toContain(AICE_ID); // provenance meta
+    // The opaque `event_key` is never shown as a title.
+    expect(header?.textContent).not.toContain(EVENT_KEY);
   });
 
   it("hides provenance + regenerate button for a non-analyst", async () => {

@@ -163,12 +163,14 @@ const ROOT: RouteNode = {
                     paramName: "eventKey",
                     children: {
                       analysis: {
-                        // Event-analysis leaf. The collapsed aice prefix
-                        // means this is the only aice-scope crumb; label
-                        // from the [eventKey] captured above.
+                        // Event-analysis leaf. The collapsed aice prefix means
+                        // this is the only aice-scope crumb. The page registers
+                        // the real `{event time} · {kind}` label (#559); this
+                        // fallback (pre-registration first paint, or if the page
+                        // never registers) is the static `Event` term — never
+                        // the opaque `event_key`, which carries no meaning.
                         kind: "link",
-                        label: (_value, params, ctx) =>
-                          entityCrumbLabel(ctx.t("event"), params.eventKey),
+                        label: (_value, _params, ctx) => ctx.t("event"),
                       },
                     },
                   },

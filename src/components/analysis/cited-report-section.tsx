@@ -15,6 +15,7 @@ import type { useTranslations } from "next-intl";
 import { AnalysisMarkdown } from "@/components/analysis-body";
 import type { CitationUnit } from "@/lib/analysis/report-result-page-loader";
 import { subjectPages } from "@/lib/navigation/routes";
+import { EventTitle } from "./event-title";
 import { pinQuery } from "./sources-panel";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
@@ -112,13 +113,19 @@ function CitationLink({
           encodeURIComponent(source.aiceId),
           encodeURIComponent(source.eventKey),
         )}?${query}`;
+  // Chip label is `{event time} · {kind}` for an event (#559) — `aice_id` is
+  // dropped (the Sources card + linked detail page carry it) and `event_key` is
+  // never shown. A story chip keeps its `{storyId}` label (out of scope here).
   const label =
-    source.sourceType === "story"
-      ? t("citations.storyLink", { storyId: source.storyId })
-      : t("citations.eventLink", {
-          aiceId: source.aiceId,
-          eventKey: source.eventKey,
-        });
+    source.sourceType === "story" ? (
+      t("citations.storyLink", { storyId: source.storyId })
+    ) : (
+      <EventTitle
+        eventTime={source.eventTime}
+        kind={source.kind}
+        fallbackLabel={t("citations.eventLink")}
+      />
+    );
   const testid =
     source.sourceType === "story"
       ? `citation-story-${source.storyId}`

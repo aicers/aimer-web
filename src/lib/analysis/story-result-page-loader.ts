@@ -173,6 +173,16 @@ export interface StoryMemberEvent {
   index: number;
   aiceId: string;
   eventKey: string;
+  /**
+   * The event's time + kind for the member row title `{event time} · {kind
+   * display name}` (#559), read off the canonical `event_analysis_result` row.
+   * Top-level (not inside `display`) so they survive a `display: null` member —
+   * though both come from the same row, so a member with no canonical row keeps
+   * `eventTime`/`kind` null and the title degrades to the static fallback while
+   * `aiceId` (from `input_event_refs`) still shows on the meta line.
+   */
+  eventTime: Date | null;
+  kind: string | null;
   display: {
     priorityTier: PriorityTier;
     severityScore: number;
@@ -757,7 +767,8 @@ async function fetchMemberEventDisplays(
   const { rows } = await customerPool.query(
     `SELECT DISTINCT ON (aice_id, event_key)
             aice_id, event_key::text AS event_key,
-            priority_tier, severity_score, likelihood_score
+            priority_tier, severity_score, likelihood_score,
+            event_time, kind
        FROM event_analysis_result
       WHERE (aice_id, event_key) IN (${tuples})
         AND lang = $${base + 1}
@@ -773,6 +784,9 @@ async function fetchMemberEventDisplays(
       priorityTier: PriorityTier;
       severityScore: number;
       likelihoodScore: number;
+      // Event identity for the member row title (#559); from the same row.
+      eventTime: Date | null;
+      kind: string | null;
     }
   >();
   for (const r of rows as Array<{
@@ -781,17 +795,33 @@ async function fetchMemberEventDisplays(
     priority_tier: PriorityTier;
     severity_score: number;
     likelihood_score: number;
+    event_time: Date | null;
+    kind: string | null;
   }>) {
     byKey.set(`${r.aice_id}:${r.event_key}`, {
       priorityTier: r.priority_tier,
       severityScore: r.severity_score,
       likelihoodScore: r.likelihood_score,
+      eventTime: r.event_time ?? null,
+      kind: r.kind ?? null,
     });
   }
-  return ordered.map((r) => ({
-    index: r.index,
-    aiceId: r.aiceId,
-    eventKey: r.eventKey,
-    display: byKey.get(`${r.aiceId}:${r.eventKey}`) ?? null,
-  }));
+  return ordered.map((r) => {
+    const v = byKey.get(`${r.aiceId}:${r.eventKey}`);
+    return {
+      index: r.index,
+      aiceId: r.aiceId,
+      eventKey: r.eventKey,
+      // Title fields surface even when there is no canonical display row.
+      eventTime: v?.eventTime ?? null,
+      kind: v?.kind ?? null,
+      display: v
+        ? {
+            priorityTier: v.priorityTier,
+            severityScore: v.severityScore,
+            likelihoodScore: v.likelihoodScore,
+          }
+        : null,
+    };
+  });
 }
