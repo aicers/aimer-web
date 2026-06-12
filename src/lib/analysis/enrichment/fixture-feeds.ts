@@ -138,15 +138,23 @@ export async function seedFixtureFeeds(
 /**
  * Resolve the deployment's configured `FeedSource` from `TI_FEED_MODE`.
  *
- * This is the single mode→source dispatch point: parts 2-4 add their case
- * here (returning their `FeedSource` for `manual-upload` / `self-fetch` /
- * `managed`) instead of teaching every import caller a new mode. Callers
- * go through this seam rather than constructing a `FeedSource` directly, so
- * the env actually selects the supply mode.
+ * This is the single mode→source dispatch point for the *pull-based* supply
+ * modes: the later parts add their case here (returning their `FeedSource`
+ * for `self-fetch` / `managed`) instead of teaching every import caller a new
+ * mode. Callers go through this seam rather than constructing a `FeedSource`
+ * directly, so the env actually selects the supply mode.
+ *
+ * `manual-upload` (part 2) is intentionally **not** wired here: it has no
+ * pull-based `FeedSource`. Uploads enter through the admin route, which calls
+ * `importRawFeedPayload()` directly. `manual-upload` is supported by
+ * `resolveTiFeedMode()`, so if this function were ever invoked in that mode
+ * it would (correctly) fall to the `default` branch — the route never routes
+ * an upload through here.
  *
  * `resolveTiFeedMode()` already fails fast on unknown or not-yet
  * -implemented modes; the `default` branch only guards against a mode being
- * promoted into `SUPPORTED_TI_FEED_MODES` without a case wired here.
+ * promoted into `SUPPORTED_TI_FEED_MODES` without a pull-based case wired
+ * here (which is the expected state for `manual-upload`).
  *
  * (Lives here, not in `feed-source.ts`, to avoid a cycle: this module
  * already depends on the source types and the concrete `FixtureFeedSource`.)

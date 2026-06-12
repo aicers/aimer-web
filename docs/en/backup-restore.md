@@ -1,8 +1,8 @@
 # Backup & Restore
 
 This guide covers how to back up and restore all stateful components
-of Clumit Insight: the central databases (`auth_db`, `audit_db`),
-per-customer databases, and the OpenBao secret engine.
+of Clumit Insight: the central databases (`auth_db`, `audit_db`,
+`feed_db`), per-customer databases, and the OpenBao secret engine.
 
 ## Prerequisites
 
@@ -18,9 +18,16 @@ per-customer databases, and the OpenBao secret engine.
 | ------------ | --------------------------------------------------- |
 | `auth`       | Central auth database (`pg_dump --format=custom`)   |
 | `audit`      | Central audit database                              |
+| `feed`       | Threat-intel feed database (manual-upload snapshots)|
 | `customers`  | All customer databases with `database_status`       |
 |              | `IN ('active', 'failed')`                           |
 | `openbao`    | OpenBao `file` storage directory (KEK + DEKs)       |
+
+The `feed` database holds Tier-1 threat-intel feed snapshots imported
+through the manual-upload admin UI (see
+[Threat Feeds](threat-feeds.md)). Because operator-uploaded snapshots
+are not re-derivable from committed fixtures, the feed DB is a required
+backup target.
 
 Customer databases for suspended and disabled customers are included
 as long as `database_status` is `active` or `failed`. Databases that
@@ -36,6 +43,7 @@ pnpm backup --target=all
 # Back up a single target
 pnpm backup --target=auth
 pnpm backup --target=audit
+pnpm backup --target=feed
 pnpm backup --target=customers
 pnpm backup --target=openbao
 
@@ -58,6 +66,7 @@ Each backup creates a timestamped directory:
       2026-04-02T14-30-45Z/
         auth_db.dump
         audit_db.dump
+        feed_db.dump
         customers/
           customer_<uuid>.dump
         openbao/
@@ -90,8 +99,8 @@ accidental execution. Use `--dry-run` to validate first.
 
 ### Full Disaster Recovery
 
-Restore order: OpenBao -> auth_db -> audit_db -> customer_dbs ->
-post-restore cleanup -> migration runner.
+Restore order: OpenBao -> auth_db -> audit_db -> feed_db ->
+customer_dbs -> post-restore cleanup -> migration runner.
 
 ```bash
 pnpm restore --target=full \
@@ -125,6 +134,21 @@ pnpm restore --target=audit \
 
 This restores `audit_db` and runs its migrations. `auth_db` is not
 touched. Audit entries between the backup and the failure are lost.
+
+### feed_db-Only Recovery
+
+If `feed_db` is corrupted, restore it on its own:
+
+```bash
+pnpm restore --target=feed \
+  --backup-file=./backups/2026-04-02T14-30-45Z/feed_db.dump \
+  --confirm
+```
+
+This restores `feed_db` and runs its migrations. Other databases are
+not touched. Threat-intel feed snapshots imported between the backup
+and the failure are lost; re-run the manual-upload imports to recover
+them.
 
 ### Single-Customer Restore
 
@@ -213,7 +237,8 @@ previous values and correct them via the admin UI or API.
 After each backup, expired directories are automatically purged.
 Retention windows are configured via environment variables:
 
-- `BACKUP_RETENTION_DAYS` (default: 30) — auth_db and customer_db
+- `BACKUP_RETENTION_DAYS` (default: 30) — auth_db, feed_db, and
+  customer_db
 - `AUDIT_BACKUP_RETENTION_DAYS` (default: 365) — audit_db
 
 ## Verification Drills
@@ -247,10 +272,16 @@ verification fails.
 | `BAO_TOKEN`                    | Yes      |              | OpenBao authentication token        |
 | `DATABASE_MIGRATION_URL`       | Yes      |              | auth_db connection (owner role)     |
 | `AUDIT_DATABASE_MIGRATION_URL` | Yes      |              | audit_db connection (owner role)    |
+| `FEED_DATABASE_MIGRATION_URL`  | Yes†     |              | feed_db connection (owner role)     |
+| `FEED_DATABASE_URL`            | Yes†     |              | feed_db fallback connection         |
 | `DATABASE_ADMIN_URL`           | Yes      |              | Admin connection for DB operations  |
 | `CUSTOMER_DATABASE_OWNER_URL`  | Yes      |              | Customer DB template (owner role)   |
 
 *Required only for OpenBao backup/restore targets.
+
+†Required only for the `feed` backup/restore target.
+`FEED_DATABASE_MIGRATION_URL` is preferred; `FEED_DATABASE_URL` is
+used as a fallback.
 
 ## Production Storage
 
