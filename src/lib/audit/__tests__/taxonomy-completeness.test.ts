@@ -182,6 +182,9 @@ const PRODUCED: Record<string, string> = {
   "customer_default_model.cleared": "src/lib/analysis/default-model.ts",
   "system.default_model_updated": "src/lib/analysis/default-model.ts",
   "system.default_model_cleared": "src/lib/analysis/default-model.ts",
+  // TI feed self-fetch scheduler (#570)
+  "system.ti_feed_self_fetch_schedule_updated":
+    "src/lib/analysis/enrichment/feed-schedule.ts",
   // Story-leaf re-analysis backfill (#466)
   "story_reanalysis.backfill_enqueued": "src/lib/analysis/story-backfill.ts",
   // Report-variant refresh (#469)

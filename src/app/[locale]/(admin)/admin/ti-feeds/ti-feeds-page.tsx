@@ -15,6 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -52,6 +53,13 @@ interface SelfFetchSourceStatus {
   lastStatus: string | null;
   lastError: string | null;
   lastRowCount: number | null;
+  effectiveCadenceMs?: number | null;
+  nextFetchDueAt?: string | null;
+}
+
+interface SelfFetchSchedule {
+  enabled: boolean;
+  intervalMs?: number;
 }
 
 type Toast = { message: string; type: "success" | "error" } | null;
@@ -310,14 +318,27 @@ function SelfFetchView() {
   const [authKeyValue, setAuthKeyValue] = useState("");
   const [authKeySaving, setAuthKeySaving] = useState(false);
 
+  // Schedule form state. `scheduleEnabled` / `intervalMinutes` are the edited
+  // values; `fetchStatus` seeds them from the stored schedule on each load.
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [intervalMinutes, setIntervalMinutes] = useState("");
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+
   const { toast, showToast } = useToast();
 
   const fetchStatus = useCallback(async () => {
     try {
-      const data = await adminFetch<{ sources: SelfFetchSourceStatus[] }>(
-        "/api/admin/ti-feed",
-      );
+      const data = await adminFetch<{
+        sources: SelfFetchSourceStatus[];
+        schedule: SelfFetchSchedule;
+      }>("/api/admin/ti-feed");
       setSources(data.sources);
+      setScheduleEnabled(data.schedule.enabled);
+      setIntervalMinutes(
+        data.schedule.intervalMs
+          ? String(Math.round(data.schedule.intervalMs / 60000))
+          : "",
+      );
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -409,9 +430,99 @@ function SelfFetchView() {
     }
   };
 
+  const handleSaveSchedule = async () => {
+    const trimmed = intervalMinutes.trim();
+    let intervalMs: number | undefined;
+    if (trimmed.length > 0) {
+      const minutes = Number(trimmed);
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        showToast(t("scheduleIntervalInvalid"), "error");
+        return;
+      }
+      intervalMs = Math.round(minutes * 60000);
+    }
+    setScheduleSaving(true);
+    try {
+      await adminFetch("/api/admin/ti-feed/schedule", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: scheduleEnabled, intervalMs }),
+      });
+      showToast(t("scheduleSaved"), "success");
+      await fetchStatus();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        window.location.href = "/api/admin-auth/sign-in";
+        return;
+      }
+      showToast(
+        err instanceof ApiError ? err.message : t("scheduleError"),
+        "error",
+      );
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <ToastBanner toast={toast} />
+
+      {!loading && !error && (
+        <div className="space-y-4 rounded-md border border-border bg-card px-4 py-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">
+              {t("scheduleTitle")}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t("scheduleDescription")}
+            </p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={scheduleEnabled}
+              onChange={(e) => setScheduleEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-border"
+            />
+            {t("scheduleEnableLabel")}
+          </label>
+          <div className="space-y-1">
+            <label
+              htmlFor="self-fetch-interval"
+              className="block text-xs font-medium text-muted-foreground"
+            >
+              {t("scheduleIntervalLabel")}
+            </label>
+            <Input
+              id="self-fetch-interval"
+              type="number"
+              min={1}
+              inputMode="numeric"
+              value={intervalMinutes}
+              onChange={(e) => setIntervalMinutes(e.target.value)}
+              className="max-w-[12rem]"
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("scheduleIntervalHint")}
+            </p>
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              {scheduleEnabled
+                ? t("scheduleEnabledOn")
+                : t("scheduleEnabledOff")}
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              disabled={scheduleSaving}
+              onClick={handleSaveSchedule}
+            >
+              {scheduleSaving ? tCommon("loading") : t("scheduleSave")}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {!loading && !error && (
         <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
@@ -454,6 +565,7 @@ function SelfFetchView() {
                 <TableHead>{t("source")}</TableHead>
                 <TableHead>{t("fetchUrl")}</TableHead>
                 <TableHead>{t("lastFetched")}</TableHead>
+                <TableHead>{t("nextFetch")}</TableHead>
                 <TableHead>{t("status")}</TableHead>
                 <TableHead>{t("freshness")}</TableHead>
                 <TableHead>{t("actions")}</TableHead>
@@ -476,6 +588,17 @@ function SelfFetchView() {
                       <Timestamp at={source.lastFetchedAt} />
                     ) : (
                       t("never")
+                    )}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {!source.fetchable ? (
+                      "—"
+                    ) : !scheduleEnabled ? (
+                      t("scheduleDisabledNextFetch")
+                    ) : source.nextFetchDueAt ? (
+                      <Timestamp at={source.nextFetchDueAt} />
+                    ) : (
+                      "—"
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">

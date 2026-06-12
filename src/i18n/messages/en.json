@@ -503,7 +503,20 @@
     "authKeySetButton": "Set Auth-Key",
     "authKeyReplace": "Replace Auth-Key",
     "authKeySaved": "Auth-Key saved.",
-    "authKeyError": "Failed to save the Auth-Key. Please try again."
+    "authKeyError": "Failed to save the Auth-Key. Please try again.",
+    "scheduleTitle": "Scheduled refresh",
+    "scheduleDescription": "Periodically fetch the feeds in the background. Off by default. Each source is never fetched more often than its cadence floor; fleet/SaaS deployments should leave this off and use the central mirror instead.",
+    "scheduleEnabledOn": "Background refresh is on.",
+    "scheduleEnabledOff": "Background refresh is off.",
+    "scheduleEnableLabel": "Enable background refresh",
+    "scheduleIntervalLabel": "Refresh interval (minutes)",
+    "scheduleIntervalHint": "Leave blank to refresh at each source's minimum cadence. Shorter intervals are clamped up to the source's cadence floor.",
+    "scheduleSave": "Save schedule",
+    "scheduleSaved": "Schedule saved.",
+    "scheduleError": "Failed to save the schedule. Please try again.",
+    "scheduleIntervalInvalid": "Enter a positive number of minutes, or leave blank.",
+    "nextFetch": "Next Fetch",
+    "scheduleDisabledNextFetch": "Off"
   },
   "validation": {
     "required": "This field is required",

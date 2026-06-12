@@ -503,7 +503,20 @@
     "authKeySetButton": "Auth-Key 설정",
     "authKeyReplace": "Auth-Key 교체",
     "authKeySaved": "Auth-Key를 저장했습니다.",
-    "authKeyError": "Auth-Key 저장에 실패했습니다. 다시 시도해 주세요."
+    "authKeyError": "Auth-Key 저장에 실패했습니다. 다시 시도해 주세요.",
+    "scheduleTitle": "예약 새로고침",
+    "scheduleDescription": "백그라운드에서 주기적으로 피드를 가져옵니다. 기본값은 꺼짐입니다. 각 소스는 최소 주기보다 더 자주 가져오지 않습니다. 플릿/SaaS 배포에서는 이 기능을 끄고 중앙 미러를 사용해야 합니다.",
+    "scheduleEnabledOn": "백그라운드 새로고침이 켜져 있습니다.",
+    "scheduleEnabledOff": "백그라운드 새로고침이 꺼져 있습니다.",
+    "scheduleEnableLabel": "백그라운드 새로고침 사용",
+    "scheduleIntervalLabel": "새로고침 간격(분)",
+    "scheduleIntervalHint": "비워 두면 각 소스의 최소 주기로 새로고침합니다. 더 짧은 간격은 소스의 주기 하한으로 올림 조정됩니다.",
+    "scheduleSave": "예약 저장",
+    "scheduleSaved": "예약을 저장했습니다.",
+    "scheduleError": "예약 저장에 실패했습니다. 다시 시도해 주세요.",
+    "scheduleIntervalInvalid": "양의 분 단위 숫자를 입력하거나 비워 두세요.",
+    "nextFetch": "다음 가져오기",
+    "scheduleDisabledNextFetch": "꺼짐"
   },
   "validation": {
     "required": "필수 입력 항목입니다",
