@@ -94,12 +94,7 @@ instance fetches each feed directly over HTTP and imports it. In 3a this is
 **operator-triggered** only — there is a **Fetch Now** action per source, with
 no background scheduler yet.
 
-<!-- Screenshot placeholder: the Threat Feeds page in self-fetch mode — the
-     URLhaus Auth-Key panel above a per-source table with Fetch URL,
-     Last Fetched, Status, Freshness, and a Fetch Now button per row
-     (docs/assets/admin-ti-feeds-selffetch-table.png). Reproduce with:
-       TI_FEED_MODE=self-fetch pnpm capture --grep 'admin-ti-feeds-selffetch'
-     (the capture spec gates these shots on TI_FEED_MODE=self-fetch). -->
+![Threat Feeds page in self-fetch mode](../assets/admin-ti-feeds-selffetch-table.png)
 
 ### Per-source fetch configuration
 
@@ -132,10 +127,7 @@ of the download URL path per the current URLhaus export API.
 - Until an Auth-Key is set, the URLhaus sources cannot be fetched (a fetch
     reports an error).
 
-<!-- Screenshot placeholder: the Set Auth-Key dialog (masked password input)
-     (docs/assets/admin-ti-feeds-selffetch-authkey-dialog.png). Reproduce with:
-       TI_FEED_MODE=self-fetch pnpm capture --grep 'admin-ti-feeds-selffetch'
-     (the capture spec gates these shots on TI_FEED_MODE=self-fetch). -->
+![Set URLhaus Auth-Key dialog](../assets/admin-ti-feeds-selffetch-authkey-dialog.png)
 
 ### Fetching a feed
 
