@@ -223,6 +223,18 @@ describe("POST /api/admin/ti-feed/upload", () => {
     );
   });
 
+  it("returns 413 for an over-limit Content-Length before parsing the body", async () => {
+    const req = new NextRequest(new URL(POST_URL), {
+      method: "POST",
+      body: new FormData(),
+      headers: { "content-length": String(64 * 1024 * 1024) },
+    });
+    const { POST } = await import("../upload/route");
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+    expect(mockImportRawFeedPayload).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for a missing file", async () => {
     const { POST } = await import("../upload/route");
     const res = await POST(makeUpload({ sourcePolicyId: "abuse.ch/feodo" }));
@@ -247,6 +259,21 @@ describe("POST /api/admin/ti-feed/upload", () => {
       makeUpload({
         sourcePolicyId: "abuse.ch/urlhaus",
         file: { name: "f.txt", content: "not a csv at all\nnope\n" },
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockImportRawFeedPayload).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for a Spamhaus file whose only data line is an invalid CIDR", async () => {
+    // The CIDR is structurally CIDR-shaped but not a valid PostgreSQL `cidr`
+    // (octets out of range), so the parser drops it and the upload validator
+    // rejects the file up front rather than letting it 500 at `$N::cidr`.
+    const { POST } = await import("../upload/route");
+    const res = await POST(
+      makeUpload({
+        sourcePolicyId: "spamhaus/drop",
+        file: { name: "drop.txt", content: "999.999.999.999/24 ; SBL123\n" },
       }),
     );
     expect(res.status).toBe(400);

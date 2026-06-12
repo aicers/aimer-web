@@ -48,6 +48,22 @@ export const POST = withAuth(
       client.release();
     }
 
+    // Reject an over-limit body up front, before `formData()` reads and
+    // buffers the whole multipart payload into memory. `Content-Length` can
+    // be absent or spoofed, so the per-part `File.size` check below remains
+    // the authoritative guard; this just avoids buffering an honestly-declared
+    // oversized upload.
+    const declaredLength = Number(req.headers.get("content-length"));
+    if (
+      Number.isFinite(declaredLength) &&
+      declaredLength > MAX_FEED_UPLOAD_BYTES
+    ) {
+      return Response.json(
+        { error: "Uploaded file exceeds the maximum allowed size" },
+        { status: 413 },
+      );
+    }
+
     let formData: FormData;
     try {
       formData = await req.formData();

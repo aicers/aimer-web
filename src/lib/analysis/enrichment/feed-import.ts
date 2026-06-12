@@ -220,7 +220,17 @@ function normalizeForEntity(entityType: EntityType, value: string): string {
   }
 }
 
-/** Validate + de-duplicate CIDR networks (Spamhaus range entries). */
+/**
+ * Validate, canonicalize, and de-duplicate CIDR networks (Spamhaus range
+ * entries). Each value is parsed with `ipaddr.js` and reduced to its
+ * canonical network address (host bits zeroed), so the stored string is
+ * always a valid PostgreSQL `cidr`. A loose regex is not enough here: values
+ * like `999.999.999.999/24`, `203.0.113.0/33`, or `203.0.113.1/24` (host
+ * bits set) match a `[0-9a-fA-F:.]+/\d+` shape but are rejected by the
+ * `$N::cidr` cast, surfacing as a 500 mid-import. Anything `ipaddr.js`
+ * rejects is dropped (and counted) instead, so an unparseable upload is
+ * caught up front rather than at the DB write.
+ */
 export function normalizeCidrs(values: readonly string[]): {
   rows: FeedSnapshotRow[];
   skipped: number;
@@ -230,13 +240,21 @@ export function normalizeCidrs(values: readonly string[]): {
   let skipped = 0;
   for (const value of values) {
     const trimmed = value.trim();
-    if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(trimmed)) {
+    let cidr: string;
+    try {
+      const [addr, prefix] = ipaddr.parseCIDR(trimmed);
+      const network =
+        addr.kind() === "ipv4"
+          ? ipaddr.IPv4.networkAddressFromCIDR(trimmed)
+          : ipaddr.IPv6.networkAddressFromCIDR(trimmed);
+      cidr = `${network.toString()}/${prefix}`;
+    } catch {
       skipped += 1;
       continue;
     }
-    if (seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    rows.push({ cidr: trimmed });
+    if (seen.has(cidr)) continue;
+    seen.add(cidr);
+    rows.push({ cidr });
   }
   return { rows, skipped };
 }
