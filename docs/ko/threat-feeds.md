@@ -16,9 +16,7 @@
 `ti-feed:write` 권한이 있는 시스템 관리자만 피드를 업로드할 수 있습니다.
 상태 표를 보려면 `ti-feed:read` 권한이 필요합니다.
 
-<!-- Screenshot placeholder: the Threat Feeds status table
-     (admin-ti-feeds-table.png). Capture with `pnpm capture` against a dev
-     server started with TI_FEED_MODE=manual-upload. -->
+![위협 피드 상태 표](../assets/admin-ti-feeds-table.png)
 
 ## 피드 상태 표
 
@@ -46,9 +44,7 @@
 3. 해당 소스의 피드 파일을 선택합니다.
 4. **업로드**를 클릭하여 가져옵니다.
 
-<!-- Screenshot placeholder: the upload dialog
-     (admin-ti-feeds-upload-dialog.png). Capture with `pnpm capture` against a
-     dev server started with TI_FEED_MODE=manual-upload. -->
+![피드 파일 업로드 대화 상자](../assets/admin-ti-feeds-upload-dialog.png)
 
 파일이 업로드되면 서버는 다음을 수행합니다.
 

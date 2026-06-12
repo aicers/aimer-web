@@ -17,9 +17,7 @@ clobbered by fixture re-seeding or a later refresh worker.
 Only System Admins with the `ti-feed:write` permission can upload feeds. The
 `ti-feed:read` permission is required to view the status table.
 
-<!-- Screenshot placeholder: the Threat Feeds status table
-     (admin-ti-feeds-table.png). Capture with `pnpm capture` against a dev
-     server started with TI_FEED_MODE=manual-upload. -->
+![Threat Feeds status table](../assets/admin-ti-feeds-table.png)
 
 ## Feed status table
 
@@ -48,9 +46,7 @@ to one that was never uploaded.
 3. Choose the feed file for that source.
 4. Click **Upload** to import it.
 
-<!-- Screenshot placeholder: the upload dialog
-     (admin-ti-feeds-upload-dialog.png). Capture with `pnpm capture` against a
-     dev server started with TI_FEED_MODE=manual-upload. -->
+![Upload feed file dialog](../assets/admin-ti-feeds-upload-dialog.png)
 
 When a file is uploaded, the server:
 
