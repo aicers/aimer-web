@@ -147,12 +147,14 @@ export async function seedFixtureFeeds(
  * mode. Callers go through this seam rather than constructing a `FeedSource`
  * directly, so the env actually selects the supply mode.
  *
- * `manual-upload` (part 2) is intentionally **not** wired here: it has no
- * pull-based `FeedSource`. Uploads enter through the admin route, which calls
- * `importRawFeedPayload()` directly. `manual-upload` is supported by
- * `resolveTiFeedMode()`, so if this function were ever invoked in that mode
- * it would (correctly) fall to the `default` branch — the route never routes
- * an upload through here.
+ * `manual-upload` (part 2) and `self-fetch` (part 3a, #568) are intentionally
+ * **not** wired here. Both are operator-triggered: an upload / "Fetch Now"
+ * enters through the admin route, which calls `importRawFeedPayload()` (upload)
+ * or `SelfFetchFeedSource.fetchAndImport()` (self-fetch) directly. Both modes
+ * are supported by `resolveTiFeedMode()`, so if this function were invoked in
+ * either mode it would (correctly) fall to the `default` branch. The pull
+ * -based scheduler that WOULD route self-fetch through this seam is deferred
+ * to part 3b.
  *
  * `resolveTiFeedMode()` already fails fast on unknown or not-yet
  * -implemented modes; the `default` branch only guards against a mode being

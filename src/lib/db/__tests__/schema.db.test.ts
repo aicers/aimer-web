@@ -1571,6 +1571,14 @@ describe.skipIf(!hasPostgres)("Schema verification (feed_db)", () => {
       await pool.query(
         "GRANT SELECT, INSERT, DELETE ON ioc_feed_snapshot TO aimer_feed",
       );
+      // Self-fetch (#568): fetch-state + secret tables get SELECT/INSERT/UPDATE
+      // (runtime upserts via ON CONFLICT DO UPDATE).
+      await pool.query(
+        "GRANT SELECT, INSERT, UPDATE ON feed_fetch_state TO aimer_feed",
+      );
+      await pool.query(
+        "GRANT SELECT, INSERT, UPDATE ON feed_source_secret TO aimer_feed",
+      );
 
       rolePool = createRolePool(dbName, "aimer_feed", "changeme", "feed");
     });
@@ -1599,6 +1607,34 @@ describe.skipIf(!hasPostgres)("Schema verification (feed_db)", () => {
           "UPDATE ioc_feed_snapshot SET classification = 'x' WHERE id = 1",
         ),
       ).rejects.toThrow();
+    });
+
+    it("can SELECT, INSERT, and UPDATE feed_fetch_state (#568)", async () => {
+      // The fetch engine upserts fetch bookkeeping (ON CONFLICT DO UPDATE).
+      await rolePool.query(
+        "INSERT INTO feed_fetch_state (source_policy_id, last_status) VALUES ('s', 'ok')",
+      );
+      await rolePool.query(
+        "UPDATE feed_fetch_state SET last_status = 'not-modified' WHERE source_policy_id = 's'",
+      );
+      const { rows } = await rolePool.query(
+        "SELECT last_status FROM feed_fetch_state WHERE source_policy_id = 's'",
+      );
+      expect(rows[0].last_status).toBe("not-modified");
+    });
+
+    it("can SELECT, INSERT, and UPDATE feed_source_secret (#568)", async () => {
+      // The auth-key route upserts the Transit-wrapped secret.
+      await rolePool.query(
+        "INSERT INTO feed_source_secret (key_name, wrapped_dek, ciphertext) VALUES ('urlhaus', 'w1', '\\x00')",
+      );
+      await rolePool.query(
+        "UPDATE feed_source_secret SET wrapped_dek = 'w2' WHERE key_name = 'urlhaus'",
+      );
+      const { rows } = await rolePool.query(
+        "SELECT wrapped_dek FROM feed_source_secret WHERE key_name = 'urlhaus'",
+      );
+      expect(rows[0].wrapped_dek).toBe("w2");
     });
   });
 });

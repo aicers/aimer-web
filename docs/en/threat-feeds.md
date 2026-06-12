@@ -1,25 +1,41 @@
-# Threat Feeds (Manual Upload)
+# Threat Feeds
 
-The Threat Feeds page lets a System Admin upload Tier-1 threat-intelligence
-feed files so that observed indicators can be matched locally against
-known-bad IOCs. Navigate to **Threat Feeds** in the admin sidebar to open it.
+The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
+feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP) that observed indicators are
+matched locally against. Navigate to **Threat Feeds** in the admin sidebar to
+open it.
 
-This is the **manual-upload** supply mode: the operator obtains each feed file
-out-of-band and provides it to aimer-web. No outbound internet fetch is
-involved, which makes it the supply mode for development and for air-gapped /
-closed-network deployments.
+Only System Admins with the `ti-feed:write` permission can change feeds (upload
+or fetch); the `ti-feed:read` permission is required to view the status table.
 
-The page (and its API) is only available when the deployment is configured
-with `TI_FEED_MODE=manual-upload`. In any other mode the nav entry is hidden
-and the routes return 404, so operator-provided snapshots cannot be silently
-clobbered by fixture re-seeding or a later refresh worker.
+How feeds reach aimer-web is controlled by the **supply mode**
+(`TI_FEED_MODE`). The Threat Feeds page is available — and the nav entry is
+shown — in two modes:
 
-Only System Admins with the `ti-feed:write` permission can upload feeds. The
-`ti-feed:read` permission is required to view the status table.
+- **`manual-upload`** — the operator obtains each feed file out-of-band and
+    uploads it. No outbound internet fetch; the mode for development and for
+    air-gapped / closed-network deployments.
+- **`self-fetch`** — the instance fetches each feed directly over HTTP and
+    imports it on demand. The production refresh path for on-prem /
+    independent / sovereignty deployments, which fetch abuse.ch / Spamhaus
+    directly (the license-sanctioned path, no redistribution).
+
+In any other mode the nav entry is hidden and the routes return 404, so
+operator-managed snapshots cannot be silently clobbered. The page renders the
+controls for the active mode only: the upload dialog in `manual-upload`, and
+the per-source **Fetch Now** action plus the URLhaus **Auth-Key** control in
+`self-fetch`.
+
+---
+
+## Manual-upload mode
+
+This is the **manual-upload** supply mode (`TI_FEED_MODE=manual-upload`): the
+operator provides each feed file directly.
 
 ![Threat Feeds status table](../assets/admin-ti-feeds-table.png)
 
-## Feed status table
+### Feed status table
 
 The table lists every known Tier-1 source. Each row shows:
 
@@ -39,7 +55,7 @@ This is also how a source that was cleared by an empty upload appears: status
 is derived purely from the imported rows, so a cleared source looks identical
 to one that was never uploaded.
 
-## Uploading a feed
+### Uploading a feed
 
 1. Click the **Upload** button in the row for the source you want to update.
 2. A dialog appears with a file picker.
@@ -57,7 +73,7 @@ When a file is uploaded, the server:
 
 The response reports how many rows were imported.
 
-### Upload rules
+#### Upload rules
 
 - The file format must match the selected source (for example, the
     abuse.ch Feodo Tracker IP blocklist for `abuse.ch/feodo`). A file whose
@@ -69,9 +85,93 @@ The response reports how many rows were imported.
     the replace-not-append guarantee always holds.
 - There is a maximum upload size; oversized files are rejected.
 
+---
+
+## Self-fetch mode
+
+This is the **self-fetch** supply mode (`TI_FEED_MODE=self-fetch`): the
+instance fetches each feed directly over HTTP and imports it. In 3a this is
+**operator-triggered** only — there is a **Fetch Now** action per source, with
+no background scheduler yet.
+
+<!-- Screenshot placeholder: the Threat Feeds page in self-fetch mode — the
+     URLhaus Auth-Key panel above a per-source table with Fetch URL,
+     Last Fetched, Status, Freshness, and a Fetch Now button per row
+     (docs/assets/admin-ti-feeds-selffetch-table.png). Reproduce with:
+       TI_FEED_MODE=self-fetch pnpm capture --grep 'admin-ti-feeds-selffetch'
+     (the capture spec gates these shots on TI_FEED_MODE=self-fetch). -->
+
+### Per-source fetch configuration
+
+Each source has a built-in fetch URL and a **hard cadence floor** — the minimum
+time between fetches, which nothing overrides. The floor guards against an
+abuse.ch / Spamhaus IP ban from over-fetching:
+
+| Source | Endpoint (variant) | Auth-Key | Cadence floor |
+| --- | --- | --- | --- |
+| `abuse.ch/feodo` | Feodo recommended plain-text IP blocklist | — | 5 min |
+| `abuse.ch/urlhaus` | URLhaus URL CSV export | required | 5 min |
+| `abuse.ch/urlhaus-payloads` | URLhaus payloads CSV export | required | 5 min |
+| `spamhaus/drop` | Spamhaus DROP `drop_v4.json` + `drop_v6.json` (NDJSON) | — | 1 h |
+
+Spamhaus **EDROP was merged into DROP** (2024), so `spamhaus/edrop` is no
+longer fetched independently — it shows as **Merged into DROP** with no Fetch
+Now button. DROP is fetched as NDJSON (one JSON object per line) over the
+`drop_v4.json` + `drop_v6.json` endpoints.
+
+### URLhaus Auth-Key
+
+URLhaus requires an Auth-Key (free, from abuse.ch). aimer-web sends it as part
+of the download URL path per the current URLhaus export API.
+
+- Use the **Set Auth-Key** / **Replace Auth-Key** control at the top of the
+    page to submit the key.
+- The key is **encrypted at rest** (OpenBao Transit envelope encryption) and
+    is **write-only**: it is never displayed again. The panel only shows
+    whether an Auth-Key is currently configured.
+- Until an Auth-Key is set, the URLhaus sources cannot be fetched (a fetch
+    reports an error).
+
+<!-- Screenshot placeholder: the Set Auth-Key dialog (masked password input)
+     (docs/assets/admin-ti-feeds-selffetch-authkey-dialog.png). Reproduce with:
+       TI_FEED_MODE=self-fetch pnpm capture --grep 'admin-ti-feeds-selffetch'
+     (the capture spec gates these shots on TI_FEED_MODE=self-fetch). -->
+
+### Fetching a feed
+
+Click **Fetch Now** in the row for the source you want to refresh. The server
+fetches the feed (a conditional request using the stored `ETag` /
+`Last-Modified`, with a timeout), imports it, and reports the outcome:
+
+- **Imported** — the feed was fetched and its snapshot replaced; the response
+    reports how many rows were imported (which may be **0** for a legitimately
+    empty feed, e.g. Feodo on a quiet day).
+- **Not modified** — the source returned `304 Not Modified`; the snapshot is
+    left untouched but the source is revalidated as current (its freshness
+    clock advances).
+- **Too soon** — the cadence floor has not yet elapsed since the last fetch;
+    nothing is fetched.
+- **Error** — the fetch failed (network / timeout / HTTP error / missing
+    Auth-Key). The existing snapshot is left untouched and its freshness is
+    **not** advanced, so it decays toward Stale naturally.
+
+Each source is single-flighted: a Fetch Now while another fetch of the same
+source is already in progress is skipped rather than run twice.
+
+### Status table
+
+In self-fetch mode each row shows the **Fetch URL**, the **Last Fetched** time,
+the last fetch **Status** (`ok` / `not-modified` / `error`, with the error
+message on hover), and a **Freshness** badge. Presence and freshness come from
+the last successful fetch time — so a source that fetched successfully but
+imported 0 rows still reads as present and fresh, and a source revalidated by a
+`304` stays fresh.
+
+---
+
 ## Backup
 
-Because a manually-uploaded snapshot is not re-derivable from committed
-fixtures, the feed database is a backup/restore target. Include it in backups
-with the `feed` target (or the `all` target). See
+Because feed snapshots (and the stored Auth-Key) are not re-derivable from
+committed fixtures, the feed database is a backup/restore target. Include it in
+backups with the `feed` target (or the `all` target). See
 [Backup & Restore](backup-restore.md).

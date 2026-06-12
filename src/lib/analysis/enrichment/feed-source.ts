@@ -37,6 +37,7 @@ export const TI_FEED_MODES: readonly TiFeedMode[] = [
 export const SUPPORTED_TI_FEED_MODES: readonly TiFeedMode[] = [
   "fixture",
   "manual-upload",
+  "self-fetch",
 ];
 
 /** Default mode when `TI_FEED_MODE` is unset. */
@@ -80,7 +81,11 @@ export type FeedParseKind =
   | "ip-blocklist"
   | "urlhaus-csv"
   | "urlhaus-payloads-csv"
-  | "spamhaus-drop";
+  | "spamhaus-drop"
+  // Spamhaus DROP/DROPv6 as published over HTTP today: NDJSON (one JSON
+  // object per line), distinct from the legacy `<CIDR> ; <SBLref>` text
+  // form (`spamhaus-drop`) the fixtures / manual uploads still use.
+  | "spamhaus-drop-ndjson";
 
 /**
  * Where a raw payload's bytes came from, recorded for audit / freshness.

@@ -161,8 +161,9 @@ export default function AdminLayout({
     };
   }, []);
 
-  // The TI feed status endpoint 404s unless `TI_FEED_MODE=manual-upload`, so
-  // a successful response is the signal to surface the nav entry.
+  // The TI feed status endpoint 404s unless `TI_FEED_MODE` is `manual-upload`
+  // or `self-fetch` (the shared Threat Feeds surface), so a successful response
+  // is the signal to surface the nav entry.
   useEffect(() => {
     let cancelled = false;
     adminFetch("/api/admin/ti-feed")

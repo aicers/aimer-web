@@ -10,6 +10,7 @@
 import "server-only";
 
 import type { Pool } from "pg";
+import { selfFetchModeActive } from "./feed-fetch";
 import {
   candidateValues,
   type FeedMatchRow,
@@ -27,6 +28,19 @@ export class PgFeedStore implements FeedStore {
   constructor(private readonly pool: Pool) {}
 
   async probe(sourcePolicyId: string): Promise<FeedSnapshotMeta> {
+    // Self-fetch breaks the row-count probe: a 304-revalidated feed would
+    // drift stale and a legitimately-empty (0-row) feed would read as
+    // absent. So ONLY when self-fetch is the active mode AND a fetch-state
+    // row exists, `feed_fetch_state` is the presence/freshness authority
+    // (success — incl. 0 rows — = present; fresh = `last_fetched_at`),
+    // independent of snapshot row count. The active-mode gate keeps a stale
+    // `feed_fetch_state` row from a prior self-fetch deployment from leaking
+    // into a later manual-upload probe.
+    if (selfFetchModeActive()) {
+      const selfFetch = await this.probeSelfFetch(sourcePolicyId);
+      if (selfFetch) return selfFetch;
+    }
+
     const { rows } = await this.pool.query<{
       cnt: string;
       source_version: string | null;
@@ -49,6 +63,46 @@ export class PgFeedStore implements FeedStore {
       sourceVersion: row.source_version ?? undefined,
       feedHash: row.feed_hash ?? undefined,
       sourceUpdatedAt: toIso(row.source_updated_at),
+    };
+  }
+
+  /**
+   * Self-fetch presence/freshness from `feed_fetch_state`. Returns `null`
+   * when no fetch-state row exists (caller falls back to the row-count probe
+   * — e.g. a source that has never been fetched). A row with a successful
+   * fetch (`last_fetched_at` set, by a 200 or 304) is `present` regardless of
+   * snapshot row count; `sourceUpdatedAt` is `last_fetched_at`. A row that has
+   * only ever failed (no `last_fetched_at`) is `present: false`.
+   */
+  private async probeSelfFetch(
+    sourcePolicyId: string,
+  ): Promise<FeedSnapshotMeta | null> {
+    const { rows } = await this.pool.query<{
+      last_fetched_at: Date | null;
+      source_version: string | null;
+      feed_hash: string | null;
+    }>(
+      `SELECT s.last_fetched_at,
+              snap.source_version,
+              snap.feed_hash
+         FROM feed_fetch_state s
+         LEFT JOIN LATERAL (
+           SELECT MAX(source_version) AS source_version,
+                  MAX(feed_hash)       AS feed_hash
+             FROM ioc_feed_snapshot
+            WHERE source_policy_id = s.source_policy_id
+         ) snap ON TRUE
+        WHERE s.source_policy_id = $1`,
+      [sourcePolicyId],
+    );
+    const row = rows[0];
+    if (!row) return null;
+    if (row.last_fetched_at == null) return { present: false };
+    return {
+      present: true,
+      sourceVersion: row.source_version ?? undefined,
+      feedHash: row.feed_hash ?? undefined,
+      sourceUpdatedAt: toIso(row.last_fetched_at),
     };
   }
 
