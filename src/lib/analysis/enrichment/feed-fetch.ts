@@ -28,7 +28,7 @@ import {
   TIER1_FEED_SOURCES,
   type Tier1FetchConfig,
 } from "./feed-catalog";
-import { importRawFeedPayload } from "./feed-import";
+import { importRawFeedPayload, isUnparseableFeedContent } from "./feed-import";
 import {
   type RawFeedPayload,
   resolveTiFeedMode,
@@ -560,8 +560,11 @@ export class SelfFetchFeedSource {
    * lock (not acquired → `locked`, skip). Enforces the hard cadence floor
    * (within floor → `too-soon`, skip). Conditional GET against stored
    * validators: 304 → `not-modified` (snapshot untouched); 200 → replace via
-   * `importRawFeedPayload` (0 rows is a legitimate import); failure → `error`
-   * (failure→stale, `last_fetched_at` untouched).
+   * `importRawFeedPayload` (a genuinely empty / comment-only feed is a
+   * legitimate 0-row import, but a 200 carrying data that parses to zero rows
+   * — an HTML error/block page or format drift — is rejected as a failure so
+   * it cannot wipe the snapshot); failure → `error` (failure→stale,
+   * `last_fetched_at` untouched).
    */
   async fetchAndImport(sourcePolicyId: string): Promise<SelfFetchOutcome> {
     const source = getTier1FeedSource(sourcePolicyId);
@@ -654,13 +657,31 @@ export class SelfFetchFeedSource {
         lastModified = lastModified ?? res.headers.get("last-modified");
       }
 
+      const content = bodies.join("\n");
+
+      // Guard against an upstream HTML error/block page or a format drift that
+      // arrives with a 200: the lenient parsers would silently drop it to zero
+      // rows, and the replace-only import would then DELETE the good snapshot
+      // and mark the source fresh+empty. Reject "data lines but zero parsed
+      // rows" as a failure (→ failure→stale: snapshot + last_fetched_at left
+      // untouched), while still allowing a genuinely empty / comment-only feed
+      // (e.g. Feodo) to legitimately clear the source.
+      if (
+        isUnparseableFeedContent(fetchConfig.parse, source.entityType, content)
+      ) {
+        throw new SelfFetchError(
+          "Fetched response has data but no recognizable feed entries " +
+            "(possible upstream error/block page or format drift)",
+        );
+      }
+
       const payload: RawFeedPayload = {
         sourcePolicyId,
         parse: fetchConfig.parse,
         entityType: source.entityType,
         hitType: source.hitType,
         classification: source.classification,
-        content: bodies.join("\n"),
+        content,
         provenance: {
           mode: "self-fetch",
           origin: fetchConfig.urls.join(", "),

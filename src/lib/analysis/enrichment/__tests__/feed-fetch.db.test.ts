@@ -14,7 +14,15 @@
 
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -182,6 +190,36 @@ describe.skipIf(!hasPostgres)("self-fetch engine (DB)", () => {
     expect(state?.lastFetchedAt).toBeNull();
   });
 
+  it("a 200 that parses to zero rows but has data is failure→stale", async () => {
+    // Seed a good snapshot first.
+    const seeded = engine([resp(200, "45.66.230.5\n", { etag: '"v1"' })], T0);
+    await seeded.source.fetchAndImport("abuse.ch/feodo");
+
+    // Upstream returns an HTML error page with a 200: data lines, zero rows.
+    const { source } = engine(
+      [resp(200, "<html><body>503 Service Unavailable</body></html>")],
+      T_PAST_FLOOR,
+    );
+    const outcome = await source.fetchAndImport("abuse.ch/feodo");
+    expect(outcome.status).toBe("error");
+
+    // The good snapshot is preserved and the freshness clock is NOT bumped, so
+    // the source decays to stale rather than reading fresh+empty.
+    expect(await snapshotCount(feedPool, "abuse.ch/feodo")).toBe(1);
+    const state = await readFeedFetchState(feedPool, "abuse.ch/feodo");
+    expect(state).toMatchObject({
+      lastStatus: "error",
+      lastFetchedAt: T0.toISOString(),
+    });
+  });
+
+  it("a comment-only 200 legitimately imports 0 rows (empty feed)", async () => {
+    const { source } = engine([resp(200, "# no entries today\n")], T0);
+    const outcome = await source.fetchAndImport("abuse.ch/feodo");
+    expect(outcome).toEqual({ status: "imported", rowCount: 0 });
+    expect(await snapshotCount(feedPool, "abuse.ch/feodo")).toBe(0);
+  });
+
   it("enforces the cadence floor (too-soon skip, no fetch)", async () => {
     const seeded = engine([resp(200, "45.66.230.5\n")], T0);
     await seeded.source.fetchAndImport("abuse.ch/feodo");
@@ -281,6 +319,14 @@ describe.skipIf(!hasPostgres)(
     let feedPool: Pool;
     let prevMode: string | undefined;
 
+    // Capture the original mode ONCE before any test runs; capturing it in
+    // `beforeEach` would read back the `self-fetch` value the first test set,
+    // and the `afterAll` restore would then leave the worker polluted.
+    beforeAll(() => {
+      prevMode = process.env.TI_FEED_MODE;
+      process.env.TI_FEED_MODE = "self-fetch";
+    });
+
     beforeEach(async () => {
       if (feedPool) {
         await dropTestDatabase(feedDbName, feedPool, "feed");
@@ -289,8 +335,6 @@ describe.skipIf(!hasPostgres)(
       feedDbName = feed.dbName;
       feedPool = feed.pool;
       await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
-      prevMode = process.env.TI_FEED_MODE;
-      process.env.TI_FEED_MODE = "self-fetch";
     });
 
     afterAll(async () => {

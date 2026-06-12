@@ -144,8 +144,12 @@ fetches the feed (a conditional request using the stored `ETag` /
 - **Too soon** — the cadence floor has not yet elapsed since the last fetch;
     nothing is fetched.
 - **Error** — the fetch failed (network / timeout / HTTP error / missing
-    Auth-Key). The existing snapshot is left untouched and its freshness is
-    **not** advanced, so it decays toward Stale naturally.
+    Auth-Key), **or** the server returned a `200` whose body carries data but
+    parses to no recognizable entries (e.g. an upstream HTML error / block page,
+    or a feed-format change). In either case the existing snapshot is left
+    untouched and its freshness is **not** advanced, so it decays toward Stale
+    naturally — a bad response can never wipe a good snapshot. (A genuinely
+    empty or comment-only feed is *not* an error; it imports 0 rows as above.)
 
 Each source is single-flighted: a Fetch Now while another fetch of the same
 source is already in progress is skipped rather than run twice.

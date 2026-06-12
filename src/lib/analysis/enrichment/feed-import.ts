@@ -432,6 +432,38 @@ export function parseFeedContent(
 }
 
 /**
+ * Whether `content` has at least one non-blank, non-comment data line.
+ * Comment conventions across the Tier-1 parsers are `#` (abuse.ch) and `;`
+ * (Spamhaus), so a leading `#`/`;` or a blank line is not a data line.
+ */
+export function hasFeedDataLines(content: string): boolean {
+  return content.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return (
+      trimmed.length > 0 && !trimmed.startsWith("#") && !trimmed.startsWith(";")
+    );
+  });
+}
+
+/**
+ * Whether parsed `content` is "unparseable": it carries data lines yet yields
+ * zero rows. The per-kind parsers are intentionally lenient and silently drop
+ * anything they do not recognize, so a structurally-wrong body — an upstream
+ * HTML error/block page, or a format drift returned with a 200 — parses to
+ * nothing. Genuinely empty / comment-only content is NOT unparseable (it
+ * legitimately clears the source). Shared by the manual-upload validation and
+ * the self-fetch engine so neither replaces a good snapshot with junk.
+ */
+export function isUnparseableFeedContent(
+  parse: FeedParseKind,
+  entityType: EntityType,
+  content: string,
+): boolean {
+  const rows = parseFeedContent(parse, entityType, content);
+  return rows.length === 0 && hasFeedDataLines(content);
+}
+
+/**
  * Import one raw feed payload: parse + normalize its content (per the
  * payload's `parse` kind), then replace the source's snapshot rows in
  * `ioc_feed_snapshot`. The provenance carries the freshness/version stamp.

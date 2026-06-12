@@ -12,8 +12,12 @@ import "server-only";
 
 import type { Pool } from "pg";
 import { getTier1FeedSource, TIER1_FEED_SOURCES } from "./feed-catalog";
-import { parseFeedContent } from "./feed-import";
+import { hasFeedDataLines, isUnparseableFeedContent } from "./feed-import";
 import { type RawFeedPayload, resolveTiFeedMode } from "./feed-source";
+
+// Re-exported from the shared parse module (`feed-import`) where the rule now
+// lives, so manual-upload and self-fetch validate feed content identically.
+export { hasFeedDataLines };
 
 /** Sane upper bound on an uploaded feed file (Tier-1 feeds are modest). */
 export const MAX_FEED_UPLOAD_BYTES = 32 * 1024 * 1024; // 32 MiB
@@ -40,20 +44,6 @@ export function manualUploadModeActive(
   } catch {
     return false;
   }
-}
-
-/**
- * Whether the content has at least one non-blank, non-comment data line.
- * Comment conventions across the Tier-1 parsers are `#` (abuse.ch) and `;`
- * (Spamhaus), so a leading `#`/`;` or blank line is not a data line.
- */
-export function hasFeedDataLines(content: string): boolean {
-  return content.split(/\r?\n/).some((line) => {
-    const trimmed = line.trim();
-    return (
-      trimmed.length > 0 && !trimmed.startsWith("#") && !trimmed.startsWith(";")
-    );
-  });
 }
 
 /**
@@ -92,12 +82,9 @@ export function buildManualUploadPayload(args: {
  * Genuinely empty / comment-only content is allowed — it clears the source.
  */
 export function assertParseableUpload(payload: RawFeedPayload): void {
-  const rows = parseFeedContent(
-    payload.parse,
-    payload.entityType,
-    payload.content,
-  );
-  if (rows.length === 0 && hasFeedDataLines(payload.content)) {
+  if (
+    isUnparseableFeedContent(payload.parse, payload.entityType, payload.content)
+  ) {
     throw new FeedUploadError(
       "Uploaded file has no recognizable feed entries for this source",
     );
