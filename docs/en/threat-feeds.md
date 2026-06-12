@@ -190,7 +190,9 @@ and replace-only import as a **Fetch Now**. The scheduler is inactive outside
 
 In self-fetch mode each row shows the **Fetch URL**, the **Last Fetched** time,
 the **Next Fetch** time (when the scheduler would next refresh the source at the
-effective cadence; **Off** while the schedule is disabled), the last fetch
+effective cadence; **Off** while the schedule is disabled, and **Due now** for a
+source that has never been fetched — the next tick will refresh it), the last
+fetch
 **Status** (`ok` / `not-modified` / `error`, with the error message on hover),
 and a **Freshness** badge. Presence and freshness come from the last successful
 fetch time — so a source that fetched successfully but imported 0 rows still

@@ -245,6 +245,34 @@ describe("GET /api/admin/ti-feed (shared surface, self-fetch)", () => {
     expect(Array.isArray(body.sources)).toBe(true);
   });
 
+  it("marks a never-fetched fetchable source as due now, not a bare null", async () => {
+    // With no `feed_fetch_state` rows, every fetchable source has never been
+    // fetched. The status GET must surface that as `dueNow: true` (the worker
+    // fetches it on the next tick) rather than a bare `nextFetchDueAt: null`,
+    // which the UI would render as "—" — indistinguishable from a merged,
+    // non-fetchable source.
+    const { GET } = await import("../route");
+    const res = await GET(
+      new NextRequest(new URL("http://localhost/api/admin/ti-feed")),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const feodo = body.sources.find(
+      (s: { sourcePolicyId: string }) => s.sourcePolicyId === "abuse.ch/feodo",
+    );
+    expect(feodo).toMatchObject({
+      fetchable: true,
+      lastFetchedAt: null,
+      nextFetchDueAt: null,
+      dueNow: true,
+    });
+    // A non-fetchable (merged) source is never "due now".
+    const edrop = body.sources.find(
+      (s: { sourcePolicyId: string }) => s.sourcePolicyId === "spamhaus/edrop",
+    );
+    expect(edrop).toMatchObject({ fetchable: false, dueNow: false });
+  });
+
   it("404s in fixture mode (neither manual-upload nor self-fetch)", async () => {
     process.env.TI_FEED_MODE = "fixture";
     const { GET } = await import("../route");

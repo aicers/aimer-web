@@ -72,20 +72,34 @@ export const GET = withAuth(
       const sources = statuses.map((status) => {
         const fetchConfig = getTier1FeedSource(status.sourcePolicyId)?.fetch;
         if (!fetchConfig) {
-          return { ...status, effectiveCadenceMs: null, nextFetchDueAt: null };
+          return {
+            ...status,
+            effectiveCadenceMs: null,
+            nextFetchDueAt: null,
+            dueNow: false,
+          };
         }
         const cadence = effectiveCadenceMs(
           schedule.intervalMs,
           fetchConfig.cadenceFloorMs,
         );
-        // Next-due mirrors `nextFetchAllowedAt(state, cadence)`: a
-        // never-fetched source (no `lastFetchedAt`) is due now (`null`).
+        // Next-due mirrors the worker's `nextFetchAllowedAt(state, cadence)`.
+        // A never-fetched source has no concrete next-due timestamp, but the
+        // worker treats it as due on the next tick. Surface that explicitly as
+        // `dueNow` instead of a bare `null` — otherwise the UI would render it
+        // as "—", indistinguishable from a non-fetchable (merged) source.
         const nextFetchDueAt = status.lastFetchedAt
           ? new Date(
               new Date(status.lastFetchedAt).getTime() + cadence,
             ).toISOString()
           : null;
-        return { ...status, effectiveCadenceMs: cadence, nextFetchDueAt };
+        const dueNow = status.lastFetchedAt === null;
+        return {
+          ...status,
+          effectiveCadenceMs: cadence,
+          nextFetchDueAt,
+          dueNow,
+        };
       });
       return Response.json({ mode: "self-fetch", sources, schedule });
     }

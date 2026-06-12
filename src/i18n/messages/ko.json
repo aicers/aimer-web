@@ -516,7 +516,8 @@
     "scheduleError": "예약 저장에 실패했습니다. 다시 시도해 주세요.",
     "scheduleIntervalInvalid": "양의 분 단위 숫자를 입력하거나 비워 두세요.",
     "nextFetch": "다음 가져오기",
-    "scheduleDisabledNextFetch": "꺼짐"
+    "scheduleDisabledNextFetch": "꺼짐",
+    "scheduleDueNow": "지금 예정"
   },
   "validation": {
     "required": "필수 입력 항목입니다",

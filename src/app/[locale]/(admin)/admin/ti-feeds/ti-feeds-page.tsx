@@ -55,6 +55,7 @@ interface SelfFetchSourceStatus {
   lastRowCount: number | null;
   effectiveCadenceMs?: number | null;
   nextFetchDueAt?: string | null;
+  dueNow?: boolean;
 }
 
 interface SelfFetchSchedule {
@@ -319,8 +320,13 @@ function SelfFetchView() {
   const [authKeySaving, setAuthKeySaving] = useState(false);
 
   // Schedule form state. `scheduleEnabled` / `intervalMinutes` are the edited
-  // values; `fetchStatus` seeds them from the stored schedule on each load.
+  // (draft) values; `fetchStatus` seeds them from the stored schedule on each
+  // load. `savedScheduleEnabled` mirrors the PERSISTED `enabled` flag and only
+  // changes on a successful load/save — the table's next-due column and the
+  // status text are driven from it so a not-yet-saved toggle never implies the
+  // worker's behavior has changed.
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [savedScheduleEnabled, setSavedScheduleEnabled] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState("");
   const [scheduleSaving, setScheduleSaving] = useState(false);
 
@@ -334,6 +340,7 @@ function SelfFetchView() {
       }>("/api/admin/ti-feed");
       setSources(data.sources);
       setScheduleEnabled(data.schedule.enabled);
+      setSavedScheduleEnabled(data.schedule.enabled);
       setIntervalMinutes(
         data.schedule.intervalMs
           ? String(Math.round(data.schedule.intervalMs / 60000))
@@ -508,7 +515,7 @@ function SelfFetchView() {
           </div>
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              {scheduleEnabled
+              {savedScheduleEnabled
                 ? t("scheduleEnabledOn")
                 : t("scheduleEnabledOff")}
             </p>
@@ -593,8 +600,10 @@ function SelfFetchView() {
                   <TableCell className="text-muted-foreground">
                     {!source.fetchable ? (
                       "—"
-                    ) : !scheduleEnabled ? (
+                    ) : !savedScheduleEnabled ? (
                       t("scheduleDisabledNextFetch")
+                    ) : source.dueNow ? (
+                      t("scheduleDueNow")
                     ) : source.nextFetchDueAt ? (
                       <Timestamp at={source.nextFetchDueAt} />
                     ) : (
