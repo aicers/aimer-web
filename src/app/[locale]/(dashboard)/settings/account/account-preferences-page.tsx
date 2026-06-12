@@ -9,6 +9,7 @@ import { useCustomerContext } from "@/hooks/use-customer-context";
 import { usePathname, useRouter } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import { apiFetch } from "@/lib/api/client";
+import type { MeResponse } from "@/lib/api/types";
 import {
   formatDateTime,
   formatDateTimeCompact,
@@ -33,12 +34,26 @@ function supportedTimeZones(): string[] {
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 
+/**
+ * The fields the preferences `PATCH` echoes back — the subset of `MeResponse`
+ * this page persists. Merged into the shared `me` after a successful save.
+ */
+type SavedPreferences = Pick<
+  MeResponse,
+  | "locale"
+  | "timezone"
+  | "timeFormatLocale"
+  | "timeFormatHourCycle"
+  | "timeFormatSeconds"
+  | "timeFormatTzLabel"
+>;
+
 /** A representative afternoon instant for the live format preview. */
 const PREVIEW_INSTANT = new Date("2026-06-03T14:05:30Z");
 
 export function AccountPreferencesPage() {
   const t = useTranslations("accountSettings");
-  const { me } = useCustomerContext();
+  const { me, updateMe } = useCustomerContext();
   const currentLocale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -82,22 +97,26 @@ export function AccountPreferencesPage() {
   );
 
   // Live preview of the sample instant rendered with the current selections.
-  // The preview locale resolves `'app'`/default against the app locale, just
-  // as `<Timestamp>` does; compact honours only locale + hour cycle.
+  // The `'app'` sentinel and the compact fallback resolve against the *pending*
+  // `language` selection (not the route locale `currentLocale`): saving applies
+  // that language, so the preview must reflect what the user will actually get
+  // once they save — picking "Follow app language" + Korean should preview in
+  // Korean immediately, before navigation. Compact honours only locale + hour
+  // cycle.
   const preview = useMemo(() => {
     if (!mounted) return { general: "", compact: "" };
-    const resolved = resolveTimeFormat(storedTimeFormat, currentLocale);
+    const resolved = resolveTimeFormat(storedTimeFormat, language);
     const tz = resolveDisplayTimeZone(timezone === "" ? null : timezone);
     return {
       general: formatDateTime(PREVIEW_INSTANT, tz, resolved),
       compact: formatDateTimeCompact(
         PREVIEW_INSTANT,
         tz,
-        resolved.locale ?? currentLocale,
+        resolved.locale ?? language,
         { hourCycle: resolved.hourCycle },
       ),
     };
-  }, [mounted, storedTimeFormat, timezone, currentLocale]);
+  }, [mounted, storedTimeFormat, timezone, language]);
 
   function markDirty() {
     setStatus("idle");
@@ -106,17 +125,24 @@ export function AccountPreferencesPage() {
   async function onSave() {
     setStatus("saving");
     try {
-      await apiFetch("/api/account/preferences", {
-        method: "PATCH",
-        body: JSON.stringify({
-          locale: language,
-          timezone: timezone === "" ? null : timezone,
-          timeFormatLocale: storedTimeFormat.locale,
-          timeFormatHourCycle: storedTimeFormat.hourCycle,
-          timeFormatSeconds: storedTimeFormat.seconds,
-          timeFormatTzLabel: storedTimeFormat.tzLabel,
-        }),
-      });
+      const updated = await apiFetch<SavedPreferences>(
+        "/api/account/preferences",
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            locale: language,
+            timezone: timezone === "" ? null : timezone,
+            timeFormatLocale: storedTimeFormat.locale,
+            timeFormatHourCycle: storedTimeFormat.hourCycle,
+            timeFormatSeconds: storedTimeFormat.seconds,
+            timeFormatTzLabel: storedTimeFormat.tzLabel,
+          }),
+        },
+      );
+      // Push the saved values into the shared `me` so the timezone and
+      // display-format providers re-render every `<Timestamp>` in the live
+      // session — without this the change would only show after a reload.
+      updateMe(updated);
       setStatus("saved");
 
       // Apply the language change immediately: mirror the cookie and

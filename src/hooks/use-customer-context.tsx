@@ -51,6 +51,15 @@ interface CustomerContextValue {
    * value is normalized before it is written. No-op in a bridge session.
    */
   setScope: (next: "all" | string[]) => void;
+  /**
+   * Merge a partial update into the cached `me` object. Used by the account
+   * settings page after a successful preferences `PATCH` so the language,
+   * timezone, and display-format providers (e.g. {@link AccountTimeFormatProvider})
+   * pick up the new values immediately — without it the saved preference would
+   * not affect `<Timestamp>` rendering until `/api/auth/me` is fetched again
+   * (a full reload). No-op while `me` is still loading (`null`).
+   */
+  updateMe: (patch: Partial<MeResponse>) => void;
   isBridgeSession: boolean;
   loading: boolean;
 }
@@ -80,6 +89,10 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
 
   const singleCustomerId =
     scope.customerIds.length === 1 ? scope.customerIds[0] : null;
+
+  const updateMe = useCallback((patch: Partial<MeResponse>) => {
+    setMe((prev) => (prev ? { ...prev, ...patch } : prev));
+  }, []);
 
   const setScope = useCallback(
     (next: "all" | string[]) => {
@@ -141,6 +154,7 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
       scope,
       singleCustomerId,
       setScope,
+      updateMe,
       isBridgeSession,
       loading,
     }),
@@ -151,6 +165,7 @@ export function CustomerContextProvider({ children }: { children: ReactNode }) {
       scope,
       singleCustomerId,
       setScope,
+      updateMe,
       isBridgeSession,
       loading,
     ],

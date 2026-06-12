@@ -11,6 +11,7 @@ import {
   resolveDisplayTimeZone,
   resolveTimeFormat,
   TIME_FORMAT_LOCALE_APP,
+  TIME_FORMAT_LOCALES,
 } from "../format-timestamp";
 
 describe("isValidTimeZone", () => {
@@ -332,7 +333,11 @@ describe("reservedWidthCh (#556)", () => {
       },
     ]) {
       const reserved = reservedWidthCh("general", opts);
-      for (const locale of opts.locale ? [opts.locale] : ["en-US", "ko"]) {
+      // For "follow browser" (undefined), the render can resolve to ANY curated
+      // locale, so the reservation must bound every one of them — measuring
+      // only en/ko would miss wider forms (see the fr-CA case below).
+      const locales = opts.locale ? [opts.locale] : TIME_FORMAT_LOCALES;
+      for (const locale of locales) {
         const rendered = formatDateTime(worst, "Asia/Seoul", {
           ...opts,
           locale,
@@ -340,6 +345,47 @@ describe("reservedWidthCh (#556)", () => {
         expect(footprintCh(rendered)).toBeLessThanOrEqual(reserved);
       }
     }
+  });
+
+  it("bounds a wide browser locale (fr-CA) under 'follow browser'", () => {
+    // fr-CA spells the time out (`11 h 59 min 59 s`), wider than the en/ko
+    // samples. Under "follow browser" the slot must still reserve enough for it,
+    // or it would grow after mount — defeating the no-layout-shift guarantee.
+    const opts = {
+      locale: undefined,
+      hourCycle: "h12" as const,
+      seconds: true,
+      tzLabel: false,
+    };
+    const reserved = reservedWidthCh("general", opts);
+    const frCa = formatDateTime(
+      new Date("2026-12-31T14:59:59Z"),
+      "Asia/Seoul",
+      {
+        ...opts,
+        locale: "fr-CA",
+      },
+    );
+    expect(footprintCh(frCa)).toBeGreaterThan(28); // exceeds the en/ko reserve
+    expect(footprintCh(frCa)).toBeLessThanOrEqual(reserved);
+  });
+
+  it("ignores seconds and tz-label preferences for the compact reservation", () => {
+    // Compact never renders seconds or a tz label, so toggling those prefs must
+    // not change the compact slot width on the tight surfaces where it is used.
+    const base = {
+      locale: undefined,
+      hourCycle: undefined,
+      seconds: true,
+      tzLabel: false,
+    };
+    const widthOnTz = reservedWidthCh("compact", { ...base, tzLabel: true });
+    const widthOnSeconds = reservedWidthCh("compact", {
+      ...base,
+      seconds: false,
+    });
+    expect(widthOnTz).toBe(reservedWidthCh("compact", base));
+    expect(widthOnSeconds).toBe(reservedWidthCh("compact", base));
   });
 
   it("grows when a wider format is chosen (tz label + 24h spelled-out ko)", () => {

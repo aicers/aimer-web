@@ -112,6 +112,9 @@ choices — so a long label can never break the compact layout.
 
 ## Saving
 
-Click **Save** to store your changes. Invalid values (an unsupported
-language, an unknown timezone, a formatting locale outside the offered
-list, or an unknown hour cycle) are rejected and not saved.
+Click **Save** to store your changes. Saved date-and-time options take
+effect across the current session right away — the timestamps already on
+screen re-render with your new format, with no reload needed. Invalid
+values (an unsupported language, an unknown timezone, a formatting locale
+outside the offered list, or an unknown hour cycle) are rejected and not
+saved.

@@ -301,19 +301,36 @@ const reservedWidthCache = new Map<string, number>();
 /**
  * The `ch` width to reserve for the `<Timestamp>` slot under the given mode and
  * resolved options. When the locale follows the browser/app (`undefined`), the
- * actual locale is unknown, so the worst case across `en`/`ko` is measured.
+ * actual locale is unknown at sizing time, so the global worst case across the
+ * full curated locale set is measured — not just `en`/`ko`. Those two are not
+ * the widest: a `fr-CA` browser spells the time out (`11 h 59 min 59 s`), wider
+ * than the `en`/`ko` samples, and would grow the slot after mount. Measuring
+ * every locale the format can resolve to keeps the reservation an upper bound,
+ * so there is no layout shift in the default "follow browser" mode.
+ *
+ * Compact never renders seconds or a timezone label (#556), so those two
+ * preferences must not affect its reservation — otherwise enabling "show
+ * timezone label" would widen compact slots whose output is unchanged. They are
+ * folded out of both the cache key and the label margin in compact mode.
+ *
  * A small margin is added; the timezone-label offset varies by zone (e.g.
  * `GMT+13:45` is wider than the `GMT+9` measured here), so extra headroom is
- * reserved when the label is shown.
+ * reserved when the label is shown (general only).
  */
 export function reservedWidthCh(
   mode: "general" | "compact",
   resolved: ResolvedTimeFormat,
 ): number {
-  const cacheKey = `${mode}|${resolved.locale ?? ""}|${resolved.hourCycle ?? ""}|${resolved.seconds}|${resolved.tzLabel}`;
+  // Fold out the compact-irrelevant knobs so they neither split the cache nor
+  // inflate the margin: compact output ignores seconds and the tz label.
+  const seconds = mode === "general" ? resolved.seconds : false;
+  const tzLabel = mode === "general" ? resolved.tzLabel : false;
+  const cacheKey = `${mode}|${resolved.locale ?? ""}|${resolved.hourCycle ?? ""}|${seconds}|${tzLabel}`;
   const cached = reservedWidthCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  const locales = resolved.locale ? [resolved.locale] : ["en-US", "ko"];
+  // Explicit locale → measure only itself; "follow browser/app" → measure the
+  // whole curated set to bound every locale the render could resolve to.
+  const locales = resolved.locale ? [resolved.locale] : TIME_FORMAT_LOCALES;
   let max = 0;
   for (const locale of locales) {
     const sample =
@@ -325,7 +342,7 @@ export function reservedWidthCh(
     const ch = footprintCh(sample);
     if (ch > max) max = ch;
   }
-  const width = max + (resolved.tzLabel ? 4 : 1);
+  const width = max + (tzLabel ? 4 : 1);
   reservedWidthCache.set(cacheKey, width);
   return width;
 }

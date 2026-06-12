@@ -178,6 +178,7 @@ function mockDefaults(
     scope: { isAll: true, customerIds: ["c1", "c2"], canonical: "all" },
     singleCustomerId: null,
     setScope: vi.fn(),
+    updateMe: vi.fn(),
     isBridgeSession: false,
     loading: false,
     ...overrides,
