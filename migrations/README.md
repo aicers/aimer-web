@@ -7,6 +7,7 @@ runner (`src/lib/db/migrate.ts`), organized by database scope.
 
 - `auth/` — Schema for the auth database (shared, central)
 - `audit/` — Schema for the audit database (shared, central)
+- `feed/` — Schema for the threat-intel feed database (shared, central)
 - `customer/` — Schema applied to every customer database
 - `group/` — Schema applied to every customer-group data database
 
@@ -51,12 +52,21 @@ name, SHA-256 checksum, applied-at). On every run it:
    stored checksum still matches the file on disk (mismatch aborts).
 3. Applies each pending file inside a transaction and records it.
 
-Auth and audit migrations run on application startup. Customer and
+Auth, audit, and feed migrations run on application startup. Customer and
 group databases are migrated at provisioning time
 (`provision-customer.ts` / `provision-group.ts`), on startup for every
 active tenant, and on demand via `pnpm migrate:customers` /
 `pnpm migrate:groups` (retry / disaster-recovery paths). The backup
 tooling (`src/lib/backup/`) replays pending migrations after a restore.
+
+The feed database is intentionally **not** a backup/restore target yet.
+In this part of the TI feed series it holds no non-reproducible data:
+production has no fetch/refresh worker, so `ioc_feed_snapshot` is empty
+until a supply mode populates it, and its only contents are reproducible
+(schema from `migrations/feed/` on startup, rows re-seeded from the
+committed `feeds/*` fixtures). Backup/restore/verify integration lands
+with the supply part that introduces fetched, non-reproducible feed data
+(self-fetch / managed), where there is finally state worth preserving.
 
 ## Database Roles
 
@@ -70,10 +80,16 @@ Each database uses two PostgreSQL roles to enforce least-privilege access:
 For the audit database the runtime role (`aimer_audit`) is restricted
 to INSERT + SELECT only — it cannot UPDATE or DELETE audit records.
 
+The feed database follows the same owner/runtime split
+(`aimer_feed_owner` / `aimer_feed`). The runtime role has
+SELECT/INSERT/DELETE on `ioc_feed_snapshot` (the import path replaces a
+source's rows wholesale), no UPDATE.
+
 The migration runner reads `DATABASE_MIGRATION_URL` /
-`AUDIT_DATABASE_MIGRATION_URL` (falling back to `DATABASE_URL` /
-`AUDIT_DATABASE_URL` when unset). The application runtime always uses
-`DATABASE_URL` / `AUDIT_DATABASE_URL`.
+`AUDIT_DATABASE_MIGRATION_URL` / `FEED_DATABASE_MIGRATION_URL` (falling
+back to `DATABASE_URL` / `AUDIT_DATABASE_URL` / `FEED_DATABASE_URL` when
+unset). The application runtime always uses `DATABASE_URL` /
+`AUDIT_DATABASE_URL` / `FEED_DATABASE_URL`.
 
 Customer and group databases share two roles across all tenants:
 

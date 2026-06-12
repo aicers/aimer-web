@@ -8,6 +8,23 @@ const AUTH_ADMIN_URL =
 // For audit: prefer a dedicated audit admin URL, otherwise fall back to
 // the auth admin URL (assumes same PostgreSQL instance).
 const AUDIT_ADMIN_URL = process.env.AUDIT_DATABASE_ADMIN_URL ?? AUTH_ADMIN_URL;
+// For feed: prefer a dedicated feed admin URL, otherwise fall back to the
+// auth admin URL (assumes same PostgreSQL instance).
+const FEED_ADMIN_URL = process.env.FEED_DATABASE_ADMIN_URL ?? AUTH_ADMIN_URL;
+
+type DbScope = "auth" | "audit" | "feed";
+
+/** The admin URL for a scope (auth / audit / feed). */
+function adminUrlForScope(scope: DbScope): string | undefined {
+  switch (scope) {
+    case "audit":
+      return AUDIT_ADMIN_URL;
+    case "feed":
+      return FEED_ADMIN_URL;
+    default:
+      return AUTH_ADMIN_URL;
+  }
+}
 
 /**
  * Whether PostgreSQL is available for integration tests.
@@ -31,20 +48,21 @@ function getAdminPool(url: string): Pool {
  * Create a fresh test database and return a Pool connected to it.
  *
  * @param prefix - Name prefix for the test database
- * @param scope  - "auth" (default) or "audit" to select the admin URL
+ * @param scope  - "auth" (default), "audit", or "feed" to select the admin URL
  */
 export async function createTestDatabase(
   prefix: string,
-  scope: "auth" | "audit" = "auth",
+  scope: DbScope = "auth",
 ): Promise<{
   dbName: string;
   pool: Pool;
   url: string;
 }> {
-  const adminUrl = scope === "audit" ? AUDIT_ADMIN_URL : AUTH_ADMIN_URL;
+  const adminUrl = adminUrlForScope(scope);
   if (!adminUrl) {
     throw new Error(
-      `No admin URL for scope "${scope}". Set DATABASE_ADMIN_URL or AUDIT_DATABASE_ADMIN_URL.`,
+      `No admin URL for scope "${scope}". Set DATABASE_ADMIN_URL, ` +
+        "AUDIT_DATABASE_ADMIN_URL, or FEED_DATABASE_ADMIN_URL.",
     );
   }
 
@@ -65,11 +83,9 @@ export async function createTestDatabase(
 export async function dropTestDatabase(
   dbName: string,
   pool?: Pool,
-  scope: "auth" | "audit" = "auth",
+  scope: DbScope = "auth",
 ): Promise<void> {
-  const adminUrl = (
-    scope === "audit" ? AUDIT_ADMIN_URL : AUTH_ADMIN_URL
-  ) as string;
+  const adminUrl = adminUrlForScope(scope) as string;
   const admin = getAdminPool(adminUrl);
 
   // Suppress error events BEFORE terminating backends — the FATAL
@@ -103,17 +119,15 @@ export async function closeAdminPool(): Promise<void> {
  * Create a Pool connected to a specific database as a specific role.
  * Useful for testing role permissions (e.g., connect as aimer_auth).
  *
- * @param scope - "auth" or "audit" to derive host/port from the correct admin URL
+ * @param scope - "auth", "audit", or "feed" to derive host/port from the correct admin URL
  */
 export function createRolePool(
   dbName: string,
   role: string,
   password: string,
-  scope: "auth" | "audit" = "auth",
+  scope: DbScope = "auth",
 ): Pool {
-  const adminUrl = (
-    scope === "audit" ? AUDIT_ADMIN_URL : AUTH_ADMIN_URL
-  ) as string;
+  const adminUrl = adminUrlForScope(scope) as string;
   const parsed = new URL(adminUrl);
   parsed.username = role;
   parsed.password = password;

@@ -1,5 +1,5 @@
 // RFC 0003 P1a (#361) — pg-backed `FeedStore` over `ioc_feed_snapshot`
-// (shared auth DB).
+// (dedicated feed DB, #564).
 //
 // `probe` reports a source's snapshot provenance/freshness (so the
 // enricher can emit answered/stale outcomes), and `match` returns the

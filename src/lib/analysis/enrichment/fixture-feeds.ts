@@ -1,31 +1,31 @@
-// RFC 0003 P1a (#361) — load the committed, pinned Tier-1 feed fixtures
-// and seed them into `ioc_feed_snapshot`.
+// RFC 0003 P1a (#361) — the committed, pinned Tier-1 feed fixtures, now
+// expressed as a `FixtureFeedSource` (#564).
 //
 // These fixtures (`./feeds/*`) are the offline stand-in for live feed
 // downloads (RFC 0003 §"Testing" — "fixtures are pinned local snapshots,
-// never live feeds"). Tests and local dev seed from them; the scheduled
-// refresh worker that fetches the real feeds is a separate follow-up.
+// never live feeds"). Tests and local dev seed from them; the later supply
+// modes (manual-upload, self-fetch, managed) are separate `FeedSource`
+// implementations in this series.
 //
-// Reads the fixture files from disk relative to the repo root. This is a
+// `FixtureFeedSource` is the `fixture` supply mode: it yields the raw feed
+// bytes (read from disk) + provenance, and the common downstream
+// (`importFromFeedSource`) parses/normalizes/imports them. This is the
 // test/dev-only seeding path — production imports come from the (future)
-// refresh worker, never this module.
+// upload/fetch sources, never this module.
 
 import "server-only";
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
+import { importFromFeedSource } from "./feed-import";
 import {
-  type FeedSnapshotRow,
-  importFeedSnapshot,
-  normalizeCidrs,
-  normalizeExactValues,
-  parseIpBlocklist,
-  parseSpamhausDrop,
-  parseUrlhausCsv,
-  parseUrlhausHosts,
-  parseUrlhausPayloadsCsv,
-} from "./feed-import";
+  type FeedParseKind,
+  type FeedSource,
+  type RawFeedPayload,
+  resolveTiFeedMode,
+  type TiFeedMode,
+} from "./feed-source";
 import type { EntityType, HitType } from "./types";
 
 const FEEDS_DIR = join(
@@ -37,16 +37,10 @@ const FEEDS_DIR = join(
   "feeds",
 );
 
-type ParseKind =
-  | "ip-blocklist"
-  | "urlhaus-csv"
-  | "urlhaus-payloads-csv"
-  | "spamhaus-drop";
-
 interface FixtureFeedSpec {
   sourcePolicyId: string;
   file: string;
-  parse: ParseKind;
+  parse: FeedParseKind;
   entityType: EntityType;
   hitType: HitType;
   classification?: string;
@@ -96,56 +90,101 @@ export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = [
   },
 ];
 
-/** Parse + normalize one fixture spec into snapshot rows. */
-export function loadFixtureRows(spec: FixtureFeedSpec): FeedSnapshotRow[] {
-  const text = readFileSync(join(FEEDS_DIR, spec.file), "utf8");
-  switch (spec.parse) {
-    case "ip-blocklist":
-      return normalizeExactValues(spec.entityType, parseIpBlocklist(text)).rows;
-    case "urlhaus-csv": {
-      // URLhaus contributes both URL rows and the DOMAIN host of each URL,
-      // under the one `abuse.ch/urlhaus` source, so a bare `host`/`dns_query`
-      // domain member matches the same infrastructure (its policy already
-      // declares `["URL", "DOMAIN"]`).
-      const urls = parseUrlhausCsv(text);
-      const urlRows = normalizeExactValues("URL", urls).rows;
-      const domainRows = normalizeExactValues(
-        "DOMAIN",
-        parseUrlhausHosts(urls),
-      ).rows.map((row) => ({ ...row, entityType: "DOMAIN" as EntityType }));
-      return [...urlRows, ...domainRows];
-    }
-    case "urlhaus-payloads-csv":
-      // URLhaus also publishes a Collected Payloads dump keyed by MD5/SHA-256
-      // hash (a separate download from the URL feed), under its own
-      // `abuse.ch/urlhaus-payloads` source so it does not clobber the URL/host
-      // snapshot.
-      return normalizeExactValues("HASH", parseUrlhausPayloadsCsv(text)).rows;
-    case "spamhaus-drop":
-      return normalizeCidrs(parseSpamhausDrop(text)).rows;
-    default:
-      throw new Error(`unknown parse kind: ${spec.parse}`);
+/** Options stamping fixture provenance (freshness drives stale coverage). */
+export interface FixtureFeedSourceOptions {
+  /** ISO timestamp of the snapshot's freshness — pass relative to the test
+   * clock to control fresh vs stale coverage. */
+  sourceUpdatedAt: string;
+  sourceVersion?: string;
+}
+
+/**
+ * The committed-fixture `FeedSource` (mode `fixture`). Reads `./feeds/*`
+ * from disk and yields each as a raw payload + provenance; the common
+ * downstream (`importFromFeedSource`) parses/normalizes/imports them. No
+ * behavior change from the prior direct-seed path — it still reads the same
+ * files and produces the same `ioc_feed_snapshot` rows.
+ */
+export class FixtureFeedSource implements FeedSource {
+  readonly mode: TiFeedMode = "fixture";
+
+  constructor(private readonly options: FixtureFeedSourceOptions) {}
+
+  async loadPayloads(): Promise<RawFeedPayload[]> {
+    return FIXTURE_FEEDS.map((spec) => {
+      const path = join(FEEDS_DIR, spec.file);
+      return {
+        sourcePolicyId: spec.sourcePolicyId,
+        parse: spec.parse,
+        entityType: spec.entityType,
+        hitType: spec.hitType,
+        classification: spec.classification,
+        content: readFileSync(path, "utf8"),
+        provenance: {
+          mode: this.mode,
+          origin: path,
+          sourceUpdatedAt: this.options.sourceUpdatedAt,
+          sourceVersion: this.options.sourceVersion,
+        },
+      };
+    });
   }
 }
 
 /**
  * Seed every fixture feed into `ioc_feed_snapshot` (replace-all per
- * source). `sourceUpdatedAt` stamps the snapshot freshness — pass a value
- * relative to the test clock to control fresh vs stale coverage.
+ * source) via the `FixtureFeedSource`. `sourceUpdatedAt` stamps the
+ * snapshot freshness — pass a value relative to the test clock to control
+ * fresh vs stale coverage.
  */
 export async function seedFixtureFeeds(
   pool: Pool,
-  options: { sourceUpdatedAt: string; sourceVersion?: string },
+  options: FixtureFeedSourceOptions,
 ): Promise<void> {
-  for (const spec of FIXTURE_FEEDS) {
-    await importFeedSnapshot(pool, {
-      sourcePolicyId: spec.sourcePolicyId,
-      entityType: spec.entityType,
-      hitType: spec.hitType,
-      classification: spec.classification,
-      sourceVersion: options.sourceVersion,
-      sourceUpdatedAt: options.sourceUpdatedAt,
-      rows: loadFixtureRows(spec),
-    });
+  await importFromFeedSource(pool, new FixtureFeedSource(options));
+}
+
+/**
+ * Resolve the deployment's configured `FeedSource` from `TI_FEED_MODE`.
+ *
+ * This is the single mode→source dispatch point: parts 2-4 add their case
+ * here (returning their `FeedSource` for `manual-upload` / `self-fetch` /
+ * `managed`) instead of teaching every import caller a new mode. Callers
+ * go through this seam rather than constructing a `FeedSource` directly, so
+ * the env actually selects the supply mode.
+ *
+ * `resolveTiFeedMode()` already fails fast on unknown or not-yet
+ * -implemented modes; the `default` branch only guards against a mode being
+ * promoted into `SUPPORTED_TI_FEED_MODES` without a case wired here.
+ *
+ * (Lives here, not in `feed-source.ts`, to avoid a cycle: this module
+ * already depends on the source types and the concrete `FixtureFeedSource`.)
+ */
+export function resolveConfiguredFeedSource(
+  options: FixtureFeedSourceOptions,
+  modeValue: string | undefined = process.env.TI_FEED_MODE,
+): FeedSource {
+  // Validate + narrow through the resolver so an explicit override gets the
+  // same fail-fast treatment (unknown / reserved-unimplemented) as the env.
+  const mode = resolveTiFeedMode(modeValue);
+  switch (mode) {
+    case "fixture":
+      return new FixtureFeedSource(options);
+    default:
+      throw new Error(`No FeedSource wired for TI_FEED_MODE "${mode}" yet`);
   }
+}
+
+/**
+ * Import the deployment's configured feed source (selected by
+ * `TI_FEED_MODE`) into `ioc_feed_snapshot`. The mode-independent
+ * `seedFixtureFeeds` stays the deterministic test/dev fixture path; this is
+ * the env-driven entry that parts 2-4 extend via
+ * `resolveConfiguredFeedSource`.
+ */
+export async function importConfiguredFeed(
+  pool: Pool,
+  options: FixtureFeedSourceOptions,
+): Promise<void> {
+  await importFromFeedSource(pool, resolveConfiguredFeedSource(options));
 }

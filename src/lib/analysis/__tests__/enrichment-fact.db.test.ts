@@ -51,8 +51,10 @@ import {
 } from "../story-worker";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2711;
+const FEED_LOCK_ID = 2713;
 const CUSTOMER_LOCK_ID = 2712;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004c1";
 const AICE_ID = "aice-fact-1";
@@ -90,6 +92,8 @@ const AIMER_RESPONSE: AnalyzeStoryAimerResponse = {
 describe.skipIf(!hasPostgres)("enrichment-fact flow (#440, cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
+  let feedDbName: string;
+  let feedPool: Pool;
   let customerDbName: string;
   let customerPool: Pool;
   let capturedFacts: string[] = [];
@@ -100,10 +104,11 @@ describe.skipIf(!hasPostgres)("enrichment-fact flow (#440, cross-DB)", () => {
 
   const enrichmentOpts = () => ({
     authPool,
+    feedPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    buildDispatcher: (ap: Pool, now: () => Date) =>
-      buildLocalFeedDispatcher(new PgFeedStore(ap), {
+    buildDispatcher: (fp: Pool, now: () => Date) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), {
         now,
         policies: FLOORING,
       }),
@@ -133,6 +138,11 @@ describe.skipIf(!hasPostgres)("enrichment-fact flow (#440, cross-DB)", () => {
     authPool = auth.pool;
     await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
 
+    const feed = await createTestDatabase("fact_e2e_feed", "feed");
+    feedDbName = feed.dbName;
+    feedPool = feed.pool;
+    await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
+
     const cust = await createTestDatabase("fact_e2e_cust");
     customerDbName = cust.dbName;
     customerPool = cust.pool;
@@ -147,7 +157,7 @@ describe.skipIf(!hasPostgres)("enrichment-fact flow (#440, cross-DB)", () => {
        VALUES ($1, 'fact-e2e', 'Fact E2E', 'active', 'Asia/Seoul')`,
       [CUSTOMER_ID],
     );
-    await importFeedSnapshot(authPool, {
+    await importFeedSnapshot(feedPool, {
       sourcePolicyId: "abuse.ch/feodo",
       entityType: "IP",
       hitType: "deterministic_ioc",
@@ -205,6 +215,7 @@ describe.skipIf(!hasPostgres)("enrichment-fact flow (#440, cross-DB)", () => {
 
   afterAll(async () => {
     await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(feedDbName, feedPool, "feed");
     await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   }, 30_000);

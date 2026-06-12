@@ -1,7 +1,7 @@
 // RFC 0003 P1a (#361) — Tier-1 local-feed enricher + source policies.
 //
 // A DB-backed `Enricher` that matches a `NormalizedIndicator` against an
-// imported feed snapshot (`ioc_feed_snapshot`, shared auth DB) and
+// imported feed snapshot (`ioc_feed_snapshot`, dedicated feed DB #564) and
 // returns an `EnrichmentResult`. Matching is local: only the feed
 // download leaves the host (the import path), never the customer's
 // observed indicators. This follows the reference `FixtureEnricher`

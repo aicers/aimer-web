@@ -58,6 +58,12 @@ export function loadBackupConfig(): BackupConfig {
   };
 }
 
+// The feed DB (`FEED_DATABASE_URL`, #564) is deliberately absent here: in
+// part 1 of the TI feed series it holds no non-reproducible data (no
+// fetch/refresh worker, schema from `migrations/feed/`, rows re-seeded from
+// committed fixtures), so there is nothing to back up. It becomes a target
+// when the self-fetch / managed supply parts introduce fetched feed state.
+// See `migrations/README.md`.
 export type BackupTarget = "auth" | "audit" | "customers" | "openbao";
 
 /**

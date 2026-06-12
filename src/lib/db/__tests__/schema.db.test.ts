@@ -13,6 +13,7 @@ import {
 const MIGRATIONS_ROOT = join(process.cwd(), "migrations");
 const LOCK_ID_AUTH = 1000;
 const LOCK_ID_AUDIT = 1001;
+const LOCK_ID_FEED = 1002;
 
 describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
   let dbName: string;
@@ -1512,6 +1513,90 @@ describe.skipIf(!hasPostgres)("Schema verification (audit_db)", () => {
 
       await expect(
         rolePool.query("DELETE FROM audit_logs WHERE id = 1"),
+      ).rejects.toThrow();
+    });
+  });
+});
+
+describe.skipIf(!hasPostgres)("Schema verification (feed_db)", () => {
+  let dbName: string;
+  let pool: Pool;
+
+  beforeAll(async () => {
+    const db = await createTestDatabase("schema_feed", "feed");
+    dbName = db.dbName;
+    pool = db.pool;
+
+    // Apply all feed migrations
+    await runMigrations(pool, join(MIGRATIONS_ROOT, "feed"), LOCK_ID_FEED);
+  });
+
+  afterAll(async () => {
+    await dropTestDatabase(dbName, pool, "feed");
+    await closeAdminPool();
+  });
+
+  it("applies all feed migrations cleanly", async () => {
+    const { rows } = await pool.query(
+      "SELECT version FROM _migrations ORDER BY version",
+    );
+    // The collapsed first-version schema (#564): one 0000_init.sql.
+    expect(rows).toHaveLength(1);
+  });
+
+  it("ioc_feed_snapshot requires exactly one of match_value / cidr", async () => {
+    // The CHECK ((match_value IS NULL) <> (cidr IS NULL)) rejects rows that
+    // set neither or both.
+    await expect(
+      pool.query(
+        "INSERT INTO ioc_feed_snapshot (source_policy_id, entity_type, hit_type) VALUES ('s', 'IP', 'deterministic_ioc')",
+      ),
+    ).rejects.toThrow();
+    await expect(
+      pool.query(
+        "INSERT INTO ioc_feed_snapshot (source_policy_id, entity_type, hit_type, match_value, cidr) VALUES ('s', 'IP', 'deterministic_ioc', '1.2.3.4', '1.2.3.0/24')",
+      ),
+    ).rejects.toThrow();
+  });
+
+  describe("feed runtime role (aimer_feed) permissions", () => {
+    let rolePool: Pool;
+
+    beforeAll(async () => {
+      await pool.query(`GRANT CONNECT ON DATABASE ${dbName} TO aimer_feed`);
+      await pool.query("GRANT USAGE ON SCHEMA public TO aimer_feed");
+      // The migration grants to aimer_feed_owner and aimer_feed. Since we ran
+      // migrations as superuser, re-grant explicitly.
+      await pool.query(
+        "GRANT SELECT, INSERT, DELETE ON ioc_feed_snapshot TO aimer_feed",
+      );
+
+      rolePool = createRolePool(dbName, "aimer_feed", "changeme", "feed");
+    });
+
+    afterAll(async () => {
+      rolePool.on("error", () => {});
+      await rolePool.end();
+    });
+
+    it("can INSERT, SELECT, and DELETE on ioc_feed_snapshot", async () => {
+      // The import/refresh path replaces a source's rows (DELETE + INSERT).
+      await rolePool.query(
+        "INSERT INTO ioc_feed_snapshot (source_policy_id, entity_type, hit_type, match_value) VALUES ('s', 'IP', 'deterministic_ioc', '1.2.3.4')",
+      );
+      const { rows } = await rolePool.query(
+        "SELECT COUNT(*) FROM ioc_feed_snapshot",
+      );
+      expect(Number(rows[0].count)).toBeGreaterThan(0);
+      await rolePool.query("DELETE FROM ioc_feed_snapshot");
+    });
+
+    it("cannot UPDATE on ioc_feed_snapshot", async () => {
+      // Snapshots are immutable between wholesale replacements — no UPDATE.
+      await expect(
+        rolePool.query(
+          "UPDATE ioc_feed_snapshot SET classification = 'x' WHERE id = 1",
+        ),
       ).rejects.toThrow();
     });
   });

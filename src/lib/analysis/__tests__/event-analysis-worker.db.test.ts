@@ -52,8 +52,10 @@ import {
 } from "../event-enrichment-worker";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2641;
+const FEED_LOCK_ID = 2643;
 const CUSTOMER_LOCK_ID = 2642;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004d1";
 const AICE_ID = "aice-1";
@@ -67,6 +69,8 @@ const MODEL_PAIR = { modelName: MODEL_NAME, model: MODEL };
 describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
   let authDbName: string;
   let authPool: Pool;
+  let feedDbName: string;
+  let feedPool: Pool;
   let customerDbName: string;
   let customerPool: Pool;
 
@@ -75,6 +79,11 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     authDbName = auth.dbName;
     authPool = auth.pool;
     await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
+
+    const feed = await createTestDatabase("evt_job_feed", "feed");
+    feedDbName = feed.dbName;
+    feedPool = feed.pool;
+    await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
 
     const cust = await createTestDatabase("evt_job_cust");
     customerDbName = cust.dbName;
@@ -94,6 +103,7 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
 
   afterAll(async () => {
     await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(feedDbName, feedPool, "feed");
     await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   }, 30_000);
@@ -257,6 +267,10 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
       resolveCustomerPool: () => customerPool,
       loadVerdict: loadEventEnrichmentVerdict,
       driveEnrichment: vi.fn(runEventEnrichment),
+      // The real `runEventEnrichment` reads the feed store; point it at the
+      // dedicated test feed DB (#564) so the default `getFeedPool()` is not
+      // used.
+      enrichmentOptions: { feedPool },
       analyzeLeaf: analyzed as unknown as ProcessEventJobOptions["analyzeLeaf"],
       resolveCap: async () => 5,
       now: () => new Date(NOW),

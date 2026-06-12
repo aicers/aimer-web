@@ -1,7 +1,7 @@
 // RFC 0003 P1a (#361) — enrichment worker integration (cross-DB).
 //
 // Drives `runStoryEnrichment` against a real customer DB (story / member /
-// evidence / state) and a real auth DB (ioc_feed_snapshot), covering:
+// evidence / state) and a dedicated feed DB (ioc_feed_snapshot), covering:
 //   - known_ioc_hit true (floor-eligible deterministic hit) + evidence
 //     storing the external indicator raw in `redaction_token`,
 //   - false-complete (answered, no hit) vs false-unknown (missing feed),
@@ -58,8 +58,10 @@ import {
 } from "../enrichment-worker";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2601;
+const FEED_LOCK_ID = 2603;
 const CUSTOMER_LOCK_ID = 2602;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000003a1";
 const AICE_ID = "aice-1";
@@ -84,15 +86,17 @@ const FLOORING: SourcePolicy[] = [
 
 function opts(
   authPool: Pool,
+  feedPool: Pool,
   customerPool: Pool,
   overrides: Partial<EnrichmentWorkerOptions> = {},
 ): EnrichmentWorkerOptions {
   return {
     authPool,
+    feedPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    buildDispatcher: (ap, now) =>
-      buildLocalFeedDispatcher(new PgFeedStore(ap), {
+    buildDispatcher: (fp, now) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), {
         now,
         policies: FLOORING,
       }),
@@ -174,8 +178,8 @@ interface PolicyEventFields {
   uri: string | null;
 }
 
-async function importFeodo(authPool: Pool, sourceUpdatedAt: string) {
-  await importFeedSnapshot(authPool, {
+async function importFeodo(feedPool: Pool, sourceUpdatedAt: string) {
+  await importFeedSnapshot(feedPool, {
     sourcePolicyId: "abuse.ch/feodo",
     entityType: "IP",
     hitType: "deterministic_ioc",
@@ -189,6 +193,8 @@ async function importFeodo(authPool: Pool, sourceUpdatedAt: string) {
 describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
+  let feedDbName: string;
+  let feedPool: Pool;
   let customerDbName: string;
   let customerPool: Pool;
 
@@ -197,6 +203,11 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     authDbName = auth.dbName;
     authPool = auth.pool;
     await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
+
+    const feed = await createTestDatabase("ioc_enrich_feed", "feed");
+    feedDbName = feed.dbName;
+    feedPool = feed.pool;
+    await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
 
     const cust = await createTestDatabase("ioc_enrich_cust");
     customerDbName = cust.dbName;
@@ -216,6 +227,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
 
   afterAll(async () => {
     await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(feedDbName, feedPool, "feed");
     await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   }, 30_000);
@@ -223,18 +235,18 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   beforeEach(async () => {
     await customerPool.query("DELETE FROM story");
     await customerPool.query("DELETE FROM policy_run");
-    await authPool.query("DELETE FROM ioc_feed_snapshot");
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
     await authPool.query("DELETE FROM story_analysis_state");
   });
 
   it("derives known_ioc_hit=true, flips the floor, and persists evidence", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedStory(customerPool, "1001", { resp_addr: "45.66.230.5" });
 
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1001",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.coverageStatus).toBe("complete");
@@ -298,13 +310,13 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("false-complete: answered, no hit → no evidence, coverage complete", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedStory(customerPool, "1002", { resp_addr: "45.66.230.99" });
 
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1002",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.coverageStatus).toBe("complete");
@@ -324,7 +336,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1003",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.coverageStatus).toBe("unknown");
@@ -343,7 +355,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("recovers a tokenized customer-asset IP via the redaction map", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // The stored member text carries a token; the recovered value is a
     // public IP inside the (here simulated) customer-registered range, so
     // it is floor-eligible and listed in the feed.
@@ -352,7 +364,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1004",
-      opts(authPool, customerPool, {
+      opts(authPool, feedPool, customerPool, {
         loadRedactionMap: async () => ({
           "<<REDACTED_IP_001>>": { kind: "ip", value: "45.66.230.5" },
         }),
@@ -389,7 +401,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     // only the token string the two rows would be indistinguishable and the
     // originals unrecoverable; the `(source_aice_id, member_event_key)` scope
     // ties each row to the map that recovers it.
-    await importFeedSnapshot(authPool, {
+    await importFeedSnapshot(feedPool, {
       sourcePolicyId: "abuse.ch/feodo",
       entityType: "IP",
       hitType: "deterministic_ioc",
@@ -426,7 +438,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1011",
-      opts(authPool, customerPool, {
+      opts(authPool, feedPool, customerPool, {
         loadRedactionMap: async (_pool, _cid, _aice, eventKey) => ({
           "<<REDACTED_IP_001>>": {
             kind: "ip",
@@ -461,7 +473,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("extracts an IOC present only in the policy_event typed columns", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // The member JSONB carries NO indicator; the IOC lives only in the
     // discrete policy_event.resp_addr column for the same event_key. A
     // worker that read story_member.event alone would mark the story
@@ -472,7 +484,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1007",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.evidenceCount).toBe(1);
@@ -485,7 +497,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("recovers a tokenized IP from a policy_event column via the map", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // The IOC is tokenized in policy_event.orig_addr (a customer-asset IP),
     // absent from the member JSONB. Token recovery uses the same
     // event_redaction_map row as the member text.
@@ -497,7 +509,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1008",
-      opts(authPool, customerPool, {
+      opts(authPool, feedPool, customerPool, {
         loadRedactionMap: async () => ({
           "<<REDACTED_IP_001>>": { kind: "ip", value: "45.66.230.5" },
         }),
@@ -513,7 +525,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("does not inherit a policy_event IOC from a different source_aice_id", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // The story belongs to AICE_ID and has no indicator in its member JSONB.
     // A DIFFERENT source's policy_run/policy_event shares the same event_key
     // (1) and carries the IOC. Logical event identity is
@@ -531,7 +543,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1009",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.evidenceCount).toBe(0);
@@ -548,19 +560,19 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const rerun = await runStoryEnrichment(
       CUSTOMER_ID,
       "1009",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(rerun.knownIocHit).toBe(true);
   });
 
   it("preserves prior evidence when a rerun finds no current match (monotonic)", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedStory(customerPool, "1010", { resp_addr: "45.66.230.5" });
 
     const first = await runStoryEnrichment(
       CUSTOMER_ID,
       "1010",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(first.knownIocHit).toBe(true);
     expect(first.evidenceCount).toBe(1);
@@ -569,11 +581,11 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     // supporting match, coverage degrades to unknown. The boolean is
     // monotonic so the hit is retained — and the evidence that explains it
     // must NOT be erased, or a `true` floor would have nothing backing it.
-    await authPool.query("DELETE FROM ioc_feed_snapshot");
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
     const second = await runStoryEnrichment(
       CUSTOMER_ID,
       "1010",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(second.knownIocHit).toBe(false); // this run observed no hit
     expect(second.coverageStatus).toBe("unknown");
@@ -597,14 +609,14 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("persists a visible, recoverable failed marker on a hard enrichment failure", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedStory(customerPool, "1012", { resp_addr: "45.66.230.5" });
 
     // A hard failure reached AFTER the canonical version is known — here the
     // dispatcher build throws, standing in for a config/decryption/DB error.
     // Without a marker this would requeue analysis forever with only process
     // logs to explain it.
-    const failing = opts(authPool, customerPool, {
+    const failing = opts(authPool, feedPool, customerPool, {
       buildDispatcher: () => {
         throw new Error("boom: dispatcher unavailable");
       },
@@ -630,7 +642,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const ok = await runStoryEnrichment(
       CUSTOMER_ID,
       "1012",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(ok.knownIocHit).toBe(true);
 
@@ -654,8 +666,8 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("seeds the pinned fixture feeds and matches a fixture IP via PgFeedStore", async () => {
-    await seedFixtureFeeds(authPool, { sourceUpdatedAt: FRESH });
-    const store = new PgFeedStore(authPool);
+    await seedFixtureFeeds(feedPool, { sourceUpdatedAt: FRESH });
+    const store = new PgFeedStore(feedPool);
 
     // Feodo fixture snapshot is present + fresh.
     const probe = await store.probe("abuse.ch/feodo");
@@ -721,7 +733,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   });
 
   it("tickStoryEnrichmentOnce enriches stories with a queued analysis job", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedStory(customerPool, "1006", { resp_addr: "45.66.230.5" });
     // A ready state + queued real job make this story a candidate.
     await authPool.query(
@@ -739,7 +751,7 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const enriched = await tickStoryEnrichmentOnce(
       authPool,
       10,
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(enriched).toBe(1);
 
@@ -757,19 +769,19 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     const again = await tickStoryEnrichmentOnce(
       authPool,
       10,
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(again).toBe(0);
   });
 
   it("a stale feed still reports the hit (boolean monotonic) but coverage is stale", async () => {
-    await importFeodo(authPool, STALE);
+    await importFeodo(feedPool, STALE);
     await seedStory(customerPool, "1005", { resp_addr: "45.66.230.5" });
 
     const result = await runStoryEnrichment(
       CUSTOMER_ID,
       "1005",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.coverageStatus).toBe("stale");

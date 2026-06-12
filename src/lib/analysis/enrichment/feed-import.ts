@@ -1,5 +1,5 @@
 // RFC 0003 P1a (#361) — Tier-1 IOC feed parse + import into
-// `ioc_feed_snapshot` (shared auth DB).
+// `ioc_feed_snapshot` (dedicated feed DB, #564).
 //
 // The parsers turn a feed's published file format into normalized
 // indicator values; `importFeedSnapshot` replaces all rows for a source
@@ -14,6 +14,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import ipaddr from "ipaddr.js";
 import type { Pool } from "pg";
+import type { FeedParseKind, FeedSource, RawFeedPayload } from "./feed-source";
 import {
   NormalizationError,
   normalizeDomain,
@@ -306,6 +307,87 @@ export async function importFeedSnapshot(
     client.release();
   }
   return { rowCount: params.rows.length, feedHash };
+}
+
+// ---------------------------------------------------------------------------
+// Common downstream: raw payload (from any FeedSource) → snapshot rows → DB
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse + normalize one raw feed payload's content into snapshot rows,
+ * dispatching on its `parse` kind. This is the common downstream shared by
+ * every `FeedSource` (fixture / upload / fetch): a source yields raw bytes,
+ * this turns them into `ioc_feed_snapshot` rows uniformly.
+ */
+export function parseFeedContent(
+  parse: FeedParseKind,
+  entityType: EntityType,
+  content: string,
+): FeedSnapshotRow[] {
+  switch (parse) {
+    case "ip-blocklist":
+      return normalizeExactValues(entityType, parseIpBlocklist(content)).rows;
+    case "urlhaus-csv": {
+      // URLhaus contributes both URL rows and the DOMAIN host of each URL,
+      // under the one `abuse.ch/urlhaus` source, so a bare `host`/`dns_query`
+      // domain member matches the same infrastructure (its policy already
+      // declares `["URL", "DOMAIN"]`).
+      const urls = parseUrlhausCsv(content);
+      const urlRows = normalizeExactValues("URL", urls).rows;
+      const domainRows = normalizeExactValues(
+        "DOMAIN",
+        parseUrlhausHosts(urls),
+      ).rows.map((row) => ({ ...row, entityType: "DOMAIN" as EntityType }));
+      return [...urlRows, ...domainRows];
+    }
+    case "urlhaus-payloads-csv":
+      // URLhaus also publishes a Collected Payloads dump keyed by MD5/SHA-256
+      // hash (a separate download from the URL feed), under its own
+      // `abuse.ch/urlhaus-payloads` source so it does not clobber the URL/host
+      // snapshot.
+      return normalizeExactValues("HASH", parseUrlhausPayloadsCsv(content))
+        .rows;
+    case "spamhaus-drop":
+      return normalizeCidrs(parseSpamhausDrop(content)).rows;
+    default:
+      throw new Error(`unknown parse kind: ${parse}`);
+  }
+}
+
+/**
+ * Import one raw feed payload: parse + normalize its content (per the
+ * payload's `parse` kind), then replace the source's snapshot rows in
+ * `ioc_feed_snapshot`. The provenance carries the freshness/version stamp.
+ */
+export async function importRawFeedPayload(
+  pool: Pool,
+  payload: RawFeedPayload,
+): Promise<{ rowCount: number; feedHash: string }> {
+  return importFeedSnapshot(pool, {
+    sourcePolicyId: payload.sourcePolicyId,
+    entityType: payload.entityType,
+    hitType: payload.hitType,
+    classification: payload.classification,
+    sourceVersion: payload.provenance.sourceVersion,
+    sourceUpdatedAt: payload.provenance.sourceUpdatedAt,
+    rows: parseFeedContent(payload.parse, payload.entityType, payload.content),
+  });
+}
+
+/**
+ * Drive a full import from any `FeedSource`: pull its raw payloads, then
+ * parse/normalize/import each into `ioc_feed_snapshot`. The source decides
+ * WHERE the bytes come from; this function is the shared pipeline for all
+ * supply modes.
+ */
+export async function importFromFeedSource(
+  pool: Pool,
+  source: FeedSource,
+): Promise<void> {
+  const payloads = await source.loadPayloads();
+  for (const payload of payloads) {
+    await importRawFeedPayload(pool, payload);
+  }
 }
 
 /** Deterministic content hash of a snapshot's rows (sorted for stability). */
