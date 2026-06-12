@@ -2,7 +2,7 @@
 // (cross-DB).
 //
 // Drives `runEventEnrichment` against a real customer DB (baseline_event /
-// story / event evidence + state) and a real auth DB (ioc_feed_snapshot),
+// story / event evidence + state) and a dedicated feed DB (ioc_feed_snapshot),
 // covering the acceptance criteria:
 //   - floor-eligible deterministic hit → stored true verdict + evidence,
 //   - false-complete (answered, no hit) vs false-unknown (missing feed),
@@ -53,8 +53,10 @@ import {
 } from "../event-enrichment-worker";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2611;
+const FEED_LOCK_ID = 2613;
 const CUSTOMER_LOCK_ID = 2612;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000004a1";
 const AICE_ID = "aice-1";
@@ -79,15 +81,17 @@ const FLOORING: SourcePolicy[] = [
 
 function opts(
   authPool: Pool,
+  feedPool: Pool,
   customerPool: Pool,
   overrides: Partial<EventEnrichmentOptions> = {},
 ): EventEnrichmentOptions {
   return {
     authPool,
+    feedPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    buildDispatcher: (ap, now) =>
-      buildLocalFeedDispatcher(new PgFeedStore(ap), {
+    buildDispatcher: (fp, now) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), {
         now,
         policies: FLOORING,
       }),
@@ -124,11 +128,11 @@ async function seedBaselineEvent(
 }
 
 async function importFeodo(
-  authPool: Pool,
+  feedPool: Pool,
   sourceUpdatedAt: string,
   matchValue = "45.66.230.5",
 ) {
-  await importFeedSnapshot(authPool, {
+  await importFeedSnapshot(feedPool, {
     sourcePolicyId: "abuse.ch/feodo",
     entityType: "IP",
     hitType: "deterministic_ioc",
@@ -142,6 +146,8 @@ async function importFeodo(
 describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
+  let feedDbName: string;
+  let feedPool: Pool;
   let customerDbName: string;
   let customerPool: Pool;
 
@@ -150,6 +156,11 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     authDbName = auth.dbName;
     authPool = auth.pool;
     await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
+
+    const feed = await createTestDatabase("evt_enrich_feed", "feed");
+    feedDbName = feed.dbName;
+    feedPool = feed.pool;
+    await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
 
     const cust = await createTestDatabase("evt_enrich_cust");
     customerDbName = cust.dbName;
@@ -169,6 +180,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
 
   afterAll(async () => {
     await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(feedDbName, feedPool, "feed");
     await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   }, 30_000);
@@ -178,11 +190,11 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     await customerPool.query("DELETE FROM story");
     await customerPool.query("DELETE FROM event_enrichment_state");
     await customerPool.query("DELETE FROM event_ioc_evidence");
-    await authPool.query("DELETE FROM ioc_feed_snapshot");
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
   });
 
   it("floor-eligible hit → true verdict + evidence + readable state", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "1",
       rawEvent: { resp_addr: "45.66.230.5" },
@@ -192,7 +204,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "1",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.status).toBe("complete");
     expect(result.knownIocHit).toBe(true);
@@ -239,7 +251,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   });
 
   it("false-complete: answered, no hit → no evidence, coverage complete", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "2",
       rawEvent: { resp_addr: "45.66.230.99" },
@@ -249,7 +261,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "2",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.coverageStatus).toBe("complete");
@@ -276,7 +288,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "3",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.coverageStatus).toBe("unknown");
@@ -298,7 +310,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     // forced false. It IS listed in the feed (so a match occurs and coverage
     // is complete), but the match does not satisfy the floor, so no evidence
     // and no tier-A-qualifying verdict.
-    await importFeodo(authPool, FRESH, "203.0.113.10");
+    await importFeodo(feedPool, FRESH, "203.0.113.10");
     await seedBaselineEvent(customerPool, {
       eventKey: "4",
       rawEvent: { resp_addr: "203.0.113.10" },
@@ -308,7 +320,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "4",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.evidenceCount).toBe(0);
@@ -328,7 +340,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     // turns on `hitType === "deterministic_ioc"`, so a soft hit never enters
     // evidence and never qualifies tier A — a branch distinct from the
     // non-public-IP (floor-ineligible) case above.
-    await importFeedSnapshot(authPool, {
+    await importFeedSnapshot(feedPool, {
       sourcePolicyId: "abuse.ch/feodo",
       entityType: "IP",
       hitType: "soft_reputation",
@@ -346,7 +358,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "11",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
     expect(result.evidenceCount).toBe(0);
@@ -361,7 +373,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   });
 
   it("computes the verdict from the latest baseline_event by received_at", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // Older row (no IOC) under one baseline_version; newer row (IOC) under a
     // later baseline_version with a later received_at. The latest row wins.
     await seedBaselineEvent(customerPool, {
@@ -381,14 +393,14 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "5",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.evidenceCount).toBe(1);
   });
 
   it("breaks an equal-received_at tie by baseline_version DESC", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     // Two rows for the same event with IDENTICAL received_at: the lower
     // baseline_version has no IOC, the higher one does. The DDL-mandated
     // deterministic tie-break (baseline_version DESC) must select the higher
@@ -411,14 +423,14 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "12",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.evidenceCount).toBe(1);
   });
 
   it("serializes concurrent persists — no duplicate evidence", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "13",
       rawEvent: { resp_addr: "45.66.230.5" },
@@ -434,13 +446,13 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
         CUSTOMER_ID,
         AICE_ID,
         "13",
-        opts(authPool, customerPool),
+        opts(authPool, feedPool, customerPool),
       ),
       runEventEnrichment(
         CUSTOMER_ID,
         AICE_ID,
         "13",
-        opts(authPool, customerPool),
+        opts(authPool, feedPool, customerPool),
       ),
     ]);
     expect(a.knownIocHit).toBe(true);
@@ -463,7 +475,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   });
 
   it("does not downgrade a prior true verdict on a source-down re-check", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "6",
       rawEvent: { resp_addr: "45.66.230.5" },
@@ -473,7 +485,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "6",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(first.knownIocHit).toBe(true);
     expect(first.evidenceCount).toBe(1);
@@ -481,12 +493,12 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     // Feed snapshot disappears before the re-check: no current supporting
     // match, coverage degrades. The verdict is monotonic so it stays true,
     // and the evidence explaining it must survive.
-    await authPool.query("DELETE FROM ioc_feed_snapshot");
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
     const second = await runEventEnrichment(
       CUSTOMER_ID,
       AICE_ID,
       "6",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(second.knownIocHit).toBe(false); // this run observed no hit
     expect(second.coverageStatus).toBe("unknown");
@@ -509,7 +521,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   });
 
   it("a stale feed still reports the hit but coverage is stale", async () => {
-    await importFeodo(authPool, STALE);
+    await importFeodo(feedPool, STALE);
     await seedBaselineEvent(customerPool, {
       eventKey: "7",
       rawEvent: { resp_addr: "45.66.230.5" },
@@ -519,14 +531,14 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "7",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.coverageStatus).toBe("stale");
   });
 
   it("skips a story-member event (enriched at story scope, no double-work)", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "8",
       rawEvent: { resp_addr: "45.66.230.5" },
@@ -555,7 +567,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "8",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.status).toBe("skipped");
     expect(result.knownIocHit).toBe(false);
@@ -581,14 +593,14 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "8",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(rerun.status).toBe("complete");
     expect(rerun.knownIocHit).toBe(true);
   });
 
   it("recovers a tokenized customer-asset IP via the redaction map", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "9",
       rawEvent: { orig_addr: "<<REDACTED_IP_001>>" },
@@ -598,7 +610,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "9",
-      opts(authPool, customerPool, {
+      opts(authPool, feedPool, customerPool, {
         loadRedactionMap: async () => ({
           "<<REDACTED_IP_001>>": { kind: "ip", value: "45.66.230.5" },
         }),
@@ -623,7 +635,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "404",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(result.status).toBe("skipped");
     const verdict = await loadEventEnrichmentVerdict(
@@ -635,13 +647,13 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   });
 
   it("persists a visible, recoverable failed marker on a hard failure", async () => {
-    await importFeodo(authPool, FRESH);
+    await importFeodo(feedPool, FRESH);
     await seedBaselineEvent(customerPool, {
       eventKey: "10",
       rawEvent: { resp_addr: "45.66.230.5" },
     });
 
-    const failing = opts(authPool, customerPool, {
+    const failing = opts(authPool, feedPool, customerPool, {
       buildDispatcher: () => {
         throw new Error("boom: dispatcher unavailable");
       },
@@ -663,7 +675,7 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       CUSTOMER_ID,
       AICE_ID,
       "10",
-      opts(authPool, customerPool),
+      opts(authPool, feedPool, customerPool),
     );
     expect(ok.knownIocHit).toBe(true);
 

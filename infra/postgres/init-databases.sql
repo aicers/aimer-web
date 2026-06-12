@@ -11,6 +11,11 @@
 CREATE DATABASE audit_db;
 
 -- ---------------------------------------------------------------
+-- feed_db
+-- ---------------------------------------------------------------
+CREATE DATABASE feed_db;
+
+-- ---------------------------------------------------------------
 -- auth_db roles (owner + runtime)
 -- ---------------------------------------------------------------
 DO $$
@@ -56,6 +61,32 @@ GRANT CONNECT ON DATABASE audit_db TO aimer_audit;
 GRANT ALL ON SCHEMA public TO aimer_audit_owner;
 -- Runtime table-level grants are applied by the audit migrations.
 GRANT USAGE ON SCHEMA public TO aimer_audit;
+
+-- ---------------------------------------------------------------
+-- feed_db roles (owner + runtime)
+-- ---------------------------------------------------------------
+\connect auth_db
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_feed_owner') THEN
+    CREATE ROLE aimer_feed_owner WITH LOGIN PASSWORD 'changeme';
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'aimer_feed') THEN
+    CREATE ROLE aimer_feed WITH LOGIN PASSWORD 'changeme';
+  END IF;
+END
+$$;
+
+GRANT ALL ON DATABASE feed_db TO aimer_feed_owner;
+GRANT CONNECT ON DATABASE feed_db TO aimer_feed;
+
+-- Switch to feed_db to grant schema-level privileges for the owner role.
+\connect feed_db
+
+GRANT ALL ON SCHEMA public TO aimer_feed_owner;
+-- Runtime table-level grants are applied by the feed migrations.
+GRANT USAGE ON SCHEMA public TO aimer_feed;
 
 -- ---------------------------------------------------------------
 -- keycloak_db (used by production Keycloak with PostgreSQL backend)

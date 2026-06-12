@@ -33,6 +33,7 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
+import { getFeedPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import type { EnrichmentDispatcher } from "./enrichment/dispatcher";
 import {
@@ -153,8 +154,8 @@ export async function runEventEnrichment(
   const loadMap = opts.loadRedactionMap ?? defaultLoadRedactionMap;
   const buildDispatcher =
     opts.buildDispatcher ??
-    ((authPool, clock) =>
-      buildLocalFeedDispatcher(new PgFeedStore(authPool), { now: clock }));
+    ((feedPool, clock) =>
+      buildLocalFeedDispatcher(new PgFeedStore(feedPool), { now: clock }));
 
   const baseline = await loadLatestBaselineEvent(
     customerPool,
@@ -195,7 +196,8 @@ export async function runEventEnrichment(
       rawEvent: baseline.rawEvent,
       now,
       loadMap,
-      buildDispatcher: () => buildDispatcher(opts.authPool, now),
+      buildDispatcher: () =>
+        buildDispatcher(opts.feedPool ?? getFeedPool(), now),
     });
   } catch (err) {
     await persistEventEnrichmentFailure(customerPool, {

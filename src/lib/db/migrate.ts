@@ -5,6 +5,7 @@ import { Pool, type PoolClient } from "pg";
 
 const LOCK_ID_AUTH = 1000;
 const LOCK_ID_AUDIT = 1001;
+const LOCK_ID_FEED = 1002;
 
 interface MigrationRow {
   version: string;
@@ -171,9 +172,8 @@ export async function runMigrations(
 }
 
 export async function runStartupMigrations(): Promise<void> {
-  const { getMigrationAuthPool, getMigrationAuditPool } = await import(
-    "./client"
-  );
+  const { getMigrationAuthPool, getMigrationAuditPool, getMigrationFeedPool } =
+    await import("./client");
 
   const migrationsRoot = join(process.cwd(), "migrations");
 
@@ -189,6 +189,13 @@ export async function runStartupMigrations(): Promise<void> {
     getMigrationAuditPool(),
     join(migrationsRoot, "audit"),
     LOCK_ID_AUDIT,
+  );
+
+  console.log("Running feed_db migrations...");
+  await runMigrations(
+    getMigrationFeedPool(),
+    join(migrationsRoot, "feed"),
+    LOCK_ID_FEED,
   );
 
   // Run pending customer_db migrations for all active customers.

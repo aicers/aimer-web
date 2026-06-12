@@ -39,8 +39,10 @@ import {
 } from "../story-worker";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
+const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const AUTH_LOCK_ID = 2611;
+const FEED_LOCK_ID = 2613;
 const CUSTOMER_LOCK_ID = 2612;
 const CUSTOMER_ID = "00000000-0000-0000-0000-0000000003b1";
 const AICE_ID = "aice-1";
@@ -72,16 +74,19 @@ const AIMER_RESPONSE: AnalyzeStoryAimerResponse = {
 describe.skipIf(!hasPostgres)("IOC floor end-to-end (cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
+  let feedDbName: string;
+  let feedPool: Pool;
   let customerDbName: string;
   let customerPool: Pool;
   let llmCalls: number;
 
   const enrichmentOpts = () => ({
     authPool,
+    feedPool,
     resolveCustomerPool: () => customerPool,
     now: () => new Date(NOW),
-    buildDispatcher: (ap: Pool, now: () => Date) =>
-      buildLocalFeedDispatcher(new PgFeedStore(ap), {
+    buildDispatcher: (fp: Pool, now: () => Date) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), {
         now,
         policies: FLOORING,
       }),
@@ -103,6 +108,11 @@ describe.skipIf(!hasPostgres)("IOC floor end-to-end (cross-DB)", () => {
     authPool = auth.pool;
     await runMigrations(authPool, AUTH_MIGRATIONS_DIR, AUTH_LOCK_ID);
 
+    const feed = await createTestDatabase("ioc_e2e_feed", "feed");
+    feedDbName = feed.dbName;
+    feedPool = feed.pool;
+    await runMigrations(feedPool, FEED_MIGRATIONS_DIR, FEED_LOCK_ID);
+
     const cust = await createTestDatabase("ioc_e2e_cust");
     customerDbName = cust.dbName;
     customerPool = cust.pool;
@@ -117,7 +127,7 @@ describe.skipIf(!hasPostgres)("IOC floor end-to-end (cross-DB)", () => {
        VALUES ($1, 'ioc-e2e', 'IOC E2E', 'active', 'Asia/Seoul')`,
       [CUSTOMER_ID],
     );
-    await importFeedSnapshot(authPool, {
+    await importFeedSnapshot(feedPool, {
       sourcePolicyId: "abuse.ch/feodo",
       entityType: "IP",
       hitType: "deterministic_ioc",
@@ -129,6 +139,7 @@ describe.skipIf(!hasPostgres)("IOC floor end-to-end (cross-DB)", () => {
 
   afterAll(async () => {
     await dropTestDatabase(authDbName, authPool);
+    await dropTestDatabase(feedDbName, feedPool, "feed");
     await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   }, 30_000);

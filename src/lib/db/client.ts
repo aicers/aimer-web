@@ -3,10 +3,12 @@ import { Pool, type PoolClient, type QueryResultRow } from "pg";
 // Lazy-initialized pools — runtime (application queries)
 let authPool: Pool | null = null;
 let auditPool: Pool | null = null;
+let feedPool: Pool | null = null;
 
 // Lazy-initialized pools — migration runner (owner role)
 let migrationAuthPool: Pool | null = null;
 let migrationAuditPool: Pool | null = null;
+let migrationFeedPool: Pool | null = null;
 
 export function getAuthPool(): Pool {
   if (!authPool) {
@@ -27,6 +29,13 @@ export function getAuditPool(): Pool {
   return auditPool;
 }
 
+export function getFeedPool(): Pool {
+  if (!feedPool) {
+    feedPool = new Pool({ connectionString: process.env.FEED_DATABASE_URL });
+  }
+  return feedPool;
+}
+
 export function getMigrationAuthPool(): Pool {
   if (!migrationAuthPool) {
     const url = process.env.DATABASE_MIGRATION_URL ?? process.env.DATABASE_URL;
@@ -43,6 +52,15 @@ export function getMigrationAuditPool(): Pool {
     migrationAuditPool = new Pool({ connectionString: url });
   }
   return migrationAuditPool;
+}
+
+export function getMigrationFeedPool(): Pool {
+  if (!migrationFeedPool) {
+    const url =
+      process.env.FEED_DATABASE_MIGRATION_URL ?? process.env.FEED_DATABASE_URL;
+    migrationFeedPool = new Pool({ connectionString: url });
+  }
+  return migrationFeedPool;
 }
 
 export async function query<T extends QueryResultRow>(

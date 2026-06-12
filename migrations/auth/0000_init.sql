@@ -728,53 +728,11 @@ CREATE INDEX periodic_report_job_dry_run_idx
     ON periodic_report_job (subject_id)
     WHERE dry_run = TRUE;
 
--- ---------------------------------------------------------------
--- ioc_feed_snapshot (RFC 0003 P1a, #361)
--- ---------------------------------------------------------------
--- Imported, locally-matched IOC feed snapshots (abuse.ch Feodo /
--- URLhaus, Spamhaus DROP/EDROP, …). Lives in the shared auth DB because
--- the feed data is global — identical for every customer. Tier 1 means
--- only the feed download leaves the host: customer indicators are
--- matched locally against this table and never egress.
---
--- Matching: exact entries carry `match_value` (normalized indicator)
--- and `cidr IS NULL`; range entries carry `cidr` and `match_value IS
--- NULL`, matched with the `>>=` containment operator. One of the two is
--- always present (CHECK below).
-CREATE TABLE ioc_feed_snapshot (
-    id                BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    source_policy_id  TEXT         NOT NULL,
-    entity_type       TEXT         NOT NULL
-        CHECK (entity_type IN ('IP', 'DOMAIN', 'URL', 'HASH')),
-    -- Exact normalized indicator (NULL for range entries).
-    match_value       TEXT,
-    -- CIDR network for range matching (NULL for exact entries).
-    cidr              CIDR,
-    -- Intrinsic to the match: a curated known-bad listing is
-    -- `deterministic_ioc`; a noisy/score feed would be `soft_reputation`
-    -- and can never drive the floor.
-    hit_type          TEXT         NOT NULL
-        CHECK (hit_type IN ('deterministic_ioc', 'soft_reputation')),
-    classification    TEXT,
-    confidence        DOUBLE PRECISION,
-    -- Snapshot provenance / freshness (audit + stale-coverage policy).
-    source_version    TEXT,
-    feed_hash         TEXT,
-    source_updated_at TIMESTAMPTZ,
-    imported_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    CHECK ((match_value IS NULL) <> (cidr IS NULL))
-);
-
--- Exact-match lookups: scoped by source + entity type, then by value.
-CREATE INDEX ioc_feed_snapshot_exact_idx
-    ON ioc_feed_snapshot (source_policy_id, entity_type, match_value)
-    WHERE match_value IS NOT NULL;
-
--- Range-match scan: narrowed to a source's IP range entries before the
--- `>>=` containment test (feed snapshots are modest — no GiST needed).
-CREATE INDEX ioc_feed_snapshot_cidr_idx
-    ON ioc_feed_snapshot (source_policy_id)
-    WHERE cidr IS NOT NULL;
+-- Note: the IOC feed store (`ioc_feed_snapshot`) moved out of this
+-- shared auth DB into its own dedicated feed DB (#564) — see
+-- migrations/feed/0000_init.sql. Feed data is external-sourced,
+-- read-heavy on match, and replaced wholesale on refresh, so it no
+-- longer shares blast radius with the authn/authz hot path.
 
 -- ---------------------------------------------------------------
 -- customer_owned_domains (RFC 0001 Amendment A.2)
@@ -1367,9 +1325,7 @@ TO aimer_auth;
 GRANT SELECT ON roles, role_permissions TO aimer_auth;
 
 -- Sequence access for the SERIAL columns above. Scoped to the named
--- sequences: `ioc_feed_snapshot.id` is GENERATED ALWAYS AS IDENTITY,
--- whose sequence needs no separate grant (INSERT on the table
--- suffices), and a blanket ALL-SEQUENCES grant would cover it.
+-- sequences rather than a blanket ALL-SEQUENCES grant.
 GRANT USAGE, SELECT ON SEQUENCE
   roles_id_seq,
   aice_environments_id_seq,
@@ -1386,10 +1342,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON story_analysis_state TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON story_analysis_job TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON periodic_report_state TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON periodic_report_job TO aimer_auth;
--- The enrichment worker reads ioc_feed_snapshot through the restricted
--- runtime role; the import/refresh path replaces a source's rows
--- (DELETE + INSERT) within one transaction.
-GRANT SELECT, INSERT, DELETE ON ioc_feed_snapshot TO aimer_auth;
 GRANT SELECT, INSERT, DELETE ON customer_owned_domains TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON customer_default_model TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON event_leaf_backfill_runs TO aimer_auth;

@@ -7,6 +7,7 @@ runner (`src/lib/db/migrate.ts`), organized by database scope.
 
 - `auth/` — Schema for the auth database (shared, central)
 - `audit/` — Schema for the audit database (shared, central)
+- `feed/` — Schema for the threat-intel feed database (shared, central)
 - `customer/` — Schema applied to every customer database
 - `group/` — Schema applied to every customer-group data database
 
@@ -70,10 +71,16 @@ Each database uses two PostgreSQL roles to enforce least-privilege access:
 For the audit database the runtime role (`aimer_audit`) is restricted
 to INSERT + SELECT only — it cannot UPDATE or DELETE audit records.
 
+The feed database follows the same owner/runtime split
+(`aimer_feed_owner` / `aimer_feed`). The runtime role has
+SELECT/INSERT/DELETE on `ioc_feed_snapshot` (the import path replaces a
+source's rows wholesale), no UPDATE.
+
 The migration runner reads `DATABASE_MIGRATION_URL` /
-`AUDIT_DATABASE_MIGRATION_URL` (falling back to `DATABASE_URL` /
-`AUDIT_DATABASE_URL` when unset). The application runtime always uses
-`DATABASE_URL` / `AUDIT_DATABASE_URL`.
+`AUDIT_DATABASE_MIGRATION_URL` / `FEED_DATABASE_MIGRATION_URL` (falling
+back to `DATABASE_URL` / `AUDIT_DATABASE_URL` / `FEED_DATABASE_URL` when
+unset). The application runtime always uses `DATABASE_URL` /
+`AUDIT_DATABASE_URL` / `FEED_DATABASE_URL`.
 
 Customer and group databases share two roles across all tenants:
 

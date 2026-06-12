@@ -26,6 +26,7 @@
 import "server-only";
 
 import type { Pool } from "pg";
+import { getFeedPool } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { ENGINE_VERSION, redact } from "@/lib/redaction/engine";
 import { decryptRedactionMap } from "@/lib/redaction/envelope-adapter";
@@ -247,10 +248,17 @@ export async function buildRecover(
 
 export interface EnrichmentWorkerOptions {
   authPool: Pool;
+  /**
+   * Pool for the dedicated feed DB backing `PgFeedStore` (#564). Optional:
+   * production omits it and the default builder uses `getFeedPool()`; DB
+   * tests inject an explicit test feed pool.
+   */
+  feedPool?: Pool;
   /** Override the customer-DB pool resolver — used by tests. */
   resolveCustomerPool?: (customerId: string) => Pool;
-  /** Override the dispatcher builder — used by tests (in-memory feed store). */
-  buildDispatcher?: (authPool: Pool, now: () => Date) => EnrichmentDispatcher;
+  /** Override the dispatcher builder — used by tests (in-memory feed store).
+   * Receives the resolved feed pool (`feedPool ?? getFeedPool()`). */
+  buildDispatcher?: (feedPool: Pool, now: () => Date) => EnrichmentDispatcher;
   /** Injectable clock for deterministic `checkedAt` / stale computation. */
   now?: () => Date;
   /** Override redaction-map recovery — used by tests (no OpenBao). */
@@ -294,8 +302,8 @@ export async function runStoryEnrichment(
   const loadMap = opts.loadRedactionMap ?? defaultLoadRedactionMap;
   const buildDispatcher =
     opts.buildDispatcher ??
-    ((authPool, clock) =>
-      buildLocalFeedDispatcher(new PgFeedStore(authPool), { now: clock }));
+    ((feedPool, clock) =>
+      buildLocalFeedDispatcher(new PgFeedStore(feedPool), { now: clock }));
 
   const canonical = await loadCanonicalVersion(customerPool, storyId);
   if (!canonical) {
@@ -320,7 +328,8 @@ export async function runStoryEnrichment(
       canonical,
       now,
       loadMap,
-      buildDispatcher: () => buildDispatcher(opts.authPool, now),
+      buildDispatcher: () =>
+        buildDispatcher(opts.feedPool ?? getFeedPool(), now),
       authPool: opts.authPool,
       loadRanges: opts.loadRanges ?? loadCustomerRanges,
       loadOwnedDomains: opts.loadOwnedDomains ?? loadCustomerOwnedDomains,
