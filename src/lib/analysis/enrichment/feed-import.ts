@@ -220,7 +220,17 @@ function normalizeForEntity(entityType: EntityType, value: string): string {
   }
 }
 
-/** Validate + de-duplicate CIDR networks (Spamhaus range entries). */
+/**
+ * Validate, canonicalize, and de-duplicate CIDR networks (Spamhaus range
+ * entries). Each value is parsed with `ipaddr.js` and reduced to its
+ * canonical network address (host bits zeroed), so the stored string is
+ * always a valid PostgreSQL `cidr`. A loose regex is not enough here: values
+ * like `999.999.999.999/24`, `203.0.113.0/33`, or `203.0.113.1/24` (host
+ * bits set) match a `[0-9a-fA-F:.]+/\d+` shape but are rejected by the
+ * `$N::cidr` cast, surfacing as a 500 mid-import. Anything `ipaddr.js`
+ * rejects is dropped (and counted) instead, so an unparseable upload is
+ * caught up front rather than at the DB write.
+ */
 export function normalizeCidrs(values: readonly string[]): {
   rows: FeedSnapshotRow[];
   skipped: number;
@@ -230,13 +240,21 @@ export function normalizeCidrs(values: readonly string[]): {
   let skipped = 0;
   for (const value of values) {
     const trimmed = value.trim();
-    if (!/^[0-9a-fA-F:.]+\/\d{1,3}$/.test(trimmed)) {
+    let cidr: string;
+    try {
+      const [addr, prefix] = ipaddr.parseCIDR(trimmed);
+      const network =
+        addr.kind() === "ipv4"
+          ? ipaddr.IPv4.networkAddressFromCIDR(trimmed)
+          : ipaddr.IPv6.networkAddressFromCIDR(trimmed);
+      cidr = `${network.toString()}/${prefix}`;
+    } catch {
       skipped += 1;
       continue;
     }
-    if (seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    rows.push({ cidr: trimmed });
+    if (seen.has(cidr)) continue;
+    seen.add(cidr);
+    rows.push({ cidr });
   }
   return { rows, skipped };
 }
@@ -261,10 +279,27 @@ export interface ImportFeedParams {
 }
 
 /**
+ * Map a `source_policy_id` to a stable signed 64-bit advisory-lock key.
+ * Different sources get (effectively) distinct keys so they stay concurrent;
+ * the same source always maps to the same key so its imports serialize.
+ */
+export function feedSourceLockKey(sourcePolicyId: string): string {
+  const digest = createHash("sha256").update(sourcePolicyId).digest();
+  // First 8 bytes → signed 64-bit, the domain of pg_advisory_xact_lock(bigint).
+  return BigInt.asIntN(64, digest.readBigUInt64BE(0)).toString();
+}
+
+/**
  * Replace the snapshot for one source in a single transaction: DELETE all
  * existing rows for the `source_policy_id`, then INSERT the new rows
  * stamped with the source/feed provenance. Returns the row count and the
  * feed hash actually stored (audit). Empty `rows` clears the source.
+ *
+ * A source-scoped `pg_advisory_xact_lock` is taken FIRST, inside this same
+ * transaction, so two concurrent imports of the SAME source serialize:
+ * under READ COMMITTED their DELETE+INSERT pairs could otherwise interleave
+ * and break the replace-not-append guarantee. Different sources lock on
+ * different keys and stay concurrent.
  */
 export async function importFeedSnapshot(
   pool: Pool,
@@ -274,6 +309,9 @@ export async function importFeedSnapshot(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [
+      feedSourceLockKey(params.sourcePolicyId),
+    ]);
     await client.query(
       `DELETE FROM ioc_feed_snapshot WHERE source_policy_id = $1`,
       [params.sourcePolicyId],

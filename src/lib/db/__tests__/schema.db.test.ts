@@ -63,6 +63,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     //   Administrator (+1); write → Manager, System Administrator (+1)
     //   per-customer default-model keys (#473) — read + write →
     //   Analyst, System Administrator only (+2 each)
+    //   ti-feed keys (#566) — read + write → System Administrator only (+2)
     //   Manager extras — customer-settings + customer-members (+4)
     //   Analyst extras — advanced-analysis keys (+5)
     expect(rows).toEqual([
@@ -71,7 +72,7 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       {
         name: "System Administrator",
         auth_context: "admin",
-        perm_count: 23,
+        perm_count: 25,
       },
       { name: "User", auth_context: "general", perm_count: 10 },
     ]);

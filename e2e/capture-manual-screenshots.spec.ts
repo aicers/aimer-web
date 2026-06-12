@@ -622,6 +622,47 @@ base.describe.serial("Manual screenshots", () => {
   });
 
   // =========================================================================
+  // Threat feeds (manual upload) — docs/{en,ko}/threat-feeds.md
+  //
+  // The Threat Feeds page only renders when the dev server runs with
+  // `TI_FEED_MODE=manual-upload` (otherwise the route 404s). Start the
+  // capture server with that env set. The feature does not depend on
+  // aice-web-next data, so this captures a real screenshot of the catalog
+  // status table and the upload dialog.
+  // =========================================================================
+
+  base("admin-ti-feeds-table.png", async () => {
+    await adminPage.goto("/en/admin/ti-feeds");
+    await settle(adminPage);
+    await expect(
+      adminPage.getByRole("heading", { name: "Threat Feeds", level: 1 }),
+    ).toBeVisible();
+
+    await adminPage.waitForSelector("table tbody tr");
+
+    await adminPage.screenshot({
+      path: resolve(ASSETS, "admin-ti-feeds-table.png"),
+    });
+  });
+
+  base("admin-ti-feeds-upload-dialog.png", async () => {
+    await adminPage.goto("/en/admin/ti-feeds");
+    await settle(adminPage);
+    await adminPage.waitForSelector("table tbody tr");
+
+    await adminPage.getByRole("button", { name: "Upload" }).first().click();
+    await expect(
+      adminPage.getByRole("heading", { name: "Upload Feed File" }),
+    ).toBeVisible();
+
+    await adminPage.screenshot({
+      path: resolve(ASSETS, "admin-ti-feeds-upload-dialog.png"),
+    });
+
+    await adminPage.getByRole("button", { name: "Cancel" }).click();
+  });
+
+  // =========================================================================
   // Customer management — docs/{en,ko}/customer-management.md
   // =========================================================================
 

@@ -30,6 +30,7 @@ export interface BackupManifest {
   targets: {
     auth_db?: BackupTargetMeta;
     audit_db?: BackupTargetMeta;
+    feed_db?: BackupTargetMeta;
     customers?: CustomerBackupMeta[];
     openbao?: BackupTargetMeta;
   };

@@ -1,8 +1,8 @@
 # 백업 및 복원
 
 이 문서는 Clumit Insight의 모든 상태 저장 구성 요소를 백업하고
-복원하는 방법을 다룹니다: 중앙 데이터베이스(`auth_db`, `audit_db`),
-고객별 데이터베이스, 그리고 OpenBao 비밀 엔진.
+복원하는 방법을 다룹니다: 중앙 데이터베이스(`auth_db`, `audit_db`,
+`feed_db`), 고객별 데이터베이스, 그리고 OpenBao 비밀 엔진.
 
 ## 사전 요구 사항
 
@@ -19,9 +19,15 @@
 | ------------ | ---------------------------------------------------- |
 | `auth`       | 중앙 인증 데이터베이스 (`pg_dump --format=custom`)   |
 | `audit`      | 중앙 감사 데이터베이스                               |
+| `feed`       | 위협 인텔 피드 데이터베이스 (수동 업로드 스냅샷)     |
 | `customers`  | `database_status`가 `IN ('active', 'failed')`인      |
 |              | 모든 고객 데이터베이스                               |
 | `openbao`    | OpenBao `file` 저장소 디렉토리 (KEK + DEK)           |
+
+`feed` 데이터베이스는 수동 업로드 관리자 UI를 통해 가져온 Tier-1
+위협 인텔 피드 스냅샷을 보관합니다([위협 피드](threat-feeds.md)
+참조). 운영자가 업로드한 스냅샷은 커밋된 픽스처에서 다시 만들 수
+없으므로, 피드 DB는 필수 백업 대상입니다.
 
 정지(suspended) 및 비활성화(disabled) 상태의 고객 데이터베이스도
 `database_status`가 `active` 또는 `failed`이면 포함됩니다.
@@ -37,6 +43,7 @@ pnpm backup --target=all
 # 단일 대상 백업
 pnpm backup --target=auth
 pnpm backup --target=audit
+pnpm backup --target=feed
 pnpm backup --target=customers
 pnpm backup --target=openbao
 
@@ -59,6 +66,7 @@ pnpm backup --target=all --output-dir=/mnt/backups
       2026-04-02T14-30-45Z/
         auth_db.dump
         audit_db.dump
+        feed_db.dump
         customers/
           customer_<uuid>.dump
         openbao/
@@ -91,8 +99,8 @@ Kubernetes CronJob)을 위해 설계되었습니다.
 
 ### 전체 재해 복구
 
-복원 순서: OpenBao -> auth_db -> audit_db -> customer_dbs ->
-복원 후 정리 -> 마이그레이션 실행.
+복원 순서: OpenBao -> auth_db -> audit_db -> feed_db ->
+customer_dbs -> 복원 후 정리 -> 마이그레이션 실행.
 
 ```bash
 pnpm restore --target=full \
@@ -127,6 +135,21 @@ pnpm restore --target=audit \
 `audit_db`를 복원하고 마이그레이션을 실행합니다. `auth_db`는
 변경하지 않습니다. 백업 시점과 장애 사이의 감사 항목은
 손실됩니다.
+
+### feed_db 단독 복구
+
+`feed_db`가 손상된 경우 단독으로 복원합니다:
+
+```bash
+pnpm restore --target=feed \
+  --backup-file=./backups/2026-04-02T14-30-45Z/feed_db.dump \
+  --confirm
+```
+
+`feed_db`를 복원하고 마이그레이션을 실행합니다. 다른
+데이터베이스는 변경하지 않습니다. 백업 시점과 장애 사이에 가져온
+위협 인텔 피드 스냅샷은 손실되므로, 수동 업로드 가져오기를 다시
+실행하여 복구하세요.
 
 ### 단일 고객 복원
 
@@ -215,7 +238,8 @@ pnpm restore --target=openbao \
 매 백업 후 만료된 디렉토리가 자동으로 정리됩니다.
 보존 기간은 환경 변수로 설정합니다:
 
-- `BACKUP_RETENTION_DAYS` (기본값: 30) — auth_db 및 customer_db
+- `BACKUP_RETENTION_DAYS` (기본값: 30) — auth_db, feed_db 및
+  customer_db
 - `AUDIT_BACKUP_RETENTION_DAYS` (기본값: 365) — audit_db
 
 ## 검증 드릴
@@ -249,10 +273,15 @@ pnpm backup:verify --backup-dir=./backups/2026-04-02T14-30-45Z
 | `BAO_TOKEN`                    | 예     |              | OpenBao 인증 토큰                   |
 | `DATABASE_MIGRATION_URL`       | 예     |              | auth_db 연결 (소유자 역할)          |
 | `AUDIT_DATABASE_MIGRATION_URL` | 예     |              | audit_db 연결 (소유자 역할)         |
+| `FEED_DATABASE_MIGRATION_URL`  | 예†    |              | feed_db 연결 (소유자 역할)          |
+| `FEED_DATABASE_URL`            | 예†    |              | feed_db 대체 연결                   |
 | `DATABASE_ADMIN_URL`           | 예     |              | DB 작업용 관리자 연결               |
 | `CUSTOMER_DATABASE_OWNER_URL`  | 예     |              | 고객 DB 템플릿 (소유자 역할)        |
 
 *OpenBao 백업/복원 대상에만 필요.
+
+†`feed` 백업/복원 대상에만 필요. `FEED_DATABASE_MIGRATION_URL`이
+우선이며, `FEED_DATABASE_URL`은 대체로 사용됩니다.
 
 ## 운영 환경 저장소
 

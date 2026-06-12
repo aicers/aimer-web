@@ -41,6 +41,20 @@ export async function restoreAudit(
   log("audit_db restored");
 }
 
+export async function restoreFeed(
+  backupFile: string,
+  config: BackupConfig,
+): Promise<void> {
+  log("Restoring feed_db...");
+  await pgRestore({
+    connectionUrl: config.feedDbUrl,
+    inputPath: backupFile,
+    clean: true,
+    noOwner: true,
+  });
+  log("feed_db restored");
+}
+
 export async function restoreCustomer(
   backupFile: string,
   customerId: string,
@@ -152,7 +166,15 @@ export async function restoreFullFromManifest(
     log("No audit_db backup in manifest, skipping");
   }
 
-  // 4. customer_dbs
+  // 4. feed_db
+  if (manifest.targets.feed_db) {
+    const file = join(backupDir, manifest.targets.feed_db.file);
+    await restoreFeed(file, config);
+  } else {
+    log("No feed_db backup in manifest, skipping");
+  }
+
+  // 5. customer_dbs
   if (manifest.targets.customers && manifest.targets.customers.length > 0) {
     const adminPool = new Pool({ connectionString: config.adminDbUrl });
     try {
@@ -176,7 +198,7 @@ export async function restoreFullFromManifest(
     }
   }
 
-  // 5. Post-restore cleanup
+  // 6. Post-restore cleanup
   if (!skipPostCleanup && manifest.targets.auth_db) {
     log("Running post-restore cleanup...");
     const authPool = new Pool({ connectionString: config.authDbUrl });
@@ -192,11 +214,12 @@ export async function restoreFullFromManifest(
     }
   }
 
-  // 6. Run migrations
+  // 7. Run migrations
   if (!skipMigrations) {
     log("Running migration runner...");
     const authMigrationsDir = join(process.cwd(), "migrations", "auth");
     const auditMigrationsDir = join(process.cwd(), "migrations", "audit");
+    const feedMigrationsDir = join(process.cwd(), "migrations", "feed");
 
     if (manifest.targets.auth_db) {
       const authPool = new Pool({ connectionString: config.authDbUrl });
@@ -215,6 +238,16 @@ export async function restoreFullFromManifest(
         log("audit_db migrations complete");
       } finally {
         await auditPool.end();
+      }
+    }
+
+    if (manifest.targets.feed_db) {
+      const feedPool = new Pool({ connectionString: config.feedDbUrl });
+      try {
+        await runMigrations(feedPool, feedMigrationsDir, 1002);
+        log("feed_db migrations complete");
+      } finally {
+        await feedPool.end();
       }
     }
   }

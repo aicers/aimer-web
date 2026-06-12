@@ -70,6 +70,7 @@
     "trustRegistry": "신뢰 레지스트리",
     "auditLog": "감사 로그",
     "suspiciousActivity": "계정 이상징후",
+    "tiFeeds": "위협 피드",
     "settings": "설정"
   },
   "events": {
@@ -462,6 +463,26 @@
     "noEligibleAccounts": "지정 가능한 계정이 없습니다.",
     "errorLoading": "관리자를 불러오지 못했습니다. 다시 시도해 주세요.",
     "adminCount": "관리자 {count}명 / 최대 {max}명"
+  },
+  "adminTiFeeds": {
+    "title": "위협 피드",
+    "description": "로컬 지표 매칭을 위한 Tier-1 위협 인텔리전스 피드 파일을 업로드합니다. 업로드할 때마다 해당 소스의 스냅샷이 교체됩니다.",
+    "source": "소스",
+    "rowCount": "항목 수",
+    "lastUpdated": "마지막 업데이트",
+    "freshness": "신선도",
+    "actions": "작업",
+    "fresh": "최신",
+    "stale": "오래됨",
+    "notUploaded": "업로드 안 됨",
+    "never": "없음",
+    "upload": "업로드",
+    "uploadTitle": "피드 파일 업로드",
+    "uploadDescription": "{source}에 대한 피드 파일을 선택하세요. 가져오면 이 소스의 현재 스냅샷이 교체됩니다.",
+    "selectFile": "파일 선택",
+    "uploadSuccess": "{count}개 항목을 가져왔습니다.",
+    "uploadError": "업로드에 실패했습니다. 다시 시도해 주세요.",
+    "errorLoading": "피드 상태를 불러오지 못했습니다. 다시 시도해 주세요."
   },
   "validation": {
     "required": "필수 입력 항목입니다",

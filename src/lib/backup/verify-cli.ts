@@ -9,7 +9,7 @@ import { verifyCustomerDek, verifyDbRestore } from "./verify";
 // CLI
 // ---------------------------------------------------------------------------
 
-type VerifyTarget = "auth" | "audit" | "customer" | "all";
+type VerifyTarget = "auth" | "audit" | "feed" | "customer" | "all";
 
 function parseArgs(argv: string[]) {
   const args = parseKvArgs(
@@ -25,7 +25,7 @@ function parseArgs(argv: string[]) {
   }
 
   const targetVal = args.get("target") ?? "all";
-  if (!["auth", "audit", "customer", "all"].includes(targetVal)) {
+  if (!["auth", "audit", "feed", "customer", "all"].includes(targetVal)) {
     console.error(`Invalid target: ${targetVal}`);
     process.exit(2);
   }
@@ -70,7 +70,9 @@ async function main() {
   const results: Array<{ target: string; status: "pass" | "warn" | "fail" }> =
     [];
   const targets =
-    args.target === "all" ? ["auth", "audit", "customer"] : [args.target];
+    args.target === "all"
+      ? ["auth", "audit", "feed", "customer"]
+      : [args.target];
 
   for (const t of targets) {
     switch (t) {
@@ -112,6 +114,27 @@ async function main() {
         results.push({
           target: "audit_db",
           status: auditOk ? "pass" : "fail",
+        });
+        break;
+      }
+
+      case "feed": {
+        if (!manifest.targets.feed_db) {
+          log("feed_db: not in manifest, skipping");
+          break;
+        }
+        const file = join(args.backupDir, manifest.targets.feed_db.file);
+        const feedOk = await verifyDbRestore(
+          "feed_db",
+          file,
+          config.adminDbUrl,
+          join(process.cwd(), "migrations", "feed"),
+          9102,
+          "_migrations",
+        );
+        results.push({
+          target: "feed_db",
+          status: feedOk ? "pass" : "fail",
         });
         break;
       }

@@ -5,6 +5,7 @@ import {
   FileText,
   Globe,
   Menu,
+  Rss,
   Settings,
   ShieldAlert,
   ShieldCheck,
@@ -28,11 +29,11 @@ import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 import { adminFetch, getAdminCsrfToken } from "@/lib/api/admin-client";
 import type { StoredTimeFormat } from "@/lib/datetime/format-timestamp";
 
-function useAdminNavItems(): NavItem[] {
+function useAdminNavItems(tiFeedsActive: boolean): NavItem[] {
   const t = useTranslations("admin");
   const locale = useLocale();
 
-  return [
+  const items: NavItem[] = [
     {
       href: `/${locale}/admin/accounts`,
       label: t("accounts"),
@@ -75,6 +76,18 @@ function useAdminNavItems(): NavItem[] {
       exact: true,
     },
   ];
+
+  // The TI feed manual-upload surface only exists in `manual-upload` mode;
+  // the entry is hidden otherwise (the route 404s when the mode is off).
+  if (tiFeedsActive) {
+    items.splice(items.length - 1, 0, {
+      href: `/${locale}/admin/ti-feeds`,
+      label: t("tiFeeds"),
+      icon: Rss,
+    });
+  }
+
+  return items;
 }
 
 function AdminMobileTrigger({ navItems }: { navItems: NavItem[] }) {
@@ -116,7 +129,8 @@ export default function AdminLayout({
   const locale = useLocale();
   const tNav = useTranslations("nav");
   const { collapsed, toggle } = useSidebarCollapsed();
-  const navItems = useAdminNavItems();
+  const [tiFeedsActive, setTiFeedsActive] = useState(false);
+  const navItems = useAdminNavItems(tiFeedsActive);
   const [adminUser, setAdminUser] = useState<{
     displayName: string;
     email?: string | null;
@@ -140,6 +154,20 @@ export default function AdminLayout({
     }>("/api/admin-auth/me")
       .then((data) => {
         if (!cancelled) setAdminUser(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The TI feed status endpoint 404s unless `TI_FEED_MODE=manual-upload`, so
+  // a successful response is the signal to surface the nav entry.
+  useEffect(() => {
+    let cancelled = false;
+    adminFetch("/api/admin/ti-feed")
+      .then(() => {
+        if (!cancelled) setTiFeedsActive(true);
       })
       .catch(() => {});
     return () => {

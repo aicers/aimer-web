@@ -37,6 +37,7 @@ function makeConfig(overrides?: Partial<BackupConfig>): BackupConfig {
     auditRetentionDays: 365,
     authDbUrl: "postgres://u:p@localhost/auth_db",
     auditDbUrl: "postgres://u:p@localhost/audit_db",
+    feedDbUrl: "postgres://u:p@localhost/feed_db",
     adminDbUrl: "postgres://admin:p@localhost/postgres",
     customerOwnerTemplateUrl: "postgres://owner:p@localhost/template1",
     baoDataDir: "/bao/data",
@@ -114,6 +115,21 @@ describe("runBackup", () => {
 
     expect(result.manifest.targets.audit_db).toBeDefined();
     expect(result.manifest.targets.audit_db?.file).toBe("audit_db.dump");
+  });
+
+  it("creates manifest with feed_db target", async () => {
+    const { runBackup } = await import("../backup");
+    const storage = makeMockStorage();
+
+    const result = await runBackup({
+      config: makeConfig(),
+      storage,
+      targets: ["feed"],
+      now: new Date("2026-04-02T10:00:00Z"),
+    });
+
+    expect(result.manifest.targets.feed_db).toBeDefined();
+    expect(result.manifest.targets.feed_db?.file).toBe("feed_db.dump");
   });
 
   it("creates manifest with openbao target", async () => {

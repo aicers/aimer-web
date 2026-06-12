@@ -3,21 +3,25 @@
 //
 // These fixtures (`./feeds/*`) are the offline stand-in for live feed
 // downloads (RFC 0003 §"Testing" — "fixtures are pinned local snapshots,
-// never live feeds"). Tests and local dev seed from them; the later supply
-// modes (manual-upload, self-fetch, managed) are separate `FeedSource`
-// implementations in this series.
+// never live feeds"). Tests and local dev seed from them. `manual-upload`
+// (part 2, #566) is NOT a `FeedSource`: operator uploads enter through the
+// admin route, which calls the common downstream (`importRawFeedPayload`)
+// directly. The pull-based `FeedSource` seam is used only by the later
+// fetch modes (self-fetch, managed).
 //
 // `FixtureFeedSource` is the `fixture` supply mode: it yields the raw feed
 // bytes (read from disk) + provenance, and the common downstream
 // (`importFromFeedSource`) parses/normalizes/imports them. This is the
-// test/dev-only seeding path — production imports come from the (future)
-// upload/fetch sources, never this module.
+// test/dev-only seeding path — production imports come from the operator
+// upload route (`manual-upload`) or the later fetch sources, never this
+// module.
 
 import "server-only";
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
+import { TIER1_FEED_SOURCES } from "./feed-catalog";
 import { importFromFeedSource } from "./feed-import";
 import {
   type FeedParseKind,
@@ -46,49 +50,39 @@ interface FixtureFeedSpec {
   classification?: string;
 }
 
-/** Manifest of the committed Tier-1 fixtures and how to import each. */
-export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = [
-  {
-    sourcePolicyId: "abuse.ch/feodo",
-    file: "feodo-ipblocklist.txt",
-    parse: "ip-blocklist",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "c2",
+/** The committed fixture file for each Tier-1 source (keyed by policy id). */
+const FIXTURE_FILES: Readonly<Record<string, string>> = {
+  "abuse.ch/feodo": "feodo-ipblocklist.txt",
+  "abuse.ch/urlhaus": "urlhaus.csv",
+  "abuse.ch/urlhaus-payloads": "urlhaus-payloads.csv",
+  "spamhaus/drop": "spamhaus-drop.txt",
+  "spamhaus/edrop": "spamhaus-edrop.txt",
+};
+
+/**
+ * Manifest of the committed Tier-1 fixtures and how to import each. Derived
+ * from the shared `TIER1_FEED_SOURCES` catalog (re-attaching each fixture
+ * `file`) so the `sourcePolicyId → parse/entityType/hitType/classification`
+ * mapping is defined once and the upload feature reads the same manifest.
+ */
+export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = TIER1_FEED_SOURCES.map(
+  (source) => {
+    const file = FIXTURE_FILES[source.sourcePolicyId];
+    if (!file) {
+      throw new Error(
+        `No fixture file mapped for source "${source.sourcePolicyId}"`,
+      );
+    }
+    return {
+      sourcePolicyId: source.sourcePolicyId,
+      file,
+      parse: source.parse,
+      entityType: source.entityType,
+      hitType: source.hitType,
+      classification: source.classification,
+    };
   },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus",
-    file: "urlhaus.csv",
-    parse: "urlhaus-csv",
-    entityType: "URL",
-    hitType: "deterministic_ioc",
-    classification: "malware_url",
-  },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus-payloads",
-    file: "urlhaus-payloads.csv",
-    parse: "urlhaus-payloads-csv",
-    entityType: "HASH",
-    hitType: "deterministic_ioc",
-    classification: "malware_payload",
-  },
-  {
-    sourcePolicyId: "spamhaus/drop",
-    file: "spamhaus-drop.txt",
-    parse: "spamhaus-drop",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "drop",
-  },
-  {
-    sourcePolicyId: "spamhaus/edrop",
-    file: "spamhaus-edrop.txt",
-    parse: "spamhaus-drop",
-    entityType: "IP",
-    hitType: "deterministic_ioc",
-    classification: "edrop",
-  },
-];
+);
 
 /** Options stamping fixture provenance (freshness drives stale coverage). */
 export interface FixtureFeedSourceOptions {
@@ -147,15 +141,23 @@ export async function seedFixtureFeeds(
 /**
  * Resolve the deployment's configured `FeedSource` from `TI_FEED_MODE`.
  *
- * This is the single mode→source dispatch point: parts 2-4 add their case
- * here (returning their `FeedSource` for `manual-upload` / `self-fetch` /
- * `managed`) instead of teaching every import caller a new mode. Callers
- * go through this seam rather than constructing a `FeedSource` directly, so
- * the env actually selects the supply mode.
+ * This is the single mode→source dispatch point for the *pull-based* supply
+ * modes: the later parts add their case here (returning their `FeedSource`
+ * for `self-fetch` / `managed`) instead of teaching every import caller a new
+ * mode. Callers go through this seam rather than constructing a `FeedSource`
+ * directly, so the env actually selects the supply mode.
+ *
+ * `manual-upload` (part 2) is intentionally **not** wired here: it has no
+ * pull-based `FeedSource`. Uploads enter through the admin route, which calls
+ * `importRawFeedPayload()` directly. `manual-upload` is supported by
+ * `resolveTiFeedMode()`, so if this function were ever invoked in that mode
+ * it would (correctly) fall to the `default` branch — the route never routes
+ * an upload through here.
  *
  * `resolveTiFeedMode()` already fails fast on unknown or not-yet
  * -implemented modes; the `default` branch only guards against a mode being
- * promoted into `SUPPORTED_TI_FEED_MODES` without a case wired here.
+ * promoted into `SUPPORTED_TI_FEED_MODES` without a pull-based case wired
+ * here (which is the expected state for `manual-upload`).
  *
  * (Lives here, not in `feed-source.ts`, to avoid a cycle: this module
  * already depends on the source types and the concrete `FixtureFeedSource`.)

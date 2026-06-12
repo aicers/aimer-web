@@ -97,6 +97,25 @@ describe("feed normalization → snapshot rows", () => {
     expect(rows).toEqual([{ cidr: "192.0.2.0/24" }]);
     expect(skipped).toBe(1);
   });
+
+  it("rejects malformed CIDRs that the loose shape would have passed", () => {
+    // Each of these matches `[0-9a-fA-F:.]+/\d+` but is not a valid
+    // PostgreSQL `cidr`, so they must be skipped (not forwarded to a
+    // `$N::cidr` insert that 500s mid-import).
+    const { rows, skipped } = normalizeCidrs([
+      "999.999.999.999/24", // octet out of range
+      "203.0.113.0/33", // IPv4 prefix out of range
+      "2001:db8::/129", // IPv6 prefix out of range
+    ]);
+    expect(rows).toEqual([]);
+    expect(skipped).toBe(3);
+  });
+
+  it("canonicalizes a CIDR with host bits set to its network address", () => {
+    const { rows, skipped } = normalizeCidrs(["203.0.113.1/24"]);
+    expect(rows).toEqual([{ cidr: "203.0.113.0/24" }]);
+    expect(skipped).toBe(0);
+  });
 });
 
 describe("feed hash", () => {

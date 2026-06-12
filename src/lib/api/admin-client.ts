@@ -11,10 +11,16 @@ export async function adminFetch<T>(
   url: string,
   options?: RequestInit,
 ): Promise<T> {
+  // A `FormData` body must keep the browser-generated
+  // `multipart/form-data; boundary=…` Content-Type — hand-setting JSON here
+  // would corrupt the multipart boundary. So omit Content-Type for FormData.
+  const isFormData =
+    typeof FormData !== "undefined" && options?.body instanceof FormData;
+
   const res = await fetch(url, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       "X-CSRF-Token-Admin": getAdminCsrfToken(),
       ...options?.headers,
     },

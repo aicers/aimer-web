@@ -59,14 +59,13 @@ active tenant, and on demand via `pnpm migrate:customers` /
 `pnpm migrate:groups` (retry / disaster-recovery paths). The backup
 tooling (`src/lib/backup/`) replays pending migrations after a restore.
 
-The feed database is intentionally **not** a backup/restore target yet.
-In this part of the TI feed series it holds no non-reproducible data:
-production has no fetch/refresh worker, so `ioc_feed_snapshot` is empty
-until a supply mode populates it, and its only contents are reproducible
-(schema from `migrations/feed/` on startup, rows re-seeded from the
-committed `feeds/*` fixtures). Backup/restore/verify integration lands
-with the supply part that introduces fetched, non-reproducible feed data
-(self-fetch / managed), where there is finally state worth preserving.
+The feed database **is** a backup/restore target as of the manual-upload
+supply mode (#566). In `manual-upload` mode `ioc_feed_snapshot` holds an
+operator-uploaded snapshot that is **not** re-derivable from the committed
+`feeds/*` fixtures, so the feed DB now carries non-reproducible data and is
+backed up/restored/verified alongside the other databases (`feed` /
+`feed_db` target across `src/lib/backup/`). (Before manual-upload its only
+contents were fixture-reproducible, hence its earlier absence as a target.)
 
 ## Database Roles
 

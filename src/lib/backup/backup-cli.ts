@@ -23,9 +23,13 @@ function parseArgs(argv: string[]) {
   const targetVal = args.get("target");
   if (
     !targetVal ||
-    !["auth", "audit", "customers", "openbao", "all"].includes(targetVal)
+    !["auth", "audit", "feed", "customers", "openbao", "all"].includes(
+      targetVal,
+    )
   ) {
-    console.error("--target is required (auth|audit|customers|openbao|all)");
+    console.error(
+      "--target is required (auth|audit|feed|customers|openbao|all)",
+    );
     process.exit(2);
   }
 
@@ -53,7 +57,7 @@ async function main() {
   }
 
   const needsPgTools =
-    target === "all" || ["auth", "audit", "customers"].includes(target);
+    target === "all" || ["auth", "audit", "feed", "customers"].includes(target);
   if (needsPgTools) {
     try {
       await checkPgToolsAvailable();
@@ -65,7 +69,9 @@ async function main() {
 
   const storage = new LocalStorageBackend(config.backupDir);
   const targets: BackupTarget[] =
-    target === "all" ? ["auth", "audit", "customers", "openbao"] : [target];
+    target === "all"
+      ? ["auth", "audit", "feed", "customers", "openbao"]
+      : [target];
 
   const result = await runBackup({
     config,
