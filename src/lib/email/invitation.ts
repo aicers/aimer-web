@@ -1,5 +1,6 @@
 import "server-only";
 
+import { escapeHtml, formatEmailTimestamp } from "./format";
 import { sendMail } from "./transport";
 
 // ---------------------------------------------------------------------------
@@ -19,17 +20,6 @@ export interface InvitationEmailParams {
 // Template helpers
 // ---------------------------------------------------------------------------
 
-function formatDate(date: Date): string {
-  return date.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
-}
-
 export function buildInvitationLink(baseUrl: string, token: string): string {
   return `${baseUrl}/api/auth/invite/${token}`;
 }
@@ -40,7 +30,7 @@ export function buildInvitationLink(baseUrl: string, token: string): string {
 
 export function buildInvitationText(params: InvitationEmailParams): string {
   const link = buildInvitationLink(params.baseUrl, params.token);
-  const expiry = formatDate(params.expiresAt);
+  const expiry = formatEmailTimestamp(params.expiresAt);
 
   return [
     `You've been invited to join ${params.customerName} on Clumit Insight.`,
@@ -57,7 +47,7 @@ export function buildInvitationText(params: InvitationEmailParams): string {
 
 export function buildInvitationHtml(params: InvitationEmailParams): string {
   const link = buildInvitationLink(params.baseUrl, params.token);
-  const expiry = formatDate(params.expiresAt);
+  const expiry = formatEmailTimestamp(params.expiresAt);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -73,15 +63,6 @@ export function buildInvitationHtml(params: InvitationEmailParams): string {
   <p style="font-size: 12px; color: #999;">If you did not expect this invitation, you can safely ignore this email.</p>
 </body>
 </html>`;
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 // ---------------------------------------------------------------------------

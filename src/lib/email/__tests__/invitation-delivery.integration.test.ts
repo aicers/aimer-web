@@ -156,6 +156,9 @@ describe.skipIf(!available)(
       expect(sentDetail.HTML).toContain("Integration Test Corp");
       expect(sentDetail.HTML).toContain("Manager");
       expect(sentDetail.HTML).toContain(expectedLink);
+      // expiresAt is 2026-12-31T23:59:59Z; the email policy pins the displayed
+      // expiry to UTC and labels the zone, surviving SMTP transport intact.
+      expect(sentDetail.HTML).toContain("December 31, 2026 at 11:59 PM UTC");
     });
 
     it("email plain text body contains invitation link, org name, and role", () => {
@@ -167,6 +170,9 @@ describe.skipIf(!available)(
       expect(sentDetail.Text).toContain("Integration Test Corp");
       expect(sentDetail.Text).toContain("Manager");
       expect(sentDetail.Text).toContain(expectedLink);
+      expect(sentDetail.Text).toContain(
+        "Expires: December 31, 2026 at 11:59 PM UTC",
+      );
       expect(sentDetail.Text).toContain("safely ignore");
     });
   },

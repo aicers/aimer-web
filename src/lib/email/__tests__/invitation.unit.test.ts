@@ -59,8 +59,10 @@ describe("buildInvitationText", () => {
     );
   });
 
-  it("includes expiration info", () => {
-    expect(text).toContain("2026");
+  it("renders the expiry as a UTC-pinned, English timestamp", () => {
+    // expiresAt is 2026-04-01T12:00:00Z; the email policy pins display to UTC
+    // and labels the zone, regardless of the server's TZ.
+    expect(text).toContain("Expires: April 1, 2026 at 12:00 PM UTC");
   });
 
   it("includes a safe-ignore notice", () => {
@@ -113,6 +115,12 @@ describe("buildInvitationHtml", () => {
     const result = buildInvitationHtml(sqParams);
     expect(result).not.toContain("O'Reilly");
     expect(result).toContain("O&#39;Reilly");
+  });
+
+  it("renders the expiry as a UTC-pinned, English timestamp", () => {
+    expect(html).toContain(
+      "This invitation expires on April 1, 2026 at 12:00 PM UTC.",
+    );
   });
 
   it("is valid HTML with doctype", () => {
