@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { AccountTimezoneProvider } from "@/hooks/use-account-timezone";
 
 // The registrar reads its own path from `usePathname`; tests drive it
 // through a ref so a single render can register multiple paths.
@@ -9,7 +10,16 @@ vi.mock("next/navigation", () => ({
   usePathname: () => currentPath,
 }));
 
+// `BreadcrumbEventLabelRegistrar` formats the compact time client-side and
+// reads the active app locale via `useLocale()`; pin it while keeping the rest
+// of next-intl real.
+vi.mock("next-intl", async () => {
+  const actual = await vi.importActual<typeof import("next-intl")>("next-intl");
+  return { ...actual, useLocale: () => "en" };
+});
+
 import {
+  BreadcrumbEventLabelRegistrar,
   BreadcrumbLabelProvider,
   BreadcrumbLabelRegistrar,
   useBreadcrumbLabels,
@@ -132,5 +142,60 @@ describe("BreadcrumbLabelStore", () => {
     // The dedup guard in `register` returns the previous map unchanged, so
     // no needless map allocation/propagation occurs for an unchanged label.
     expect(seen[seen.length - 1]).toBe(afterFirst);
+  });
+});
+
+describe("BreadcrumbEventLabelRegistrar (#559)", () => {
+  const PATH = "/en/subjects/c1/aice/a1/events/777/analysis";
+  // A fixed display timezone makes the formatted compact time deterministic.
+  function renderRegistrar(
+    sink: { current: ReadonlyMap<string, string> },
+    props: { eventTime: string | null; kind: string | null; fallback: string },
+  ) {
+    const Probe = captureLabels(sink);
+    currentPath = PATH;
+    return render(
+      <AccountTimezoneProvider timezone="UTC">
+        <BreadcrumbLabelProvider>
+          <Probe />
+          <BreadcrumbEventLabelRegistrar {...props} />
+        </BreadcrumbLabelProvider>
+      </AccountTimezoneProvider>,
+    );
+  }
+
+  it("registers `{time} · {kind display name}` from the raw event time + kind", () => {
+    const sink = { current: new Map<string, string>() };
+    renderRegistrar(sink, {
+      eventTime: "2026-05-20T08:30:00Z",
+      kind: "HttpThreat",
+      fallback: "Event",
+    });
+    const label = sink.current.get(PATH);
+    // Friendly kind name from the ported map, appended after the compact time.
+    expect(label).toContain("· HTTP Threat");
+    expect(label).not.toBe("Event");
+  });
+
+  it("registers the time only (no separator) when kind is null", () => {
+    const sink = { current: new Map<string, string>() };
+    renderRegistrar(sink, {
+      eventTime: "2026-05-20T08:30:00Z",
+      kind: null,
+      fallback: "Event",
+    });
+    const label = sink.current.get(PATH);
+    expect(label).not.toContain("·");
+    expect(label).not.toBe("Event");
+  });
+
+  it("registers the static fallback when eventTime is null", () => {
+    const sink = { current: new Map<string, string>() };
+    renderRegistrar(sink, {
+      eventTime: null,
+      kind: "HttpThreat",
+      fallback: "Event",
+    });
+    expect(sink.current.get(PATH)).toBe("Event");
   });
 });

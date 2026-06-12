@@ -9,8 +9,9 @@ import {
   CompareModelSelector,
 } from "@/components/analysis/compare-model-selector";
 import { EventCompareView } from "@/components/analysis/event-compare-view";
+import { EventTitle } from "@/components/analysis/event-title";
 import { AnalysisBody } from "@/components/analysis-body";
-import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
+import { BreadcrumbEventLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
@@ -19,7 +20,6 @@ import {
   type AnalysisResultPageData,
   loadAnalysisResultPage,
 } from "@/lib/analysis/result-page-loader";
-import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
 import { subjectPages } from "@/lib/navigation/routes";
 import { EventRegenerateButton } from "./regenerate-button";
 
@@ -113,8 +113,14 @@ export default async function AnalysisResultPage({
             {tA("eventAnalysis.title")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {tA("eventAnalysis.subtitlePinned", {
-              eventKey,
+            {/* Title is `{event time} · {kind}` (#559); `aice_id` + generation
+                stay trailing provenance meta. `event_key` is never shown. */}
+            <EventTitle
+              eventTime={outcome.eventTitle.eventTime}
+              kind={outcome.eventTitle.kind}
+              fallbackLabel={tA("eventAnalysis.subtitleFallback")}
+            />
+            {tA("eventAnalysis.subtitlePinnedMeta", {
               aiceId,
               generation: outcome.generation,
             })}
@@ -180,21 +186,29 @@ export default async function AnalysisResultPage({
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      {/* Feed the breadcrumb its leaf label from already-loaded data
-          (no client refetch); `<Breadcrumbs />` falls back to the same
-          terminology + short-key format if this never registers (#393). */}
-      <BreadcrumbLabelRegistrar
-        label={entityCrumbLabel(t("event"), data.eventKey)}
+      {/* Feed the breadcrumb its leaf label from already-loaded data (#559):
+          the raw event time (ISO) + kind, formatted to `{time} · {kind}` inside
+          the client registrar (the display tz resolves client-side). The
+          `<Breadcrumbs />` fallback is the static `Event` label if this never
+          registers (first paint / no event time). `event_key` is never shown. */}
+      <BreadcrumbEventLabelRegistrar
+        eventTime={data.eventTitle.eventTime?.toISOString() ?? null}
+        kind={data.eventTitle.kind}
+        fallback={t("event")}
       />
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-foreground">
           {tA("eventAnalysis.title")}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {tA("eventAnalysis.subtitle", {
-            eventKey: data.eventKey,
-            aiceId: data.aiceId,
-          })}
+          {/* Title is `{event time} · {kind}` (#559); `aice_id` stays trailing
+              provenance meta. `event_key` is never shown as a title. */}
+          <EventTitle
+            eventTime={data.eventTitle.eventTime}
+            kind={data.eventTitle.kind}
+            fallbackLabel={tA("eventAnalysis.subtitleFallback")}
+          />
+          {tA("eventAnalysis.subtitleMeta", { aiceId: data.aiceId })}
         </p>
       </header>
 

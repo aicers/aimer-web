@@ -555,6 +555,28 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
       },
     ];
 
+    // The cited event leaf row supplies the chip's `{event time} · {kind}`
+    // title (#559); keyed to the ref by aice_id/event_key/generation/model.
+    eventLeafRows = [
+      {
+        analysis_text: "",
+        severity_factors: [],
+        likelihood_factors: [],
+        priority_tier: "MEDIUM",
+        severity_score: 0.4,
+        likelihood_score: 0.5,
+        ttp_tags: [],
+        superseded_at: null,
+        aice_id: "aice-9",
+        event_key: "777",
+        event_time: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
+        generation: 4,
+        model_name: "openai",
+        model: "gpt-4o",
+      },
+    ];
+
     const outcome = await callLoader({ locale: "en" });
     if (outcome.kind !== "ok") throw new Error("expected ok");
     const exec = outcome.data.sections.executive_summary;
@@ -590,6 +612,9 @@ describe("loadReportResultPage — sentence-level citations (#449)", () => {
           modelName: "openai",
           model: "gpt-4o",
         },
+        // Title fields wired from the cited leaf row (#559).
+        eventTime: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
       },
     });
   });

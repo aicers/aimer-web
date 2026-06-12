@@ -109,6 +109,9 @@ function resultRowData(extras: Record<string, unknown> = {}) {
     requested_by: "acc-1",
     requested_at: new Date("2026-05-20T00:00:00Z"),
     origin: "manual",
+    // Event identity for the subtitle / breadcrumb title (#559).
+    event_time: new Date("2026-05-19T00:00:00Z"),
+    kind: "HttpThreat",
     ...extras,
   };
 }

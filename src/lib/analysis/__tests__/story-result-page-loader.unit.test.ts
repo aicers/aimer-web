@@ -310,6 +310,8 @@ describe("loadStoryResultPage — member events (T2 #396)", () => {
         priority_tier: "HIGH",
         severity_score: 0.6,
         likelihood_score: 0.7,
+        event_time: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
       },
       {
         aice_id: "aice-b",
@@ -317,6 +319,8 @@ describe("loadStoryResultPage — member events (T2 #396)", () => {
         priority_tier: "LOW",
         severity_score: 0.1,
         likelihood_score: 0.2,
+        event_time: new Date("2026-05-21T00:00:00Z"),
+        kind: null,
       },
     ];
     const outcome = await callLoader();
@@ -326,6 +330,9 @@ describe("loadStoryResultPage — member events (T2 #396)", () => {
       index: 1,
       aiceId: "aice-a",
       eventKey: "10",
+      // Title fields read off the same canonical row (#559).
+      eventTime: new Date("2026-05-20T00:00:00Z"),
+      kind: "HttpThreat",
       display: {
         priorityTier: "HIGH",
         severityScore: 0.6,
@@ -348,8 +355,16 @@ describe("loadStoryResultPage — member events (T2 #396)", () => {
     eventDisplayRows = []; // no event row at the canonical variant
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
+    // No canonical row → title fields and display both null (#559).
     expect(outcome.data.memberEvents).toEqual([
-      { index: 1, aiceId: "aice-a", eventKey: "10", display: null },
+      {
+        index: 1,
+        aiceId: "aice-a",
+        eventKey: "10",
+        eventTime: null,
+        kind: null,
+        display: null,
+      },
     ]);
   });
 

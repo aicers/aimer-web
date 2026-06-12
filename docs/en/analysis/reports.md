@@ -495,11 +495,16 @@ Within the three leaf-derived sections, each narrative unit (a sentence
 or short, self-contained chunk for the executive summary, or a single
 entry for story highlights and notable events) can carry an inline
 citation linking it to the **one** analysis leaf it was derived from. The
-link renders as a small **↗ Story {story_id}** or **↗ Event {aice_id} ·
-{event_key}** chip after the unit's text. This deepens the trust chain
-from the report-level [Sources](#sources) panel ("which analyses fed this
-report") to the sentence level ("which analysis backs *this* claim"), so
-verifying one statement no longer means scanning every cited source.
+link renders as a small **↗ Story {story_id}** chip for a threat story, or
+an **↗ {event time} · {kind}** chip for a suspicious event (for example,
+`↗ 6/3, 2:05 PM · HTTP Threat`) — the same event label the
+[Sources](#sources) cards and the Suspicious Events lists use — after the
+unit's text. When the event time is unavailable the chip falls back to a
+plain **↗ Event** label; the opaque `event_key` is never shown. This
+deepens the trust chain from the report-level Sources panel ("which
+analyses fed this report") to the sentence level ("which analysis backs
+*this* claim"), so verifying one statement no longer means scanning every
+cited source.
 
 - A unit grounds in **exactly one** leaf. Prose that synthesises several
   leaves is split into separate units or left uncited, so a citation

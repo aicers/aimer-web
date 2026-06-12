@@ -827,8 +827,9 @@
       "pendingBanner": "분석이 진행 중입니다 (상태: {status}). 결과가 준비되면 페이지가 자동으로 갱신됩니다.",
       "memberEventsHeading": "구성 의심 이벤트",
       "memberEventsDescription": "이 스토리로 연관된 의심 이벤트를 순서대로 표시합니다.",
-      "memberUnavailable": "기본 변형에서는 이벤트 분석을 사용할 수 없습니다.",
-      "memberEventLabel": "이벤트 {aiceId} · {eventKey}"
+      "memberUnavailableMeta": "{aiceId} • 기본 변형에서는 이벤트 분석을 사용할 수 없습니다.",
+      "memberEventLabel": "이벤트",
+      "memberEventMeta": "{aiceId} • 심각도 {severity} • 가능성 {likelihood}"
     },
     "coverage": {
       "incompleteBadge": "위협 인텔리전스 커버리지 불완전",
@@ -836,8 +837,9 @@
     },
     "eventAnalysis": {
       "title": "AI 분석",
-      "subtitle": "이벤트 {eventKey} • {aiceId}",
-      "subtitlePinned": "이벤트 {eventKey} • {aiceId} • 세대 {generation}",
+      "subtitleFallback": "이벤트",
+      "subtitleMeta": " • {aiceId}",
+      "subtitlePinnedMeta": " • {aiceId} • 세대 {generation}",
       "retentionBanner": "원본 이벤트는 보존 정책에 따라 삭제되었으며, 분석 결과는 보존되었습니다.",
       "partOfThreat": "{count, plural, other {위협 스토리의 일부}}",
       "storyLabel": "스토리 {storyId}",
@@ -900,7 +902,7 @@
     "citations": {
       "ariaLabel": "이 문장의 인용 근거",
       "storyLink": "스토리 {storyId}",
-      "eventLink": "이벤트 {aiceId} · {eventKey}"
+      "eventLink": "이벤트"
     },
     "citedBy": {
       "heading": "인용한 보고서",

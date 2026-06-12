@@ -8,6 +8,7 @@ import {
   COMPARE_MODEL_PARAM,
   CompareModelSelector,
 } from "@/components/analysis/compare-model-selector";
+import { EventTitle } from "@/components/analysis/event-title";
 import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
@@ -492,14 +493,18 @@ function MemberEventCard({
           <div className="min-w-0">
             <div className="truncate text-sm font-medium text-foreground">
               <span className="text-muted-foreground">#{member.index}</span>{" "}
-              {t("storyDetail.memberEventLabel", {
-                aiceId: member.aiceId,
-                eventKey: member.eventKey,
-              })}
+              {/* Title is `{event time} · {kind}` (#559); `aice_id` moves to the
+                  meta line below as provenance. `event_key` is never shown. */}
+              <EventTitle
+                eventTime={member.eventTime}
+                kind={member.kind}
+                fallbackLabel={t("storyDetail.memberEventLabel")}
+              />
             </div>
             {member.display ? (
               <div className="mt-0.5 text-xs text-muted-foreground">
-                {t("common.severityLikelihood", {
+                {t("storyDetail.memberEventMeta", {
+                  aiceId: member.aiceId,
                   severity: member.display.severityScore.toFixed(3),
                   likelihood: member.display.likelihoodScore.toFixed(3),
                 })}
@@ -509,7 +514,9 @@ function MemberEventCard({
                 data-testid="member-event-unavailable"
                 className="mt-0.5 text-xs text-muted-foreground"
               >
-                {t("storyDetail.memberUnavailable")}
+                {t("storyDetail.memberUnavailableMeta", {
+                  aiceId: member.aiceId,
+                })}
               </div>
             )}
           </div>

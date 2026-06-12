@@ -125,6 +125,16 @@ export type CitedUnitSource =
       /** Owning member customer id — see the story variant. */
       customerId: string;
       variant: CitedLeafVariant;
+      /**
+       * Event time + kind for the chip label `{event time} · {kind display
+       * name}` (#559), wired from the same already-fetched leaf rows the Sources
+       * panel uses (`CitedEventSource`, #552) — no extra query. `eventTime` null
+       * (leaf row missing/superseded) falls back to the static `Event` label;
+       * `aice_id` is dropped from the chip (the Sources card + detail page carry
+       * it). Both null on the compare column, which renders no chip.
+       */
+      eventTime: Date | null;
+      kind: string | null;
     };
 
 /**
@@ -894,6 +904,22 @@ export async function loadReportResultPage(
     }),
   };
 
+  // Event time + kind per cited leaf, keyed for the sentence-citation chips
+  // (#559). Reuses the leaf display rows already fetched above (positional with
+  // `eventRefs`) — no extra query — keyed the same way `restoreReportSections-
+  // FromRow` resolves an event source.
+  const eventDisplayByKey = new Map<
+    string,
+    { eventTime: Date | null; kind: string | null }
+  >();
+  eventRefs.forEach((ref, i) => {
+    const d = eventDisplays[i];
+    eventDisplayByKey.set(
+      memberKey(ref.customer_id, `${ref.aice_id}:${ref.event_key}`),
+      { eventTime: d?.eventTime ?? null, kind: d?.kind ?? null },
+    );
+  });
+
   const sections = restoreReportSectionsFromRow(
     row,
     replayLang,
@@ -901,6 +927,7 @@ export async function loadReportResultPage(
     eventRefs,
     plaintextByReportToken,
     subjectId,
+    eventDisplayByKey,
   );
 
   // Coverage indicator (#465 Scope 6): count cited leaves on the report's own
@@ -1048,6 +1075,14 @@ function restoreReportSectionsFromRow(
   eventRefs: EventRef[],
   plaintextByReportToken: Map<string, string>,
   subjectId: string,
+  // Event time + kind per leaf, keyed the same way as `eventRefByKey` (#559),
+  // so a sentence citation can title its chip `{event time} · {kind}`. Wired
+  // from the already-fetched leaf display rows by the primary loader; the
+  // compare loader passes nothing (it flattens units to plain text — no chip).
+  eventDisplayByKey: ReadonlyMap<
+    string,
+    { eventTime: Date | null; kind: string | null }
+  > = new Map(),
 ): ReportSections {
   const restoreOne = (s: unknown) =>
     restoreReportAnalysisTokens(
@@ -1119,10 +1154,12 @@ function restoreReportSectionsFromRow(
       // `event_ref` is opaque; resolve it through the input refs by the same
       // packed key the builder emitted (member-qualified, #525) instead of
       // splitting on `:` (robust even if an `aice_id` ever contained a colon).
-      const ref = eventRefByKey.get(
-        memberKey(sourceCustomerId, wire.event_ref),
-      );
+      const key = memberKey(sourceCustomerId, wire.event_ref);
+      const ref = eventRefByKey.get(key);
       if (!ref) return undefined;
+      // Event time + kind off the same leaf row the Sources panel resolved
+      // (#559); absent (missing/superseded leaf) → static fallback chip.
+      const display = eventDisplayByKey.get(key);
       return {
         sourceType: "event",
         aiceId: ref.aice_id,
@@ -1134,6 +1171,8 @@ function restoreReportSectionsFromRow(
           modelName: ref.model_name,
           model: ref.model,
         },
+        eventTime: display?.eventTime ?? null,
+        kind: display?.kind ?? null,
       };
     }
     return undefined;

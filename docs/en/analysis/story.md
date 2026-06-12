@@ -283,12 +283,16 @@ correlated into this story, in the story's member order (the member
 ordinal embedded in the redaction token namespace). Each member is a card
 linking down to that event's [Analysis Result page](../analysis-result.md),
 carrying the default `(language, provider, model)` variant so the event
-page resolves the same evidence the card describes. A card shows the
-member's priority-tier badge and severity / likelihood scores when the
-event has a result at that variant; a member whose event has no result
-there (for example, swept by retention) still links by id, with a short
-"Event analysis not available at the default variant" note instead of the
-scores.
+page resolves the same evidence the card describes. The card is titled by
+the event's time and kind — `{event time} · {kind}` (for example, `6/3,
+2:05 PM · HTTP Threat`), the same label the Suspicious Events lists use —
+with the originating `aice_id` on a meta line beneath the title; the opaque
+`event_key` is never shown as a title. A card shows the member's
+priority-tier badge and severity / likelihood scores when the event has a
+result at that variant; a member whose event has no result there (for
+example, swept by retention) falls back to a plain `Event` title and shows
+a short "Event analysis not available at the default variant" note on the
+meta line instead of the scores.
 
 This is the downward half of the trust drill-down: a reader can move from
 the story narrative into each cited event, then on to the raw source

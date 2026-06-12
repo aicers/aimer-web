@@ -318,3 +318,47 @@ describe("StoryAnalysisPage — IOC coverage status banner (#498)", () => {
     expect(screen.queryByTestId("coverage-status-banner")).toBeNull();
   });
 });
+
+describe("StoryAnalysisPage — member event labels (#559)", () => {
+  it("titles member rows `{event time} · {kind}` with aice_id on the meta line", async () => {
+    const outcome = fixture("HIGH");
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    outcome.data.memberEvents = [
+      {
+        index: 1,
+        aiceId: "aice-a",
+        eventKey: "10",
+        eventTime: new Date("2026-05-20T00:00:00Z"),
+        kind: "HttpThreat",
+        display: {
+          priorityTier: "HIGH",
+          severityScore: 0.6,
+          likelihoodScore: 0.7,
+        },
+      },
+      // No canonical row → static `Event` title, aice_id still on the note.
+      {
+        index: 2,
+        aiceId: "aice-b",
+        eventKey: "20",
+        eventTime: null,
+        kind: null,
+        display: null,
+      },
+    ];
+    mockLoad.mockResolvedValueOnce(outcome);
+    await renderPage();
+
+    // Titled card: friendly kind name shows; `aice_id` is on the meta line;
+    // the opaque `event_key` is never shown as a title.
+    const titled = screen.getByTestId("member-event-aice-a-10");
+    expect(titled.textContent).toContain("HTTP Threat");
+    expect(titled.textContent).toContain("aice-a");
+
+    // No-row member: static `Event` fallback title + `aice_id` on the note.
+    const fallback = screen.getByTestId("member-event-aice-b-20");
+    expect(fallback.textContent).toContain("Event");
+    const note = screen.getByTestId("member-event-unavailable");
+    expect(note.textContent).toContain("aice-b");
+  });
+});

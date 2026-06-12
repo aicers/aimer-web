@@ -39,14 +39,34 @@ import { restoreRedactedTokens } from "./restore";
 // generation it pins is one the story page can actually render.
 const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
 
+/**
+ * The event's identity for the `{event time} · {kind display name}` title
+ * (#559), composed by `<EventTitle>`. `eventTime` is `null` only when there is
+ * no row to read it from (a missing pinned row) — the title then degrades to
+ * the static `Event` / `이벤트` fallback. Read off the result row regardless of
+ * `superseded_at` since both are variant-independent (same rule as #552's
+ * `CitedEventSource`). Carried as a nested object rather than sibling fields so
+ * the event `kind` never collides with `ResultPageOutcome`'s `kind` discriminant.
+ */
+export interface EventTitleFields {
+  eventTime: Date | null;
+  kind: string | null;
+}
+
 export type ResultPageOutcome =
   | { kind: "unauthorized" }
   | { kind: "not_found" }
   // A specific generation was pinned (T1 Sources link) but the pinned row
   // is missing or superseded. The page shows the "evidence version no
   // longer available" notice and does NOT fall back to the latest
-  // generation (parent #386 generation-pin contract).
-  | { kind: "pin_unavailable"; generation: number }
+  // generation (parent #386 generation-pin contract). `eventTitle` keeps the
+  // pinned subtitle meaningful in the superseded case (the row still exists);
+  // it falls back to the static label when the row is missing entirely (#559).
+  | {
+      kind: "pin_unavailable";
+      generation: number;
+      eventTitle: EventTitleFields;
+    }
   | { kind: "ok"; data: AnalysisResultPageData };
 
 /**
@@ -101,6 +121,12 @@ export interface AnalysisResultPageData {
   generation: number;
   modelActualVersion: string;
   promptVersion: string;
+  /**
+   * The event's time + kind for the page subtitle and breadcrumb title (#559),
+   * read off the result row (variant-independent, same rule as #552). Composed
+   * by `<EventTitle>`; `aice_id` stays separate provenance meta.
+   */
+  eventTitle: EventTitleFields;
   severityScore: number;
   likelihoodScore: number;
   priorityTier: PriorityTier;
@@ -329,6 +355,10 @@ export async function loadAnalysisResultPage(
     requested_by: string | null;
     requested_at: Date;
     origin: "manual" | "auto_baseline";
+    // Event identity for the subtitle / breadcrumb title (#559). `event_time`
+    // is `NOT NULL` on the column; `kind` is nullable.
+    event_time: Date;
+    kind: string | null;
   }>(
     pinnedGeneration === null
       ? `SELECT
@@ -345,7 +375,9 @@ export async function loadAnalysisResultPage(
            superseded_at,
            requested_by,
            requested_at,
-           origin
+           origin,
+           event_time,
+           kind
          FROM event_analysis_result
          WHERE aice_id = $1
            AND event_key = $2::numeric
@@ -369,7 +401,9 @@ export async function loadAnalysisResultPage(
            superseded_at,
            requested_by,
            requested_at,
-           origin
+           origin,
+           event_time,
+           kind
          FROM event_analysis_result
          WHERE aice_id = $1
            AND event_key = $2::numeric
@@ -391,15 +425,27 @@ export async function loadAnalysisResultPage(
   );
   if (resultRow.rows.length === 0) {
     if (pinnedGeneration !== null) {
-      return { kind: "pin_unavailable", generation: pinnedGeneration };
+      // No row at the pinned variant — there is nothing to read the event
+      // time / kind from, so the pinned subtitle degrades to the static label.
+      return {
+        kind: "pin_unavailable",
+        generation: pinnedGeneration,
+        eventTitle: { eventTime: null, kind: null },
+      };
     }
     return { kind: "not_found" };
   }
   const row = resultRow.rows[0];
   // A superseded pinned row is treated as unavailable — the page must not
-  // present stale evidence as the version the report cited.
+  // present stale evidence as the version the report cited. The event time /
+  // kind are variant-independent, so read them off the superseded row to keep
+  // the pinned subtitle's title meaningful (#559).
   if (pinnedGeneration !== null && row.superseded_at !== null) {
-    return { kind: "pin_unavailable", generation: pinnedGeneration };
+    return {
+      kind: "pin_unavailable",
+      generation: pinnedGeneration,
+      eventTitle: { eventTime: row.event_time, kind: row.kind },
+    };
   }
 
   // Always restore tokens — there is no "view redacted" mode. The decrypted
@@ -528,6 +574,7 @@ export async function loadAnalysisResultPage(
       generation: row.generation,
       modelActualVersion: row.model_actual_version,
       promptVersion: row.prompt_version,
+      eventTitle: { eventTime: row.event_time, kind: row.kind },
       severityScore: row.severity_score,
       likelihoodScore: row.likelihood_score,
       priorityTier: row.priority_tier,

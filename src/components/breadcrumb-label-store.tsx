@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { useLocale } from "next-intl";
 import {
   createContext,
   type ReactNode,
@@ -10,6 +11,13 @@ import {
   useMemo,
   useState,
 } from "react";
+
+import { useAccountTimezone } from "@/hooks/use-account-timezone";
+import {
+  formatDateTimeCompact,
+  resolveDisplayTimeZone,
+} from "@/lib/datetime/format-timestamp";
+import { eventKindDisplayName } from "@/lib/events/event-kind-names";
 
 // Client-side breadcrumb-label store.
 //
@@ -91,6 +99,52 @@ export function useBreadcrumbLabels(): LabelMap {
 export function BreadcrumbLabelRegistrar({ label }: { label: string }) {
   const { register, unregister } = useContext(BreadcrumbLabelContext);
   const pathname = usePathname();
+
+  useEffect(() => {
+    register(pathname, label);
+    return () => unregister(pathname);
+  }, [pathname, label, register, unregister]);
+
+  return null;
+}
+
+/**
+ * Registers the event-analysis crumb label as `{event time} · {kind display
+ * name}` (#559), mirroring aice-web-next#746's breadcrumb. The label store is
+ * string-typed and the display timezone resolves client-side (account → browser
+ * → UTC), so — unlike the server-composed string `<BreadcrumbLabelRegistrar>`
+ * takes — the compact time MUST be formatted here, in the browser, from the raw
+ * ISO `eventTime`. Uses the same `formatDateTimeCompact` + `resolveDisplayTimeZone`
+ * helpers `<Timestamp compact>` uses, so the crumb time matches the page subtitle.
+ *
+ * Fallbacks mirror `<EventTitle>`: `kind` null → time only; `eventTime` null
+ * (no row to read it from) → the static `fallback` label (`Event` / `이벤트`),
+ * never the opaque `event_key`.
+ */
+export function BreadcrumbEventLabelRegistrar({
+  eventTime,
+  kind,
+  fallback,
+}: {
+  /** The event instant as an ISO string, or `null` to register `fallback`. */
+  eventTime: string | null;
+  /** Raw upstream kind (`__typename`), or `null` to register time only. */
+  kind: string | null;
+  /** Static localized fallback when `eventTime` is absent. */
+  fallback: string;
+}) {
+  const { register, unregister } = useContext(BreadcrumbLabelContext);
+  const pathname = usePathname();
+  const accountTimezone = useAccountTimezone();
+  const locale = useLocale();
+
+  const label = useMemo(() => {
+    if (eventTime === null) return fallback;
+    const timeZone = resolveDisplayTimeZone(accountTimezone);
+    const time = formatDateTimeCompact(eventTime, timeZone, locale);
+    const displayKind = eventKindDisplayName(kind);
+    return displayKind !== null ? `${time} · ${displayKind}` : time;
+  }, [eventTime, kind, fallback, accountTimezone, locale]);
 
   useEffect(() => {
     register(pathname, label);
