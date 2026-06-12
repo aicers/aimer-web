@@ -244,8 +244,11 @@ describe.skipIf(!hasPostgres)("reverse-citation lookup (db)", () => {
   });
 
   afterAll(async () => {
-    if (customerPool) await customerPool.end();
-    if (customerDbName) await dropTestDatabase(customerDbName);
+    // Pass the pool to dropTestDatabase so it suppresses the pool's error
+    // event before terminating backends. Otherwise the FATAL
+    // "terminating connection due to administrator command" can surface
+    // as an unhandled error and fail the run.
+    if (customerDbName) await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   });
 

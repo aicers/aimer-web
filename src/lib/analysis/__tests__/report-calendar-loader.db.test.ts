@@ -361,10 +361,12 @@ describe.skipIf(!hasPostgres)("report calendar loader (cross-DB)", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await authPool?.end();
-    await customerPool?.end();
-    if (authDbName) await dropTestDatabase(authDbName);
-    if (customerDbName) await dropTestDatabase(customerDbName);
+    // Pass the pool to dropTestDatabase so it suppresses the pool's error
+    // event before terminating backends. Otherwise the FATAL
+    // "terminating connection due to administrator command" can surface
+    // as an unhandled error and fail the run.
+    if (authDbName) await dropTestDatabase(authDbName, authPool);
+    if (customerDbName) await dropTestDatabase(customerDbName, customerPool);
     await closeAdminPool();
   });
 
