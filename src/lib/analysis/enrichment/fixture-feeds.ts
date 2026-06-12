@@ -3,15 +3,18 @@
 //
 // These fixtures (`./feeds/*`) are the offline stand-in for live feed
 // downloads (RFC 0003 §"Testing" — "fixtures are pinned local snapshots,
-// never live feeds"). Tests and local dev seed from them; the later supply
-// modes (manual-upload, self-fetch, managed) are separate `FeedSource`
-// implementations in this series.
+// never live feeds"). Tests and local dev seed from them. `manual-upload`
+// (part 2, #566) is NOT a `FeedSource`: operator uploads enter through the
+// admin route, which calls the common downstream (`importRawFeedPayload`)
+// directly. The pull-based `FeedSource` seam is used only by the later
+// fetch modes (self-fetch, managed).
 //
 // `FixtureFeedSource` is the `fixture` supply mode: it yields the raw feed
 // bytes (read from disk) + provenance, and the common downstream
 // (`importFromFeedSource`) parses/normalizes/imports them. This is the
-// test/dev-only seeding path — production imports come from the (future)
-// upload/fetch sources, never this module.
+// test/dev-only seeding path — production imports come from the operator
+// upload route (`manual-upload`) or the later fetch sources, never this
+// module.
 
 import "server-only";
 

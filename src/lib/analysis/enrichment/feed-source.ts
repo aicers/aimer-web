@@ -8,16 +8,20 @@
 // from ANY source into `ioc_feed_snapshot` rows uniformly.
 //
 // So a "mode" = WHERE the raw feed comes from; everything after the raw
-// bytes is shared. This is part 1 (foundation): only the `fixture` mode
-// exists. Parts 2-4 add `manual-upload` / `self-fetch` / `managed`
-// FeedSource implementations without re-plumbing the downstream.
+// bytes is shared. `fixture` (part 1) and `manual-upload` (part 2, #566)
+// are implemented. Note that `manual-upload` is NOT a pull-based
+// `FeedSource`: the admin upload route builds a `RawFeedPayload` and calls
+// the common downstream (`importRawFeedPayload`) directly, so it never goes
+// through the mode→`FeedSource` dispatch. The pull-based `FeedSource` seam
+// is reserved for parts 3-4 (`self-fetch` / `managed`), which add their
+// implementations without re-plumbing the downstream.
 
 import type { EntityType, HitType } from "./types";
 
 /**
  * Deployment-level TI feed supply mode (`TI_FEED_MODE`). The value space is
- * fixed here so parts 2-4 slot in without re-plumbing; part 1 supports only
- * `fixture`.
+ * fixed here so the later parts slot in without re-plumbing; parts 1-2
+ * (`fixture`, `manual-upload`) are implemented.
  */
 export type TiFeedMode = "fixture" | "manual-upload" | "self-fetch" | "managed";
 
@@ -41,8 +45,8 @@ export const DEFAULT_TI_FEED_MODE: TiFeedMode = "fixture";
 /**
  * Resolve the deployment's TI feed mode from `TI_FEED_MODE` (defaulting to
  * `fixture`). Throws on an unknown value, or on a defined-but-not-yet
- * -implemented mode (parts 2-4), so a misconfiguration fails fast rather
- * than silently importing nothing.
+ * -implemented mode (parts 3-4: `self-fetch` / `managed`), so a
+ * misconfiguration fails fast rather than silently importing nothing.
  */
 export function resolveTiFeedMode(
   value: string | undefined = process.env.TI_FEED_MODE,
