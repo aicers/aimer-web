@@ -130,6 +130,43 @@ export function parseSpamhausDrop(text: string): string[] {
   return cidrs;
 }
 
+/**
+ * Spamhaus DROP / DROPv6 as published over HTTP today: NDJSON — one JSON
+ * object per line, e.g. `{"cidr":"1.2.3.0/24","sblid":"SBL123","rir":"arin"}`,
+ * interleaved with metadata line(s) (`{"type":"metadata",...}`) and the odd
+ * `;`/`#` comment line. Parse line-by-line, emit the `cidr` of each object
+ * that has one, and skip everything else (metadata, comments, blank lines,
+ * unparseable lines). Normalization (`normalizeCidrs`) happens at import.
+ *
+ * EDROP was merged into DROP in 2024, so only the DROP (`drop_v4`/`drop_v6`)
+ * JSON feeds are fetched; there is no separate EDROP download.
+ */
+export function parseSpamhausDropNdjson(text: string): string[] {
+  const cidrs: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith("#") || line.startsWith(";")) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "cidr" in parsed &&
+      typeof (parsed as { cidr: unknown }).cidr === "string"
+    ) {
+      const cidr = (parsed as { cidr: string }).cidr.trim();
+      if (cidr.includes("/")) cidrs.push(cidr);
+    }
+  }
+  return cidrs;
+}
+
 /** Minimal CSV field splitter handling double-quoted fields. */
 function splitCsv(line: string): string[] {
   const out: string[] = [];
@@ -387,9 +424,43 @@ export function parseFeedContent(
         .rows;
     case "spamhaus-drop":
       return normalizeCidrs(parseSpamhausDrop(content)).rows;
+    case "spamhaus-drop-ndjson":
+      return normalizeCidrs(parseSpamhausDropNdjson(content)).rows;
     default:
       throw new Error(`unknown parse kind: ${parse}`);
   }
+}
+
+/**
+ * Whether `content` has at least one non-blank, non-comment data line.
+ * Comment conventions across the Tier-1 parsers are `#` (abuse.ch) and `;`
+ * (Spamhaus), so a leading `#`/`;` or a blank line is not a data line.
+ */
+export function hasFeedDataLines(content: string): boolean {
+  return content.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    return (
+      trimmed.length > 0 && !trimmed.startsWith("#") && !trimmed.startsWith(";")
+    );
+  });
+}
+
+/**
+ * Whether parsed `content` is "unparseable": it carries data lines yet yields
+ * zero rows. The per-kind parsers are intentionally lenient and silently drop
+ * anything they do not recognize, so a structurally-wrong body — an upstream
+ * HTML error/block page, or a format drift returned with a 200 — parses to
+ * nothing. Genuinely empty / comment-only content is NOT unparseable (it
+ * legitimately clears the source). Shared by the manual-upload validation and
+ * the self-fetch engine so neither replaces a good snapshot with junk.
+ */
+export function isUnparseableFeedContent(
+  parse: FeedParseKind,
+  entityType: EntityType,
+  content: string,
+): boolean {
+  const rows = parseFeedContent(parse, entityType, content);
+  return rows.length === 0 && hasFeedDataLines(content);
 }
 
 /**

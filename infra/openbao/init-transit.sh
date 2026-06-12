@@ -53,4 +53,7 @@ bao secrets enable transit 2>/dev/null || echo "Transit engine already enabled"
 echo "Creating staging-events key..."
 bao write -f transit/keys/staging-events 2>/dev/null || echo "staging-events key already exists"
 
+echo "Creating feed-secrets key (TI feed self-fetch Auth-Key, #568)..."
+bao write -f transit/keys/feed-secrets 2>/dev/null || echo "feed-secrets key already exists"
+
 echo "OpenBao is ready. Root token: $ROOT_TOKEN"

@@ -8,6 +8,8 @@ vi.mock("server-only", () => ({}));
 
 import {
   computeFeedHash,
+  hasFeedDataLines,
+  isUnparseableFeedContent,
   normalizeCidrs,
   normalizeExactValues,
   parseIpBlocklist,
@@ -115,6 +117,38 @@ describe("feed normalization → snapshot rows", () => {
     const { rows, skipped } = normalizeCidrs(["203.0.113.1/24"]);
     expect(rows).toEqual([{ cidr: "203.0.113.0/24" }]);
     expect(skipped).toBe(0);
+  });
+});
+
+describe("hasFeedDataLines", () => {
+  it("is false for empty / comment-only content", () => {
+    expect(hasFeedDataLines("")).toBe(false);
+    expect(hasFeedDataLines("\n\n  \n")).toBe(false);
+    expect(hasFeedDataLines("# a comment\n; another\n")).toBe(false);
+  });
+
+  it("is true when there is a non-comment data line", () => {
+    expect(hasFeedDataLines("# header\n45.66.230.5\n")).toBe(true);
+  });
+});
+
+describe("isUnparseableFeedContent", () => {
+  it("flags data that parses to zero rows (e.g. an HTML error page)", () => {
+    const html = "<html><body>503 Service Unavailable</body></html>";
+    expect(isUnparseableFeedContent("ip-blocklist", "IP", html)).toBe(true);
+  });
+
+  it("does not flag a genuinely empty / comment-only feed", () => {
+    expect(isUnparseableFeedContent("ip-blocklist", "IP", "# none\n")).toBe(
+      false,
+    );
+    expect(isUnparseableFeedContent("ip-blocklist", "IP", "")).toBe(false);
+  });
+
+  it("does not flag content that parses to at least one row", () => {
+    expect(
+      isUnparseableFeedContent("ip-blocklist", "IP", "# h\n45.66.230.5\n"),
+    ).toBe(false);
   });
 });
 

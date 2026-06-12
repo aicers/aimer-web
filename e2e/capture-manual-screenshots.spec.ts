@@ -622,16 +622,30 @@ base.describe.serial("Manual screenshots", () => {
   });
 
   // =========================================================================
-  // Threat feeds (manual upload) — docs/{en,ko}/threat-feeds.md
+  // Threat feeds — docs/{en,ko}/threat-feeds.md
   //
-  // The Threat Feeds page only renders when the dev server runs with
-  // `TI_FEED_MODE=manual-upload` (otherwise the route 404s). Start the
-  // capture server with that env set. The feature does not depend on
-  // aice-web-next data, so this captures a real screenshot of the catalog
-  // status table and the upload dialog.
+  // The Threat Feeds page is shared between the `manual-upload` and
+  // `self-fetch` supply modes, but each renders DIFFERENT controls and the
+  // route 404s in any other mode. Because a dev server has a single
+  // `TI_FEED_MODE`, the two mode-specific capture sets cannot be produced in
+  // one run: each block below skips unless its mode is active, so a capture
+  // run picks up only the shots for the mode the server was started with.
+  //
+  //   manual-upload shots:  pnpm capture --grep 'admin-ti-feeds-(table|upload)'
+  //                         (server env: TI_FEED_MODE=manual-upload)
+  //   self-fetch shots:     pnpm capture --grep 'admin-ti-feeds-selffetch'
+  //                         (server env: TI_FEED_MODE=self-fetch)
+  //
+  // Neither depends on aice-web-next data, so both capture real UI.
   // =========================================================================
 
+  const tiFeedMode = process.env.TI_FEED_MODE;
+
   base("admin-ti-feeds-table.png", async () => {
+    base.skip(
+      tiFeedMode !== "manual-upload",
+      "manual-upload mode only (set TI_FEED_MODE=manual-upload)",
+    );
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -646,6 +660,10 @@ base.describe.serial("Manual screenshots", () => {
   });
 
   base("admin-ti-feeds-upload-dialog.png", async () => {
+    base.skip(
+      tiFeedMode !== "manual-upload",
+      "manual-upload mode only (set TI_FEED_MODE=manual-upload)",
+    );
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await adminPage.waitForSelector("table tbody tr");
@@ -657,6 +675,52 @@ base.describe.serial("Manual screenshots", () => {
 
     await adminPage.screenshot({
       path: resolve(ASSETS, "admin-ti-feeds-upload-dialog.png"),
+    });
+
+    await adminPage.getByRole("button", { name: "Cancel" }).click();
+  });
+
+  // Self-fetch (#568): the per-source Fetch Now table (with the URLhaus
+  // Auth-Key panel above it) and the Set Auth-Key dialog. Captured against a
+  // freshly-migrated feed DB, so every source reads "Not fetched" — that empty
+  // state is the real UI an operator first sees before any Fetch Now.
+
+  base("admin-ti-feeds-selffetch-table.png", async () => {
+    base.skip(
+      tiFeedMode !== "self-fetch",
+      "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
+    );
+    await adminPage.goto("/en/admin/ti-feeds");
+    await settle(adminPage);
+    await expect(
+      adminPage.getByRole("heading", { name: "Threat Feeds", level: 1 }),
+    ).toBeVisible();
+
+    await adminPage.waitForSelector("table tbody tr");
+
+    await adminPage.screenshot({
+      path: resolve(ASSETS, "admin-ti-feeds-selffetch-table.png"),
+    });
+  });
+
+  base("admin-ti-feeds-selffetch-authkey-dialog.png", async () => {
+    base.skip(
+      tiFeedMode !== "self-fetch",
+      "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
+    );
+    await adminPage.goto("/en/admin/ti-feeds");
+    await settle(adminPage);
+    await adminPage.waitForSelector("table tbody tr");
+
+    // The Auth-Key panel button reads "Set Auth-Key" (unset) or
+    // "Replace Auth-Key" (set); on a fresh feed DB it is unset.
+    await adminPage.getByRole("button", { name: "Set Auth-Key" }).click();
+    await expect(
+      adminPage.getByRole("heading", { name: "URLhaus Auth-Key" }),
+    ).toBeVisible();
+
+    await adminPage.screenshot({
+      path: resolve(ASSETS, "admin-ti-feeds-selffetch-authkey-dialog.png"),
     });
 
     await adminPage.getByRole("button", { name: "Cancel" }).click();

@@ -52,7 +52,11 @@ describe("resolveTiFeedMode", () => {
       "self-fetch",
       "managed",
     ]);
-    expect(SUPPORTED_TI_FEED_MODES).toEqual(["fixture", "manual-upload"]);
+    expect(SUPPORTED_TI_FEED_MODES).toEqual([
+      "fixture",
+      "manual-upload",
+      "self-fetch",
+    ]);
   });
 });
 
