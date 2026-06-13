@@ -11,6 +11,8 @@
 //     second aimer call
 //   - canonical_missing when no English row exists
 //   - leak scan + element-count mismatch fail loudly (no row written)
+//   - the per-call metric + audit are emitted right after the aimer response,
+//     independent of storage (so a call that later leaks is still metered)
 
 import { join } from "node:path";
 import type { Pool } from "pg";
@@ -23,6 +25,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { auditLog } from "@/lib/audit";
 import {
   closeAdminPool,
   createTestDatabase,
@@ -505,6 +508,58 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     const res = await derive("300");
     expect(res.kind).toBe("leak");
     expect(await liveKoreanRow("300")).toBeUndefined();
+  });
+
+  it("meters the call (per-call metric + audit) after the response, even when the result later leaks (no row)", async () => {
+    await seedCanonical({ eventKey: "302" });
+    // Translation drops a token, so the leak scan rejects it and NO row is
+    // written. The aimer call was still spent, so the per-call metric + audit
+    // MUST have been emitted from the post-response point — independent of
+    // storage (#581 per-call cost metering).
+    mockGraphqlRequest.mockResolvedValue({
+      translateAnalysisNarrative: {
+        analysis: "KO narrative without the token.",
+        severityFactors: ["ko sev <<REDACTED_IP_E1_001>>", "ko sev two"],
+        likelihoodFactors: ["ko lik one"],
+        promptVersion: "tp-v9",
+        modelActualVersion: "tmv-9",
+      },
+    });
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const res = await derive("302");
+      expect(res.kind).toBe("leak");
+      expect(await liveKoreanRow("302")).toBeUndefined();
+
+      // Per-call metric carries the response provenance.
+      const callMetric = infoSpy.mock.calls
+        .map((c) => String(c[0]))
+        .find((line) => line.includes('"analysis.event_translation.call"'));
+      expect(callMetric).toBeDefined();
+      expect(callMetric).toContain('"translation_prompt_version":"tp-v9"');
+      expect(callMetric).toContain(
+        '"translation_model_actual_version":"tmv-9"',
+      );
+    } finally {
+      infoSpy.mockRestore();
+    }
+
+    // The call-level audit recorded the same response metadata...
+    const auditActions = vi.mocked(auditLog).mock.calls.map((c) => c[0]);
+    const callAudit = auditActions.find(
+      (a) => a.action === "ai_analysis.aimer_call_succeeded",
+    );
+    expect(callAudit).toBeDefined();
+    expect(callAudit?.details).toMatchObject({
+      translate: true,
+      lang: "KOREAN",
+      translation_prompt_version: "tp-v9",
+      translation_model_actual_version: "tmv-9",
+    });
+    // ...while the storage-confirmation audit/metric did NOT fire (no row).
+    expect(
+      auditActions.find((a) => a.action === "ai_analysis.result_stored"),
+    ).toBeUndefined();
   });
 
   it("fails loudly on a factor element-count mismatch, writing no row", async () => {

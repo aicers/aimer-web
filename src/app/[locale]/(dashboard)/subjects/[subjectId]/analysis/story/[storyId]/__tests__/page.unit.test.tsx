@@ -354,6 +354,11 @@ describe("StoryAnalysisPage — member event labels (#559)", () => {
     const titled = screen.getByTestId("member-event-aice-a-10");
     expect(titled.textContent).toContain("HTTP Threat");
     expect(titled.textContent).toContain("aice-a");
+    // Member events link DOWN to the event detail page, whose `?lang` is the
+    // locale form (#581): the stored `ENGLISH` enum maps to `en`.
+    const titledHref = titled.getAttribute("href");
+    expect(titledHref).toContain("lang=en");
+    expect(titledHref).not.toContain("lang=ENGLISH");
 
     // No-row member: static `Event` fallback title + `aice_id` on the note.
     const fallback = screen.getByTestId("member-event-aice-b-20");

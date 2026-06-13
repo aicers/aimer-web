@@ -381,6 +381,45 @@ export async function deriveEventTranslation(
     };
   }
 
+  // Per-call cost metering (#581 acceptance criterion). The translation call
+  // has now completed and is PAID FOR; emit the call-level metric + audit
+  // entry HERE — recording the aimer#495 response provenance — BEFORE the
+  // factor-count / leak validation and the row write below can turn the
+  // outcome into a leak, error, or lost-race no-op. Emitting only on a
+  // successful insert (as `result_stored` / the `translated` metric do) would
+  // silently drop the record of a call we spent whenever validation or storage
+  // rejects it. This accounting is independent of the tier-B generation gate:
+  // a translation consumes no tier-B cap slot — it only makes the (already
+  // gated) canonical's translation cost observable.
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.aimer_call_succeeded",
+    targetId,
+    details: {
+      stage: "translate_call",
+      translate: true,
+      lang: targetLang,
+      modelName,
+      model,
+      generation: canonical.generation,
+      translation_model_name: translationModelName,
+      translation_model: translationModel,
+      translation_prompt_version: resp.promptVersion,
+      translation_model_actual_version: resp.modelActualVersion,
+    },
+  });
+  emitMetric("call", {
+    customer_id: auditBase.customerId,
+    aice_id: aiceId,
+    event_key: eventKey,
+    lang: targetLang,
+    generation: canonical.generation,
+    translation_model_name: translationModelName,
+    translation_model: translationModel,
+    translation_prompt_version: resp.promptVersion,
+    translation_model_actual_version: resp.modelActualVersion,
+  });
+
   // 3. Defensive checks. aimer#495 already guarantees one-per-input-in-order
   //    factors and verbatim token preservation, but a leak/shape failure must
   //    FAIL the job loudly here — never substitute, never re-shape — before

@@ -142,6 +142,10 @@ export type AuditAction =
   | "ai_analysis.request_issued"
   | "ai_analysis.result_stored"
   | "ai_analysis.aimer_call_failed"
+  // Emitted right after a successful aimer call, before validation/storage, so
+  // a call that is paid for is always recorded even if it later leaks/no-ops
+  // (per-call translation cost metering, #581).
+  | "ai_analysis.aimer_call_succeeded"
   | "ai_analysis.hallucination_detected"
   | "ai_analysis.ttp_tag_dropped"
   | "ai_analysis.factor_dropped"

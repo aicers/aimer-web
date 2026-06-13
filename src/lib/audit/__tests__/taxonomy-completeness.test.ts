@@ -131,6 +131,8 @@ const PRODUCED: Record<string, string> = {
   "ai_analysis.request_issued": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.result_stored": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.aimer_call_failed": "src/lib/analysis/run-analyze-flow.ts",
+  "ai_analysis.aimer_call_succeeded":
+    "src/lib/analysis/translate-event-analysis.ts",
   "ai_analysis.hallucination_detected": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.ttp_tag_dropped": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.factor_dropped": "src/lib/analysis/run-analyze-flow.ts",

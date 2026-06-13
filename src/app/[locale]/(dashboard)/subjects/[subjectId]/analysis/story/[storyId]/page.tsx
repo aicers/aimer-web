@@ -13,6 +13,7 @@ import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
+import { storedLangToReaderLang } from "@/i18n/locale";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
@@ -211,8 +212,11 @@ export default async function StoryAnalysisPage({
       model: data.model,
     },
   });
+  // Member events link DOWN to the event detail page, whose `?lang` is the
+  // locale form (`en`/`ko`, #581); map the stored enum `lang` so the pin
+  // resolves the cited variant instead of falling through to the viewer locale.
   const memberVariantQuery = new URLSearchParams({
-    lang: data.memberEventVariant.lang,
+    lang: storedLangToReaderLang(data.memberEventVariant.lang),
     model_name: data.memberEventVariant.modelName,
     model: data.memberEventVariant.model,
   }).toString();

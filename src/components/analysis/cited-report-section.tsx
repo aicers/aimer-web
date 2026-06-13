@@ -16,7 +16,7 @@ import { AnalysisMarkdown } from "@/components/analysis-body";
 import type { CitationUnit } from "@/lib/analysis/report-result-page-loader";
 import { subjectPages } from "@/lib/navigation/routes";
 import { EventTitle } from "./event-title";
-import { pinQuery } from "./sources-panel";
+import { eventPinQuery, pinQuery } from "./sources-panel";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
 // caller and passed in so this presentational component stays synchronous.
@@ -97,22 +97,23 @@ function CitationLink({
   locale: string;
   t: AnalysisTranslations;
 }) {
-  const query = pinQuery(source.variant);
   // Link to the OWNING MEMBER customer's leaf detail (#513), carried on the
   // source — for a group report the leaf lives in a member DB, not the group.
+  // The story reader pins on the enum-form `?lang`; the event reader pins on
+  // the locale form (#581), so each side uses its own variant pin builder.
   const href =
     source.sourceType === "story"
       ? `${subjectPages.story(
           locale,
           source.customerId,
           encodeURIComponent(source.storyId),
-        )}?${query}`
+        )}?${pinQuery(source.variant)}`
       : `${subjectPages.eventAnalysis(
           locale,
           source.customerId,
           encodeURIComponent(source.aiceId),
           encodeURIComponent(source.eventKey),
-        )}?${query}`;
+        )}?${eventPinQuery(source.variant)}`;
   // Chip label is `{event time} · {kind}` for an event (#559) — `aice_id` is
   // dropped (the Sources card + linked detail page carry it) and `event_key` is
   // never shown. A story chip keeps its `{storyId}` label (out of scope here).
