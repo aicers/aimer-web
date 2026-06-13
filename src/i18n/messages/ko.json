@@ -897,7 +897,12 @@
       "cellHasReport": "{label} — 보고서 열기",
       "cellNone": "{label} — 보고서 없음",
       "cellOutOfRetention": "{label} — 보관 기간 지남",
-      "cellFuture": "{label} — 미래"
+      "cellFuture": "{label} — 미래",
+      "popoverLabel": "보고서 달력",
+      "loading": "달력을 불러오는 중…",
+      "error": "달력을 불러오지 못했습니다.",
+      "retry": "다시 시도",
+      "close": "닫기"
     },
     "storyDetail": {
       "title": "스토리 분석",

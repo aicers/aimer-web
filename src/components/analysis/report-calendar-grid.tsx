@@ -1,6 +1,6 @@
 import Link from "next/link";
-import type { useTranslations } from "next-intl";
 import { addCalendarDays } from "@/lib/analysis/report-bucket-date";
+import type { CalendarGridLabels } from "@/lib/analysis/report-calendar-labels";
 import type {
   CalendarCell,
   CalendarCellState,
@@ -8,13 +8,11 @@ import type {
 } from "@/lib/analysis/report-calendar-loader";
 import { subjectPages } from "@/lib/navigation/routes";
 
-type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
-
 interface Props {
   data: ReportCalendarData;
   locale: string;
   subjectId: string;
-  t: AnalysisTranslations;
+  labels: CalendarGridLabels;
 }
 
 // Per-state cell styling. Only `has-report` is interactive; the rest are
@@ -27,32 +25,45 @@ const STATE_CLASSES: Record<CalendarCellState, string> = {
   future: "border-border/40 bg-muted/40 text-muted-foreground/60",
 };
 
-// The aria/title message key per state.
-const CELL_LABEL_KEY: Record<CalendarCellState, string> = {
-  "has-report": "reportCalendar.cellHasReport",
-  none: "reportCalendar.cellNone",
-  "out-of-retention": "reportCalendar.cellOutOfRetention",
-  future: "reportCalendar.cellFuture",
-};
-
 /**
- * RFC 0004 (#505) — per-period calendar. The granularity matches the period:
- * DAILY → a month/day grid, WEEKLY → a list of weeks, MONTHLY → a year/month
- * grid. Each cell is one of has-report / none / out-of-retention / future;
- * only has-report cells link into the detail page (tz pinned). The component
- * is subject-generic — it renders whatever `data` the loader classified.
+ * RFC 0004 (#505 / #576) — per-period calendar grid, shared verbatim between
+ * the standalone calendar page and the in-context calendar popover so the
+ * has-report / none / out-of-retention / future cell states, styling, and
+ * legend never diverge. DAILY → a month/day grid, WEEKLY → a list of weeks,
+ * MONTHLY → a year/month grid. Only has-report cells link into the detail page
+ * (tz pinned); the others are greyed, non-navigable spans.
+ *
+ * Presentational and serializable-prop-only: it receives pre-resolved
+ * {@link CalendarGridLabels} (NOT a `next-intl` translation function), so it
+ * crosses the server/client boundary the popover introduces. The standalone
+ * (server) page and the (client) popover both render it with the same labels.
  */
-export function ReportCalendar({ data, locale, subjectId, t }: Props) {
+export function ReportCalendarGrid({ data, locale, subjectId, labels }: Props) {
   return (
     <div data-testid="report-calendar" data-period={data.period}>
       {data.period === "DAILY" ? (
-        <MonthGrid data={data} locale={locale} subjectId={subjectId} t={t} />
+        <MonthGrid
+          data={data}
+          locale={locale}
+          subjectId={subjectId}
+          labels={labels}
+        />
       ) : data.period === "WEEKLY" ? (
-        <WeekList data={data} locale={locale} subjectId={subjectId} t={t} />
+        <WeekList
+          data={data}
+          locale={locale}
+          subjectId={subjectId}
+          labels={labels}
+        />
       ) : (
-        <MonthList data={data} locale={locale} subjectId={subjectId} t={t} />
+        <MonthList
+          data={data}
+          locale={locale}
+          subjectId={subjectId}
+          labels={labels}
+        />
       )}
-      <Legend t={t} />
+      <Legend labels={labels} />
     </div>
   );
 }
@@ -77,21 +88,19 @@ function CellBox({
   locale,
   subjectId,
   period,
-  t,
+  labels,
 }: {
   cell: CalendarCell;
   label: string;
   locale: string;
   subjectId: string;
   period: string;
-  t: AnalysisTranslations;
+  labels: CalendarGridLabels;
 }) {
   // Full accessible description (`{label} — {state}`); the visible label is
   // just the date, so the state is carried in `title` (hover) and an sr-only
   // span (screen readers), since color alone is not accessible.
-  const aria = t(CELL_LABEL_KEY[cell.state] as "reportCalendar.cellHasReport", {
-    label,
-  });
+  const aria = labels.cell[cell.state].replace("{label}", label);
   const base = `flex min-h-[2.75rem] items-center justify-center rounded border px-2 py-1.5 text-center text-sm transition-colors ${STATE_CLASSES[cell.state]}`;
   if (cell.state === "has-report") {
     return (
@@ -123,7 +132,7 @@ function CellBox({
 
 // --- DAILY: month/day grid -------------------------------------------------
 
-function MonthGrid({ data, locale, subjectId, t }: Props) {
+function MonthGrid({ data, locale, subjectId, labels }: Props) {
   // Weekday headers (Mon…Sun) and the leading blank count come from the
   // first cell's weekday; names are localized via Intl so no extra strings.
   // Each header is keyed by its ISO anchor day (2024-01-01 is a Monday), and
@@ -141,10 +150,7 @@ function MonthGrid({ data, locale, subjectId, t }: Props) {
   );
 
   return (
-    <section
-      aria-label={t("reportCalendar.gridLabel")}
-      className="grid grid-cols-7 gap-1.5"
-    >
+    <section aria-label={labels.gridLabel} className="grid grid-cols-7 gap-1.5">
       {weekdays.map((wd) => (
         <div
           key={wd.key}
@@ -164,7 +170,7 @@ function MonthGrid({ data, locale, subjectId, t }: Props) {
           locale={locale}
           subjectId={subjectId}
           period="DAILY"
-          t={t}
+          labels={labels}
         />
       ))}
     </section>
@@ -180,21 +186,20 @@ function isoDow(date: string): number {
 
 // --- WEEKLY: list of weeks -------------------------------------------------
 
-function WeekList({ data, locale, subjectId, t }: Props) {
+function WeekList({ data, locale, subjectId, labels }: Props) {
   return (
-    <ul className="space-y-1.5" aria-label={t("reportCalendar.gridLabel")}>
+    <ul className="space-y-1.5" aria-label={labels.gridLabel}>
       {data.cells.map((cell) => (
         <li key={cell.bucketDate}>
           <CellBox
             cell={cell}
-            label={t("reportIndex.weekOf", {
-              start: cell.bucketDate,
-              end: addCalendarDays(cell.bucketDate, 6),
-            })}
+            label={labels.weekOf
+              .replace("{start}", cell.bucketDate)
+              .replace("{end}", addCalendarDays(cell.bucketDate, 6))}
             locale={locale}
             subjectId={subjectId}
             period="WEEKLY"
-            t={t}
+            labels={labels}
           />
         </li>
       ))}
@@ -204,11 +209,11 @@ function WeekList({ data, locale, subjectId, t }: Props) {
 
 // --- MONTHLY: year/month grid ----------------------------------------------
 
-function MonthList({ data, locale, subjectId, t }: Props) {
+function MonthList({ data, locale, subjectId, labels }: Props) {
   const monthFmt = new Intl.DateTimeFormat(locale, { month: "long" });
   return (
     <section
-      aria-label={t("reportCalendar.gridLabel")}
+      aria-label={labels.gridLabel}
       className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 md:grid-cols-4"
     >
       {data.cells.map((cell) => {
@@ -222,7 +227,7 @@ function MonthList({ data, locale, subjectId, t }: Props) {
             locale={locale}
             subjectId={subjectId}
             period="MONTHLY"
-            t={t}
+            labels={labels}
           />
         );
       })}
@@ -232,15 +237,12 @@ function MonthList({ data, locale, subjectId, t }: Props) {
 
 // --- Legend ----------------------------------------------------------------
 
-function Legend({ t }: { t: AnalysisTranslations }) {
+function Legend({ labels }: { labels: CalendarGridLabels }) {
   const items: Array<{ state: CalendarCellState; label: string }> = [
-    { state: "has-report", label: t("reportCalendar.legendHasReport") },
-    { state: "none", label: t("reportCalendar.legendNone") },
-    {
-      state: "out-of-retention",
-      label: t("reportCalendar.legendOutOfRetention"),
-    },
-    { state: "future", label: t("reportCalendar.legendFuture") },
+    { state: "has-report", label: labels.legend["has-report"] },
+    { state: "none", label: labels.legend.none },
+    { state: "out-of-retention", label: labels.legend["out-of-retention"] },
+    { state: "future", label: labels.legend.future },
   ];
   return (
     <ul

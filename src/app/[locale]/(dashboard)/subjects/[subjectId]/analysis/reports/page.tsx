@@ -2,11 +2,13 @@ import Link from "next/link";
 import { forbidden, notFound } from "next/navigation";
 import type { useTranslations } from "next-intl";
 import { getTranslations } from "next-intl/server";
+import { ReportCalendarPopover } from "@/components/analysis/report-calendar-popover";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
+import type { PeriodKind } from "@/lib/analysis/report-bucket-date";
 import {
-  calendarViewportQuery,
-  type PeriodKind,
-} from "@/lib/analysis/report-bucket-date";
+  buildCalendarPopoverLabels,
+  type CalendarPopoverLabels,
+} from "@/lib/analysis/report-calendar-labels";
 import {
   loadReportIndexPage,
   type ReportBucketItem,
@@ -62,6 +64,10 @@ export default async function ReportIndexPage({ params }: PageProps) {
     WEEKLY: tPeriod("WEEKLY"),
     MONTHLY: tPeriod("MONTHLY"),
   };
+  // Resolved once and shared by every per-section calendar button (#576): the
+  // popover is a client component, so its labels must cross the boundary as
+  // serializable strings, not a `next-intl` translation function.
+  const popoverLabels = buildCalendarPopoverLabels(tA);
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
@@ -91,6 +97,7 @@ export default async function ReportIndexPage({ params }: PageProps) {
               locale={locale}
               subjectId={subjectId}
               periodLabels={periodLabels}
+              popoverLabels={popoverLabels}
               t={tA}
             />
           ))}
@@ -105,12 +112,14 @@ function PeriodSection({
   locale,
   subjectId,
   periodLabels,
+  popoverLabels,
   t,
 }: {
   group: ReportPeriodGroup;
   locale: string;
   subjectId: string;
   periodLabels: Record<PeriodKind, string>;
+  popoverLabels: CalendarPopoverLabels;
   t: AnalysisTranslations;
 }) {
   const [latest, ...rest] = group.items;
@@ -119,7 +128,7 @@ function PeriodSection({
       aria-labelledby={`period-heading-${group.period}`}
       data-testid={`period-section-${group.period}`}
     >
-      <div className="mb-2 flex items-baseline justify-between gap-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
         <h2
           id={`period-heading-${group.period}`}
           className="text-sm font-semibold uppercase tracking-wide text-muted-foreground"
@@ -127,20 +136,20 @@ function PeriodSection({
           {periodLabels[group.period]}
         </h2>
         {/* The hub keeps its capped "recent" preview (#369); the calendar is
-            the "view all / go back" affordance into history (#505). LIVE is a
-            single rolling bucket — no calendar. */}
+            the in-context "view all / go back" affordance into history. The
+            per-section button opens the period-matched popover, centered on the
+            latest bucket, replacing the faint standalone-page link (#576). LIVE
+            is a single rolling bucket — no calendar. */}
         {group.period !== "LIVE" && (
-          <Link
-            href={`${subjectPages.reportCalendar(
-              locale,
-              subjectId,
-              group.period,
-            )}${calendarViewportQuery(group.period, latest.bucketDate)}`}
-            data-testid={`period-calendar-link-${group.period}`}
-            className="text-xs font-medium text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {t("reportIndex.viewCalendar")}
-          </Link>
+          <ReportCalendarPopover
+            locale={locale}
+            subjectId={subjectId}
+            period={group.period}
+            anchorBucketDate={latest.bucketDate}
+            buttonLabel={t("reportIndex.viewCalendar")}
+            buttonTestId={`period-calendar-button-${group.period}`}
+            labels={popoverLabels}
+          />
         )}
       </div>
       <BucketCard

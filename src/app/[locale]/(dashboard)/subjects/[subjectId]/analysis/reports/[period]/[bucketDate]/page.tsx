@@ -15,12 +15,15 @@ import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
-  calendarViewportQuery,
   isValidBucketDate,
   LIVE_BUCKET_DATE,
   type PeriodKind,
 } from "@/lib/analysis/report-bucket-date";
-import { loadReportNeighbors } from "@/lib/analysis/report-calendar-loader";
+import { buildCalendarPopoverLabels } from "@/lib/analysis/report-calendar-labels";
+import {
+  loadReportNeighbors,
+  type ReportNeighbors,
+} from "@/lib/analysis/report-calendar-loader";
 import {
   loadReportResultPage,
   type ReportSections,
@@ -40,10 +43,9 @@ import {
 } from "@/lib/navigation/query";
 import { subjectApi, subjectPages } from "@/lib/navigation/routes";
 import { ReportRegenerateButton } from "./regenerate-button";
+import { ReportDateToolbar } from "./report-date-toolbar";
 import { ReportLanguageStatus } from "./report-language-status";
 import { ReportLanguageSwitcher } from "./report-language-switcher";
-import { ReportPeriodTabs } from "./report-period-tabs";
-import { ReportTemporalNav } from "./report-temporal-nav";
 
 // The app locales offered by the language switcher, in display order.
 const SWITCHER_LOCALES: readonly AppLocale[] = ["en", "ko"];
@@ -245,29 +247,22 @@ export default async function ReportDetailPage({
     );
   }
 
-  // Build the tab bar only now that the loader has resolved the report
+  // Build the toolbar only now that the loader has resolved the report
   // timezone (the only remaining outcomes — `pending` and `ok` — both
   // carry it). The LIVE tab anchors its cross-period links on "today" in
   // that resolved tz, so this must run after the loader rather than off
   // the raw `?tz` query value.
   const resolvedTz = outcome.kind === "ok" ? outcome.data.tz : outcome.tz;
-  const tabs = (
-    <ReportPeriodTabs
-      locale={locale}
-      customerId={customerId}
-      activePeriod={period}
-      referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
-      currentQuery={currentQuery}
-      periodLabels={periodLabels}
-      navLabel={tA("reportDetail.periodNavLabel")}
-    />
-  );
 
   // Within-period prev/next (#505): step to the nearest has-report bucket in
   // the same period, bounded by retention (older) and the newest report
   // (newer). N/A for LIVE — the rolling bucket has no temporal neighbors. The
   // neighbor read is best-effort (own try/catch), so it never fails the page.
-  let temporalNav: React.ReactNode = null;
+  let neighbors: ReportNeighbors = {
+    prev: null,
+    next: null,
+    olderStop: false,
+  };
   if (period !== "LIVE") {
     // For a group, read neighbor buckets from the group result DB and clamp the
     // older side with the GROUP retention boundary (B4); a customer keeps the
@@ -278,7 +273,7 @@ export default async function ReportDetailPage({
     const neighborProvider: SubjectRetentionProvider | undefined = isGroup
       ? createGroupRetentionProvider(subjectId, getAuthPool())
       : undefined;
-    const neighbors = await loadReportNeighbors({
+    neighbors = await loadReportNeighbors({
       authPool: getAuthPool(),
       customerPool: neighborPool,
       subjectId: customerId,
@@ -286,29 +281,35 @@ export default async function ReportDetailPage({
       bucketDate,
       provider: neighborProvider,
     });
-    temporalNav = (
-      <ReportTemporalNav
-        locale={locale}
-        subjectId={customerId}
-        period={period}
-        prev={neighbors.prev}
-        next={neighbors.next}
-        olderStop={neighbors.olderStop}
-        calendarHref={`${subjectPages.reportCalendar(
-          locale,
-          customerId,
-          period,
-        )}${calendarViewportQuery(period as PeriodKind, bucketDate)}`}
-        labels={{
-          navLabel: tA("reportDetail.temporalNavLabel"),
-          prev: tA("reportDetail.prevReport"),
-          next: tA("reportDetail.nextReport"),
-          noOlderRetained: tA("reportDetail.noOlderRetained"),
-          openCalendar: tA("reportDetail.openCalendar"),
-        }}
-      />
-    );
   }
+
+  // The unified date toolbar (#576): period tabs + within-period prev/next +
+  // the calendar button + popover. The calendar button + popover is the SAME
+  // component the report index embeds per section, so the two surfaces stay
+  // consistent. LIVE renders only the tabs (no calendar, no prev/next).
+  const toolbar = (
+    <ReportDateToolbar
+      locale={locale}
+      subjectId={customerId}
+      activePeriod={period}
+      referenceDate={tabReferenceDate(period, bucketDate, resolvedTz)}
+      bucketDate={bucketDate}
+      currentQuery={currentQuery}
+      periodLabels={periodLabels}
+      prev={neighbors.prev}
+      next={neighbors.next}
+      olderStop={neighbors.olderStop}
+      popoverLabels={buildCalendarPopoverLabels(tA)}
+      labels={{
+        periodNavLabel: tA("reportDetail.periodNavLabel"),
+        temporalNavLabel: tA("reportDetail.temporalNavLabel"),
+        prev: tA("reportDetail.prevReport"),
+        next: tA("reportDetail.nextReport"),
+        noOlderRetained: tA("reportDetail.noOlderRetained"),
+        openCalendar: tA("reportDetail.openCalendar"),
+      }}
+    />
+  );
 
   if (outcome.kind === "pending") {
     return (
@@ -324,8 +325,7 @@ export default async function ReportDetailPage({
             })}
           </p>
         </header>
-        <div className="mb-2">{tabs}</div>
-        {temporalNav ? <div className="mb-6">{temporalNav}</div> : null}
+        <div className="mb-6">{toolbar}</div>
         <div
           role="status"
           data-testid="pending-banner"
@@ -452,8 +452,7 @@ export default async function ReportDetailPage({
         </p>
       </header>
 
-      <div className="mb-2">{tabs}</div>
-      {temporalNav ? <div className="mb-4">{temporalNav}</div> : null}
+      <div className="mb-6">{toolbar}</div>
       <div className="mb-6 flex flex-wrap items-center justify-end gap-3">
         {/* Analyst-only compare control (#458): pick a second model to render
             side by side. Needs at least one other catalog model to offer. */}

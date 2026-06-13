@@ -221,6 +221,21 @@ describe("report index page", () => {
     ).toBe("Updating");
   });
 
+  it("renders a per-section calendar button for non-LIVE sections only (#576)", async () => {
+    await renderPage();
+    // The DAILY section's calendar button opens the popover, with the
+    // standalone calendar page (centered on the latest bucket) as its no-JS
+    // fallback href.
+    const dailyBtn = screen.getByTestId("period-calendar-button-DAILY");
+    expect(dailyBtn.getAttribute("href")).toBe(
+      `/en/subjects/${CUSTOMER_ID}/analysis/reports/DAILY/calendar?month=2026-05`,
+    );
+    // LIVE is a single rolling bucket — no calendar affordance.
+    expect(screen.queryByTestId("period-calendar-button-LIVE")).toBeNull();
+    // Collapsed by default — the grid is not rendered inline.
+    expect(screen.queryByTestId("report-calendar")).toBeNull();
+  });
+
   it("renders the empty banner when no buckets are discovered", async () => {
     mockLoad.mockResolvedValue({ kind: "ok", groups: [] });
     await renderPage();

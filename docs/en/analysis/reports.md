@@ -66,19 +66,32 @@ without `reports:read` or a rejected bridge session returns a real
 `403`.
 
 The recent list is a **preview**, not the full history: each period
-section (except Live) carries a **View all in calendar** link into the
-per-period calendar below, which reaches every retained bucket. The link
-opens the calendar already scrolled to the viewport (month for daily, year
-for weekly/monthly) that holds that period's most recent report, rather
-than the current month/year.
+section (except Live) carries a **calendar button** that opens an anchored
+**calendar popover** (below) in place, centered on the viewport (month for
+daily, year for weekly/monthly) that holds that period's most recent
+report. The button doubles as a link to the standalone calendar page, so it
+still works without JavaScript.
 
 ## Report calendar
 
-The recent list on the index is intentionally short. To reach older
-reports, open the **calendar** for a period (the **View all in calendar**
-link on the index, or **Open calendar** beside the prev/next controls on a
-report). The calendar is the opt-in path to history; the default landing
-for a subject is always the most recent report.
+The recent list on the index is intentionally short. The **calendar** is
+the opt-in path to older reports; the default landing for a subject is
+always the most recent report. It is reachable two ways, both rendering the
+**same grid** (identical cell states, styling, and legend):
+
+- **In-context popover** (the everyday path) — the **calendar button** on
+  the report index (one per non-Live period section) and on the report
+  detail toolbar opens an anchored popover showing that period's grid in
+  place. The popover is collapsed by default and renders **one** period's
+  grid on demand — it never expands all four periods inline. Viewport
+  previous/next (one month or one year) fetches inside the popover **without
+  a full page navigation**, and selecting a bucket that has a report opens
+  its detail page.
+- **Standalone page** (the addressable path) — the same calendar at
+  `…/[period]/calendar`, retained as a shareable / deep-link / no-JS
+  fallback target. The calendar button's link points here, so direct
+  navigation still works when the popover cannot run (no JavaScript, or
+  opening the button in a new tab).
 
 The calendar's granularity matches the period:
 
@@ -224,11 +237,14 @@ Both ends are explicit states, never a dead link or a `404`:
 - **Newer end** — at the most recent report there is simply no next
   control.
 
-An **Open calendar** link sits beside the controls for jumping straight to
-a date; it opens the calendar at the viewport (month or year) containing the
-report you are currently reading, not the current month/year. **Live** has
-no prev/next (it is a single rolling bucket), so the control is not shown
-there.
+A **calendar button** sits beside the controls for jumping straight to a
+date; it opens the same calendar popover described above, centered on the
+viewport (month or year) containing the report you are currently reading.
+The period tabs, the within-period prev/next, and this calendar button are
+unified into a single **date toolbar** above the report body — the calendar
+button is the same control the report index embeds per section, so the two
+surfaces stay consistent. **Live** has no prev/next and no calendar button
+(it is a single rolling bucket), so the toolbar shows only the tabs there.
 
 ## Report language
 
