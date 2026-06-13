@@ -971,6 +971,24 @@ CREATE INDEX report_variant_refresh_items_category_idx
 --   * `event_time` / `received_at` carry the source ordering keys so
 --     pickup ORDER BY follows neutral chronological order.
 --
+-- Bilingual translation jobs (#581): when the app user language differs
+-- from English, every analyzed event is seeded in BOTH languages. The
+-- English row is the native canonical (classified tier_a/tier_b and
+-- budget-gated as above); the user-language row is a TRANSLATION of that
+-- canonical and follows a distinct lifecycle:
+--   * It NEVER enters tier classification and never reserves a tier-B
+--     slot, so it leaves `selection_tier = NULL` permanently — that NULL
+--     is disambiguated from the "held native" meaning purely by
+--     `lang <> 'ENGLISH'` (a non-English row is always a translation job).
+--   * While the English canonical does not yet exist it DEFERS on
+--     `next_due_at` (below) WITHOUT incrementing `attempts`, so the
+--     failure backoff / `failed` path is never tripped by "waiting on
+--     canonical". Once the canonical row exists it derives the translated
+--     result and transitions `queued -> done`.
+--   * It is exempt from the claim-time live-leaf / story-membership gate:
+--     a translation is a pure re-expression of a canonical that already
+--     passed those gates.
+--
 -- Unlike `story_analysis_job` (which cascades through its state
 -- parent), this table has no per-event state parent, so it references
 -- `customers(id)` DIRECTLY — without the cascade a deleted customer
@@ -999,6 +1017,13 @@ CREATE TABLE event_analysis_job (
     created_at            TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
     processing_started_at TIMESTAMPTZ,
     last_generated_at     TIMESTAMPTZ,
+    -- Not-yet-ready clock for bilingual translation jobs (#581), mirroring
+    -- `periodic_report_job.next_due_at`. A translation job whose English
+    -- canonical does not yet exist sets this to a near-future instant and
+    -- is skipped by pickup until then, deferring WITHOUT touching the
+    -- failure `attempts` counter. NULL on native English jobs, which gate
+    -- purely on the `attempts`/`updated_at` exponential backoff.
+    next_due_at           TIMESTAMPTZ,
     force_requested_at    TIMESTAMPTZ,
     force_requested_by    UUID,
     attempts              INT            NOT NULL DEFAULT 0,

@@ -9,6 +9,7 @@
 import Link from "next/link";
 import type { useTranslations } from "next-intl";
 import { EventTitle } from "@/components/analysis/event-title";
+import { storedLangToReaderLang } from "@/i18n/locale";
 import type {
   EventOverviewRow,
   FailedCustomer,
@@ -141,9 +142,11 @@ export function EventRow({
   scoreLabel: string;
 }) {
   // The event detail page 404s without `model_name`/`model`, so carry the
-  // canonical variant on the link (it only defaults `lang` to ENGLISH).
+  // canonical variant on the link. `?lang` is the locale form the event reader
+  // validates (#581): map the row's stored enum `lang` to `en`/`ko` so the
+  // pin resolves instead of falling through to the viewer locale.
   const params = new URLSearchParams({
-    lang: row.lang,
+    lang: storedLangToReaderLang(row.lang),
     model_name: row.modelName,
     model: row.model,
   });

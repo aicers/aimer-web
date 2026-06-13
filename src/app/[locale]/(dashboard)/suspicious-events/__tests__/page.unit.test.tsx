@@ -140,7 +140,7 @@ describe("suspicious events overview page", () => {
     ).toBe("1");
     const row = screen.getByTestId("overview-event-row");
     expect(row.getAttribute("href")).toBe(
-      "/en/subjects/c1/aice/aice-1/events/42/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o",
+      "/en/subjects/c1/aice/aice-1/events/42/analysis?lang=en&model_name=openai&model=gpt-4o",
     );
     expect(
       screen.getByTestId("priority-tier-badge").getAttribute("data-tier"),
@@ -177,7 +177,7 @@ describe("suspicious events overview page", () => {
     await renderPage();
     const row = screen.getByTestId("overview-event-row");
     expect(row.getAttribute("href")).toBe(
-      "/en/subjects/c1/aice/aice%2F1%20a/events/ev%3Fk%252/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o",
+      "/en/subjects/c1/aice/aice%2F1%20a/events/ev%3Fk%252/analysis?lang=en&model_name=openai&model=gpt-4o",
     );
   });
 

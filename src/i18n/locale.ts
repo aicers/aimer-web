@@ -50,6 +50,43 @@ export function reportLanguageToAppLocale(language: ReportLanguage): AppLocale {
 }
 
 /**
+ * Map a stored analysis `lang` value (the report-language enum, e.g.
+ * `ENGLISH`/`KOREAN`) to the locale-form `?lang` the event reader/switcher
+ * expects (`en`/`ko`, #581).
+ *
+ * Event links pin the cited variant through `?lang`, and the event detail page
+ * validates `?lang` as a locale via {@link isSupportedLocale} and maps it to
+ * the aimer enum internally. Emitting the raw enum (e.g. `?lang=ENGLISH`) would
+ * be treated as unsupported and fall through to the viewer locale, breaking the
+ * pin — so any event link built from a stored variant's enum `lang` MUST route
+ * it through here. An unrecognized value passes through unchanged (the reader
+ * treats it as unsupported and falls back the same way).
+ */
+export function storedLangToReaderLang(lang: string): string {
+  return lang === "ENGLISH" || lang === "KOREAN"
+    ? reportLanguageToAppLocale(lang)
+    : lang;
+}
+
+/**
+ * The app's configured user-facing display language as a report-language enum
+ * value, resolved from the `DEFAULT_LOCALE` env with the same `?? "ko"`
+ * fallback as `i18n/routing.ts`. A garbled / unsupported value resolves to the
+ * English baseline (never folds silently inside the mapper).
+ *
+ * This is the single source of truth for the language whose translated
+ * analysis rows a deployment eagerly maintains — the bilingual eager set
+ * (#581). It collapses to `"ENGLISH"` on an English deployment, which callers
+ * use to decide that there is no user-language translation to derive.
+ */
+export function configuredAppDisplayLanguage(): ReportLanguage {
+  const locale = process.env.DEFAULT_LOCALE ?? "ko";
+  return isSupportedLocale(locale)
+    ? appLocaleToReportLanguage(locale)
+    : "ENGLISH";
+}
+
+/**
  * Validate that a value is a real IANA time zone, using the runtime's
  * own zone database. `accounts.timezone` is not CHECK-constrained at the
  * DB level (the IANA set is large and runtime-dependent), so this is the

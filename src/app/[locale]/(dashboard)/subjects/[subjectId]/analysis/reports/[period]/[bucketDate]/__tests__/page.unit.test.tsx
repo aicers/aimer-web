@@ -403,7 +403,11 @@ describe("report detail page", () => {
       .getAttribute("href");
     expect(eventHref).toContain("/aice/aice-9/events/777/analysis");
     expect(eventHref).toContain("generation=2");
-    expect(eventHref).toContain("lang=ENGLISH");
+    // Event reader pins on locale-form `?lang` (#581): the stored `ENGLISH`
+    // enum is mapped to `en` so the cited English leaf resolves. The story
+    // link above still pins on the enum form (its reader is unchanged).
+    expect(eventHref).toContain("lang=en");
+    expect(eventHref).not.toContain("lang=ENGLISH");
     expect(eventHref).toContain("model_name=openai");
     expect(eventHref).toContain("model=gpt-4o");
   });
@@ -522,6 +526,10 @@ describe("report detail page", () => {
     const eventHref = eventCite.getAttribute("href");
     expect(eventHref).toContain("/aice/aice-9/events/777/analysis");
     expect(eventHref).toContain("generation=4");
+    // Event reader pins on locale-form `?lang` (#581): the stored `ENGLISH`
+    // enum maps to `en` so the cited English leaf resolves.
+    expect(eventHref).toContain("lang=en");
+    expect(eventHref).not.toContain("lang=ENGLISH");
     // The chip is titled `{event time} · {kind}` (#559): the friendly kind
     // name shows and the opaque `event_key` / `aice_id` are not chip text.
     expect(eventCite.textContent).toContain("HTTP Threat");

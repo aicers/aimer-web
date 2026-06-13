@@ -8,6 +8,7 @@ import {
   type ModelOption,
   ModelSelect,
 } from "@/components/analysis/model-select";
+import { reportLanguageToAppLocale } from "@/i18n/locale";
 import { subjectApi, subjectPages } from "@/lib/navigation/routes";
 
 interface Props {
@@ -144,7 +145,12 @@ export function EventRegenerateButton({
         // model, the new generation belongs to that variant, so the view URL
         // must point at the chosen model — not the originally-open one (#464).
         const dest = new URLSearchParams();
-        if (variant.lang) dest.set("lang", variant.lang);
+        // The reader `?lang` is the locale form (`en`/`ko`), cross-compatible
+        // with report/story links (#581); the regenerate API above keeps the
+        // enum contract.
+        if (variant.lang === "KOREAN" || variant.lang === "ENGLISH") {
+          dest.set("lang", reportLanguageToAppLocale(variant.lang));
+        }
         if (modelName) dest.set("model_name", modelName);
         if (model) dest.set("model", model);
         dest.set("generation", String(body.generation));

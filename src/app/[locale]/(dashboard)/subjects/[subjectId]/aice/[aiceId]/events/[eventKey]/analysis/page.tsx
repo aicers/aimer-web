@@ -13,6 +13,11 @@ import { EventTitle } from "@/components/analysis/event-title";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbEventLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
+import {
+  type AppLocale,
+  appLocaleToReportLanguage,
+  isSupportedLocale,
+} from "@/i18n/locale";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
@@ -42,8 +47,6 @@ interface PageProps {
   }>;
 }
 
-const SUPPORTED_LANGS = new Set(["KOREAN", "ENGLISH"]);
-
 export default async function AnalysisResultPage({
   params,
   searchParams,
@@ -51,13 +54,22 @@ export default async function AnalysisResultPage({
   const { locale, subjectId, aiceId, eventKey } = await params;
   const customerId = subjectId;
   const search = await searchParams;
-  const lang = search.lang ?? "ENGLISH";
+  // `?lang` is the report/story-compatible locale form (`en`/`ko`), validated
+  // then mapped to the aimer enum internally (#581). An enum-shaped or garbled
+  // value falls through to the viewer locale, then the English baseline; the
+  // loader then resolves the requested -> English -> any variant.
+  const requestedLocale: AppLocale = isSupportedLocale(search.lang)
+    ? search.lang
+    : isSupportedLocale(locale)
+      ? locale
+      : "en";
+  const lang = appLocaleToReportLanguage(requestedLocale);
   const modelName = search.model_name ?? "";
   const model = search.model ?? "";
 
   // Required query params are part of the storage PK. A missing piece
   // makes the request unresolvable — 404 instead of guessing.
-  if (!SUPPORTED_LANGS.has(lang) || !modelName || !model) {
+  if (!modelName || !model) {
     notFound();
   }
 

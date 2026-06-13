@@ -22,6 +22,7 @@
 import "server-only";
 
 import type { Pool } from "pg";
+import { configuredAppDisplayLanguage } from "@/i18n/locale";
 import {
   decryptRedactionMap,
   loadCustomerOwnedDomains,
@@ -32,8 +33,10 @@ import type { AnalyzeErrorCode } from "./analyze-types";
 import { parseEventTime } from "./event-time";
 import {
   analyzeAndStoreEventResult,
+  DEFAULT_LANG,
   type SupportedLang,
 } from "./run-analyze-flow";
+import { deriveEventTranslation } from "./translate-event-analysis";
 
 /**
  * Categorized outcome of a single-event re-analysis. The bulk backfill
@@ -182,6 +185,21 @@ export async function regenerateEventLeaf(
   const ranges = await loadCustomerRanges(authPool, customerId);
   const ownedDomains = await loadCustomerOwnedDomains(authPool, customerId);
 
+  const auditBase = {
+    actorId: params.accountId,
+    authContext: "general" as const,
+    targetType: "event_analysis_result",
+    ipAddress: params.auditMeta.ipAddress,
+    sid: params.auditMeta.sid,
+    customerId,
+    aiceId,
+  };
+
+  // Bilingual invariant (#581): a non-English regenerate target does NOT
+  // natively re-generate that language. It re-generates the English canonical
+  // natively, then re-derives the user-language row as a translation of the
+  // NEW canonical — so no translated row ever stays pinned to a superseded
+  // English generation.
   const stored = await analyzeAndStoreEventResult({
     customerPool,
     aiceId,
@@ -190,10 +208,9 @@ export async function regenerateEventLeaf(
     eventTimeForAimer,
     // Preserve the event-level kind across re-analysis (#552).
     eventKind,
-    // Regenerate the exact target variant: pass the concrete lang as both
-    // the GraphQL variable and the storage PK component.
-    lang: params.lang,
-    langForStorage: params.lang,
+    // Always regenerate the English canonical (the only native generation).
+    lang: DEFAULT_LANG,
+    langForStorage: DEFAULT_LANG,
     modelName: params.modelName,
     model: params.model,
     accountId: params.accountId,
@@ -207,15 +224,7 @@ export async function regenerateEventLeaf(
     // attribute `requested_by` to the acting account (#493).
     origin: "manual",
     requestedBy: params.accountId,
-    auditBase: {
-      actorId: params.accountId,
-      authContext: "general",
-      targetType: "event_analysis_result",
-      ipAddress: params.auditMeta.ipAddress,
-      sid: params.auditMeta.sid,
-      customerId,
-      aiceId,
-    },
+    auditBase,
     force: params.force,
   });
   if (stored.kind === "error") {
@@ -234,5 +243,62 @@ export async function regenerateEventLeaf(
       message: `store skipped: ${stored.reason}`,
     };
   }
+
+  // Re-derive the user-language translation(s) from the freshly regenerated
+  // canonical so the bilingual pair stays generation-aligned (#581). This MUST
+  // run even when the regenerate target is English (`params.lang ===
+  // DEFAULT_LANG`): regenerating the English canonical advances its generation,
+  // and the configured user-language row would otherwise stay pinned to the
+  // now-superseded generation with stale scores / factors / text — exactly the
+  // "no translated row stays pinned to a superseded English generation"
+  // invariant. The target set is the explicit non-English regenerate target ∪
+  // the deployment's configured user-display language, deduplicated; it is
+  // empty on an English-only deployment regenerating English (nothing to
+  // translate), in which case the bilingual pair is just the English row.
+  const derivedTargets = new Set<SupportedLang>();
+  if (params.lang !== DEFAULT_LANG) derivedTargets.add(params.lang);
+  const userLang = configuredAppDisplayLanguage();
+  if (userLang !== DEFAULT_LANG) derivedTargets.add(userLang);
+
+  for (const targetLang of derivedTargets) {
+    const derived = await deriveEventTranslation({
+      customerPool,
+      aiceId,
+      eventKey,
+      modelName: params.modelName,
+      model: params.model,
+      targetLang,
+      accountId: params.accountId,
+      graphqlAiceId: aiceId,
+      requestedBy: params.accountId,
+      ranges,
+      ownedDomains,
+      auditBase,
+    });
+    if (derived.kind === "error") {
+      return {
+        kind: "error",
+        errorCode: derived.errorCode,
+        message: derived.message,
+      };
+    }
+    if (derived.kind === "leak") {
+      return {
+        kind: "error",
+        errorCode: "aimer_invalid_request",
+        message: derived.message,
+      };
+    }
+    if (derived.kind === "canonical_missing") {
+      return {
+        kind: "error",
+        errorCode: "storage_failed",
+        message: "english canonical unavailable for translation",
+      };
+    }
+  }
+
+  // The translated rows share the canonical's generation, so report the
+  // canonical generation regardless of which variant(s) were re-derived.
   return { kind: "reanalyzed", generation: stored.generation };
 }

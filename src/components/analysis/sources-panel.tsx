@@ -12,6 +12,7 @@
 import Link from "next/link";
 import type { useTranslations } from "next-intl";
 import { EventTitle } from "@/components/analysis/event-title";
+import { storedLangToReaderLang } from "@/i18n/locale";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CitedEventSource,
@@ -37,10 +38,30 @@ const TIER_CLASSES: Record<PriorityTier, string> = {
 // contract). Keys match what each leaf page parses (`model_name`/`model`).
 // Exported so the per-unit sentence citations (#449) pin leaf links the same
 // way without duplicating the contract.
+//
+// `lang` is serialized as the stored variant enum (`ENGLISH`/`KOREAN`). The
+// STORY detail reader still pins on that enum form; the EVENT detail reader now
+// pins on the locale form (`en`/`ko`, #581), so event links must use
+// {@link eventPinQuery} instead — never this one.
 export function pinQuery(variant: CitedLeafVariant): string {
   return new URLSearchParams({
     generation: String(variant.generation),
     lang: variant.lang,
+    model_name: variant.modelName,
+    model: variant.model,
+  }).toString();
+}
+
+// Event-leaf variant of {@link pinQuery}: identical except `lang` is mapped
+// from the stored enum to the locale form the event reader validates (#581),
+// so a cited event link such as `?lang=en` resolves the cited ENGLISH leaf
+// instead of being treated as unsupported and falling through to the viewer
+// locale. Exported so the per-unit sentence citations (#449) pin event links
+// the same way.
+export function eventPinQuery(variant: CitedLeafVariant): string {
+  return new URLSearchParams({
+    generation: String(variant.generation),
+    lang: storedLangToReaderLang(variant.lang),
     model_name: variant.modelName,
     model: variant.model,
   }).toString();
@@ -163,12 +184,13 @@ function EventSourceCard({
   t: AnalysisTranslations;
 }) {
   // Link to the owning member customer's event detail (#513) — see StorySourceCard.
+  // Event reader pins on locale-form `?lang` (#581), so use `eventPinQuery`.
   const href = `${subjectPages.eventAnalysis(
     locale,
     source.customerId,
     encodeURIComponent(source.aiceId),
     encodeURIComponent(source.eventKey),
-  )}?${pinQuery(source.variant)}`;
+  )}?${eventPinQuery(source.variant)}`;
   return (
     <li>
       <Link

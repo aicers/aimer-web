@@ -96,6 +96,10 @@ const baseInput = {
 
 function resultRowData(extras: Record<string, unknown> = {}) {
   return {
+    // Language actually resolved for the row (#581): the non-pinned read
+    // selects requested -> English -> any, so the loader surfaces this back
+    // as the displayed language. Defaults to the requested ENGLISH.
+    lang: "ENGLISH",
     severity_score: 0.42,
     likelihood_score: 0.81,
     priority_tier: "HIGH",
@@ -202,6 +206,38 @@ describe("loadAnalysisResultPage", () => {
       { id: "T1078", name: "Valid Accounts" },
       { id: "T9999", name: null },
     ]);
+  });
+
+  it("non-pin: resolves requested -> English -> any and surfaces the displayed language (#581)", async () => {
+    // Viewer requests KOREAN, but only the English canonical exists yet (the
+    // translation is still pending). The non-pinned read falls back to the
+    // English row, and the loader surfaces `lang = ENGLISH` so the page chrome
+    // / switcher reflect what is actually displayed.
+    pushResultRow({ lang: "ENGLISH" });
+    pushMapRow();
+    pushSourcePresent(true);
+
+    const mod = await import("../result-page-loader");
+    const outcome = await mod.loadAnalysisResultPage({
+      ...baseInput,
+      lang: "KOREAN",
+    });
+    expect(outcome.kind).toBe("ok");
+    if (outcome.kind !== "ok") return;
+    expect(outcome.data.lang).toBe("ENGLISH");
+
+    // The non-pinned SELECT orders the LATEST generation first, then the
+    // requested lang, then the English canonical — binding the requested lang
+    // as $3. Generation-first ensures a stale lower-generation translation
+    // never shadows a newer English canonical (#581 review R1).
+    const call = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("FROM event_analysis_result"),
+    );
+    expect(String(call?.[0])).toContain(
+      "ORDER BY generation DESC, (lang = $3) DESC, (lang = 'ENGLISH') DESC",
+    );
+    expect(String(call?.[0])).not.toContain("AND lang = $3");
+    expect(call?.[1]?.[2]).toBe("KOREAN");
   });
 
   it("authorizes the read-only result page with the analyses:read permission key", async () => {

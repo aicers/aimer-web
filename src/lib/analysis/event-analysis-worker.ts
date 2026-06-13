@@ -34,9 +34,12 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
+import { configuredAppDisplayLanguage } from "@/i18n/locale";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
+import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
   type AnalyzeBaselineEventOutcome,
   analyzeBaselineEventLeaf,
@@ -59,12 +62,13 @@ import {
   RETRY_BACKOFF_MAX_MS,
   WORKER_ACCOUNT_ID,
 } from "./story-worker";
+import { deriveEventTranslation } from "./translate-event-analysis";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-const DEFAULT_LANG = "ENGLISH";
+const DEFAULT_LANG: SupportedLang = "ENGLISH";
 const DEFAULT_MAX_ENRICHMENT_ATTEMPTS = 5;
 const DEFAULT_MAX_ENRICHMENT_AGE_MINUTES = 60;
 
@@ -74,7 +78,28 @@ function resolveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-const WORKER_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? DEFAULT_LANG;
+// Bilingual eager set (#581): English canonical ∪ the app default-locale
+// language, deduplicated. English (`DEFAULT_LANG`) is ALWAYS the natively
+// generated canonical; any other entry is ALWAYS a TRANSLATION of that
+// canonical (never natively generated). Collapses to English-only when the
+// app language is English. `configuredAppDisplayLanguage()` is the single
+// source of truth for the deployment's user-display language (it validates
+// `DEFAULT_LOCALE` and folds a garbled value to the English baseline), shared
+// with the regenerate / synchronous-analyze re-derivation paths.
+export const EAGER_LANGS: SupportedLang[] = Array.from(
+  new Set<SupportedLang>([DEFAULT_LANG, configuredAppDisplayLanguage()]),
+);
+
+// Backoff applied when a translation job defers because its English canonical
+// is not yet available. A NON-TERMINAL wait, not a failure: the defer leaves
+// `attempts` untouched (never counts toward `MAX_ATTEMPTS` / `failed`) and
+// only sets `next_due_at` so the picker does not hot-spin. Mirrors the report
+// worker's `CANONICAL_DEFER_MS`.
+const DEFAULT_CANONICAL_DEFER_MS = 30_000;
+const CANONICAL_DEFER_MS = resolveInt(
+  process.env.ANALYSIS_CANONICAL_DEFER_MS,
+  DEFAULT_CANONICAL_DEFER_MS,
+);
 
 // Tier-A kill switch (emergency disable for incident response). Default ON
 // since #492 (the verdict surface) is merged. Set to a falsey string to stop
@@ -136,6 +161,7 @@ interface EventJobPickup {
   generation: number;
   attempts: number;
   created_at: Date;
+  next_due_at: Date | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,41 +219,115 @@ export async function seedBaselineEventJobs(
 
   // The default variant is per-customer (#473) and constant for the batch.
   const model = await resolveModelFn(input.customerId, authClient);
-  const lang = WORKER_LANG;
 
   for (const cand of input.candidates) {
     // Story members are analyzed at story scope — never auto-analyzed here.
+    // (Variant-independent, so checked once per event regardless of language.)
     if (
       await storyMemberCheck(customerPool, cand.sourceAiceId, cand.eventKey)
     ) {
       continue;
     }
 
-    // Rebaseline idempotency (mirrors #470): when a live (non-superseded)
-    // leaf already exists for the target variant, do not re-analyze. The job
-    // still records the latest `baseline_version` so reproducibility tracks
-    // the newest ingested row.
-    const leaf = await customerPool.query<{ one: number }>(
-      `SELECT 1 AS one
-         FROM event_analysis_result
-        WHERE aice_id = $1 AND event_key = $2::numeric
-          AND lang = $3 AND model_name = $4 AND model = $5
-          AND superseded_at IS NULL
-        LIMIT 1`,
-      [cand.sourceAiceId, cand.eventKey, lang, model.modelName, model.model],
-    );
-    if (leaf.rows.length > 0) {
+    // Seed one job per eager language (#581): the English canonical (a HELD
+    // native job) and, when the app language differs, the user-language
+    // TRANSLATION job. Both seed `selection_tier = NULL`; the worker tells
+    // them apart purely by `lang` (the translation job bypasses tier
+    // classification and budget, and derives from the canonical instead).
+    for (const lang of EAGER_LANGS) {
+      // Rebaseline idempotency (mirrors #470): when a live (non-superseded)
+      // leaf already exists for this language variant, do not re-analyze. The
+      // job still records the latest `baseline_version` so reproducibility
+      // tracks the newest ingested row.
+      //
+      // For a NON-English variant the live leaf must be a genuine translation
+      // (`restoration_lang = ENGLISH`) to count as complete — the same
+      // bilingual-shape predicate the sync cache uses. A LEGACY / native
+      // non-English row (`restoration_lang IS NULL`, written by the pre-#581
+      // per-language path) is NOT a valid translation, so it must NOT suppress
+      // seeding the translation job; otherwise the job is never created and,
+      // once the English canonical advances and supersedes all languages, there
+      // would be no job left to derive the replacement translation.
+      const requireTranslation = lang !== DEFAULT_LANG;
+      const leaf = await customerPool.query<{ one: number }>(
+        `SELECT 1 AS one
+           FROM event_analysis_result
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5
+            AND superseded_at IS NULL
+            ${requireTranslation ? "AND restoration_lang = $6" : ""}
+          LIMIT 1`,
+        requireTranslation
+          ? [
+              cand.sourceAiceId,
+              cand.eventKey,
+              lang,
+              model.modelName,
+              model.model,
+              DEFAULT_LANG,
+            ]
+          : [
+              cand.sourceAiceId,
+              cand.eventKey,
+              lang,
+              model.modelName,
+              model.model,
+            ],
+      );
+      if (leaf.rows.length > 0) {
+        await authClient.query(
+          // Do NOT rewrite `baseline_version` of a CLAIMED (in-flight) row:
+          // the worker analyzes the version captured at its own pickup, so
+          // updating the source version of a `processing` attempt would leave
+          // the job recording a newer version than the payload the stored
+          // result came from — undercutting the reproducibility the column
+          // exists for.
+          `UPDATE event_analysis_job
+              SET baseline_version = $7, updated_at = $8::timestamptz
+            WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+              AND lang = $4 AND model_name = $5 AND model = $6
+              AND status <> 'processing'`,
+          [
+            input.customerId,
+            cand.sourceAiceId,
+            cand.eventKey,
+            lang,
+            model.modelName,
+            model.model,
+            cand.baselineVersion,
+            nowIso,
+          ],
+        );
+        continue;
+      }
+
+      // Seed a HELD row. `budget_day` is the customer-tz calendar day the row
+      // is seeded into — computed in SQL from `nowIso` AT TIME ZONE the
+      // customer tz so the auth-DB row carries the boundary the cap evaluates.
+      // ON CONFLICT only records the latest `baseline_version` (never resets a
+      // terminal/in-flight status — that would re-spend or over-enqueue).
+      // `next_due_at` starts NULL (immediately eligible); a translation job
+      // sets it forward itself when it finds no English canonical yet.
       await authClient.query(
-        // Do NOT rewrite `baseline_version` of a CLAIMED (in-flight) row: the
-        // worker analyzes the version captured at its own pickup, so updating
-        // the source version of a `processing` attempt would leave the job
-        // recording a newer version than the payload the stored result came
-        // from — undercutting the reproducibility the column exists for.
-        `UPDATE event_analysis_job
-            SET baseline_version = $7, updated_at = $8::timestamptz
-          WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
-            AND lang = $4 AND model_name = $5 AND model = $6
-            AND status <> 'processing'`,
+        `INSERT INTO event_analysis_job
+           (customer_id, aice_id, event_key, lang, model_name, model,
+            status, selection_tier, budget_day, baseline_version,
+            event_time, received_at,
+            generation, dry_run, created_at, updated_at)
+         VALUES ($1, $2, $3::numeric, $4, $5, $6,
+                 'queued', NULL,
+                 (($9::timestamptz AT TIME ZONE $7)::date), $8,
+                 $10::timestamptz, $11::timestamptz,
+                 1, FALSE, $9::timestamptz, $9::timestamptz)
+         ON CONFLICT (customer_id, aice_id, event_key, lang, model_name, model)
+         DO UPDATE SET baseline_version = EXCLUDED.baseline_version,
+                       updated_at = EXCLUDED.updated_at
+         -- Never rewrite the source version of a CLAIMED (in-flight) attempt;
+         -- the worker analyzes the version it captured at pickup, so a
+         -- concurrent rebaseline must not drift the recorded version away from
+         -- the payload the stored result was produced from. event_time /
+         -- received_at stay at their seeded chronological values.
+         WHERE event_analysis_job.status <> 'processing'`,
         [
           input.customerId,
           cand.sourceAiceId,
@@ -235,52 +335,14 @@ export async function seedBaselineEventJobs(
           lang,
           model.modelName,
           model.model,
+          input.tz,
           cand.baselineVersion,
           nowIso,
+          cand.eventTime.toISOString(),
+          cand.receivedAt.toISOString(),
         ],
       );
-      continue;
     }
-
-    // Seed a HELD row. `budget_day` is the customer-tz calendar day the row
-    // is seeded into — computed in SQL from `nowIso` AT TIME ZONE the
-    // customer tz so the auth-DB row carries the boundary the cap evaluates.
-    // ON CONFLICT only records the latest `baseline_version` (never resets a
-    // terminal/in-flight status — that would re-spend or over-enqueue).
-    await authClient.query(
-      `INSERT INTO event_analysis_job
-         (customer_id, aice_id, event_key, lang, model_name, model,
-          status, selection_tier, budget_day, baseline_version,
-          event_time, received_at,
-          generation, dry_run, created_at, updated_at)
-       VALUES ($1, $2, $3::numeric, $4, $5, $6,
-               'queued', NULL,
-               (($9::timestamptz AT TIME ZONE $7)::date), $8,
-               $10::timestamptz, $11::timestamptz,
-               1, FALSE, $9::timestamptz, $9::timestamptz)
-       ON CONFLICT (customer_id, aice_id, event_key, lang, model_name, model)
-       DO UPDATE SET baseline_version = EXCLUDED.baseline_version,
-                     updated_at = EXCLUDED.updated_at
-       -- Never rewrite the source version of a CLAIMED (in-flight) attempt;
-       -- the worker analyzes the version it captured at pickup, so a
-       -- concurrent rebaseline must not drift the recorded version away from
-       -- the payload the stored result was produced from. event_time /
-       -- received_at stay at their seeded chronological values.
-       WHERE event_analysis_job.status <> 'processing'`,
-      [
-        input.customerId,
-        cand.sourceAiceId,
-        cand.eventKey,
-        lang,
-        model.modelName,
-        model.model,
-        input.tz,
-        cand.baselineVersion,
-        nowIso,
-        cand.eventTime.toISOString(),
-        cand.receivedAt.toISOString(),
-      ],
-    );
   }
 }
 
@@ -301,10 +363,13 @@ async function pickQueuedEventJobs(
             selection_tier,
             budget_day::text  AS budget_day,
             event_time, received_at,
-            generation, attempts, created_at
+            generation, attempts, created_at, next_due_at
        FROM event_analysis_job
       WHERE status = 'queued'
         AND dry_run = FALSE
+        -- Translation jobs defer on next_due_at while their English
+        -- canonical is missing (#581); native jobs leave it NULL.
+        AND (next_due_at IS NULL OR next_due_at <= NOW())
         AND (
           attempts = 0
           OR updated_at
@@ -334,6 +399,8 @@ export interface ProcessEventJobOptions {
   loadVerdict?: typeof loadEventEnrichmentVerdict;
   driveEnrichment?: typeof runEventEnrichment;
   analyzeLeaf?: typeof analyzeBaselineEventLeaf;
+  /** User-language translation derivation (#581). Defaults to the real one. */
+  deriveTranslation?: typeof deriveEventTranslation;
   /** Loose-membership predicate (#492), re-checked at claim time. */
   storyMemberCheck?: typeof isStoryMember;
   /** Options threaded into `runEventEnrichment` (feed store, redaction map). */
@@ -747,6 +814,159 @@ async function cancelStaleJob(
   );
 }
 
+/**
+ * Defer a translation job because its English canonical does not yet exist.
+ * Non-terminal: status returns to `queued` and `next_due_at` is pushed
+ * forward so the picker skips it until then, WITHOUT touching `attempts`
+ * (which feeds the failure backoff / `failed` path). `selection_tier` stays
+ * NULL — a translation job never classifies.
+ */
+async function deferTranslationJob(
+  authPool: Pool,
+  job: EventJobPickup,
+  reason: string,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE event_analysis_job
+        SET status = 'queued',
+            next_due_at = NOW() + ($7::bigint * interval '1 millisecond'),
+            last_error = $8,
+            processing_started_at = NULL,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+        AND lang = $4 AND model_name = $5 AND model = $6
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.aice_id,
+      job.event_key,
+      job.lang,
+      job.model_name,
+      job.model,
+      CANONICAL_DEFER_MS,
+      reason,
+    ],
+  );
+}
+
+/** Terminally fail a translation job (deterministic leak/shape failure —
+ * retrying cannot help). */
+async function failTranslationJob(
+  authPool: Pool,
+  job: EventJobPickup,
+  reason: string,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE event_analysis_job
+        SET status = 'failed', last_error = $7, updated_at = NOW()
+      WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+        AND lang = $4 AND model_name = $5 AND model = $6
+        AND status = 'processing'`,
+    [
+      job.customer_id,
+      job.aice_id,
+      job.event_key,
+      job.lang,
+      job.model_name,
+      job.model,
+      reason,
+    ],
+  );
+}
+
+/**
+ * Process a claimed TRANSLATION job: derive the user-language row from the
+ * English canonical (#581). Defers (no `attempts` burn) while the canonical
+ * is missing; finalizes on a fresh translation or an idempotent no-op; fails
+ * loudly on a leak/shape failure; retries with backoff on a transient
+ * aimer/storage error.
+ */
+async function processTranslationJob(
+  job: EventJobPickup,
+  opts: ProcessEventJobOptions,
+  customerPool: Pool,
+): Promise<void> {
+  const derive = opts.deriveTranslation ?? deriveEventTranslation;
+  // The customer's redaction policy gates the translation leak scan for raw
+  // entities the translator may introduce (#581). Loaded here — same source as
+  // the native generation path (`analyze-baseline-event.ts`).
+  const ranges = await loadCustomerRanges(opts.authPool, job.customer_id);
+  const ownedDomains = await loadCustomerOwnedDomains(
+    opts.authPool,
+    job.customer_id,
+  );
+  let outcome: Awaited<ReturnType<typeof deriveEventTranslation>>;
+  try {
+    outcome = await derive({
+      customerPool,
+      aiceId: job.aice_id,
+      eventKey: job.event_key,
+      modelName: job.model_name,
+      model: job.model,
+      targetLang: job.lang as SupportedLang,
+      accountId: WORKER_ACCOUNT_ID,
+      graphqlAiceId: job.aice_id,
+      requestedBy: null,
+      ranges,
+      ownedDomains,
+      auditBase: {
+        actorId: WORKER_ACCOUNT_ID,
+        authContext: "general",
+        targetType: "event_analysis_result",
+        ipAddress: undefined,
+        sid: "",
+        customerId: job.customer_id,
+        aiceId: job.aice_id,
+      },
+    });
+  } catch (err) {
+    await requeueOrFailAnalysis(
+      opts.authPool,
+      job,
+      err instanceof Error ? err.message : String(err),
+    );
+    return;
+  }
+
+  if (outcome.kind === "canonical_missing") {
+    await deferTranslationJob(opts.authPool, job, "awaiting_canonical");
+    emitMetric("translation_deferred", {
+      customer_id: job.customer_id,
+      aice_id: job.aice_id,
+      event_key: job.event_key,
+      lang: job.lang,
+    });
+    return;
+  }
+  if (outcome.kind === "translated" || outcome.kind === "noop") {
+    await finalizeJob(opts.authPool, job);
+    // Re-dirty the periodic report buckets so a non-English report variant
+    // picks up the freshly translated leaf (idempotent + best-effort, same as
+    // the native path).
+    await redirtyReportsForLeaf(opts.authPool, job).catch((err) => {
+      console.error("[event-analysis-worker] report re-dirty failed:", err);
+    });
+    return;
+  }
+  if (outcome.kind === "leak") {
+    await failTranslationJob(
+      opts.authPool,
+      job,
+      `translation_leak:${outcome.field}`,
+    );
+    emitMetric("translation_leak", {
+      customer_id: job.customer_id,
+      aice_id: job.aice_id,
+      event_key: job.event_key,
+      lang: job.lang,
+      field: outcome.field,
+    });
+    return;
+  }
+  // Transient aimer / storage error — retryable with backoff.
+  await requeueOrFailAnalysis(opts.authPool, job, outcome.message);
+}
+
 export async function processEventJob(
   job: EventJobPickup,
   opts: ProcessEventJobOptions,
@@ -778,6 +998,16 @@ export async function processEventJob(
     ],
   );
   if (claim.rowCount === 0) return; // lost the pickup race
+
+  // A non-English job is a TRANSLATION of the English canonical (#581), not a
+  // native analysis. It bypasses tier classification, the budget reservation,
+  // and the claim-time live-leaf / story-membership gate (a translation is a
+  // pure re-expression of a canonical that already passed those gates); it
+  // defers on `next_due_at` until the canonical exists, then derives.
+  if (job.lang !== DEFAULT_LANG) {
+    await processTranslationJob(job, opts, customerPool);
+    return;
+  }
 
   // Re-check eligibility at claim time. Seeding screened story membership and
   // the live-leaf dedupe, but the worker is asynchronous: in the gap between

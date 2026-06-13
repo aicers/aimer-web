@@ -341,6 +341,7 @@ export async function loadAnalysisResultPage(
   // latest-non-superseded behavior.
   const pinnedGeneration = input.generation ?? null;
   const resultRow = await customerPool.query<{
+    lang: "KOREAN" | "ENGLISH";
     severity_score: number;
     likelihood_score: number;
     priority_tier: PriorityTier;
@@ -360,8 +361,21 @@ export async function loadAnalysisResultPage(
     event_time: Date;
     kind: string | null;
   }>(
+    // Non-pinned read resolves the viewer-language variant with a
+    // requested -> English -> any fallback (#581), but the LATEST generation
+    // wins FIRST: a translated row shares its canonical's generation and can
+    // never exceed it, so ordering `generation DESC` ahead of the language
+    // preference guarantees a stale lower-generation translation never shadows
+    // a newer English canonical. This is what keeps a force-regenerate (or a
+    // failed/lagging translation that left an older user-language row live)
+    // from displaying superseded scores/factors/text: until the matching
+    // translation lands at the new generation, the reader falls back to the
+    // English canonical. Within one generation the requested language wins,
+    // then English, then whatever exists. A generation pin is variant-exact (a
+    // report citation pins a precise `(lang, generation)`) — no fallback.
     pinnedGeneration === null
       ? `SELECT
+           lang,
            severity_score,
            likelihood_score,
            priority_tier,
@@ -381,13 +395,13 @@ export async function loadAnalysisResultPage(
          FROM event_analysis_result
          WHERE aice_id = $1
            AND event_key = $2::numeric
-           AND lang = $3
            AND model_name = $4
            AND model = $5
            AND superseded_at IS NULL
-         ORDER BY generation DESC
+         ORDER BY generation DESC, (lang = $3) DESC, (lang = 'ENGLISH') DESC
          LIMIT 1`
       : `SELECT
+           lang,
            severity_score,
            likelihood_score,
            priority_tier,
@@ -554,7 +568,8 @@ export async function loadAnalysisResultPage(
       {
         aiceId: input.aiceId,
         eventKey: input.eventKey,
-        lang: input.lang,
+        // Compare at the language actually resolved for the primary column.
+        lang: row.lang,
         modelName: input.compare.modelName,
         model: input.compare.model,
       },
@@ -568,7 +583,9 @@ export async function loadAnalysisResultPage(
       customerId: input.customerId,
       aiceId: input.aiceId,
       eventKey: input.eventKey,
-      lang: input.lang as "KOREAN" | "ENGLISH",
+      // The language actually resolved (requested -> English -> any), so the
+      // page chrome / switcher reflect what is displayed (#581).
+      lang: row.lang,
       modelName: input.modelName,
       model: input.model,
       generation: row.generation,

@@ -3,6 +3,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { ClientError } from "graphql-request";
 import type { Pool, PoolClient } from "pg";
+import {
+  configuredAppDisplayLanguage,
+  reportLanguageToAppLocale,
+} from "@/i18n/locale";
 import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { getCustomerByExternalKey } from "@/lib/auth/customers";
@@ -29,6 +33,7 @@ import {
 } from "./factor-filter";
 import { MITRE_VENDOR_VERSION, validateTtpTags } from "./mitre-ttp";
 import { computePriorityTier } from "./priority-tier";
+import { deriveEventTranslation } from "./translate-event-analysis";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -47,14 +52,14 @@ const SCHEMA_VERSION_DEFAULT = "0.0-stub";
 // Paired with `eventVariantLockKey` so the (read MAX → supersede →
 // insert) section is serialized per event variant (#297 review round 1,
 // item 4).
-const EVENT_GENERATION_LOCK_NAMESPACE = 0x2978;
+export const EVENT_GENERATION_LOCK_NAMESPACE = 0x2978;
 
 /**
  * Stable positive int4 advisory-lock key derived from an event variant,
  * so concurrent analyzes of the *same* `(aice_id, event_key, lang,
  * model_name, model)` serialize while different variants run freely.
  */
-function eventVariantLockKey(
+export function eventVariantLockKey(
   aiceId: string,
   eventKey: string,
   lang: string,
@@ -311,7 +316,7 @@ async function ingestAndRedact(params: IngestAndRedactParams): Promise<{
   });
 }
 
-function mapAimerError(err: unknown): AnalyzeErrorCode {
+export function mapAimerError(err: unknown): AnalyzeErrorCode {
   if (err instanceof ClientError) {
     const status = err.response?.status;
     if (status === 401 || status === 403) return "aimer_auth_failed";
@@ -339,14 +344,13 @@ function buildViewUrl(
   model: string,
 ): string {
   // `lang` here is the post-fallback concrete value (caller-supplied or
-  // {@link DEFAULT_LANG}) so the URL always carries a `lang` parameter
-  // that matches the row written to `event_analysis_result`. The result
-  // page picks the variant by `(aice_id, event_key, lang, model_name,
-  // model)`, and an absent `lang=` would not resolve to the row
-  // that aimer just produced under its default.
+  // {@link DEFAULT_LANG}). The reader `?lang` is the locale form (`en`/`ko`,
+  // #581), cross-compatible with report/story links — so map the analysis
+  // enum to its app locale. The detail loader resolves the requested ->
+  // English -> any variant from there.
   const locale = "en";
   const params = new URLSearchParams({
-    lang,
+    lang: reportLanguageToAppLocale(lang),
     model_name: modelName,
     model,
   });
@@ -768,27 +772,73 @@ export async function analyzeAndStoreEventResult(
           return { kind: "skipped", reason: skipReason };
         }
       }
+      // When writing the ENGLISH canonical, treat every language of the
+      // variant as one supersede/generation domain (see the supersede comment
+      // below). Computed before the MAX query so the canonical's generation is
+      // taken across ALL languages, never English-only.
+      const supersedeAllLangs = params.langForStorage === DEFAULT_LANG;
       const { rows: genRows } = await writeClient.query<{
         next_generation: number;
       }>(
+        // The canonical's generation is `MAX(generation) + 1` over ALL
+        // languages of the variant (`$6` true), not English-only. In a healthy
+        // bilingual state the two language rows share a generation, so the
+        // all-language MAX equals the English-only MAX and this is a no-op. It
+        // only diverges against a LEGACY / native non-English row written by
+        // the pre-#581 sync path with NO English canonical (the exact
+        // pre-existing state #581 calls out): an English-only MAX would put the
+        // new canonical at the SAME generation as that stray row, so the
+        // canonical's all-language supersede below could not retire it
+        // (`generation < nextGeneration` excludes an equal generation) and the
+        // translation INSERT would collide with it on the result PK and
+        // `DO NOTHING`, leaving the legacy native row live forever. Taking the
+        // MAX across all languages puts the canonical strictly above the stray
+        // row so it is superseded and the translation replaces it. A
+        // non-canonical write keeps the per-language MAX (`$6` false).
         `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
            FROM event_analysis_result
           WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5`,
+            AND model_name = $4 AND model = $5
+            AND ($6::boolean OR lang = $3)`,
         [
           params.aiceId,
           params.eventKey,
           params.langForStorage,
           params.modelName,
           params.model,
+          supersedeAllLangs,
         ],
       );
       nextGeneration = genRows[0]?.next_generation ?? 1;
+      // Supersede the prior live row(s) for this variant at an older
+      // generation. When writing the ENGLISH canonical, broaden the supersede
+      // to EVERY language of the variant — not just English — so advancing the
+      // canonical immediately retires any user-language translation pinned to
+      // the now-superseded generation (#581). This also retires a legacy native
+      // non-English row (which the all-language generation MAX above placed
+      // strictly below the new canonical). Without this, a canonical advance
+      // whose follow-up translation later fails (error/leak) would leave the
+      // old user-language row live at the superseded generation: the event
+      // detail loader hides that behind its generation-first fallback, but the
+      // report input builder selects live leaves per report language
+      // (`WHERE lang = $1 AND superseded_at IS NULL`, newest generation within
+      // that language — `report-input-builder.ts`), so a user-language report
+      // would still cite the stale translated leaf while English advanced,
+      // violating cross-language report consistency. Retiring all languages
+      // here makes a failed re-translation fall back to English (no live
+      // user-language leaf) rather than a stale one; the successful translation
+      // re-inserts the user-language row at the new generation. Safe under the
+      // lock discipline: every non-English writer (`deriveEventTranslation`)
+      // acquires this same English variant lock FIRST, so holding it here makes
+      // the cross-language supersede mutually exclusive with any concurrent
+      // translation write. Gated on `langForStorage === DEFAULT_LANG` so a
+      // (non-canonical) write never supersedes the English canonical.
       await writeClient.query(
         `UPDATE event_analysis_result
             SET superseded_at = NOW()
           WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5
+            AND model_name = $4 AND model = $5
+            AND ($7::boolean OR lang = $3)
             AND generation < $6
             AND superseded_at IS NULL`,
         [
@@ -798,6 +848,7 @@ export async function analyzeAndStoreEventResult(
           params.modelName,
           params.model,
           nextGeneration,
+          supersedeAllLangs,
         ],
       );
       await writeClient.query(
@@ -974,11 +1025,28 @@ export async function runAnalyzeFlow(
 
   let cached = false;
   if (!params.force) {
+    // Only a row in the canonical bilingual shape counts as a cache hit. For a
+    // non-English target this REQUIRES `restoration_lang = ENGLISH` (a genuine
+    // translation of a canonical); for the English target it REQUIRES
+    // `restoration_lang IS NULL` (a native canonical). This deliberately
+    // EXCLUDES a legacy / native non-English row — one written by the pre-#581
+    // sync path with `restoration_lang IS NULL` and NO English canonical (the
+    // exact pre-existing state #581 calls out). Treating that row as cached
+    // would perpetuate the bilingual-invariant violation; falling through
+    // instead regenerates the English canonical and derives a proper
+    // translation that supersedes and replaces the legacy row. A live
+    // translation always mirrors a live canonical at the same generation (the
+    // canonical write supersedes every language together), so the
+    // `restoration_lang` marker alone is a sufficient validity test here.
     const cachedRow = await customerPool.query<{ requested_at: Date }>(
       `SELECT requested_at FROM event_analysis_result r
        WHERE r.aice_id = $1 AND r.event_key = $2::numeric
          AND r.lang = $3 AND r.model_name = $4 AND r.model = $5
          AND r.superseded_at IS NULL
+         AND (
+           ($3 = $6 AND r.restoration_lang IS NULL)
+           OR ($3 <> $6 AND r.restoration_lang = $6)
+         )
          AND EXISTS (
            SELECT 1 FROM detection_events d
            WHERE d.aice_id = $1 AND d.event_key = $2::numeric
@@ -989,6 +1057,7 @@ export async function runAnalyzeFlow(
         langForStorage,
         params.modelName,
         params.model,
+        DEFAULT_LANG,
       ],
     );
     if (cachedRow.rows.length > 0) cached = true;
@@ -1095,31 +1164,142 @@ export async function runAnalyzeFlow(
     ownedDomains,
   );
 
-  const stored = await analyzeAndStoreEventResult({
+  // Bilingual invariant (#581): the English canonical is the ONLY natively
+  // generated row; a user-language request derives its row by translating the
+  // canonical, never by a native non-English analysis. So produce/reuse the
+  // English canonical first, then (for a non-English target) derive the
+  // user-language row from it.
+  const canonicalExists = await liveCanonicalExists(
     customerPool,
-    aiceId: params.aiceId,
-    eventKey: params.eventKey,
-    redactedEvent,
-    eventTimeForAimer,
-    // Manual wire contract carries no kind field (see `inspectEventData`).
-    eventKind: null,
-    lang: params.lang,
-    langForStorage,
-    modelName: params.modelName,
-    model: params.model,
-    accountId: params.accountId,
-    mergedMap,
-    ranges,
-    ownedDomains,
-    redactionPolicyVersion: analysisPolicyVersion,
-    origin: "manual",
-    requestedBy: params.accountId,
-    auditBase,
-    force: params.force,
-  });
-  if (stored.kind === "error") {
-    return stored;
+    params.aiceId,
+    params.eventKey,
+    params.modelName,
+    params.model,
+  );
+  // Generate the English canonical natively when it is missing, or always on
+  // a forced regenerate (which re-derives the translation from the new
+  // canonical). A non-forced request whose canonical already exists skips the
+  // native English call — a retry of a failed translation then performs ONLY
+  // the translation, never re-running or duplicating the English generation.
+  if (params.force || !canonicalExists) {
+    // The GraphQL `lang` variable for the canonical generation: when the
+    // target is English (or omitted, so the cache PK collapses to English),
+    // preserve the caller's value — omitting it lets aimer apply its English
+    // default. When the target is a user language, the canonical is still
+    // generated in English explicitly (the user language is derived, never
+    // natively generated).
+    const canonicalLangVar: SupportedLang | undefined =
+      langForStorage === DEFAULT_LANG ? params.lang : DEFAULT_LANG;
+    const canonicalStored = await analyzeAndStoreEventResult({
+      customerPool,
+      aiceId: params.aiceId,
+      eventKey: params.eventKey,
+      redactedEvent,
+      eventTimeForAimer,
+      // Manual wire contract carries no kind field (see `inspectEventData`).
+      eventKind: null,
+      lang: canonicalLangVar,
+      langForStorage: DEFAULT_LANG,
+      modelName: params.modelName,
+      model: params.model,
+      accountId: params.accountId,
+      mergedMap,
+      ranges,
+      ownedDomains,
+      redactionPolicyVersion: analysisPolicyVersion,
+      origin: "manual",
+      requestedBy: params.accountId,
+      auditBase,
+      force: params.force,
+    });
+    if (canonicalStored.kind === "error") {
+      return canonicalStored;
+    }
+  }
+
+  // Derive the user-language translation(s) of the canonical (#581). The
+  // explicit non-English request target is ALWAYS derived — this covers a
+  // translate-only retry where the canonical already existed and was NOT
+  // re-generated above. Additionally, force-regenerating an EXISTING canonical
+  // re-derives the deployment's configured user-display language even on an
+  // ENGLISH target: forcing advances the canonical generation, so a
+  // user-language row from the prior generation would otherwise stay pinned to
+  // the now-superseded canonical with stale scores / factors / text
+  // (force-regenerate consistency). The `canonicalExists` guard scopes this to
+  // a genuine regeneration: a FIRST-time analysis (no prior canonical) has no
+  // prior user-language row to keep aligned, and the sync path is on-demand —
+  // a bare English request only produces English until the user language is
+  // actually requested or the worker seeds it.
+  const derivedTargets = new Set<SupportedLang>();
+  if (langForStorage !== DEFAULT_LANG) derivedTargets.add(langForStorage);
+  if (params.force && canonicalExists) {
+    const userLang = configuredAppDisplayLanguage();
+    if (userLang !== DEFAULT_LANG) derivedTargets.add(userLang);
+  }
+
+  for (const targetLang of derivedTargets) {
+    const derived = await deriveEventTranslation({
+      customerPool,
+      aiceId: params.aiceId,
+      eventKey: params.eventKey,
+      modelName: params.modelName,
+      model: params.model,
+      targetLang,
+      accountId: params.accountId,
+      graphqlAiceId: params.aiceId,
+      requestedBy: params.accountId,
+      ranges,
+      ownedDomains,
+      auditBase,
+    });
+    if (derived.kind === "error") {
+      // Partial failure: the English canonical is KEPT; the user-language text
+      // is not yet available. Surfaced as a (retryable) failure; a retry runs
+      // ONLY the translation since the canonical now exists.
+      return {
+        kind: "error",
+        errorCode: derived.errorCode,
+        message: derived.message,
+      };
+    }
+    if (derived.kind === "leak") {
+      // A redaction-token leak / shape failure in the translation — terminal.
+      return {
+        kind: "error",
+        errorCode: "aimer_invalid_request",
+        message: derived.message,
+      };
+    }
+    if (derived.kind === "canonical_missing") {
+      return {
+        kind: "error",
+        errorCode: "storage_failed",
+        message: "english canonical unavailable for translation",
+      };
+    }
   }
 
   return { kind: "success", viewUrl, cached: false, customerId: customer.id };
+}
+
+/** Whether a live (non-superseded) English canonical row exists for the
+ * variant — used to decide whether a non-English request must first generate
+ * the canonical natively (#581). */
+async function liveCanonicalExists(
+  customerPool: Pool,
+  aiceId: string,
+  eventKey: string,
+  modelName: string,
+  model: string,
+): Promise<boolean> {
+  const { rows } = await customerPool.query<{ one: number }>(
+    `SELECT 1 AS one
+       FROM event_analysis_result
+      WHERE aice_id = $1 AND event_key = $2::numeric
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND superseded_at IS NULL
+      LIMIT 1`,
+    [aiceId, eventKey, DEFAULT_LANG, modelName, model],
+  );
+  return rows.length > 0;
 }

@@ -69,8 +69,17 @@ fallback. The chip row is omitted when the LLM returned no techniques.
 Below the score fields the page shows the analysis metadata in a
 two-column grid:
 
-- **Language** — `KOREAN` or `ENGLISH`. Matches the language the analysis
-  text was generated in.
+- **Language** — `KOREAN` or `ENGLISH`. The language of the analysis text
+  on screen. Per-event analysis is **bilingual**: English is the canonical
+  source, and the user-language row is a translation of it. The narrative
+  and the score factors are translated, while the numeric severity /
+  likelihood scores, the priority tier, and the MITRE technique IDs are
+  copied from the English canonical unchanged — so they are identical in
+  both languages. The page shows the language matching your app locale; the
+  link's `?lang=en` / `?lang=ko` pins it, and it falls back to English (then
+  any available language) when your language is not yet available for the
+  current version — either never generated, or briefly while a re-generated
+  English canonical is being re-translated.
 
 The remaining fields are **model/prompt provenance** — how the artifact
 was produced — and are restricted to analysts (see [Analyst-only

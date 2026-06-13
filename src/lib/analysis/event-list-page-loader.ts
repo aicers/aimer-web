@@ -34,7 +34,14 @@ import {
 import { decodeCursor, encodeCursor } from "./keyset-cursor";
 import { type PriorityTier, priorityRankCaseSql } from "./priority-tier";
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// The list enumerates the ENGLISH canonical (#581): the bilingual invariant
+// guarantees every analyzed event has an English row, while a user-language
+// translation may still be pending — so filtering on English never drops an
+// event. Numeric scores / tier are language-invariant (byte-identical across
+// the language pair), so the canonical's values are correct for any viewer.
+// The detail link's displayed language is the VIEWER's locale, resolved at the
+// page boundary (requested -> English -> any fallback in the detail loader).
+const CANONICAL_LANG = "ENGLISH";
 
 export const DEFAULT_PAGE_SIZE = 25;
 
@@ -149,7 +156,7 @@ export async function queryEventListPage(
 
   const rankCase = priorityRankCaseSql("priority_tier");
 
-  const lang = p(DEFAULT_LANG);
+  const lang = p(CANONICAL_LANG);
   const modelName = p(defaultPair.modelName);
   const model = p(defaultPair.model);
 
@@ -290,7 +297,7 @@ export async function queryEventListPage(
     items,
     nextCursor,
     variant: {
-      lang: DEFAULT_LANG,
+      lang: CANONICAL_LANG,
       modelName: defaultPair.modelName,
       model: defaultPair.model,
     },
