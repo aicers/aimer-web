@@ -291,14 +291,14 @@ type Mutation {
 	analysis into `targetLang`, returning the translated `analysis`
 	narrative and the translated `severityFactors` / `likelihoodFactors`
 	arrays, with every redaction token preserved verbatim.
-	
+
 	This is the bilingual prerequisite for `analyzeStory` and
 	`analyzeEvent`: the English canonical is generated natively, and the
 	user-language row is derived from it by this mutation so the numeric
 	scores never diverge across languages. Accordingly, `severityScore`,
 	`likelihoodScore`, and `ttpTags` are neither accepted nor returned —
 	aimer-web copies them from the canonical.
-	
+
 	Stateless under `auth-mtls`: aimer stores nothing and performs no
 	caching. The translation model (`name` + `model`) is independent of the
 	generation model. Only narrative prose and factor phrases are
@@ -306,7 +306,7 @@ type Mutation {
 	native form. `targetLang` is limited to the `Language` enum's current
 	variants (Korean / English); `targetLang: ENGLISH` on the English
 	canonical is a no-op round-trip.
-	
+
 	The input factor arrays are validated (1–5 items, ≤80 chars each)
 	BEFORE the LLM call, so a malformed canonical fails fast instead of
 	paying for a wasted translation, and the translated arrays are
@@ -316,9 +316,9 @@ type Mutation {
 	and a per-corresponding-string redaction-token multiset check rejects
 	any token add / drop / rewrite as well as any token moved to a
 	different field or array index.
-	
+
 	# Errors
-	
+
 	Returns an error if:
 	- Input validation fails (empty `model` / `name`, or a factor array
 	that violates the 1–5 item / ≤80 char bounds)

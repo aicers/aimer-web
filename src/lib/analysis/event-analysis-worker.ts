@@ -237,14 +237,40 @@ export async function seedBaselineEventJobs(
       // leaf already exists for this language variant, do not re-analyze. The
       // job still records the latest `baseline_version` so reproducibility
       // tracks the newest ingested row.
+      //
+      // For a NON-English variant the live leaf must be a genuine translation
+      // (`restoration_lang = ENGLISH`) to count as complete — the same
+      // bilingual-shape predicate the sync cache uses. A LEGACY / native
+      // non-English row (`restoration_lang IS NULL`, written by the pre-#581
+      // per-language path) is NOT a valid translation, so it must NOT suppress
+      // seeding the translation job; otherwise the job is never created and,
+      // once the English canonical advances and supersedes all languages, there
+      // would be no job left to derive the replacement translation.
+      const requireTranslation = lang !== DEFAULT_LANG;
       const leaf = await customerPool.query<{ one: number }>(
         `SELECT 1 AS one
            FROM event_analysis_result
           WHERE aice_id = $1 AND event_key = $2::numeric
             AND lang = $3 AND model_name = $4 AND model = $5
             AND superseded_at IS NULL
+            ${requireTranslation ? "AND restoration_lang = $6" : ""}
           LIMIT 1`,
-        [cand.sourceAiceId, cand.eventKey, lang, model.modelName, model.model],
+        requireTranslation
+          ? [
+              cand.sourceAiceId,
+              cand.eventKey,
+              lang,
+              model.modelName,
+              model.model,
+              DEFAULT_LANG,
+            ]
+          : [
+              cand.sourceAiceId,
+              cand.eventKey,
+              lang,
+              model.modelName,
+              model.model,
+            ],
       );
       if (leaf.rows.length > 0) {
         await authClient.query(

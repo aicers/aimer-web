@@ -665,6 +665,95 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it("retires a legacy native non-English row sitting ABOVE the canonical generation", async () => {
+    // #581 review R6: the pre-PR per-language generation model could leave a
+    // NATIVE Korean row at a generation HIGHER than the English canonical —
+    // English canonical gen 1 beside a native Korean gen 2 (restoration_lang IS
+    // NULL). A non-forced Korean request derives at the canonical's generation
+    // (gen 1), so a supersede scoped to `generation < canonical.generation`
+    // could not retire the gen-2 native row. It would survive `superseded_at IS
+    // NULL`, and because the detail loader orders `generation DESC` and report
+    // selection takes the newest generation within `e.lang`, readers/reports
+    // would keep showing the legacy native gen-2 row instead of the translated
+    // canonical mirror. The supersede must therefore retire ANY live target row
+    // at a non-canonical generation, including a higher legacy one.
+    const KEY = "402";
+    await seedCanonical({ eventKey: KEY, generation: 1 });
+    // Native Korean row at the HIGHER generation 2, no matching canonical there.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, event_time, kind,
+          redaction_policy_version, requested_by, requested_at, origin)
+       VALUES ($1, $2::numeric, 'KOREAN', NULL, $3, $4,
+               'mv-legacy', 'pv-legacy', 2,
+               0.1, 0.2,
+               $5::jsonb, $6::jsonb, $7::jsonb,
+               'LOW', 'legacy native KO gen 2', '2026-05-20T00:00:00Z',
+               'HttpThreat', 'rp-v0', $8::uuid, NOW(), 'manual')`,
+      [
+        AICE,
+        KEY,
+        MODEL_NAME,
+        MODEL,
+        JSON.stringify(["legacy sev"]),
+        JSON.stringify(["legacy lik"]),
+        JSON.stringify(["T0000"]),
+        ACCOUNT,
+      ],
+    );
+
+    // A genuine translation IS produced at the canonical generation (gen 1) —
+    // the higher legacy gen-2 row does not make the derive a no-op.
+    const res = await derive(KEY);
+    expect(res).toEqual({ kind: "translated", generation: 1 });
+
+    // The legacy native gen-2 Korean row was retired by the `generation <>`
+    // supersede.
+    const legacy = await pool.query<{ superseded: boolean }>(
+      `SELECT superseded_at IS NOT NULL AS superseded
+         FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'KOREAN'
+          AND generation = 2`,
+      [AICE, KEY],
+    );
+    expect(legacy.rows[0].superseded).toBe(true);
+
+    // The single live Korean row is the genuine translation at the canonical
+    // generation — nothing left for the detail loader or report selection to
+    // pick at gen 2.
+    const live = await liveKoreanRow(KEY);
+    expect(live.generation).toBe(1);
+    expect(live.restoration_lang).toBe("ENGLISH");
+    expect(live.priority_tier).not.toBe("LOW");
+    const { rows } = await pool.query<{
+      n: number;
+      max_live_gen: number | null;
+    }>(
+      `SELECT COUNT(*)::int AS n,
+              MAX(generation) FILTER (WHERE superseded_at IS NULL) AS max_live_gen
+         FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'KOREAN'
+          AND superseded_at IS NULL`,
+      [AICE, KEY],
+    );
+    expect(rows[0].n).toBe(1);
+    expect(rows[0].max_live_gen).toBe(1);
+  });
+
+  it("does not make a second aimer call once the clean translation exists beside no stale rows", async () => {
+    // The strict no-op fast path: a SINGLE live translation at the canonical
+    // generation (and no stray rows) finalizes without a second aimer call.
+    await seedCanonical({ eventKey: "403", generation: 5 });
+    expect((await derive("403")).kind).toBe("translated");
+    expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
+    expect(await derive("403")).toEqual({ kind: "noop", generation: 5 });
+    expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("returns canonical_missing when no English canonical exists", async () => {
     const res = await derive("200");
     expect(res).toEqual({ kind: "canonical_missing" });

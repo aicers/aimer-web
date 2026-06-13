@@ -751,6 +751,52 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     expect(ko?.selection_tier).toBeNull();
   });
 
+  it("a legacy native KOREAN leaf does NOT suppress seeding the translation job", async () => {
+    // #581 review R6: a pre-#581 NATIVE Korean row (restoration_lang IS NULL)
+    // is not a valid bilingual translation, so it must NOT dedup-suppress the
+    // KOREAN translation job. Otherwise the job is never created and, once the
+    // English canonical advances and supersedes all languages, there is no job
+    // left to derive the replacement translation. A native ENGLISH leaf still
+    // dedups its own (English) job.
+    await customerPool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, event_time, redaction_policy_version)
+       VALUES ($1, '95'::numeric, 'KOREAN', NULL, $2, $3, 'mv', 'pv',
+               0.5, 0.5, 'LOW', 'legacy native KO',
+               '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty')`,
+      [AICE_ID, MODEL_NAME, MODEL],
+    );
+    await seed(["95"]);
+    // The English canonical job is seeded (no English leaf yet), and the KOREAN
+    // job is seeded too — the legacy native KOREAN row did not suppress it.
+    expect((await loadJobLang("95", "ENGLISH"))?.status).toBe("queued");
+    expect((await loadJobLang("95", "KOREAN"))?.status).toBe("queued");
+  });
+
+  it("a genuine KOREAN translation leaf DOES dedup-suppress its own job", async () => {
+    // The complement of the legacy case: a real translation
+    // (restoration_lang = ENGLISH) is a valid bilingual leaf, so re-seeding is
+    // suppressed exactly as a native English leaf suppresses the English job.
+    await seedLiveLeaf("96"); // native ENGLISH canonical → English job deduped
+    await customerPool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, event_time, redaction_policy_version)
+       VALUES ($1, '96'::numeric, 'KOREAN', 'ENGLISH', $2, $3, 'mv', 'pv',
+               0.5, 0.5, 'LOW', 'real KO translation',
+               '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty')`,
+      [AICE_ID, MODEL_NAME, MODEL],
+    );
+    await seed(["96"]);
+    expect(await loadJobLang("96", "ENGLISH")).toBeNull();
+    expect(await loadJobLang("96", "KOREAN")).toBeNull();
+  });
+
   it("a translation job defers (next_due_at) WITHOUT burning attempts when the canonical is missing", async () => {
     await seed(["91"]);
     const deriveTranslation = vi.fn(async () => ({

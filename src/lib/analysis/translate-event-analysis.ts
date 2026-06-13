@@ -175,18 +175,29 @@ async function readLiveCanonical(
   };
 }
 
-/** Whether a genuine TRANSLATED row already exists at the given generation
- * (any supersede state — the PK slot being occupied by a real translation
- * means the translation for that generation is materialized). The
- * `restoration_lang = ENGLISH` filter is what makes "real translation"
- * precise: a LEGACY / native non-English row (`restoration_lang IS NULL`,
- * written by the pre-#581 sync path) at the same generation must NOT be
- * treated as a materialized translation, so the derivation supersedes and
- * replaces it instead of short-circuiting to a no-op. The all-language
- * canonical generation (`run-analyze-flow.ts`) already keeps a legacy row
- * strictly below the canonical's generation, so this is defense-in-depth on
- * the idempotency check. */
-async function translationExistsAtGeneration(
+/**
+ * Whether the live (non-superseded) target-language state is already exactly
+ * the clean bilingual shape for the canonical generation: a SINGLE live row,
+ * a genuine translation (`restoration_lang = ENGLISH`), pinned to the
+ * canonical's generation. Only then is the derivation a true finalize/no-op
+ * that can skip the (expensive) aimer call.
+ *
+ * This is deliberately STRICTER than "a translation exists at the canonical
+ * generation". A LEGACY / native non-English row (`restoration_lang IS NULL`,
+ * written by the pre-#581 sync path) can be live at a DIFFERENT generation
+ * than the English canonical — e.g. English canonical generation 1 beside a
+ * stray native generation 2 — because the pre-PR per-language generation model
+ * advanced the user language independently. Such a row is NOT a valid
+ * translation, yet the detail loader (`result-page-loader.ts`, ordering
+ * `generation DESC`) and report selection (`report-input-builder.ts`, newest
+ * generation within `e.lang`) would still pick it over the genuine translation
+ * at the canonical generation. So whenever the live target state is anything
+ * other than this single clean row, fall through to the full locked write,
+ * which retires EVERY stray live target row at a non-canonical generation and
+ * converts/no-ops the canonical-generation slot — leaving only the genuine
+ * translation live.
+ */
+async function liveTranslationIsClean(
   customerPool: Pool,
   aiceId: string,
   eventKey: string,
@@ -195,17 +206,22 @@ async function translationExistsAtGeneration(
   model: string,
   generation: number,
 ): Promise<boolean> {
-  const { rows } = await customerPool.query<{ one: number }>(
-    `SELECT 1 AS one
+  const { rows } = await customerPool.query<{
+    generation: number;
+    restoration_lang: string | null;
+  }>(
+    `SELECT generation, restoration_lang
        FROM event_analysis_result
       WHERE aice_id = $1 AND event_key = $2::numeric
         AND lang = $3 AND model_name = $4 AND model = $5
-        AND generation = $6
-        AND restoration_lang = $7
-      LIMIT 1`,
-    [aiceId, eventKey, targetLang, modelName, model, generation, DEFAULT_LANG],
+        AND superseded_at IS NULL`,
+    [aiceId, eventKey, targetLang, modelName, model],
   );
-  return rows.length > 0;
+  return (
+    rows.length === 1 &&
+    rows[0].generation === generation &&
+    rows[0].restoration_lang === DEFAULT_LANG
+  );
 }
 
 function tokenMultiset(text: string): Map<string, number> {
@@ -314,7 +330,7 @@ export async function deriveEventTranslation(
   );
   if (!canonical) return { kind: "canonical_missing" };
   if (
-    await translationExistsAtGeneration(
+    await liveTranslationIsClean(
       customerPool,
       aiceId,
       eventKey,
@@ -479,22 +495,27 @@ export async function deriveEventTranslation(
     };
   }
 
-  // 4. Supersede any prior live translated row and INSERT the fresh
-  //    translation AT THE CANONICAL'S GENERATION (never MAX+1) under the
-  //    per-variant advisory lock, so the two language rows of one analysis
-  //    share a generation. On a PK conflict the row is CONVERTED only when it
-  //    is a LEGACY / native non-English row (`restoration_lang IS NULL`) — the
+  // 4. Retire EVERY stray live target-language row at a generation OTHER than
+  //    the canonical's, then INSERT the fresh translation AT THE CANONICAL'S
+  //    GENERATION (never MAX+1) under the per-variant advisory lock, so the two
+  //    language rows of one analysis share a generation. The supersede uses
+  //    `generation <> canonical.generation` (not `<`), so it retires a LEGACY /
+  //    native non-English row (`restoration_lang IS NULL`, written by the
+  //    pre-#581 per-language path) sitting ABOVE the canonical too — e.g. a
+  //    native generation-2 Korean row beside an English canonical at
+  //    generation 1. The canonical generation was just re-validated as the live
+  //    one under the English lock, so no live canonical exists at any other
+  //    generation; any live target row at a different generation is therefore
+  //    stale and must not survive to be picked by the detail loader
+  //    (`generation DESC`) or report selection (newest generation within
+  //    `e.lang`). On a PK conflict at the canonical generation the row is
+  //    CONVERTED only when it is a legacy / native non-English row — the
   //    `ON CONFLICT ... DO UPDATE ... WHERE restoration_lang IS NULL` overwrites
   //    such a pre-#581 row with the real translation (and revives it,
   //    `superseded_at = NULL`). A genuine translation already at this slot
   //    (`restoration_lang = ENGLISH`) fails the WHERE, so the conflict is a
   //    no-op — idempotent, never a duplicate and never an overwrite of a valid
-  //    translation. This is what lets an existing English canonical that
-  //    happens to share a native non-English row's generation replace that row
-  //    rather than be blocked by it (the canonical-generation MAX in
-  //    `run-analyze-flow.ts` already keeps a NEWLY generated canonical above any
-  //    such row; this covers the case where the canonical pre-exists at the same
-  //    generation).
+  //    translation.
   let inserted: boolean;
   try {
     const writeClient = await customerPool.connect();
@@ -558,7 +579,7 @@ export async function deriveEventTranslation(
             SET superseded_at = NOW()
           WHERE aice_id = $1 AND event_key = $2::numeric
             AND lang = $3 AND model_name = $4 AND model = $5
-            AND generation < $6
+            AND generation <> $6
             AND superseded_at IS NULL`,
         [aiceId, eventKey, targetLang, modelName, model, canonical.generation],
       );
