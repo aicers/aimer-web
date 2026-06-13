@@ -29,7 +29,7 @@ vi.mock("next-intl", () => {
     overview: "Overview",
     reports: "Reports",
     threatStories: "Threat Stories",
-    suspiciousEvents: "Suspicious Events",
+    suspiciousEvents: "Detections",
     accountSettings: "Account Settings",
     members: "Members",
     customerSettings: "Customer Settings",
@@ -233,7 +233,7 @@ describe("Sidebar", () => {
     expect(text).toContain("Overview");
     expect(text).toContain("Reports");
     expect(text).toContain("Threat Stories");
-    expect(text).toContain("Suspicious Events");
+    expect(text).toContain("Detections");
     expect(text).toContain("Account Settings");
   });
 
@@ -589,7 +589,7 @@ describe("MobileSidebarTrigger", () => {
     expect(text).toContain("Overview");
     expect(text).toContain("Reports");
     expect(text).toContain("Threat Stories");
-    expect(text).toContain("Suspicious Events");
+    expect(text).toContain("Detections");
   });
 
   it("renders scope selector inside sheet", () => {

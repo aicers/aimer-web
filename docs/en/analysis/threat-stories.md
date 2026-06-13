@@ -1,7 +1,7 @@
 # Threat Stories
 
-A threat story is a pre-curated correlation of multiple [suspicious
-events](suspicious-events.md) into one kill-chain narrative. The threat
+A threat story is a pre-curated correlation of multiple
+[detections](suspicious-events.md) into one kill-chain narrative. The threat
 stories list is the customer-scoped index of those stories, sibling to
 the existing [story detail page](story.md).
 

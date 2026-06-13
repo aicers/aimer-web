@@ -15,7 +15,7 @@ test.describe("Dashboard sidebar", () => {
     await expect(nav.getByText("Overview")).toBeVisible();
     await expect(nav.getByText("Reports")).toBeVisible();
     await expect(nav.getByText("Threat Stories")).toBeVisible();
-    await expect(nav.getByText("Suspicious Events")).toBeVisible();
+    await expect(nav.getByText("Detections")).toBeVisible();
   });
 
   test("renders manager-only items for Manager role", async ({
@@ -262,7 +262,7 @@ test.describe("Dashboard top-level pages", () => {
   test("suspicious events page renders", async ({ managerPage }) => {
     await managerPage.goto("/en/suspicious-events");
     await expect(
-      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
+      managerPage.getByRole("heading", { name: "Detections", level: 1 }),
     ).toBeVisible();
   });
 
@@ -272,7 +272,7 @@ test.describe("Dashboard top-level pages", () => {
     await managerPage.goto("/en/events");
     await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
     await expect(
-      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
+      managerPage.getByRole("heading", { name: "Detections", level: 1 }),
     ).toBeVisible();
   });
 
@@ -305,11 +305,11 @@ test.describe("Dashboard navigation", () => {
     // overview (WS5 restructure; WS2 destination).
     await managerPage
       .getByRole("navigation", { name: "Main" })
-      .getByText("Suspicious Events")
+      .getByText("Detections")
       .click();
 
     await expect(
-      managerPage.getByRole("heading", { name: "Suspicious Events", level: 1 }),
+      managerPage.getByRole("heading", { name: "Detections", level: 1 }),
     ).toBeVisible();
     await expect(managerPage).toHaveURL(/\/en\/suspicious-events/);
   });
@@ -340,6 +340,6 @@ test.describe("Dashboard locale", () => {
     await expect(nav.getByText("개요")).toBeVisible();
     await expect(nav.getByText("보고서")).toBeVisible();
     await expect(nav.getByText("위협 스토리")).toBeVisible();
-    await expect(nav.getByText("의심 이벤트")).toBeVisible();
+    await expect(nav.getByText("탐지 이벤트")).toBeVisible();
   });
 });

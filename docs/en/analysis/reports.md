@@ -2,13 +2,13 @@
 
 A periodic security report is a single LLM-written synthesis across a
 time window for one customer — it weaves together the threat stories and
-[suspicious events](suspicious-events.md) already analysed in that window
-plus the trends across the period's suspicious events. Unlike a story
+[detections](suspicious-events.md) already analysed in that window
+plus the trends across the period's detections. Unlike a story
 analysis (one LLM call about one story), a report aggregates many
 individual analyses into one
 narrative and does **not** ask the LLM for scores: Clumit Insight derives
 the report's priority itself from the included story and event analyses
-and the suspicious-event trend.
+and the detection trend.
 
 The page is reached from an aice-web-next dashboard card deep link, or by
 opening a specific report from the report index below.
@@ -18,7 +18,7 @@ or a request for a report that does not exist — sees a `404`, while a
 member without the `reports:read` permission, or a rejected bridge
 session, sees a permission notice rather than the report.
 
-![Periodic report detail page, showing the priority-tier badge with its provenance hint, the aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, suspicious-event trends, and period outlook sections](../../assets/report-detail.en.png)
+![Periodic report detail page, showing the priority-tier badge with its provenance hint, the aggregate severity and likelihood scores, MITRE ATT&CK technique chips, and the executive summary, story highlights, notable events, detection trends, and period outlook sections](../../assets/report-detail.en.png)
 
 > **Weekly/monthly screenshots pending recapture (#430, #450).** The
 > DAILY capture above is fixture-driven and current: it leads with the
@@ -294,7 +294,7 @@ The worker pipeline runs without operator action:
 3. The input builder deterministically selects the **top stories**
    (eligible only when the story's state is `ready` and a non-superseded
    result exists, and the canonical story window overlaps the bucket) and
-   **top events** (event analyses whose deduped suspicious-event time falls
+   **top events** (event analyses whose deduped detection time falls
    in the bucket, excluding events already covered by the chosen stories).
    Event citation follows a **tier policy** under a hard ceiling: every
    `CRITICAL` and `HIGH` event is cited individually up to the ceiling; if
@@ -312,7 +312,7 @@ The worker pipeline runs without operator action:
    scoring](#cross-model-coverage-and-scoring)). An **alternate-model**
    report (one an analyst generated under a non-default model) stays strict
    and selects only that model's leaves. The language is always strict. It
-   also computes the window's **suspicious-event aggregates** (deduplicated
+   also computes the window's **detection aggregates** (deduplicated
    event counts and a category distribution) and the **analyzed-event
    aggregates** that drive the [long-tail narrative](#long-tail-narrative):
    over the whole non-story-covered analyzed-in-window set — the cited events
@@ -352,7 +352,7 @@ shows the two aggregate scores:
 
 - **Priority tier** — `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`, rendered
   as a colored badge. The tier is the **maximum** over every included
-  analysis's own priority tier and the tier the period's suspicious-event
+  analysis's own priority tier and the tier the period's detection
   trend maps to. Deriving it from the individual analyses directly
   (rather than from an aggregate score) means a report is never tagged
   below the worst analysis it cites, even when that analysis's tier was
@@ -366,9 +366,9 @@ shows the two aggregate scores:
   the report's severity and likelihood; they are not the input to the
   tier.
 
-The period's **suspicious-event trend** can raise the report's priority
+The period's **detection trend** can raise the report's priority
 when the window's activity deviates from the prior comparable period. The
-trend itself is narrated in the report's **Suspicious-event trends**
+trend itself is narrated in the report's **Detection trends**
 section; only the resulting priority tier and aggregate scores surface in
 the header.
 
@@ -386,7 +386,7 @@ leaves are narrated normally in the body.
 To keep the headline numbers meaningful for the model the report is labeled
 with, the **priority tier and aggregate severity / likelihood scores are
 computed only from the leaves that match the report's own model** (together
-with the suspicious-event trend). Filled-in, other-model leaves are shown in
+with the detection trend). Filled-in, other-model leaves are shown in
 the narrative but do not move the aggregate scores or the tier. Right after
 a model change this can make the scores read low relative to the full set of
 leaves on display; the gap closes as the underlying analyses are re-analyzed
@@ -435,8 +435,8 @@ to plaintext:
   guaranteed a citation up to the ceiling; spare slots are filled with
   `MEDIUM`; `LOW` events are never listed here, so a quiet period leaves
   this section empty rather than padded.
-- **Suspicious-event trends** — short factual readings of the window's
-  suspicious-event counts and ranks and any shift visible against the top
+- **Detection trends** — short factual readings of the window's
+  detection counts and ranks and any shift visible against the top
   techniques and sensors. When the window carried analyzed events beyond the
   individually cited ones, this section also weaves in the **long-tail
   narrative** (see below).
@@ -445,7 +445,7 @@ to plaintext:
   tomorrow's operator should re-check; for WEEKLY / MONTHLY, the trend
   to carry into the next week or month.
 
-Suspicious-event trends is a list of entries the page joins into one
+Detection trends is a list of entries the page joins into one
 block. The three **leaf-derived** sections — executive summary, story
 highlights, and notable events — are instead rendered as a sequence of
 **citation units**, each carrying its own optional source link (see
@@ -457,11 +457,11 @@ hallucinated decodes are blocked at write time and never reach this view.
 ### Long-tail narrative
 
 The **Notable events** section only ever lists the handful of individually
-cited events. But a busy window can analyze far more suspicious events than
+cited events. But a busy window can analyze far more detections than
 it cites — every `LOW` event, and any `CRITICAL` / `HIGH` / `MEDIUM` past the
 citation ceiling. Rather than drop that signal, the report folds the whole
 non-story-covered analyzed-in-window set into a **long-tail narrative** that
-the **Suspicious-event trends** section weaves into prose. It is grounded in
+the **Detection trends** section weaves into prose. It is grounded in
 aggregates the builder computes, not in fabricated detail:
 
 - **How many were analyzed vs cited** — so the prose can say, e.g., "of 240
@@ -496,9 +496,9 @@ or short, self-contained chunk for the executive summary, or a single
 entry for story highlights and notable events) can carry an inline
 citation linking it to the **one** analysis leaf it was derived from. The
 link renders as a small **↗ Story {story_id}** chip for a threat story, or
-an **↗ {event time} · {kind}** chip for a suspicious event (for example,
+an **↗ {event time} · {kind}** chip for a detection (for example,
 `↗ 6/3, 2:05 PM · HTTP Threat`) — the same event label the
-[Sources](#sources) cards and the Suspicious Events lists use — after the
+[Sources](#sources) cards and the Detections lists use — after the
 unit's text. When the event time is unavailable the chip falls back to a
 plain **↗ Event** label; the opaque `event_key` is never shown. This
 deepens the trust chain from the report-level Sources panel ("which
@@ -516,7 +516,7 @@ cited source.
   like the Sources cards, and resolves to the canonical-language leaf for
   a translated report.
 - Citations apply **only** to the three leaf-derived sections.
-  **Period outlook** (forward-looking) and **suspicious-event trends**
+  **Period outlook** (forward-looking) and **detection trends**
   (the drill-down's deliberate stopping point) are not leaf-derived and
   carry no sentence citations.
 - The source identifier is validated against the report's recorded input
@@ -531,13 +531,13 @@ cited source.
 
 Below the analysis-derived sections — executive summary, story
 highlights, and notable events — the page shows a **Sources** panel
-listing the cited threat-story and suspicious-event analyses the report
+listing the cited threat-story and detection analyses the report
 was generated from. These are the generation's recorded input list, so the panel is
 **report-level cited sources**: it tells you which analyses the report
 drew on, not which sentence cites which analysis. The panel does not imply
 per-sentence or per-claim provenance.
 
-![The report detail Sources panel — the "N stories · M events" provenance line above the cited threat-story and suspicious-event cards](../../assets/report-sources-panel.en.png)
+![The report detail Sources panel — the "N stories · M events" provenance line above the cited threat-story and detection cards](../../assets/report-sources-panel.en.png)
 
 The panel header shows an **N stories · M events** provenance count.
 Each cited analysis renders as a card:
@@ -545,9 +545,9 @@ Each cited analysis renders as a card:
 - **Threat-story cards** are labelled `Story {story_id}` and show the
   priority tier, severity and likelihood scores, and MITRE ATT&CK
   technique chips of the cited analysis.
-- **Suspicious-event cards** are titled by the event's time and kind —
+- **Detection cards** are titled by the event's time and kind —
   `{event time} · {kind}` (for example, `6/3, 2:05 PM · HTTP Threat`), the
-  same label used on the Suspicious Events lists — with the originating
+  same label used on the Detections lists — with the originating
   `aice_id` shown on a meta line beneath the title for provenance. They show
   the priority tier and the severity and likelihood scores. When the event
   time is unavailable the card falls back to a plain `Event` label; the
@@ -573,7 +573,7 @@ the same notice rather than silently substituting the latest version. The
 card's link still carries the pinned generation, so the provenance trail
 is preserved even when the underlying evidence version is gone.
 
-**Suspicious-event trends has no Sources panel.** It is the deliberate
+**Detection trends has no Sources panel.** It is the deliberate
 stopping point of the drill-down: the section reports only narrative trend
 readings and is not traced back to individual analyses.
 
@@ -612,7 +612,7 @@ independent of your personal display timezone.
 The model/prompt provenance fields and the **Regenerate** button are shown
 only to analysts for the customer. A non-analyst viewer keeps everything
 that carries analytical meaning — priority tier, MITRE ATT&CK tags,
-language, aggregate scores, the suspicious-event-trends hint, and the
+language, aggregate scores, the detection-trends hint, and the
 generated body sections — but the model provider/model, model snapshot,
 prompt version, requested-by, and requested-at fields are hidden, and the
 Regenerate control is absent. This matches the regenerate endpoint, which
@@ -630,10 +630,10 @@ out-of-cadence rerun via the **Regenerate** button at the bottom of the
 page. The button is shown only to analysts; non-analyst viewers do not see
 it (see [Analyst-only fields](#analyst-only-fields)).
 
-![Regenerate confirmation modal, warning that a fresh LLM call is issued across the period's stories, events, and suspicious-event trends and that the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/report-regenerate-modal.en.png)
+![Regenerate confirmation modal, warning that a fresh LLM call is issued across the period's stories, events, and detection trends and that the latest generation is superseded, with Cancel and Regenerate buttons](../../assets/report-regenerate-modal.en.png)
 
 The confirmation modal states that a fresh LLM call is issued across the
-period's analysed stories, events, and suspicious-event trends, and that
+period's analysed stories, events, and detection trends, and that
 the latest generation is superseded once the new result lands. The
 previous result row is preserved with a `superseded_at` stamp; nothing is
 overwritten in place.
@@ -685,7 +685,7 @@ remain available to compare.
 The **Compare with** selector beside the language switcher lets you pick a
 second model. The page then renders the open variant and the compared
 variant in two columns, aligned across the five report sections —
-executive summary, story highlights, notable events, suspicious-event
+executive summary, story highlights, notable events, detection
 trends, and period outlook — with per-column provenance (model, snapshot,
 prompt version, generation). On a narrow screen the columns stack
 vertically. Selecting a model sets `?compareModelName=&compareModel=` on
@@ -712,7 +712,7 @@ leaf-derived sections with the usual em-dash fallback and surfaces a short
 note for whichever displayed column is the non-default model, whether that
 is the open variant or the compared one (a default-model column never
 triggers the note). The synthesis sections (executive summary,
-suspicious-event trends, period outlook) compare normally.
+detection trends, period outlook) compare normally.
 
 <!-- Screenshot placeholder: the two-column report comparison (current vs
      compared model) aligned across the five sections, the per-column
