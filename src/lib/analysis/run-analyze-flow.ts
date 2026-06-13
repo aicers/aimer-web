@@ -788,11 +788,34 @@ export async function analyzeAndStoreEventResult(
         ],
       );
       nextGeneration = genRows[0]?.next_generation ?? 1;
+      // Supersede the prior live row(s) for this variant at an older
+      // generation. When writing the ENGLISH canonical, broaden the supersede
+      // to EVERY language of the variant — not just English — so advancing the
+      // canonical immediately retires any user-language translation pinned to
+      // the now-superseded generation (#581). Without this, a canonical advance
+      // whose follow-up translation later fails (error/leak) would leave the
+      // old user-language row live at the superseded generation: the event
+      // detail loader hides that behind its generation-first fallback, but the
+      // report input builder selects live leaves per report language
+      // (`WHERE lang = $1 AND superseded_at IS NULL`, newest generation within
+      // that language — `report-input-builder.ts`), so a user-language report
+      // would still cite the stale translated leaf while English advanced,
+      // violating cross-language report consistency. Retiring all languages
+      // here makes a failed re-translation fall back to English (no live
+      // user-language leaf) rather than a stale one; the successful translation
+      // re-inserts the user-language row at the new generation. Safe under the
+      // lock discipline: every non-English writer (`deriveEventTranslation`)
+      // acquires this same English variant lock FIRST, so holding it here makes
+      // the cross-language supersede mutually exclusive with any concurrent
+      // translation write. Gated on `langForStorage === DEFAULT_LANG` so a
+      // (non-canonical) write never supersedes the English canonical.
+      const supersedeAllLangs = params.langForStorage === DEFAULT_LANG;
       await writeClient.query(
         `UPDATE event_analysis_result
             SET superseded_at = NOW()
           WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5
+            AND model_name = $4 AND model = $5
+            AND ($7::boolean OR lang = $3)
             AND generation < $6
             AND superseded_at IS NULL`,
         [
@@ -802,6 +825,7 @@ export async function analyzeAndStoreEventResult(
           params.modelName,
           params.model,
           nextGeneration,
+          supersedeAllLangs,
         ],
       );
       await writeClient.query(

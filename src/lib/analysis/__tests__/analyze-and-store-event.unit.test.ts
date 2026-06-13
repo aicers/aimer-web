@@ -143,6 +143,19 @@ describe("analyzeAndStoreEventResult", () => {
     expect(writeCalls.at(-1)?.sql).toBe("COMMIT");
   });
 
+  it("broadens the English-canonical supersede across every language (#581)", async () => {
+    // Advancing the English canonical must retire any user-language translation
+    // pinned to the now-superseded generation, so a later failed re-translation
+    // cannot leave a stale non-English leaf live for report selection. The
+    // English write therefore passes `supersedeAllLangs = true` (the trailing
+    // boolean bind) and the UPDATE drops the `lang =` equality.
+    await analyzeAndStoreEventResult(baseParams());
+    const update = writeCalls.find((c) => c.sql.includes("SET superseded_at"));
+    expect(update).toBeDefined();
+    expect(update?.sql).toContain("($7::boolean OR lang = $3)");
+    expect(update?.params?.[6]).toBe(true);
+  });
+
   it("persists event_time and the supplied kind (#552)", async () => {
     await analyzeAndStoreEventResult({
       ...baseParams(),

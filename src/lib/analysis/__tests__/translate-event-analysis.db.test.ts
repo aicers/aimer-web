@@ -30,6 +30,7 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
+import { buildRangeSet, EMPTY_OWNED_DOMAIN_SET } from "@/lib/redaction";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn() }));
@@ -41,9 +42,11 @@ vi.mock("@/lib/graphql/client", () => ({
 }));
 
 const { deriveEventTranslation } = await import("../translate-event-analysis");
-const { eventVariantLockKey, EVENT_GENERATION_LOCK_NAMESPACE } = await import(
-  "../run-analyze-flow"
-);
+const {
+  analyzeAndStoreEventResult,
+  eventVariantLockKey,
+  EVENT_GENERATION_LOCK_NAMESPACE,
+} = await import("../run-analyze-flow");
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -279,6 +282,82 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
       [AICE],
     );
     expect(rows[0].n).toBe(1);
+  });
+
+  it("retires a stale user-language translation when the canonical advances even if the re-translation never runs", async () => {
+    // #581 review R3: a canonical regeneration followed by a FAILED
+    // re-translation must not leave the old user-language row live at the
+    // superseded generation. `deriveEventTranslation` only supersedes the prior
+    // translation INSIDE a successful write, so if it errors/leaks the stale
+    // row would otherwise stay `superseded_at IS NULL`. The event detail loader
+    // hides that behind its generation-first fallback, but the report input
+    // builder selects live leaves per report language
+    // (`WHERE lang = $1 AND superseded_at IS NULL`, newest generation within
+    // that language), so a Korean report could cite the stale gen-3 leaf while
+    // English advanced to gen 4. The canonical-advance write must therefore
+    // retire ALL languages at the superseded generation, so the failed
+    // re-translation falls back to English (no live Korean leaf), never a stale
+    // one.
+    await seedCanonical({ eventKey: "106", generation: 3 });
+    await derive("106"); // English + Korean both live at gen 3.
+
+    // Regenerate the English canonical to gen 4. The follow-up re-translation is
+    // NOT invoked here (simulating a translation failure / deferred retry), so
+    // only the canonical-advance supersede can retire the Korean gen-3 row.
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.8,
+        likelihoodScore: 0.6,
+        severityFactors: ["sev <<REDACTED_IP_E1_001>>", "sev two"],
+        likelihoodFactors: ["lik one"],
+        ttpTags: ["T1059", "T1071"],
+        analysis: "Narrative with <<REDACTED_IP_E1_001>>.",
+        promptVersion: "pv-canon-2",
+        modelActualVersion: "mv-canon-2",
+      },
+    });
+    const stored = await analyzeAndStoreEventResult({
+      customerPool: pool,
+      aiceId: AICE,
+      eventKey: "106",
+      redactedEvent: { event_time: "2026-05-20T00:00:00Z" },
+      eventTimeForAimer: "2026-05-20T00:00:00Z",
+      eventKind: null,
+      lang: "ENGLISH",
+      langForStorage: "ENGLISH",
+      modelName: MODEL_NAME,
+      model: MODEL,
+      accountId: ACCOUNT,
+      mergedMap: {},
+      ranges: buildRangeSet([]),
+      ownedDomains: EMPTY_OWNED_DOMAIN_SET,
+      redactionPolicyVersion: "rp-v1",
+      origin: "manual",
+      requestedBy: ACCOUNT,
+      auditBase,
+      force: true,
+    });
+    expect(stored).toEqual({ kind: "success", generation: 4 });
+
+    // The English canonical advanced to gen 4...
+    const liveEnglish = await pool.query<{ generation: number }>(
+      `SELECT generation FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = '106'::numeric AND lang = 'ENGLISH'
+          AND superseded_at IS NULL`,
+      [AICE],
+    );
+    expect(liveEnglish.rows.map((r) => r.generation)).toEqual([4]);
+
+    // ...and the stale Korean gen-3 translation is no longer a live leaf: the
+    // report input builder selects none for KOREAN, so the report falls back to
+    // English rather than citing the superseded translation.
+    const liveKorean = await pool.query(
+      `SELECT generation FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = '106'::numeric AND lang = 'KOREAN'
+          AND superseded_at IS NULL`,
+      [AICE],
+    );
+    expect(liveKorean.rows).toHaveLength(0);
   });
 
   it("abandons a stale translation as a no-op when the canonical advances mid-call", async () => {
