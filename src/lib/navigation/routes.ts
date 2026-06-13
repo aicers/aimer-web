@@ -56,6 +56,14 @@ export const subjectApi = {
     bucketDate: string,
   ) =>
     `/api/subjects/${subjectId}/analysis/report/${period}/${bucketDate}/language-status`,
+  /**
+   * Calendar data for one viewport (#576). The in-context popover appends the
+   * granularity-matched viewport param (`?month=YYYY-MM` for DAILY, `?year=YYYY`
+   * for WEEKLY/MONTHLY); the handler reuses `loadReportCalendarPage`. No
+   * calendar endpoint for LIVE.
+   */
+  reportCalendar: (subjectId: string, period: string) =>
+    `/api/subjects/${subjectId}/analysis/report/${period}/calendar`,
   storySummary: (subjectId: string, storyId: string) =>
     `/api/subjects/${subjectId}/analysis/story/${storyId}/summary`,
   storyRegenerate: (subjectId: string, storyId: string) =>

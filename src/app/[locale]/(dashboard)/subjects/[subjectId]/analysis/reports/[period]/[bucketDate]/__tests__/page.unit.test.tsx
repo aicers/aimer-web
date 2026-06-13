@@ -570,6 +570,36 @@ describe("report detail page", () => {
     ).toContain("/reports/LIVE/1970-01-01");
   });
 
+  it("renders the unified date toolbar with the calendar button (#576)", async () => {
+    await renderPage("DAILY", "2026-05-26");
+    expect(screen.getByTestId("report-date-toolbar")).toBeTruthy();
+    expect(screen.getByTestId("report-period-tabs")).toBeTruthy();
+    expect(screen.getByTestId("report-temporal-nav")).toBeTruthy();
+    // The calendar button is the same component the index embeds; its no-JS
+    // fallback href is the standalone calendar page for this bucket's month.
+    const calBtn = screen.getByTestId("report-calendar-button");
+    expect(calBtn.getAttribute("href")).toBe(
+      `/en/subjects/${CUSTOMER_ID}/analysis/reports/DAILY/calendar?month=2026-05`,
+    );
+    // Collapsed by default — no inline grid.
+    expect(screen.queryByTestId("report-calendar")).toBeNull();
+  });
+
+  it("hides the calendar button and prev/next for LIVE (#576)", async () => {
+    const base = okFixture();
+    if (base.kind !== "ok") throw new Error("fixture must be ok");
+    mockLoad.mockResolvedValue({
+      kind: "ok",
+      data: { ...base.data, period: "LIVE", bucketDate: "1970-01-01" },
+    });
+    await renderPage("LIVE", "1970-01-01");
+    // Tabs still render, but LIVE carries no calendar affordance and no
+    // within-period prev/next.
+    expect(screen.getByTestId("report-period-tabs")).toBeTruthy();
+    expect(screen.queryByTestId("report-calendar-button")).toBeNull();
+    expect(screen.queryByTestId("report-temporal-nav")).toBeNull();
+  });
+
   it("drops a generation pin from tab links but preserves other variant params", async () => {
     // Arriving via a "Cited by" deep-link pins `?generation`. That pin is
     // specific to this bucket + variant, so the period tabs (different

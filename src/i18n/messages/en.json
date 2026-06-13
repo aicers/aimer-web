@@ -897,7 +897,12 @@
       "cellHasReport": "{label} — open report",
       "cellNone": "{label} — no report",
       "cellOutOfRetention": "{label} — out of retention",
-      "cellFuture": "{label} — future"
+      "cellFuture": "{label} — future",
+      "popoverLabel": "Report calendar",
+      "loading": "Loading calendar…",
+      "error": "Couldn't load the calendar.",
+      "retry": "Retry",
+      "close": "Close"
     },
     "storyDetail": {
       "title": "Story Analysis",
