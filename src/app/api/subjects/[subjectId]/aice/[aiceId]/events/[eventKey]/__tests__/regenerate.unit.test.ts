@@ -212,13 +212,24 @@ describe("event regenerate", () => {
     );
   });
 
-  it("regenerates English natively WITHOUT deriving a translation for an English target", async () => {
+  it("regenerates English natively AND re-derives the configured user-language translation for an English target (#581)", async () => {
+    // Force-regenerate consistency: regenerating the English canonical advances
+    // its generation, so the configured user-language row (KOREAN here — the
+    // test env's DEFAULT_LOCALE is unset -> "ko") must be re-derived at the new
+    // generation rather than left pinned to the superseded canonical. An
+    // English-target regenerate therefore still derives the KOREAN translation.
     const { POST } = await import("../regenerate/route");
     await POST(eventRequest("?lang=ENGLISH&model_name=anthropic&model=claude"));
     expect(mockAnalyzeAndStore).toHaveBeenCalledWith(
       expect.objectContaining({ lang: "ENGLISH", langForStorage: "ENGLISH" }),
     );
-    expect(mockDeriveTranslation).not.toHaveBeenCalled();
+    expect(mockDeriveTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetLang: "KOREAN",
+        modelName: "anthropic",
+        model: "claude",
+      }),
+    );
   });
 
   it("returns 404 when no detection_events row exists", async () => {

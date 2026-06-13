@@ -1155,18 +1155,19 @@ export async function runAnalyzeFlow(
   // Derive the user-language translation(s) of the canonical (#581). The
   // explicit non-English request target is ALWAYS derived — this covers a
   // translate-only retry where the canonical already existed and was NOT
-  // re-generated above. Additionally, a FORCED regenerate re-derives the
-  // deployment's configured user-display language even on an ENGLISH target:
-  // forcing advances the canonical generation, so a user-language row from the
-  // prior generation would otherwise stay pinned to the now-superseded
-  // canonical with stale scores / factors / text (force-regenerate
-  // consistency). A first-time analysis (no prior canonical) is NOT eagerly
-  // translated here — the sync path is on-demand, so a bare English request
-  // only produces English until the user language is actually requested or the
-  // worker seeds it; there is no prior user-language row to keep aligned.
+  // re-generated above. Additionally, force-regenerating an EXISTING canonical
+  // re-derives the deployment's configured user-display language even on an
+  // ENGLISH target: forcing advances the canonical generation, so a
+  // user-language row from the prior generation would otherwise stay pinned to
+  // the now-superseded canonical with stale scores / factors / text
+  // (force-regenerate consistency). The `canonicalExists` guard scopes this to
+  // a genuine regeneration: a FIRST-time analysis (no prior canonical) has no
+  // prior user-language row to keep aligned, and the sync path is on-demand —
+  // a bare English request only produces English until the user language is
+  // actually requested or the worker seeds it.
   const derivedTargets = new Set<SupportedLang>();
   if (langForStorage !== DEFAULT_LANG) derivedTargets.add(langForStorage);
-  if (params.force) {
+  if (params.force && canonicalExists) {
     const userLang = configuredAppDisplayLanguage();
     if (userLang !== DEFAULT_LANG) derivedTargets.add(userLang);
   }
