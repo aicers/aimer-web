@@ -11,6 +11,12 @@
 
 import "server-only";
 
+import {
+  type AppLocale,
+  appLocaleToReportLanguage,
+  isSupportedLocale,
+  reportLanguageToAppLocale,
+} from "@/i18n/locale";
 import { authorize, isAnalystForCustomer } from "@/lib/auth/authorization";
 import { getAuthCookie } from "@/lib/auth/cookies";
 import { verifyJwtFull } from "@/lib/auth/jwt";
@@ -25,7 +31,12 @@ import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreStoryAnalysisTokens } from "./story-token-restore";
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// English is the guaranteed baseline language (#580): the worker always seeds
+// and natively generates it, so it is the second link in the reader's fallback
+// chain (requested → English → any available). This is NOT `ANALYSIS_DEFAULT_LANG`
+// — the displayed language is driven by the viewer's locale, mirroring the
+// periodic-report reader.
+const ENGLISH_BASELINE = "ENGLISH";
 
 /**
  * RFC 0003 §"Audit / evidence model" IOC-enrichment coverage status,
@@ -136,6 +147,29 @@ export interface StoryResultPageData {
    */
   canRegenerate: boolean;
   /**
+   * The language the viewer asked for (their locale, or a pinned `?lang`), as
+   * an app-locale code. Equals `reportLanguageToAppLocale(data.lang)` when the
+   * requested variant exists; differs when a fallback occurred (#580).
+   */
+  requestedLocale: AppLocale;
+  /**
+   * Languages with a stored, non-superseded result for this
+   * `(model_name, model)` variant, as app-locale codes, for the language
+   * switcher. Always includes the shown language (#580).
+   */
+  availableLocales: AppLocale[];
+  /**
+   * Present only when the shown story fell back from the requested language
+   * (the requested variant has no stored row). Describes the fallback for the
+   * notice. Unlike the report reader there is no on-demand job — every story is
+   * seeded eagerly in both languages, so a fallback is transient (the
+   * user-language row is still translating) (#580).
+   */
+  languageFallback: {
+    requestedLocale: AppLocale;
+    shownLocale: AppLocale;
+  } | null;
+  /**
    * The story's member suspicious events, in `input_event_refs[].index`
    * order (the member ordinal — see `story-token.ts`, which persists
    * `index: ordinal`). Each carries display fields fetched from the
@@ -194,13 +228,21 @@ export interface StoryResultPageInput {
   customerId: string;
   storyId: string;
   /**
+   * The viewer's resolved app locale (the page's `[locale]` route param). This
+   * is the DEFAULT displayed story language when `?lang` is not pinned —
+   * converted to the aimer enum via the canonical locale↔language mapper, NOT
+   * `ANALYSIS_DEFAULT_LANG` (#580, mirroring the periodic-report reader).
+   */
+  locale: string;
+  /**
    * Optional generation/variant pin (T1 Sources link, parent #386). When
    * present, the loader resolves the EXACT pinned row — that generation at
    * `(lang, modelName, model)` — instead of the latest non-superseded one,
    * and reports `pin_unavailable` when that row is missing or superseded
-   * (no silent fallback to latest). `lang`/`modelName`/`model` default to
-   * the env-configured variant when omitted. `lang` is the report-language
-   * enum (`ENGLISH`/`KOREAN`), matching the leaf's stored `lang` column.
+   * (no silent fallback to latest). `modelName`/`model` default to the
+   * customer's effective default when omitted. `lang` is an app-locale code
+   * (`en` / `ko`), validated and mapped to the aimer enum; an enum-shaped value
+   * is not a valid reader param and falls through to the viewer locale (#580).
    */
   pin?: {
     generation: number;
@@ -219,6 +261,7 @@ export interface StoryResultPageInput {
    * the env-configured variant when omitted.
    */
   variant?: {
+    /** App-locale code (`en` / `ko`), validated and mapped to the aimer enum. */
     lang?: string;
     modelName?: string;
     model?: string;
@@ -303,8 +346,8 @@ export async function loadStoryResultPage(
 
   // The default MODEL is per-customer (#473): resolve the customer's
   // effective default (override → global → env) once and use it wherever
-  // the "default variant" was previously the env pair. `lang` stays the
-  // env `DEFAULT_LANG` (lang is not DB-backed).
+  // the "default variant" was previously the env pair. The displayed language
+  // is resolved from the viewer locale below (#580), not from the env.
   const defaultPair = await resolveDefaultModel(input.customerId, authPool);
 
   // The story read loader allows bridge sessions, but the story regenerate
@@ -327,19 +370,76 @@ export async function loadStoryResultPage(
   if (stateRows.rows.length === 0) return { kind: "not_found" };
   if (stateRows.rows[0].status === "archived") return { kind: "not_found" };
 
-  // Variant resolution: a pin (T1 Sources link) selects the exact cited
-  // variant; an unpinned `variant` selects a model by latest non-superseded
-  // generation (#458, a `?model_name=&model=` link with no `?generation`);
-  // otherwise the env-configured default variant. `pin` wins over `variant`
-  // (a generation pin already carries its own variant fields). `lang` is the
-  // report-language enum the leaf row is keyed on.
-  const lang = input.pin?.lang ?? input.variant?.lang ?? DEFAULT_LANG;
+  // Model resolution: a pin / unpinned `variant` selects a model; otherwise the
+  // customer's effective default. `pin` wins over `variant`.
   const modelName =
     input.pin?.modelName ?? input.variant?.modelName ?? defaultPair.modelName;
   const model = input.pin?.model ?? input.variant?.model ?? defaultPair.model;
   const pinnedGeneration = input.pin?.generation ?? null;
 
+  // Language resolution (#580, mirroring the report reader): the requested
+  // language is the pinned `?lang` (validated to a real app locale) → else the
+  // viewer's locale (validated) → else the English baseline. The pinned value
+  // MUST be validated to `{en, ko}` BEFORE mapping: an enum-shaped
+  // `?lang=KOREAN` is not a supported locale, so it falls through to the viewer
+  // default rather than being mapped.
+  const pinnedLang = input.pin?.lang ?? input.variant?.lang;
+  const requestedLocale: AppLocale = isSupportedLocale(pinnedLang)
+    ? pinnedLang
+    : isSupportedLocale(input.locale)
+      ? input.locale
+      : "en";
+  const requestedLang = appLocaleToReportLanguage(requestedLocale);
+
   const customerPool = getCustomerRuntimePool(input.customerId);
+
+  // Languages with a stored, non-superseded row for this model variant — the
+  // switcher options and the fallback chain's candidate set.
+  const availLangRows = await customerPool.query<{ lang: string }>(
+    `SELECT DISTINCT lang FROM story_analysis_result
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND model_name = $3 AND model = $4
+        AND superseded_at IS NULL`,
+    [input.customerId, input.storyId, modelName, model],
+  );
+  const availableLangs = availLangRows.rows.map((r) => r.lang);
+
+  // Resolve the SHOWN language. A pin targets its exact cited variant (no
+  // fallback — a missing pin is `pin_unavailable`). On the unpinned path the
+  // fallback chain is requested → English baseline → any available, so a
+  // shareable link is stable and a still-translating user-language row degrades
+  // to English rather than a spinner.
+  let shownLang: string;
+  let languageFallback: StoryResultPageData["languageFallback"] = null;
+  if (pinnedGeneration !== null) {
+    shownLang = requestedLang;
+  } else if (availableLangs.includes(requestedLang)) {
+    shownLang = requestedLang;
+  } else if (availableLangs.includes(ENGLISH_BASELINE)) {
+    shownLang = ENGLISH_BASELINE;
+  } else {
+    // Deterministic "any available" pick so a shareable link is stable.
+    const any = [...availableLangs].sort()[0];
+    if (any === undefined) {
+      // No result for any language yet — the first generation is still in
+      // flight (the worker is producing the English canonical).
+      return {
+        kind: "pending",
+        stateStatus: stateRows.rows[0].status as "pending" | "ready" | "dirty",
+      };
+    }
+    shownLang = any;
+  }
+  if (pinnedGeneration === null && shownLang !== requestedLang) {
+    languageFallback = {
+      requestedLocale,
+      shownLocale: reportLanguageToAppLocale(
+        shownLang === "KOREAN" ? "KOREAN" : "ENGLISH",
+      ),
+    };
+  }
+  const lang = shownLang;
+
   // When a generation is pinned, target that exact row and read
   // `superseded_at` so a superseded pin degrades to the notice rather than
   // silently resolving the latest generation; otherwise keep the
@@ -399,9 +499,15 @@ export async function loadStoryResultPage(
   // Fetched at the canonical event variant so the cards match the
   // Suspicious Events list; ordered by the member ordinal (`index`).
   const refs = Array.isArray(row.input_event_refs) ? row.input_event_refs : [];
+  // Member-event displays follow the shown story language where a variant
+  // exists, keeping the English baseline fallback (#580). The display fields
+  // (tier / scores) are language-invariant, but resolving at the shown
+  // language keeps the member-event link consistent with the displayed story.
+  const memberLangPrefs = [...new Set([lang, ENGLISH_BASELINE])];
   const memberEvents = await fetchMemberEventDisplays(
     customerPool,
     refs,
+    memberLangPrefs,
     defaultPair,
   );
 
@@ -455,9 +561,19 @@ export async function loadStoryResultPage(
       requestedAt: row.requested_at,
       isViewerAnalyst,
       canRegenerate,
+      requestedLocale,
+      availableLocales: availableLangs
+        .filter(
+          (l): l is "ENGLISH" | "KOREAN" => l === "ENGLISH" || l === "KOREAN",
+        )
+        .map((l) => reportLanguageToAppLocale(l)),
+      languageFallback,
       memberEvents,
       memberEventVariant: {
-        lang: DEFAULT_LANG,
+        // Follow the shown story language so the member-event link opens the
+        // matching variant; the member fetch + the event reader keep an English
+        // fallback for variants that do not exist yet (#580).
+        lang,
         modelName: defaultPair.modelName,
         model: defaultPair.model,
       },
@@ -750,6 +866,11 @@ async function fetchMemberEventDisplays(
   // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
   customerPool: any,
   refs: ReadonlyArray<{ index: number; aiceId: string; eventKey: string }>,
+  // Language preference order (#580): the shown story language first, then the
+  // English baseline. Per `(aice_id, event_key)` the first available language
+  // wins. The display fields are language-invariant, so this only steers which
+  // stored event variant supplies them and keeps the English fallback.
+  langPrefs: ReadonlyArray<string>,
   // The canonical event variant the member cards match — keyed on the
   // customer's per-customer default model (#473), not the env pair.
   defaultPair: ModelPair,
@@ -762,8 +883,11 @@ async function fetchMemberEventDisplays(
     .join(", ");
   const params: unknown[] = ordered.flatMap((r) => [r.aiceId, r.eventKey]);
   const base = ordered.length * 2;
-  params.push(DEFAULT_LANG, defaultPair.modelName, defaultPair.model);
+  // Lang preference list ($base+1) ranks variants; model pair follows.
+  params.push(langPrefs, defaultPair.modelName, defaultPair.model);
 
+  // `array_position(langPrefs, lang)` ranks each row by the preference order;
+  // DISTINCT ON keeps the best-ranked (then latest-generation) row per event.
   const { rows } = await customerPool.query(
     `SELECT DISTINCT ON (aice_id, event_key)
             aice_id, event_key::text AS event_key,
@@ -771,11 +895,13 @@ async function fetchMemberEventDisplays(
             event_time, kind
        FROM event_analysis_result
       WHERE (aice_id, event_key) IN (${tuples})
-        AND lang = $${base + 1}
+        AND lang = ANY($${base + 1}::text[])
         AND model_name = $${base + 2}
         AND model = $${base + 3}
         AND superseded_at IS NULL
-      ORDER BY aice_id, event_key, generation DESC`,
+      ORDER BY aice_id, event_key,
+               array_position($${base + 1}::text[], lang),
+               generation DESC`,
     params,
   );
   const byKey = new Map<

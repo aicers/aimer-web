@@ -29,6 +29,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { ClientError } from "graphql-request";
 import type { Pool, PoolClient } from "pg";
+import { appLocaleToReportLanguage, isSupportedLocale } from "@/i18n/locale";
 import { auditLog } from "@/lib/audit";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
@@ -37,6 +38,7 @@ import {
   type StoryMemberInput,
   type StoryMetadataInput,
 } from "@/lib/graphql/__generated__/analyze-story";
+import { TranslateAnalysisNarrativeDocument } from "@/lib/graphql/__generated__/translate-analysis-narrative";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
@@ -55,7 +57,11 @@ import {
   computePriorityTier,
   type PriorityTier,
 } from "./priority-tier";
-import { buildStoryTokenMap, scanStoryAnalysisForLeaks } from "./story-token";
+import {
+  buildStoryTokenMap,
+  extractRedactionTokens,
+  scanStoryAnalysisForLeaks,
+} from "./story-token";
 
 // ---------------------------------------------------------------------------
 // Configuration (env-driven, read at module init)
@@ -106,6 +112,65 @@ const WORKER_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? DEFAULT_LANG;
 const WORKER_MODEL_NAME =
   process.env.ANALYSIS_DEFAULT_MODEL_NAME ?? DEFAULT_MODEL_NAME;
 const WORKER_MODEL = process.env.ANALYSIS_DEFAULT_MODEL ?? DEFAULT_MODEL;
+
+// The LLM server `name` / `model` used on the translate path (#580, mirroring
+// the report worker's `TRANSLATION_MODEL_NAME` / `TRANSLATION_MODEL`). They
+// default to the worker's generation defaults but are independently
+// configurable, and are recorded as the `story_analysis_job` translation audit
+// columns — the translated `story_analysis_result` row keeps the English
+// canonical's `model_name`/`model` so the variant key stays self-consistent.
+const TRANSLATION_MODEL_NAME =
+  process.env.ANALYSIS_TRANSLATION_MODEL_NAME ?? WORKER_MODEL_NAME;
+const TRANSLATION_MODEL =
+  process.env.ANALYSIS_TRANSLATION_MODEL ?? WORKER_MODEL;
+
+// Backoff applied when the user-language translate job defers because its
+// English canonical is not yet available. This is a NON-TERMINAL wait, not a
+// failure: the defer leaves `attempts` untouched (never counts toward
+// `MAX_ATTEMPTS` / `failed`) and only sets `next_due_at` so the picker does
+// not hot-spin (#580, mirroring the report worker).
+const DEFAULT_CANONICAL_DEFER_MS = 30_000;
+export const CANONICAL_DEFER_MS = resolveInt(
+  process.env.ANALYSIS_CANONICAL_DEFER_MS,
+  DEFAULT_CANONICAL_DEFER_MS,
+);
+
+// `DEFAULT_LOCALE` is the global app UI locale (`en` / `ko`), mirrored from
+// `src/i18n/routing.ts` (same `?? "ko"` fallback). Read directly here so the
+// worker stays free of next-intl.
+const DEFAULT_LOCALE = process.env.DEFAULT_LOCALE ?? "ko";
+
+// Eager language set seeded for every story (#580). This is INTENTIONALLY the
+// SAME three-element union as the report worker's `EAGER_LANGS`: English
+// baseline ∪ the app default-locale language ∪ the legacy
+// `ANALYSIS_DEFAULT_LANG` knob (`WORKER_LANG`). The issue requires reusing the
+// existing eager-language concept rather than defining a divergent set, and
+// keeping the two sets identical is itself a correctness property: periodic
+// reports cite story leaves, so a language the report worker seeds (e.g. via
+// `WORKER_LANG`) but the story worker does NOT would force a report in that
+// language to fall back to translating absent story leaves — re-introducing the
+// cross-surface inconsistency #580 eliminates. `WORKER_LANG` defaults to
+// `ENGLISH`, so it adds nothing in a default deployment; it only seeds an extra
+// language when an operator explicitly set `ANALYSIS_DEFAULT_LANG`, preserving
+// that legacy parity deliberately. This is a UNION, never a replacement —
+// English is always present as the guaranteed canonical. Deduplicated, so it
+// collapses to a single English entry when all three coincide (e.g.
+// `DEFAULT_LOCALE=en` with `WORKER_LANG=ENGLISH`) and nothing is translated.
+// English (`DEFAULT_LANG`) is generated natively via `analyzeStory` and is the
+// canonical; every other entry is ALWAYS derived by translating that canonical
+// (never generated natively, which would diverge the LLM scores).
+export const EAGER_LANGS = Array.from(
+  new Set<string>([
+    DEFAULT_LANG,
+    // The canonical locale↔language mapper is typed (`AppLocale`), so a garbled
+    // `DEFAULT_LOCALE` env value is validated to the English baseline here
+    // rather than folded silently inside the mapper.
+    isSupportedLocale(DEFAULT_LOCALE)
+      ? appLocaleToReportLanguage(DEFAULT_LOCALE)
+      : DEFAULT_LANG,
+    WORKER_LANG,
+  ]),
+);
 
 // `attempts = 0 OR updated_at + BASE * 2^LEAST(attempts-1, log2(MAX/BASE)) <= now()`
 // Pre-computed cap exponent so the SQL doesn't need ln() math.
@@ -184,6 +249,14 @@ async function pickQueuedStoryJobs(
        FROM story_analysis_job
       WHERE status = 'queued'
         AND dry_run = FALSE
+        -- Honor a per-variant next_due_at for queued rows (#580): the
+        -- non-terminal canonical-defer path (user-language translate job
+        -- waiting on its English canonical) sets a future next_due_at WITHOUT
+        -- touching attempts, so without this gate the row would be re-picked
+        -- on the very next tick (hot spin). Immediate-process requeues (dirty
+        -- bump, force-regenerate, stuck recovery, enrichment wait) reset
+        -- next_due_at = NULL so they are not stalled by a leftover value.
+        AND (next_due_at IS NULL OR next_due_at <= NOW())
         AND (
           attempts = 0
           OR updated_at
@@ -206,6 +279,8 @@ interface ProcessOptions {
   authPool: Pool;
   /** Override the LLM dispatch — used by tests. */
   callAnalyzeStory?: typeof callAnalyzeStory;
+  /** Override the translate-path LLM dispatch (#580) — used by tests. */
+  callTranslateAnalysisNarrative?: typeof callTranslateAnalysisNarrative;
   /** Override the customer-DB pool resolver — used by tests. */
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the customer redaction-range loader — used by tests. */
@@ -280,7 +355,7 @@ export async function processStoryJob(
   // the LLM. The advisory lock further prevents simultaneous execution
   // for the same `(customer_id, story_id)`, but it does not by itself
   // reserve the picked row, hence the predicates below.
-  const claim = await opts.authPool.query(
+  const claim = await opts.authPool.query<{ processing_started_at: string }>(
     `UPDATE story_analysis_job
         SET status = 'processing',
             processing_started_at = NOW(),
@@ -289,7 +364,16 @@ export async function processStoryJob(
         AND lang = $3 AND model_name = $4 AND model = $5
         AND generation = $6
         AND status = 'queued'
-        AND attempts = $7`,
+        AND attempts = $7
+        -- Re-check next_due_at at claim time, mirroring the picker filter.
+        -- Pickup and claim are split, so a concurrent tick can hold a stale
+        -- JobPickup for this row from before another worker deferred it. The
+        -- non-terminal canonical-defer leaves status='queued' and attempts
+        -- unchanged while setting a future next_due_at, so without this gate
+        -- the stale worker would still satisfy status/generation/attempts and
+        -- claim the just-deferred row — bypassing the defer backoff (#580).
+        AND (next_due_at IS NULL OR next_due_at <= NOW())
+      RETURNING processing_started_at::text AS processing_started_at`,
     [
       job.customer_id,
       job.story_id,
@@ -314,6 +398,15 @@ export async function processStoryJob(
     return;
   }
 
+  // Claim marker — the exact `processing_started_at` this claim stamped,
+  // carried as text into the translate path's audit-record / finalize / defer
+  // so a watchdog requeue (`recoverStuckStoryJobs`) that cleared the column and
+  // a re-claim that stamped a fresh value neutralize a timed-out first attempt
+  // returning late (#580, mirroring the report worker's claim marker). The
+  // native path keeps its simpler generation+status guard; only the translate
+  // path consults this marker.
+  const claimMarker = claim.rows[0]?.processing_started_at ?? null;
+
   // Result-row probe — if the result row at the captured PK already
   // exists, step 1 was completed by a previous attempt that crashed
   // before step 2. Skip the LLM call entirely and finalize.
@@ -337,6 +430,12 @@ export async function processStoryJob(
     ],
   );
   if (existingResult.rows.length > 0) {
+    // Crash-recovery finalize. For a translated user-language row the
+    // translation audit columns were already persisted (by
+    // `recordStoryTranslationAudit`) BEFORE this result insert; the native
+    // `finalizeJob` never touches those columns, so they are preserved here.
+    // For the native English row they are already NULL. Either way the mirror
+    // is fed only by the English canonical (gate in `finalizeJob`).
     await finalizeJob(opts.authPool, job, {
       priorityTier: existingResult.rows[0].priority_tier as PriorityTier,
       severityScore: existingResult.rows[0].severity_score,
@@ -344,6 +443,18 @@ export async function processStoryJob(
       promptVersion: null,
       modelActualVersion: null,
     });
+    return;
+  }
+
+  // --- Native-vs-translate routing (#580) ----------------------------------
+  // English (`DEFAULT_LANG`) is the canonical: generated natively via
+  // `analyzeStory`, carrying the authoritative scores/factors/tier/TTP. Every
+  // other (user-language) row is ALWAYS produced by translating that canonical
+  // — never generated natively, which would let the LLM diverge the scores and
+  // reorder the priority-first story list / propagate divergent scores into any
+  // periodic report that cites the story leaf.
+  if (job.lang !== DEFAULT_LANG) {
+    await runStoryTranslation({ job, opts, customerPool, claimMarker });
     return;
   }
 
@@ -1094,19 +1205,31 @@ async function writeResultRow(
         args.requestedBy,
       ],
     );
-    // Mark prior generation (if any) superseded. Excludes the row we
-    // just inserted to keep the UPDATE deterministic.
+    // Mark prior generations (if any) superseded. This is the NATIVE English
+    // canonical write, so the new canonical at `generation` is the authority
+    // for the whole bilingual pair. Supersede EVERY lower-generation row of
+    // this `(customer, story, model)` variant — both the prior English row AND
+    // any prior translated user-language row — NOT just `lang = job.lang`
+    // (#580). The translated row always shares the canonical's
+    // `model_name`/`model` and copies its `generation`, so any translated row
+    // at a lower generation is pinned to a now-superseded English canonical.
+    // Superseding it the moment the new canonical lands closes the
+    // stale-user-language-row window: if the matching translation is still
+    // in-flight or permanently fails (4xx / factor-shape / leak), no live
+    // translated row remains, so the reader and report builder fall back to the
+    // new English canonical instead of consuming stale translated scores. The
+    // `generation < $6` bound never touches the same-generation translated row
+    // (which derives FROM this canonical and is written afterward).
     await client.query(
       `UPDATE story_analysis_result
           SET superseded_at = NOW()
         WHERE customer_id = $1 AND story_id = $2::bigint
-          AND lang = $3 AND model_name = $4 AND model = $5
-          AND generation < $6
+          AND model_name = $3 AND model = $4
+          AND generation < $5
           AND superseded_at IS NULL`,
       [
         args.job.customer_id,
         args.job.story_id,
-        args.job.lang,
         args.job.model_name,
         args.job.model,
         args.job.generation,
@@ -1178,15 +1301,19 @@ async function finalizeJob(
   // its single canonical variant, so a non-default-variant finalize must not
   // overwrite the mirror. The default MODEL is now per-customer (#473):
   // resolved through `resolveDefaultModel` so the mirror tracks the same
-  // variant the seeder treats as default (no silent mismatch). `lang` stays
-  // the env `WORKER_LANG` (lang is not DB-backed). The scores stored here are
-  // the raw on-disk values (matching `story_analysis_result`), not the
-  // floored likelihood used only for tier lookup. Guarded on
-  // `status <> 'archived'`: a row that archived while this generation was in
-  // flight stays archived (the result is already superseded by the lifecycle).
+  // variant the seeder treats as default (no silent mismatch). The mirror is
+  // fed by the English canonical (`DEFAULT_LANG`, #580): its scores are
+  // language-invariant, so the priority-first story list orders identically
+  // regardless of the app user-language, and the translated user-language row —
+  // which merely copies the canonical's scores — must NOT write the mirror
+  // (each generation updates it exactly once). The scores stored here are the
+  // raw on-disk values (matching `story_analysis_result`), not the floored
+  // likelihood used only for tier lookup. Guarded on `status <> 'archived'`: a
+  // row that archived while this generation was in flight stays archived (the
+  // result is already superseded by the lifecycle).
   const defaultPair = await resolveDefaultModel(job.customer_id, authPool);
   if (
-    job.lang === WORKER_LANG &&
+    job.lang === DEFAULT_LANG &&
     job.model_name === defaultPair.modelName &&
     job.model === defaultPair.model
   ) {
@@ -1327,6 +1454,7 @@ async function requeueForEnrichment(
     `UPDATE story_analysis_job
         SET status = 'queued',
             processing_started_at = NULL,
+            next_due_at = NULL,
             last_error = 'awaiting_enrichment',
             updated_at = NOW()
       WHERE customer_id = $1 AND story_id = $2::bigint
@@ -1374,11 +1502,15 @@ async function requeueWithBackoff(
     return;
   }
   await authPool.query(
+    // Reset next_due_at on the non-terminal requeue so retry timing is governed
+    // solely by the attempts-based backoff in the picker, not by a leftover
+    // future next_due_at (e.g. a canonical-defer value) (#580).
     `UPDATE story_analysis_job
         SET status = 'queued',
             attempts = $7,
             last_error = $8,
             processing_started_at = NULL,
+            next_due_at = NULL,
             updated_at = NOW()
       WHERE customer_id = $1 AND story_id = $2::bigint
         AND lang = $3 AND model_name = $4 AND model = $5
@@ -1394,6 +1526,644 @@ async function requeueWithBackoff(
       reason,
     ],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Translate path (#580) — user-language row derived from the English canonical
+// ---------------------------------------------------------------------------
+
+/**
+ * The English canonical `story_analysis_result` row a user-language variant
+ * derives from: the English row at the SAME `(model_name, model, generation)`
+ * as the job. The `generation` match is load-bearing AND sufficient — the
+ * result PK includes `generation`, so a translate job bumped to generation N
+ * (dirty / force) cannot read a stale generation N-1 row; it matches gen N or
+ * defers. We deliberately do NOT require `superseded_at IS NULL`: a
+ * same-generation English row superseded by a later English-only generation is
+ * still the correct canonical for a translate job pinned to that generation
+ * (mirrors the report worker). `null` when no English row exists at this
+ * generation yet — the caller defers.
+ */
+interface StoryEnglishCanonical {
+  analysisText: string;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+  severityScore: number;
+  likelihoodScore: number;
+  ttpTags: string[];
+  priorityTier: PriorityTier;
+  inputEventRefs: unknown;
+  inputFactRefs: unknown;
+  modelActualVersion: string;
+  promptVersion: string;
+  inputHash: string;
+  redactionPolicyVersion: string;
+}
+
+async function loadStoryEnglishCanonical(
+  customerPool: Pool,
+  job: JobPickup,
+): Promise<StoryEnglishCanonical | null> {
+  const { rows } = await customerPool.query<{
+    analysis_text: string;
+    severity_factors: string[] | null;
+    likelihood_factors: string[] | null;
+    severity_score: number;
+    likelihood_score: number;
+    ttp_tags: string[] | null;
+    priority_tier: string;
+    input_event_refs: unknown;
+    input_fact_refs: unknown;
+    model_actual_version: string;
+    prompt_version: string;
+    input_hash: string;
+    redaction_policy_version: string;
+  }>(
+    `SELECT analysis_text,
+            severity_factors, likelihood_factors,
+            severity_score, likelihood_score,
+            ttp_tags, priority_tier,
+            input_event_refs, input_fact_refs,
+            model_actual_version, prompt_version,
+            input_hash, redaction_policy_version
+       FROM story_analysis_result
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+      LIMIT 1`,
+    [
+      job.customer_id,
+      job.story_id,
+      DEFAULT_LANG,
+      job.model_name,
+      job.model,
+      job.generation,
+    ],
+  );
+  if (rows.length === 0) return null;
+  const r = rows[0];
+  return {
+    analysisText: r.analysis_text,
+    severityFactors: Array.isArray(r.severity_factors)
+      ? r.severity_factors
+      : [],
+    likelihoodFactors: Array.isArray(r.likelihood_factors)
+      ? r.likelihood_factors
+      : [],
+    severityScore: r.severity_score,
+    likelihoodScore: r.likelihood_score,
+    ttpTags: Array.isArray(r.ttp_tags) ? r.ttp_tags : [],
+    priorityTier: r.priority_tier as PriorityTier,
+    inputEventRefs: r.input_event_refs,
+    inputFactRefs: r.input_fact_refs,
+    modelActualVersion: r.model_actual_version,
+    promptVersion: r.prompt_version,
+    inputHash: r.input_hash,
+    redactionPolicyVersion: r.redaction_policy_version,
+  };
+}
+
+export interface TranslateNarrativeAimerResponse {
+  analysis: string;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+  promptVersion: string;
+  modelActualVersion: string;
+}
+
+// Translate-path call wrapper — aimer's stateless, token-preserving
+// `translateAnalysisNarrative` mutation (#580 / aimer#495). The numeric scores,
+// MITRE codes, and priority tier are language-invariant and are NOT sent or
+// returned; only the narrative and the score-factor phrases are localized.
+async function callTranslateAnalysisNarrative(args: {
+  analysis: string;
+  severityFactors: string[];
+  likelihoodFactors: string[];
+  targetLang: string;
+  modelName: string;
+  model: string;
+  aiceId: string;
+}): Promise<TranslateNarrativeAimerResponse> {
+  const result = await graphqlRequest(
+    TranslateAnalysisNarrativeDocument,
+    {
+      analysis: args.analysis,
+      severityFactors: args.severityFactors,
+      likelihoodFactors: args.likelihoodFactors,
+      targetLang: args.targetLang as "KOREAN" | "ENGLISH",
+      name: args.modelName,
+      model: args.model,
+    },
+    { accountId: WORKER_ACCOUNT_ID, aiceId: args.aiceId },
+  );
+  return result.translateAnalysisNarrative;
+}
+
+// Defer a user-language translate job whose English canonical is not yet
+// available. NON-TERMINAL: leaves `status = 'queued'` and `attempts` UNCHANGED
+// (never counts toward `MAX_ATTEMPTS` / `failed`), and sets `next_due_at` so the
+// picker — which now honors `next_due_at` for queued rows — does not re-pick it
+// on the next tick (no hot spin). Keyed by the claim marker so a stale
+// timed-out attempt cannot defer a later re-claimed one (#580).
+async function deferJobForCanonical(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string | null,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE story_analysis_job
+        SET status = 'queued',
+            processing_started_at = NULL,
+            next_due_at = NOW() + ($7::bigint * interval '1 millisecond'),
+            last_error = 'english_canonical_not_ready',
+            updated_at = NOW()
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+        AND status = 'processing'
+        AND processing_started_at::text = $8`,
+    [
+      job.customer_id,
+      job.story_id,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
+      CANONICAL_DEFER_MS,
+      claimMarker,
+    ],
+  );
+}
+
+interface StoryTranslationAudit {
+  translationModelName: string;
+  translationModel: string;
+  translationPromptVersion: string;
+}
+
+/**
+ * Persist the translation audit columns on the `story_analysis_job` row while
+ * it is still `processing`, BEFORE the customer-DB result-row insert. The
+ * result row (customer DB) and the audit columns (auth DB) cannot share a
+ * transaction, so a crash between the insert and finalize would otherwise leave
+ * a durable translated row whose audit trail never landed. Writing the audit
+ * first means the crash-recovery result probe only has to PRESERVE these
+ * columns (the native `finalizeJob` never touches them). It is also the
+ * authoritative claim re-check: if the watchdog returned the row to `queued`
+ * and cleared `processing_started_at`, the claim-marker guard matches zero rows
+ * and the caller ABORTS before the customer-DB insert (#580). Returns the
+ * affected row count.
+ */
+async function recordStoryTranslationAudit(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string | null,
+  audit: StoryTranslationAudit,
+): Promise<number> {
+  const res = await authPool.query(
+    `UPDATE story_analysis_job
+        SET translation_model_name = $7,
+            translation_model = $8,
+            translation_prompt_version = $9,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+        AND status = 'processing'
+        AND processing_started_at::text = $10`,
+    [
+      job.customer_id,
+      job.story_id,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
+      audit.translationModelName,
+      audit.translationModel,
+      audit.translationPromptVersion,
+      claimMarker,
+    ],
+  );
+  return res.rowCount ?? 0;
+}
+
+/**
+ * Finalize a user-language translate job: flip to `done` and re-assert the
+ * translation audit columns (already persisted by `recordStoryTranslationAudit`
+ * before the result insert), guarded by the claim marker. The translate job is
+ * never the English canonical, so it never feeds the `story_analysis_state`
+ * mirror (#580) — hence no `resolveDefaultModel` / state write here.
+ */
+async function finalizeTranslatedJob(
+  authPool: Pool,
+  job: JobPickup,
+  claimMarker: string | null,
+  audit: StoryTranslationAudit,
+): Promise<void> {
+  await authPool.query(
+    `UPDATE story_analysis_job
+        SET status = 'done',
+            last_generated_at = NOW(),
+            next_due_at = NULL,
+            last_error = NULL,
+            dry_run = FALSE,
+            translation_model_name = $7,
+            translation_model = $8,
+            translation_prompt_version = $9,
+            updated_at = NOW()
+      WHERE customer_id = $1 AND story_id = $2::bigint
+        AND lang = $3 AND model_name = $4 AND model = $5
+        AND generation = $6
+        AND status = 'processing'
+        AND processing_started_at::text = $10`,
+    [
+      job.customer_id,
+      job.story_id,
+      job.lang,
+      job.model_name,
+      job.model,
+      job.generation,
+      audit.translationModelName,
+      audit.translationModel,
+      audit.translationPromptVersion,
+      claimMarker,
+    ],
+  );
+}
+
+/**
+ * Customer-DB write for the translated user-language row: copies the English
+ * canonical's numeric scores, priority tier, TTP codes, cited refs, and
+ * provenance (`model_actual_version` / `prompt_version`) verbatim, stores the
+ * translated narrative + factor phrases, and pins `restoration_lang = ENGLISH`
+ * so the loader replays the English cited leaves. Supersedes any prior live
+ * translated row of the same `(customer, story, lang, model)` so a fresh
+ * translation replaces a stale one (idempotent under crash/retry).
+ */
+async function writeTranslatedResultRow(
+  customerPool: Pool,
+  job: JobPickup,
+  values: {
+    canonical: StoryEnglishCanonical;
+    translatedAnalysis: string;
+    translatedSeverityFactors: string[];
+    translatedLikelihoodFactors: string[];
+    requestedBy: string | null;
+  },
+): Promise<void> {
+  const { canonical } = values;
+  const client = await customerPool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO story_analysis_result
+         (customer_id, story_id, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text,
+          input_event_refs, input_fact_refs, input_hash,
+          redaction_policy_version, requested_by)
+       VALUES ($1, $2::bigint, $3, $4, $5, $6,
+               $7, $8, $9,
+               $10, $11,
+               $12::jsonb, $13::jsonb, $14::jsonb,
+               $15, $16,
+               $17::jsonb, $18::jsonb, $19,
+               $20, $21::uuid)`,
+      [
+        job.customer_id,
+        job.story_id,
+        job.lang,
+        DEFAULT_LANG, // restoration_lang = ENGLISH
+        job.model_name,
+        job.model,
+        canonical.modelActualVersion,
+        canonical.promptVersion,
+        job.generation,
+        canonical.severityScore,
+        canonical.likelihoodScore,
+        JSON.stringify(values.translatedSeverityFactors),
+        JSON.stringify(values.translatedLikelihoodFactors),
+        JSON.stringify(canonical.ttpTags),
+        canonical.priorityTier,
+        values.translatedAnalysis,
+        JSON.stringify(canonical.inputEventRefs ?? []),
+        JSON.stringify(canonical.inputFactRefs ?? []),
+        canonical.inputHash,
+        canonical.redactionPolicyVersion,
+        values.requestedBy,
+      ],
+    );
+    await client.query(
+      `UPDATE story_analysis_result
+          SET superseded_at = NOW()
+        WHERE customer_id = $1 AND story_id = $2::bigint
+          AND lang = $3 AND model_name = $4 AND model = $5
+          AND generation < $6
+          AND superseded_at IS NULL`,
+      [
+        job.customer_id,
+        job.story_id,
+        job.lang,
+        job.model_name,
+        job.model,
+        job.generation,
+      ],
+    );
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+interface RunStoryTranslationArgs {
+  job: JobPickup;
+  opts: ProcessOptions;
+  customerPool: Pool;
+  claimMarker: string | null;
+}
+
+/**
+ * Derive the user-language row by ALWAYS translating the English canonical
+ * (#580). Defers (without consuming the retry budget) until the canonical
+ * exists; copies the canonical's numeric scores / tier / TTP / cited refs
+ * verbatim; translates ONLY the narrative and the factor phrases; preserves the
+ * canonical factor count and order element-wise (no `filterFactors` re-run);
+ * leak-scans the translated text against the canonical's allowed tokens; and
+ * persists with `restoration_lang = ENGLISH`.
+ */
+async function runStoryTranslation(
+  args: RunStoryTranslationArgs,
+): Promise<void> {
+  const { job, opts, customerPool, claimMarker } = args;
+  const callTranslate =
+    opts.callTranslateAnalysisNarrative ?? callTranslateAnalysisNarrative;
+
+  // The English canonical must already exist. If absent, defer WITHOUT
+  // consuming the retry/failure budget — "canonical not ready" is a normal
+  // wait, not a failure. The defer sets `next_due_at` so the job does not
+  // hot-spin and leaves `attempts` untouched.
+  const canonical = await loadStoryEnglishCanonical(customerPool, job);
+  if (canonical === null) {
+    await deferJobForCanonical(opts.authPool, job, claimMarker);
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.story_canonical_defer",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        lang: job.lang,
+        model_name: job.model_name,
+        model: job.model,
+        generation: job.generation,
+        reason: "english_canonical_not_ready",
+      }),
+    );
+    return;
+  }
+
+  // Resolve the story's `source_aice_id` for the aimer request context and
+  // confirm the source story still exists; if it is gone, fail loudly (we
+  // refuse to persist a translation whose source has vanished).
+  const members = await loadCanonicalMembers(customerPool, job.story_id);
+  if (!members) {
+    await failJob(opts.authPool, job, "source_unavailable");
+    return;
+  }
+  // Leak-scan allow-list = the EXACT redaction tokens (member `E{i}` + fact
+  // `F{k}`) the English canonical was generated and ALREADY validated against,
+  // taken from its STORED narrative + factor phrases (#580). Deriving it from
+  // the stored canonical row — rather than re-running `buildStoryTokenMap`
+  // against whatever story version / enrichment facts are latest at
+  // translation time — keeps the scan pinned to generation N's actual LLM
+  // input. If ingestion advances the story version or facts between the
+  // English generation and this translation attempt, a member-rebuilt set
+  // would falsely fail a valid translation (a now-removed token) or admit a
+  // token absent from the canonical (a newly-added one). aimer preserves every
+  // redaction token verbatim, so a faithful translation can only echo tokens
+  // already in the canonical text. Mirrors the report translate path's
+  // canonical-pinned allow-list.
+  const allowedTokens = extractRedactionTokens(
+    [
+      canonical.analysisText,
+      ...canonical.severityFactors,
+      ...canonical.likelihoodFactors,
+    ].join("\n"),
+  );
+
+  const auditBase: AuditEmissionBase = {
+    actorId: WORKER_ACCOUNT_ID,
+    authContext: "general",
+    targetType: "story_analysis_result",
+    customerId: job.customer_id,
+    aiceId: members.sourceAiceId,
+  };
+  const force = job.force_requested_at !== null;
+
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.request_issued",
+    targetId: `${job.customer_id}/${job.story_id}`,
+    details: {
+      customer_id: job.customer_id,
+      story_id: job.story_id,
+      lang: job.lang,
+      model_name: job.model_name,
+      model: job.model,
+      generation: job.generation,
+      force,
+      translate: true,
+      translation_model_name: TRANSLATION_MODEL_NAME,
+      translation_model: TRANSLATION_MODEL,
+    },
+  });
+
+  let aimerResponse: TranslateNarrativeAimerResponse;
+  try {
+    aimerResponse = await callTranslate({
+      analysis: canonical.analysisText,
+      severityFactors: canonical.severityFactors,
+      likelihoodFactors: canonical.likelihoodFactors,
+      targetLang: job.lang,
+      modelName: TRANSLATION_MODEL_NAME,
+      model: TRANSLATION_MODEL,
+      aiceId: members.sourceAiceId,
+    });
+  } catch (err) {
+    const classification = classifyAimerError(err);
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: `${job.customer_id}/${job.story_id}`,
+      details: {
+        generation: job.generation,
+        stage: "translate",
+        code: classification.code,
+        retryable: classification.retryable,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    if (!classification.retryable) {
+      await failJob(opts.authPool, job, classification.code, {
+        attempts: job.attempts + 1,
+      });
+      return;
+    }
+    await requeueWithBackoff(opts.authPool, job, classification.code);
+    return;
+  }
+
+  // Factor length/order preservation (#580): the translated arrays are an
+  // element-wise translation of the canonical's already-shape-filtered factors.
+  // Do NOT re-run `filterFactors` on the translated row — a length or order
+  // change would silently break the factor↔meaning correspondence even though
+  // the numbers match. aimer#495 guarantees the element count; treat any
+  // mismatch as a loud shape failure.
+  if (
+    aimerResponse.severityFactors.length !== canonical.severityFactors.length ||
+    aimerResponse.likelihoodFactors.length !==
+      canonical.likelihoodFactors.length
+  ) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: `${job.customer_id}/${job.story_id}`,
+      details: {
+        generation: job.generation,
+        stage: "translate_factor_shape",
+        canonical_severity: canonical.severityFactors.length,
+        canonical_likelihood: canonical.likelihoodFactors.length,
+        translated_severity: aimerResponse.severityFactors.length,
+        translated_likelihood: aimerResponse.likelihoodFactors.length,
+      },
+    });
+    await failJob(opts.authPool, job, "translation_factor_shape_changed", {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
+  // Leak scan on the translated narrative AND factor phrases: aimer#495
+  // preserves every redaction token verbatim, so the same `allowedTokens`
+  // derived from the canonical's leaves must cover the translated text. Any
+  // residual / leaked token (or decoded plaintext IP/domain) fails the job
+  // before the row is written, exactly as the native path does.
+  const ranges = await (opts.loadRanges ?? loadCustomerRanges)(
+    opts.authPool,
+    job.customer_id,
+  );
+  const ownedDomains = await (
+    opts.loadOwnedDomains ?? loadCustomerOwnedDomains
+  )(opts.authPool, job.customer_id);
+  const leakScan = scanStoryAnalysisForLeaks(
+    [
+      aimerResponse.analysis,
+      ...aimerResponse.severityFactors,
+      ...aimerResponse.likelihoodFactors,
+    ].join("\n"),
+    allowedTokens,
+    ranges,
+    ownedDomains,
+  );
+  if (leakScan.hasLeak) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId: `${job.customer_id}/${job.story_id}`,
+      details: {
+        generation: job.generation,
+        stage: "translate",
+        leaks: leakScan.leaks.slice(0, 20),
+      },
+    });
+    await failJob(opts.authPool, job, "hallucination_detected", {
+      attempts: job.attempts + 1,
+    });
+    return;
+  }
+
+  const translationAudit: StoryTranslationAudit = {
+    translationModelName: TRANSLATION_MODEL_NAME,
+    translationModel: TRANSLATION_MODEL,
+    translationPromptVersion: aimerResponse.promptVersion,
+  };
+
+  // Persist the translation audit BEFORE the customer-DB result insert (so a
+  // crash between insert and finalize cannot lose it) AND as the authoritative
+  // claim re-check: a zero row count means the watchdog returned this row to
+  // `queued` mid-translation, so ABORT before the durable result insert.
+  const auditRows = await recordStoryTranslationAudit(
+    opts.authPool,
+    job,
+    claimMarker,
+    translationAudit,
+  );
+  if (auditRows === 0) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        event: "analysis.story_translation_claim_lost",
+        customer_id: job.customer_id,
+        story_id: job.story_id,
+        generation: job.generation,
+      }),
+    );
+    return;
+  }
+
+  // Step 1 — customer-DB INSERT (translated text + copied canonical fields).
+  try {
+    await writeTranslatedResultRow(customerPool, job, {
+      canonical,
+      translatedAnalysis: aimerResponse.analysis,
+      translatedSeverityFactors: aimerResponse.severityFactors,
+      translatedLikelihoodFactors: aimerResponse.likelihoodFactors,
+      requestedBy: force ? job.force_requested_by : null,
+    });
+  } catch (err) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.aimer_call_failed",
+      targetId: `${job.customer_id}/${job.story_id}`,
+      details: {
+        generation: job.generation,
+        stage: "result_insert",
+        error: err instanceof Error ? err.message : String(err),
+      },
+    });
+    throw err;
+  }
+
+  // Step 2 — auth-DB finalize (re-asserting the translation audit, no mirror).
+  await finalizeTranslatedJob(
+    opts.authPool,
+    job,
+    claimMarker,
+    translationAudit,
+  );
+
+  void auditLog({
+    ...auditBase,
+    action: "ai_analysis.result_stored",
+    targetId: `${job.customer_id}/${job.story_id}`,
+    details: {
+      customer_id: job.customer_id,
+      story_id: job.story_id,
+      generation: job.generation,
+      prompt_version: canonical.promptVersion,
+      model_actual_version: canonical.modelActualVersion,
+      priority_tier: canonical.priorityTier,
+      translate: true,
+      restoration_lang: DEFAULT_LANG,
+      translation_model_name: TRANSLATION_MODEL_NAME,
+      translation_model: TRANSLATION_MODEL,
+      translation_prompt_version: aimerResponse.promptVersion,
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1553,9 +2323,13 @@ export async function tickStoryJobsOnce(
  */
 export async function recoverStuckStoryJobs(authPool: Pool): Promise<void> {
   await authPool.query(
+    // Reset next_due_at too: a stuck row is being returned for IMMEDIATE
+    // reprocessing, so a leftover future canonical-defer value must not stall
+    // it now that the picker honors next_due_at for queued rows (#580).
     `UPDATE story_analysis_job
         SET status = 'queued',
             processing_started_at = NULL,
+            next_due_at = NULL,
             updated_at = NOW()
       WHERE status = 'processing'
         AND dry_run = FALSE
@@ -1566,11 +2340,18 @@ export async function recoverStuckStoryJobs(authPool: Pool): Promise<void> {
 }
 
 /**
- * Seed a real (non-dry-run) job row for every `ready`/`dirty` state
- * row that lacks one for the default variant. Mirrors the Phase 0
- * seeding tick — without it, Phase 1's first deployment would have
- * the migration delete all dry-run rows but no `ready` row would ever
- * receive a real job until something hand-inserted it.
+ * Seed a real (non-dry-run) job row for every `ready`/`dirty` state row that
+ * is missing a job for any language in the eager set (`EAGER_LANGS` — English
+ * baseline ∪ the app user-language, #580). English is generated natively and
+ * is the canonical; every other eager language is always TRANSLATED from it.
+ *
+ * The eager set is seeded "along the language dimension only": every entry
+ * shares the per-customer default model pair. A `ready` bucket that already
+ * has English but not the user language is still picked up (anti-join) and the
+ * missing language seeded. On a `dirty` signal every existing variant is
+ * bumped together so English and the user-language translate job stay at the
+ * same generation (the translate job derives from the English canonical at its
+ * own generation).
  */
 export async function seedRealStoryJobs(
   authClient: PoolClient,
@@ -1583,8 +2364,7 @@ export async function seedRealStoryJobs(
   // `system_settings`, so the seeding query computes the effective pair
   // per row via a LEFT JOIN + COALESCE and carries it forward — what used
   // to be the single env `WORKER_MODEL_NAME`/`WORKER_MODEL` pair is now
-  // resolved per customer. `lang` stays the env `WORKER_LANG` (lang is not
-  // DB-backed).
+  // resolved per customer. Every eager language shares this one resolved pair.
   //
   // DEFENSIVE catalog filtering (#473 review round 1): the SQL must mirror
   // `resolveDefaultModel`'s read-path fallback so worker seeding and the
@@ -1644,110 +2424,136 @@ export async function seedRealStoryJobs(
        LEFT JOIN global_default gd ON TRUE
       WHERE s.status = 'dirty'
          OR (s.status = 'ready'
-             AND NOT EXISTS (
-               SELECT 1 FROM story_analysis_job j
-                WHERE j.customer_id = s.customer_id
-                  AND j.story_id    = s.story_id
-                  AND j.lang        = $2
-                  AND j.model_name  = COALESCE(cdm.model_name, gd.model_name, $3)
-                  AND j.model       = COALESCE(cdm.model,      gd.model,      $4)
+             -- Actionable when ANY eager-set language lacks a job (anti-join
+             -- over unnest($2)): a story that has English but not the user
+             -- language is still picked up and the missing language seeded.
+             AND EXISTS (
+               SELECT 1 FROM unnest($2::text[]) AS el(lang)
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM story_analysis_job j
+                   WHERE j.customer_id = s.customer_id
+                     AND j.story_id    = s.story_id
+                     AND j.lang        = el.lang
+                     AND j.model_name  = COALESCE(cdm.model_name, gd.model_name, $3)
+                     AND j.model       = COALESCE(cdm.model,      gd.model,      $4)
+                )
              ))
       ORDER BY s.customer_id, s.story_id
       LIMIT $1
       FOR UPDATE OF s SKIP LOCKED`,
-    [batchSize, WORKER_LANG, WORKER_MODEL_NAME, WORKER_MODEL, catalogJson],
+    [batchSize, EAGER_LANGS, WORKER_MODEL_NAME, WORKER_MODEL, catalogJson],
   );
   for (const row of actionable) {
     if (row.status === "dirty") {
-      // The dirty branch has three sub-cases:
-      //
-      //  (a) A default-variant job already exists and its generation
-      //      is below `ANALYSIS_MAX_GENERATION`: bump it to the next
-      //      generation and reset the queued state.
-      //  (b) A default-variant job exists but already sits at the
-      //      cap: emit `analysis.story_max_generation_reached` and
-      //      leave the row alone (operators can still force past the
-      //      cap via the regenerate endpoint).
-      //  (c) NO default-variant job exists (e.g. the dry-run rows
-      //      were purged while the state survived): seed
-      //      generation 1, same shape as the ready branch.
-      //
-      // Conflating (b) and (c) — what the v1 code did — would both
-      // miss the promised first real enqueue for such dirty rows AND
-      // emit a false `story_max_generation_reached` log. Probe the
-      // existing job's generation first, then dispatch.
-      //
-      // We move the state row back to `ready` regardless — the
-      // pipeline is "done" until the next dirty transition, and
-      // leaving it stuck on `dirty` would make the seeding pass keep
-      // re-selecting it forever.
-      const { rows: existingJob } = await authClient.query<{
-        generation: number;
+      // Surface every existing variant already at the cap. An at-cap variant
+      // cannot auto-bump on a dirty signal; only an operator force may push
+      // past the cap (via the regenerate endpoint).
+      const { rows: capped } = await authClient.query<{
+        lang: string;
+        model_name: string;
+        model: string;
       }>(
-        `SELECT generation FROM story_analysis_job
+        `SELECT lang, model_name, model FROM story_analysis_job
           WHERE customer_id = $1 AND story_id = $2::bigint
-            AND lang = $3 AND model_name = $4 AND model = $5`,
-        [row.customer_id, row.story_id, WORKER_LANG, row.model_name, row.model],
+            AND generation >= $3`,
+        [row.customer_id, row.story_id, MAX_GENERATION],
       );
-      if (existingJob.length === 0) {
-        // Sub-case (c): no default-variant job to bump. Seed a fresh
-        // generation 1 row, identical to the ready-branch insert.
-        await authClient.query(
-          `INSERT INTO story_analysis_job
-             (customer_id, story_id, lang, model_name, model,
-              status, generation, dry_run, created_at, updated_at)
-           VALUES ($1, $2::bigint, $3, $4, $5,
-                   'queued', 1, FALSE, $6::timestamptz, $6::timestamptz)
-           ON CONFLICT (customer_id, story_id, lang, model_name, model)
-           DO NOTHING`,
-          [
-            row.customer_id,
-            row.story_id,
-            WORKER_LANG,
-            row.model_name,
-            row.model,
-            nowIso,
-          ],
-        );
-      } else if (existingJob[0].generation >= MAX_GENERATION) {
-        // Sub-case (b): cap reached. Surface the audit log so operators
-        // know why this dirty row stopped re-queuing.
+      for (const variant of capped) {
         console.warn(
           JSON.stringify({
             level: "warn",
             event: "analysis.story_max_generation_reached",
             customer_id: row.customer_id,
             story_id: row.story_id,
+            lang: variant.lang,
+            model_name: variant.model_name,
+            model: variant.model,
             max_generation: MAX_GENERATION,
           }),
         );
-      } else {
-        // Sub-case (a): bump the existing job. The `generation < $7`
-        // guard is belt-and-braces — the SELECT above already proved
-        // it's below the cap inside this transaction's row lock.
-        await authClient.query(
-          `UPDATE story_analysis_job
-              SET generation = generation + 1,
-                  status = 'queued',
-                  attempts = 0,
-                  last_error = NULL,
-                  processing_started_at = NULL,
-                  dry_run = FALSE,
-                  updated_at = $6::timestamptz
-            WHERE customer_id = $1 AND story_id = $2::bigint
-              AND lang = $3 AND model_name = $4 AND model = $5
-              AND generation < $7`,
-          [
-            row.customer_id,
-            row.story_id,
-            WORKER_LANG,
-            row.model_name,
-            row.model,
-            nowIso,
-            MAX_GENERATION,
-          ],
-        );
       }
+      // Bump the eager bilingual pair under the dirty state to ONE shared
+      // target generation — not a per-row `generation + 1` (#580). The
+      // user-language translate job derives from the English canonical at the
+      // SAME generation, so the pair must advance in lockstep: a per-row `+1`
+      // preserves any pre-existing offset (e.g. English at 3, no Korean →
+      // English 4 but a missing Korean seeded at a stale generation), leaving a
+      // user-language row pinned to a superseded English generation. Compute
+      // the target as MAX(existing generation) + 1 for THIS model pair (capped
+      // at MAX_GENERATION) and apply it uniformly to every eager-lang variant,
+      // then seed any missing eager variant at the same target. Reset
+      // next_due_at so a leftover canonical-defer value cannot stall the bumped
+      // row; clear the force metadata so a source-driven bump stays classified
+      // automatic. The cap is honored via `generation < MAX` (the at-cap
+      // variants warned above are skipped, and `min(..., MAX)` keeps the target
+      // from overshooting). Legacy variants under a DIFFERENT model are not part
+      // of this row's eager pair, so they keep the independent `+1` refresh.
+      const { rows: maxGenRows } = await authClient.query<{
+        max_gen: number | null;
+      }>(
+        `SELECT MAX(generation) AS max_gen FROM story_analysis_job
+          WHERE customer_id = $1 AND story_id = $2::bigint
+            AND model_name = $3 AND model = $4`,
+        [row.customer_id, row.story_id, row.model_name, row.model],
+      );
+      const eagerTarget = Math.min(
+        (maxGenRows[0]?.max_gen ?? 0) + 1,
+        MAX_GENERATION,
+      );
+      await authClient.query(
+        `UPDATE story_analysis_job
+            SET generation = generation + 1,
+                status = 'queued',
+                attempts = 0,
+                last_error = NULL,
+                processing_started_at = NULL,
+                next_due_at = NULL,
+                dry_run = FALSE,
+                force_requested_at = NULL,
+                force_requested_by = NULL,
+                updated_at = $3::timestamptz
+          WHERE customer_id = $1 AND story_id = $2::bigint
+            AND NOT (model_name = $4 AND model = $5)
+            AND generation < $6`,
+        [
+          row.customer_id,
+          row.story_id,
+          nowIso,
+          row.model_name,
+          row.model,
+          MAX_GENERATION,
+        ],
+      );
+      await authClient.query(
+        `UPDATE story_analysis_job
+            SET generation = $7,
+                status = 'queued',
+                attempts = 0,
+                last_error = NULL,
+                processing_started_at = NULL,
+                next_due_at = NULL,
+                dry_run = FALSE,
+                force_requested_at = NULL,
+                force_requested_by = NULL,
+                updated_at = $3::timestamptz
+          WHERE customer_id = $1 AND story_id = $2::bigint
+            AND model_name = $4 AND model = $5
+            AND generation < $6`,
+        [
+          row.customer_id,
+          row.story_id,
+          nowIso,
+          row.model_name,
+          row.model,
+          MAX_GENERATION,
+          eagerTarget,
+        ],
+      );
+      // Seed any still-missing eager-language variant at the shared target so a
+      // freshly-seeded translation pairs with the bumped English canonical.
+      // ON CONFLICT DO NOTHING leaves a variant that was just bumped above — or
+      // one already at the cap — untouched.
+      await seedEagerStoryLangJobs(authClient, row, nowIso, eagerTarget);
       await authClient.query(
         `UPDATE story_analysis_state
             SET status = 'ready',
@@ -1758,21 +2564,69 @@ export async function seedRealStoryJobs(
       );
       continue;
     }
+    // Ready branch: the story is already analyzed and some eager-lang variant
+    // is simply missing a job (e.g. an existing single-language story after the
+    // bilingual rollout). Seed the missing variant at the EXISTING canonical's
+    // generation — NOT a fixed `1` — so the new translate job derives from and
+    // pairs with the live English canonical instead of a superseded generation
+    // (#580). With no existing variant (brand-new story) MAX resolves to NULL
+    // and we fall back to generation 1.
+    const { rows: readyGenRows } = await authClient.query<{
+      max_gen: number | null;
+    }>(
+      `SELECT MAX(generation) AS max_gen FROM story_analysis_job
+        WHERE customer_id = $1 AND story_id = $2::bigint
+          AND model_name = $3 AND model = $4`,
+      [row.customer_id, row.story_id, row.model_name, row.model],
+    );
+    const readyTarget = readyGenRows[0]?.max_gen ?? 1;
+    await seedEagerStoryLangJobs(authClient, row, nowIso, readyTarget);
+  }
+}
+
+/**
+ * Seed a `queued` job at `generation` for every eager-set language (#580) that
+ * does not already have one under this story state. ON CONFLICT DO NOTHING
+ * makes it idempotent, so an existing variant is left untouched and only the
+ * genuinely-missing languages get a row. Every eager language shares the
+ * customer's effective default model pair, resolved by `seedRealStoryJobs`.
+ *
+ * `generation` MUST be the generation of the existing English canonical for
+ * this story/model pair (or `1` for a brand-new story with no variants), so a
+ * freshly-seeded user-language translate job derives from — and pairs with —
+ * the CURRENT canonical generation. Seeding a missing translation at a fixed
+ * `1` while the English canonical sits at a higher generation would pin the
+ * translation to a stale/superseded canonical (the bilingual-pairing invariant
+ * the force-regenerate path already upholds).
+ */
+async function seedEagerStoryLangJobs(
+  authClient: PoolClient,
+  row: {
+    customer_id: string;
+    story_id: string;
+    model_name: string;
+    model: string;
+  },
+  nowIso: string,
+  generation: number,
+): Promise<void> {
+  for (const lang of EAGER_LANGS) {
     await authClient.query(
       `INSERT INTO story_analysis_job
          (customer_id, story_id, lang, model_name, model,
           status, generation, dry_run, created_at, updated_at)
        VALUES ($1, $2::bigint, $3, $4, $5,
-               'queued', 1, FALSE, $6::timestamptz, $6::timestamptz)
+               'queued', $7, FALSE, $6::timestamptz, $6::timestamptz)
        ON CONFLICT (customer_id, story_id, lang, model_name, model)
        DO NOTHING`,
       [
         row.customer_id,
         row.story_id,
-        WORKER_LANG,
+        lang,
         row.model_name,
         row.model,
         nowIso,
+        generation,
       ],
     );
   }

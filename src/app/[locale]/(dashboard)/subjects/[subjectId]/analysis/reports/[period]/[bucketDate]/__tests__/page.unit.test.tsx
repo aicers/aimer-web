@@ -394,7 +394,8 @@ describe("report detail page", () => {
     // The four params guard against linking to the latest generation.
     expect(storyHref).toContain("/analysis/story/555");
     expect(storyHref).toContain("generation=2");
-    expect(storyHref).toContain("lang=ENGLISH");
+    // The story reader speaks app-locale `?lang` (#580): ENGLISH → en.
+    expect(storyHref).toContain("lang=en");
     expect(storyHref).toContain("model_name=openai");
     expect(storyHref).toContain("model=gpt-4o");
 
@@ -517,7 +518,8 @@ describe("report detail page", () => {
     const storyHref = storyCite.getAttribute("href");
     expect(storyHref).toContain("/analysis/story/555");
     expect(storyHref).toContain("generation=2");
-    expect(storyHref).toContain("lang=ENGLISH");
+    // The story reader speaks app-locale `?lang` (#580): ENGLISH → en.
+    expect(storyHref).toContain("lang=en");
     expect(storyHref).toContain("model_name=openai");
     expect(storyHref).toContain("model=gpt-4o");
 

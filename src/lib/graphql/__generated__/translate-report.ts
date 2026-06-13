@@ -49,7 +49,12 @@ export const TRANSLATE_REPORT_SOURCE = `mutation TranslateReport(
 
 const document: DocumentNode = parse(TRANSLATE_REPORT_SOURCE);
 
-export const TranslateReportDocument = document as unknown as TypedDocumentNode<
+// The cast lives on its own const so the exported Document declaration never
+// overflows the formatter's line width for a long operation name (the type
+// argument list is always broken across lines, keeping output stable).
+const typedDocument = document as unknown as TypedDocumentNode<
   TranslateReportResponse,
   TranslateReportVariables
 >;
+
+export const TranslateReportDocument = typedDocument;

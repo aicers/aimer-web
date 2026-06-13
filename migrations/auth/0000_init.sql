@@ -581,6 +581,14 @@ CREATE INDEX story_analysis_state_priority_idx
     ON story_analysis_state (customer_id)
     WHERE status <> 'archived' AND priority_tier IS NOT NULL;
 
+-- `next_due_at` lives on the job table because it is per-variant — each
+-- language variant ticks independently. The user-language translate job uses
+-- it for a bounded canonical-not-ready backoff (defer without consuming the
+-- retry budget). The `translation_*` columns are the audit trail for a
+-- translate-path variant (#580, mirroring periodic_report_job): the translated
+-- result row carries the English canonical's model/prompt provenance so the
+-- variant key stays self-consistent; the model/prompt actually used to
+-- translate are recorded here instead. NULL for the native English job.
 CREATE TABLE story_analysis_job (
     customer_id           UUID         NOT NULL,
     story_id              BIGINT       NOT NULL,
@@ -594,10 +602,14 @@ CREATE TABLE story_analysis_job (
     created_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     processing_started_at TIMESTAMPTZ,
     last_generated_at     TIMESTAMPTZ,
+    next_due_at           TIMESTAMPTZ,
     force_requested_at    TIMESTAMPTZ,
     force_requested_by    UUID,
     attempts              INT          NOT NULL DEFAULT 0,
     last_error            TEXT,
+    translation_model_name     TEXT,
+    translation_model          TEXT,
+    translation_prompt_version TEXT,
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (customer_id, story_id, lang, model_name, model),
     FOREIGN KEY (customer_id, story_id)

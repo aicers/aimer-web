@@ -314,6 +314,15 @@ CREATE TABLE story_analysis_result (
     customer_id              UUID             NOT NULL,
     story_id                 BIGINT           NOT NULL,
     lang                     TEXT             NOT NULL,
+    -- Language whose cited leaves the page loader replays to restore the
+    -- per-story `<<REDACTED_*_E{i}_*>>` / `<<REDACTED_*_F{k}_*>>` tokens to
+    -- plaintext. NULL means "replay leaves at this row's own `lang`" (the
+    -- native English canonical path). A translated user-language row pins it
+    -- to the English canonical's language (ENGLISH) because it copies the
+    -- canonical's `input_event_refs` / `input_fact_refs` verbatim and those
+    -- leaves only exist under that language (#580, mirroring the
+    -- periodic_report_result column above).
+    restoration_lang         TEXT,
     model_name               TEXT             NOT NULL,
     model                    TEXT             NOT NULL,
     model_actual_version     TEXT             NOT NULL,

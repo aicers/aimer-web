@@ -13,7 +13,11 @@ import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
-import { storedLangToReaderLang } from "@/i18n/locale";
+import {
+  type AppLocale,
+  reportLanguageToAppLocale,
+  storedLangToReaderLang,
+} from "@/i18n/locale";
 import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
@@ -23,8 +27,18 @@ import {
   type StoryMemberEvent,
 } from "@/lib/analysis/story-result-page-loader";
 import { entityCrumbLabel } from "@/lib/navigation/breadcrumb-labels";
+import {
+  mergeQuery,
+  searchParamsToUrlSearchParams,
+} from "@/lib/navigation/query";
 import { subjectPages } from "@/lib/navigation/routes";
 import { StoryRegenerateButton } from "./regenerate-button";
+import { StoryLanguageSwitcher } from "./story-language-switcher";
+
+// The story reader/switcher speaks the report-compatible app-locale `?lang`
+// vocabulary (#580): `en` / `ko`, validated and mapped to the aimer enum in
+// the loader. An enum-shaped `?lang=KOREAN` is not a valid reader param.
+const SWITCHER_LOCALES: readonly AppLocale[] = ["en", "ko"];
 
 type AnalysisTranslations = ReturnType<typeof useTranslations<"analysis">>;
 
@@ -66,9 +80,9 @@ export default async function StoryAnalysisPage({
   if (generation === "invalid") {
     notFound();
   }
-  // The pin is keyed on the full variant; carry the cited `lang`/model
-  // params (report-language enum) alongside the generation so the exact
-  // cited leaf row resolves instead of the latest.
+  // The pin is keyed on the full variant; carry the cited `lang` (app-locale
+  // form, #580) + model params alongside the generation so the exact cited
+  // leaf row resolves instead of the latest.
   const pin =
     generation !== null
       ? {
@@ -107,6 +121,7 @@ export default async function StoryAnalysisPage({
   const outcome = await loadStoryResultPage({
     customerId,
     storyId,
+    locale,
     pin,
     variant,
     compare: compareInput,
@@ -169,6 +184,49 @@ export default async function StoryAnalysisPage({
   const data = outcome.data;
   const collapseFactors = data.priorityTier === "LOW";
 
+  // Language switcher (#580): offer every supported locale, marking which
+  // already have a stored result. Drop `generation` from the carried query —
+  // a generation pin is specific to one variant, so carrying it onto a
+  // different-language option would resolve "evidence version no longer
+  // available". The shown language is the row's actual `lang` mapped to a
+  // locale code.
+  const currentQuery = mergeQuery(searchParamsToUrlSearchParams(search), {
+    generation: null,
+  });
+  const shownLocale = reportLanguageToAppLocale(
+    data.lang === "KOREAN" ? "KOREAN" : "ENGLISH",
+  );
+  const localeName = (loc: AppLocale): string =>
+    loc === "en"
+      ? tA("storyDetail.languageNameEn")
+      : tA("storyDetail.languageNameKo");
+  const basePath = subjectPages.story(locale, customerId, storyId);
+  const languageSwitcher = (
+    <StoryLanguageSwitcher
+      label={tA("storyDetail.languageSwitcherLabel")}
+      navLabel={tA("storyDetail.languageNavLabel")}
+      basePath={basePath}
+      currentQuery={currentQuery}
+      currentLocale={shownLocale}
+      languages={SWITCHER_LOCALES.map((loc) => ({
+        locale: loc,
+        name: localeName(loc),
+        available: data.availableLocales.includes(loc),
+      }))}
+    />
+  );
+  const languageNotice = data.languageFallback ? (
+    <div
+      role="status"
+      data-testid="story-language-fallback"
+      className="mt-4 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+    >
+      {tA("storyDetail.languageFallbackNotice", {
+        language: localeName(data.languageFallback.requestedLocale),
+      })}
+    </div>
+  ) : null;
+
   // Analyst-only model catalog (#458), read server-side and passed to the
   // client picker/compare controls as serializable props (the catalog module
   // is server-only). Gated on `canRegenerate` — the story regenerate gate from
@@ -230,15 +288,21 @@ export default async function StoryAnalysisPage({
         label={entityCrumbLabel(t("threatStory"), data.storyId)}
       />
       <header className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">
-          {tA("storyDetail.title")}
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {tA("storyDetail.subtitle", {
-            storyId: data.storyId,
-            generation: data.generation,
-          })}
-        </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">
+              {tA("storyDetail.title")}
+            </h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {tA("storyDetail.subtitle", {
+                storyId: data.storyId,
+                generation: data.generation,
+              })}
+            </p>
+          </div>
+          {languageSwitcher}
+        </div>
+        {languageNotice}
       </header>
 
       {/* Threat-intel coverage transparency (#498): when the canonical

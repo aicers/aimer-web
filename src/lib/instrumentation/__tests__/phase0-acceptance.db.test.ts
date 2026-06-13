@@ -1205,9 +1205,19 @@ describe.skipIf(!hasPostgres)("Phase 0 acceptance suite", () => {
           payload.customer_id === customerId &&
           payload.story_id === storyId,
       );
-      expect(capLogs).toHaveLength(1);
-      expect(capLogs[0].level).toBe("warn");
-      expect(capLogs[0].max_generation).toBe(MAX_GENERATION);
+      // Bilingual (#580): the dirty seeder pairs the missing user-language
+      // translate variant at the canonical's generation. When the canonical is
+      // already at MAX_GENERATION the translation is seeded at the cap too, so
+      // from the next cycle on BOTH the English canonical and its translation
+      // sit at MAX_GENERATION and the per-capped-variant warn fires once for
+      // each (one warn on the first cycle, before the translation exists; two
+      // thereafter). The invariant under test is that every capped variant
+      // warns AT the cap and none auto-bumps — not a single fixed count.
+      expect(capLogs.length).toBeGreaterThanOrEqual(1);
+      for (const capLog of capLogs) {
+        expect(capLog.level).toBe("warn");
+        expect(capLog.max_generation).toBe(MAX_GENERATION);
+      }
 
       const state = await getStoryState(authPool, customerId, storyId);
       expect(state?.status).toBe("ready");

@@ -56,7 +56,12 @@ export const TRANSLATE_EVENT_SOURCE = `mutation TranslateEvent(
 
 const document: DocumentNode = parse(TRANSLATE_EVENT_SOURCE);
 
-export const TranslateEventDocument = document as unknown as TypedDocumentNode<
+// The cast lives on its own const so the exported Document declaration never
+// overflows the formatter's line width for a long operation name (the type
+// argument list is always broken across lines, keeping output stable).
+const typedDocument = document as unknown as TypedDocumentNode<
   TranslateEventResponse,
   TranslateEventVariables
 >;
+
+export const TranslateEventDocument = typedDocument;

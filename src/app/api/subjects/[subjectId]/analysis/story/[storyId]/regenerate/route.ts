@@ -24,6 +24,7 @@
 
 import type { NextRequest } from "next/server";
 import { resolveDefaultModel } from "@/lib/analysis/default-model";
+import { EAGER_LANGS } from "@/lib/analysis/story-worker";
 import { authorize } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -179,36 +180,64 @@ export const POST = withAuth(
         return Response.json(errorBody("source_unavailable"), { status: 409 });
       }
 
-      // UPSERT the job row. The UPDATE branch's WHERE clause is the PK,
-      // so a missing variant row triggers the INSERT branch.
-      const upsertRes = await client.query<{
-        generation: number;
-        inserted: boolean;
-      }>(
-        `INSERT INTO story_analysis_job
-           (customer_id, story_id, lang, model_name, model,
-            status, generation, dry_run,
-            force_requested_at, force_requested_by,
-            attempts, last_error)
-         VALUES ($1, $2::bigint, $3, $4, $5,
-                 'queued', 1, FALSE,
-                 NOW(), $6::uuid,
-                 0, NULL)
-         ON CONFLICT (customer_id, story_id, lang, model_name, model)
-         DO UPDATE SET
-           generation         = story_analysis_job.generation + 1,
-           status             = 'queued',
-           dry_run            = FALSE,
-           force_requested_at = NOW(),
-           force_requested_by = EXCLUDED.force_requested_by,
-           attempts           = 0,
-           last_error         = NULL,
-           processing_started_at = NULL,
-           updated_at         = NOW()
-         RETURNING generation, (xmax = 0) AS inserted`,
-        [subjectId, storyId, lang, modelName, model, auth.accountId],
+      // Bilingual force-regenerate (#580): a force-regen operates on the whole
+      // bilingual pair, not a single variant. Bump/seed the English canonical
+      // AND the user-language translate variant(s) to the SAME new generation
+      // in one transaction so the translated row never stays pinned to a
+      // superseded English generation — the async pipeline re-runs the English
+      // canonical natively and re-derives the translation at the matching
+      // generation, superseding the prior translated row. The HTTP response
+      // returns 202 promptly and does NOT block on translation completing.
+      //
+      // The union always includes the English canonical (`DEFAULT_LANG` ∈
+      // `EAGER_LANGS`) plus the requested `lang`, so force-regenerating any
+      // variant carries its canonical along. The target generation is
+      // MAX(existing generation across the pair) + 1, applied uniformly so a
+      // missing or out-of-lockstep variant is re-aligned rather than forked.
+      const langs = [...new Set([...EAGER_LANGS, lang])];
+      const maxGenRes = await client.query<{ max_generation: number | null }>(
+        `SELECT MAX(generation) AS max_generation
+           FROM story_analysis_job
+          WHERE customer_id = $1 AND story_id = $2::bigint
+            AND model_name = $3 AND model = $4
+            AND lang = ANY($5::text[])`,
+        [subjectId, storyId, modelName, model, langs],
       );
-      const { generation } = upsertRes.rows[0];
+      const generation = (maxGenRes.rows[0]?.max_generation ?? 0) + 1;
+      for (const seedLang of langs) {
+        await client.query(
+          `INSERT INTO story_analysis_job
+             (customer_id, story_id, lang, model_name, model,
+              status, generation, dry_run,
+              next_due_at, force_requested_at, force_requested_by,
+              attempts, last_error)
+           VALUES ($1, $2::bigint, $3, $4, $5,
+                   'queued', $7, FALSE,
+                   NULL, NOW(), $6::uuid,
+                   0, NULL)
+           ON CONFLICT (customer_id, story_id, lang, model_name, model)
+           DO UPDATE SET
+             generation         = $7,
+             status             = 'queued',
+             dry_run            = FALSE,
+             next_due_at        = NULL,
+             force_requested_at = NOW(),
+             force_requested_by = EXCLUDED.force_requested_by,
+             attempts           = 0,
+             last_error         = NULL,
+             processing_started_at = NULL,
+             updated_at         = NOW()`,
+          [
+            subjectId,
+            storyId,
+            seedLang,
+            modelName,
+            model,
+            auth.accountId,
+            generation,
+          ],
+        );
+      }
 
       return Response.json(
         {
