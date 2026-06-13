@@ -1,8 +1,13 @@
+import { getTier1FeedSource } from "@/lib/analysis/enrichment/feed-catalog";
 import {
   getSelfFetchSourceStatuses,
   selfFetchModeActive,
   tiFeedAdminSurfaceActive,
 } from "@/lib/analysis/enrichment/feed-fetch";
+import {
+  effectiveCadenceMs,
+  readSelfFetchSchedule,
+} from "@/lib/analysis/enrichment/feed-schedule";
 import { getFeedSourceStatuses } from "@/lib/analysis/enrichment/feed-upload";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
@@ -55,8 +60,48 @@ export const GET = withAuth(
     const feedPool = getFeedPool();
     const now = new Date();
     if (selfFetchModeActive()) {
-      const sources = await getSelfFetchSourceStatuses(feedPool, now);
-      return Response.json({ mode: "self-fetch", sources });
+      // Surface the schedule and, per source, the next time the scheduler
+      // would fetch it at the effective cadence (`max(intervalMs, floor)`).
+      // The source of truth for last-fetch / next-due is per-source
+      // `feed_fetch_state` (#570 §4), NOT a new column or the in-memory
+      // worker state.
+      const [statuses, schedule] = await Promise.all([
+        getSelfFetchSourceStatuses(feedPool, now),
+        readSelfFetchSchedule(authPool),
+      ]);
+      const sources = statuses.map((status) => {
+        const fetchConfig = getTier1FeedSource(status.sourcePolicyId)?.fetch;
+        if (!fetchConfig) {
+          return {
+            ...status,
+            effectiveCadenceMs: null,
+            nextFetchDueAt: null,
+            dueNow: false,
+          };
+        }
+        const cadence = effectiveCadenceMs(
+          schedule.intervalMs,
+          fetchConfig.cadenceFloorMs,
+        );
+        // Next-due mirrors the worker's `nextFetchAllowedAt(state, cadence)`.
+        // A never-fetched source has no concrete next-due timestamp, but the
+        // worker treats it as due on the next tick. Surface that explicitly as
+        // `dueNow` instead of a bare `null` — otherwise the UI would render it
+        // as "—", indistinguishable from a non-fetchable (merged) source.
+        const nextFetchDueAt = status.lastFetchedAt
+          ? new Date(
+              new Date(status.lastFetchedAt).getTime() + cadence,
+            ).toISOString()
+          : null;
+        const dueNow = status.lastFetchedAt === null;
+        return {
+          ...status,
+          effectiveCadenceMs: cadence,
+          nextFetchDueAt,
+          dueNow,
+        };
+      });
+      return Response.json({ mode: "self-fetch", sources, schedule });
     }
     const sources = await getFeedSourceStatuses(feedPool, now);
     return Response.json({ mode: "manual-upload", sources });

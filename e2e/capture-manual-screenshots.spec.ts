@@ -726,6 +726,31 @@ base.describe.serial("Manual screenshots", () => {
     await adminPage.getByRole("button", { name: "Cancel" }).click();
   });
 
+  // Self-fetch scheduler (#570): the Scheduled refresh panel at the top of the
+  // page — the default-off "Enable background refresh" toggle, the optional
+  // interval input, and the "Background refresh is off." status. The panel is
+  // operator config (no aice-web-next data), so it captures real UI on a fresh
+  // stack; the per-source Next Fetch column below it reads "Off" until enabled.
+
+  base("admin-ti-feeds-selffetch-schedule.png", async () => {
+    base.skip(
+      tiFeedMode !== "self-fetch",
+      "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
+    );
+    await adminPage.goto("/en/admin/ti-feeds");
+    await settle(adminPage);
+    await expect(
+      adminPage.getByText("Scheduled refresh", { exact: true }),
+    ).toBeVisible();
+
+    const panel = adminPage
+      .getByText("Scheduled refresh", { exact: true })
+      .locator('xpath=ancestor::div[contains(@class,"rounded-md")][1]');
+    await panel.screenshot({
+      path: resolve(ASSETS, "admin-ti-feeds-selffetch-schedule.png"),
+    });
+  });
+
   // =========================================================================
   // Customer management — docs/{en,ko}/customer-management.md
   // =========================================================================

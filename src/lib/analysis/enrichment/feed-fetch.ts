@@ -6,10 +6,12 @@
 // supply mode (`importRawFeedPayload`). A `SelfFetchFeedSource` yields the
 // fetched bytes + provenance; nothing about parsing/normalization changes.
 //
-// This part is OPERATOR-TRIGGERED only ("Fetch Now"): there is no background
-// scheduler yet (deferred to 3b). Each fetch is single-flighted with a
-// per-source advisory lock and guarded by a hard cadence floor so a
-// trigger-happy operator can't get the instance IP-banned.
+// Two callers drive this engine: the operator-triggered "Fetch Now" (3a) and
+// the background scheduler (3b, #570, `self-fetch-worker.ts`), which calls
+// `fetchAndImport` on a timer for due sources. Either way each fetch is
+// single-flighted with a per-source advisory lock and guarded by a hard
+// cadence floor, so neither a trigger-happy operator nor the scheduler can get
+// the instance IP-banned.
 //
 // Snapshot writes are strictly replace-only via `importRawFeedPayload`. The
 // ONLY thing a 304 / empty / failed fetch changes is `feed_fetch_state`

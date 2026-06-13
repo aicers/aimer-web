@@ -90,9 +90,10 @@ The response reports how many rows were imported.
 ## Self-fetch mode
 
 This is the **self-fetch** supply mode (`TI_FEED_MODE=self-fetch`): the
-instance fetches each feed directly over HTTP and imports it. In 3a this is
-**operator-triggered** only — there is a **Fetch Now** action per source, with
-no background scheduler yet.
+instance fetches each feed directly over HTTP and imports it. Refreshes are
+**operator-triggered** (a **Fetch Now** action per source) and, optionally, run
+on a **background schedule** that is **disabled by default** (see
+[Scheduled refresh](#scheduled-refresh)).
 
 ![Threat Feeds page in self-fetch mode](../assets/admin-ti-feeds-selffetch-table.png)
 
@@ -154,14 +155,50 @@ fetches the feed (a conditional request using the stored `ETag` /
 Each source is single-flighted: a Fetch Now while another fetch of the same
 source is already in progress is skipped rather than run twice.
 
+### Scheduled refresh
+
+By default the instance only fetches when an operator clicks **Fetch Now**. The
+**Scheduled refresh** panel at the top of the page turns on a background worker
+that refreshes the feeds automatically on a timer.
+
+![Scheduled refresh panel, disabled by default](../assets/admin-ti-feeds-selffetch-schedule.png)
+
+- **Disabled by default — on purpose.** Fleet / SaaS deployments refresh
+    indicators through the central mirror, not by each instance fetching
+    abuse.ch / Spamhaus on its own timer. The engine's single-flight lock is
+    **per feed database**, so it does not coordinate across per-customer
+    databases — many instances on independent schedules would multiply the
+    outbound request rate and risk an upstream IP ban. The scheduler therefore
+    ships **off** and is opt-in for **on-prem / independent / sovereignty**
+    operators who run a single instance and want hands-off refresh.
+- **Enable.** Tick **Enable background refresh** and click **Save schedule**.
+    The worker then fetches each fetchable source whenever it becomes due.
+- **Interval.** The optional **Refresh interval (minutes)** is the desired
+    cadence between refreshes. Leave it **blank** to refresh each source as
+    often as its license allows (its cadence floor); because an unchanged feed
+    answers a conditional request with a cheap `304`, frequent polling is
+    inexpensive. A value **shorter** than a source's cadence floor is **clamped
+    up** to that floor — the per-source floor (5 min / 1 h, see the table above)
+    is the hard minimum and nothing overrides it.
+
+The scheduler only **drives** the existing fetch engine on a timer; every fetch
+still goes through the same single-flight lock, cadence floor, conditional GET,
+and replace-only import as a **Fetch Now**. The scheduler is inactive outside
+`self-fetch` mode and while it is disabled.
+
 ### Status table
 
 In self-fetch mode each row shows the **Fetch URL**, the **Last Fetched** time,
-the last fetch **Status** (`ok` / `not-modified` / `error`, with the error
-message on hover), and a **Freshness** badge. Presence and freshness come from
-the last successful fetch time — so a source that fetched successfully but
-imported 0 rows still reads as present and fresh, and a source revalidated by a
-`304` stays fresh.
+the **Next Fetch** time (when the scheduler would next refresh the source at the
+effective cadence; **Off** while the schedule is disabled, and **Due now** for a
+source that has never been fetched — the next tick will refresh it), the last
+fetch
+**Status** (`ok` / `not-modified` / `error`, with the error message on hover),
+and a **Freshness** badge. Presence and freshness come from the last successful
+fetch time — so a source that fetched successfully but imported 0 rows still
+reads as present and fresh, and a source revalidated by a `304` stays fresh. The
+Last Fetched / Next Fetch values are derived from each source's own fetch
+state, not from a separate scheduler record.
 
 ---
 

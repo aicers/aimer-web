@@ -128,6 +128,8 @@ export type AuditAction =
   // System
   | "system.policy_changed"
   | "system.settings_updated"
+  // TI feed self-fetch scheduler (#570)
+  | "system.ti_feed_self_fetch_schedule_updated"
   // Phase 2 ingest
   | "phase2.ingest"
   | "phase2.ingest_failed"

@@ -45,5 +45,9 @@ export async function register() {
       "@/lib/instrumentation/auth-pool-cleanup"
     );
     installAuthPoolCleanup();
+    const { installSelfFetchWorker } = await import(
+      "@/lib/instrumentation/self-fetch-worker"
+    );
+    installSelfFetchWorker();
   }
 }
