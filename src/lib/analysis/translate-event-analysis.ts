@@ -273,7 +273,9 @@ function scanTranslationLeak(
  * Single-row safety under crash/retry and sync-vs-worker races is enforced by
  * the result PK + `ON CONFLICT DO NOTHING`; the pre-call existence check
  * skips the (expensive) aimer call on the common retry path. The canonical
- * generation is also re-validated UNDER the write lock: if a concurrent
+ * generation is also re-validated while holding BOTH the English canonical
+ * variant lock and the target-language variant lock (so the re-check is
+ * mutually exclusive with English canonical advancement): if a concurrent
  * regeneration advanced the canonical while this call was translating, the
  * now-stale translation is abandoned as a no-op rather than written, so no
  * translated row is ever pinned to a superseded canonical generation.
@@ -439,20 +441,41 @@ export async function deriveEventTranslation(
     const writeClient = await customerPool.connect();
     try {
       await writeClient.query("BEGIN");
+      // Acquire BOTH the English canonical variant lock and the target-language
+      // variant lock, English FIRST. The canonical re-check below is only sound
+      // if it is mutually exclusive with English canonical advancement, and the
+      // canonical write (`run-analyze-flow.ts`) serializes its supersede+insert
+      // on the ENGLISH variant lock — a DIFFERENT key from this call's target
+      // lang. Holding only the target lock would let an English regeneration
+      // commit generation N+1 between this re-check and the insert below,
+      // leaving a stale live translated row at N beside the N+1 canonical.
+      // Taking the English lock here closes that window. The target lock still
+      // serializes concurrent translations of the same target variant
+      // (idempotent supersede+insert). Lock order is fixed (English then
+      // target) and the canonical write only ever holds the single English
+      // lock — released on its COMMIT before this call runs — so no lock cycle
+      // (hence no deadlock) is possible.
+      await writeClient.query("SELECT pg_advisory_xact_lock($1, $2)", [
+        EVENT_GENERATION_LOCK_NAMESPACE,
+        eventVariantLockKey(aiceId, eventKey, DEFAULT_LANG, modelName, model),
+      ]);
       await writeClient.query("SELECT pg_advisory_xact_lock($1, $2)", [
         EVENT_GENERATION_LOCK_NAMESPACE,
         eventVariantLockKey(aiceId, eventKey, targetLang, modelName, model),
       ]);
-      // Re-validate the canonical generation under the lock. The canonical was
-      // read (and the aimer translate call issued) BEFORE this lock, so a
+      // Re-validate the canonical generation under the locks. The canonical was
+      // read (and the aimer translate call issued) BEFORE these locks, so a
       // concurrent English regeneration may have committed a newer canonical
       // (generation N+1) while this call was translating generation N's text.
-      // Writing now would leave a stale live translated row at N alongside the
-      // N+1 derivation. If the canonical advanced, abandon this stale
-      // translation as a no-op — the regenerate path re-derives the user
-      // language synchronously at N+1 (#581), so the newer derivation owns the
-      // live row. If nothing is live, the canonical was fully superseded with
-      // no replacement yet; let the caller defer.
+      // Now that the English variant lock is held, any such regeneration has
+      // either already committed (and is visible to this SELECT) or is blocked
+      // behind us until we COMMIT. Writing a row for a superseded generation
+      // would leave a stale live translated row at N alongside the N+1
+      // derivation. If the canonical advanced, abandon this stale translation as
+      // a no-op — the regenerate path re-derives the user language synchronously
+      // at N+1 (#581), so the newer derivation owns the live row. If nothing is
+      // live, the canonical was fully superseded with no replacement yet; let
+      // the caller defer.
       const live = await writeClient.query<{ generation: number }>(
         `SELECT generation FROM event_analysis_result
           WHERE aice_id = $1 AND event_key = $2::numeric

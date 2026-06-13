@@ -41,6 +41,17 @@ vi.mock("@/lib/graphql/client", () => ({
 }));
 
 const { deriveEventTranslation } = await import("../translate-event-analysis");
+const { eventVariantLockKey, EVENT_GENERATION_LOCK_NAMESPACE } = await import(
+  "../run-analyze-flow"
+);
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 const CUSTOMER_MIGRATIONS_DIR = join(process.cwd(), "migrations", "customer");
 const LOCK_ID = 3812;
@@ -133,6 +144,27 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     return rows[0];
   }
 
+  // Poll until the translation write is parked (granted = false) on the English
+  // variant advisory lock. `pg_advisory_xact_lock($1, $2)` records classid = the
+  // namespace, objid = the (unsigned) variant key, objsubid = 2.
+  async function waitForBlockedEnglishLock(key: number): Promise<void> {
+    const objid = key >>> 0;
+    for (let i = 0; i < 200; i += 1) {
+      const { rows } = await pool.query(
+        `SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND classid = $1
+            AND objid = $2 AND objsubid = 2 AND NOT granted
+          LIMIT 1`,
+        [EVENT_GENERATION_LOCK_NAMESPACE, objid],
+      );
+      if (rows.length > 0) return;
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    throw new Error(
+      "timed out waiting for the translation to block on the lock",
+    );
+  }
+
   function derive(eventKey: string) {
     return deriveEventTranslation({
       customerPool: pool,
@@ -212,12 +244,14 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     // No second aimer call.
     expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
 
+    // Exactly one materialized KOREAN row for the event under test — the second
+    // derive neither duplicated nor left a stale row at the canonical generation.
     const { rows } = await pool.query(
       `SELECT COUNT(*)::int AS n FROM event_analysis_result
-        WHERE aice_id = $1 AND event_key = '102'::numeric AND lang = 'KOREAN'`,
+        WHERE aice_id = $1 AND event_key = '101'::numeric AND lang = 'KOREAN'`,
       [AICE],
     );
-    expect(rows[0].n).toBe(0);
+    expect(rows[0].n).toBe(1);
   });
 
   it("supersedes a prior translated row when the canonical regenerates", async () => {
@@ -271,6 +305,101 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     const { rows } = await pool.query(
       `SELECT COUNT(*)::int AS n FROM event_analysis_result
         WHERE aice_id = $1 AND event_key = '104'::numeric AND lang = 'KOREAN'`,
+      [AICE],
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it("serializes the write against an English regeneration holding the canonical lock", async () => {
+    // The Round-1 fix re-reads the live canonical under the write lock, but that
+    // re-check is only sound if it is mutually exclusive with English canonical
+    // advancement. The canonical write serializes on the ENGLISH variant lock —
+    // a different key from the target language — so the translation write must
+    // take that same English lock before its re-check (#581 review R2).
+    //
+    // Here a concurrent English regeneration holds the English variant lock and
+    // has staged gen 4 (gen 3 superseded) but has NOT committed. The translation
+    // reads gen 3 (the only committed live canonical), translates, then must
+    // BLOCK acquiring the English lock until the regeneration commits — and then
+    // observe gen 4, abandoning the now-stale gen-3 translation. Without the
+    // English lock it would slip into the window between re-check and insert and
+    // write a stale live gen-3 KOREAN row.
+    await seedCanonical({ eventKey: "105", generation: 3 });
+    const englishLockKey = eventVariantLockKey(
+      AICE,
+      "105",
+      "ENGLISH",
+      MODEL_NAME,
+      MODEL,
+    );
+
+    const reachedTranslate = deferred();
+    const proceed = deferred();
+    mockGraphqlRequest.mockImplementation(async () => {
+      reachedTranslate.resolve();
+      await proceed.promise;
+      return happyTranslation();
+    });
+
+    const blocker = await pool.connect();
+    try {
+      // Regeneration: hold the English variant lock and stage gen 4 uncommitted.
+      await blocker.query("BEGIN");
+      await blocker.query("SELECT pg_advisory_xact_lock($1, $2)", [
+        EVENT_GENERATION_LOCK_NAMESPACE,
+        englishLockKey,
+      ]);
+      await blocker.query(
+        `UPDATE event_analysis_result SET superseded_at = NOW()
+          WHERE aice_id = $1 AND event_key = '105'::numeric AND generation = 3`,
+        [AICE],
+      );
+      await blocker.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version, generation,
+            severity_score, likelihood_score,
+            severity_factors, likelihood_factors, ttp_tags,
+            priority_tier, analysis_text, event_time, kind,
+            redaction_policy_version, requested_by, requested_at, origin)
+         VALUES ($1, '105'::numeric, 'ENGLISH', $2, $3,
+                 'mv-canon', 'pv-canon', 4,
+                 0.8, 0.6,
+                 $4::jsonb, $5::jsonb, $6::jsonb,
+                 'HIGH', $7, '2026-05-20T00:00:00Z', 'HttpThreat',
+                 'rp-v1', $8::uuid, NOW(), 'auto_baseline')`,
+        [
+          AICE,
+          MODEL_NAME,
+          MODEL,
+          JSON.stringify(["sev <<REDACTED_IP_E1_001>>", "sev two"]),
+          JSON.stringify(["lik one"]),
+          JSON.stringify(["T1059", "T1071"]),
+          "Narrative with <<REDACTED_IP_E1_001>>.",
+          ACCOUNT,
+        ],
+      );
+
+      // Start the translation; it reads gen 3, translates, then parks on the
+      // English lock the regeneration holds.
+      const derivePromise = derive("105");
+      await reachedTranslate.promise;
+      proceed.resolve();
+      await waitForBlockedEnglishLock(englishLockKey);
+
+      // Commit the regeneration: release the lock and make gen 4 live.
+      await blocker.query("COMMIT");
+
+      const res = await derivePromise;
+      expect(res).toEqual({ kind: "noop", generation: 4 });
+    } finally {
+      blocker.release();
+    }
+
+    // No stale gen-3 KOREAN row was written.
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = '105'::numeric AND lang = 'KOREAN'`,
       [AICE],
     );
     expect(rows[0].n).toBe(0);
