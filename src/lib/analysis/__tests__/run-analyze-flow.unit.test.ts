@@ -76,7 +76,7 @@ vi.mock("@/lib/redaction", async (importActual) => {
 });
 
 import type { RunAnalyzeFlowParams } from "../run-analyze-flow";
-import { runAnalyzeFlow } from "../run-analyze-flow";
+import { DEFAULT_LANG, runAnalyzeFlow } from "../run-analyze-flow";
 
 const CUSTOMER_ID = "00000000-0000-0000-0000-000000000001";
 const AICE_ID = "aice-1";
@@ -85,7 +85,12 @@ const EVENT_TIME = "2026-05-20T00:00:00Z";
 const ACCOUNT = "00000000-0000-0000-0000-0000000000aa";
 
 // Test-controlled state for the two top-level event_analysis_result reads.
-let cacheRows: unknown[]; // the non-forced result-cache lookup
+// Cache rows carry `restoration_lang` so the mock can apply the real cache
+// predicate: a non-English hit REQUIRES restoration_lang = ENGLISH (a genuine
+// translation); an English hit REQUIRES restoration_lang IS NULL (native
+// canonical). A legacy / native non-English row (restoration_lang null) is
+// therefore NOT a cache hit.
+let cacheRows: { requested_at: Date; restoration_lang: string | null }[];
 let canonicalRows: unknown[]; // liveCanonicalExists (English canonical)
 
 function makeDbClient() {
@@ -121,10 +126,18 @@ const authPool = {
   }),
 };
 
-function topLevelQuery(sql: string) {
+function topLevelQuery(sql: string, params?: unknown[]) {
   // Non-forced result-cache lookup (joins detection_events via EXISTS).
   if (sql.includes("EXISTS") && sql.includes("detection_events d")) {
-    return { rows: cacheRows };
+    // Mirror the real cache predicate: $3 = langForStorage, $6 = DEFAULT_LANG.
+    const lang = params?.[2];
+    const defLang = params?.[5];
+    const rows = cacheRows.filter((r) =>
+      lang === defLang
+        ? r.restoration_lang == null
+        : r.restoration_lang === defLang,
+    );
+    return { rows };
   }
   // liveCanonicalExists.
   if (sql.includes("SELECT 1 AS one")) {
@@ -164,7 +177,9 @@ beforeEach(() => {
   canonicalRows = [];
   dbClient = makeDbClient();
   customerPool = {
-    query: vi.fn(async (sql: string) => topLevelQuery(sql)),
+    query: vi.fn(async (sql: string, params?: unknown[]) =>
+      topLevelQuery(sql, params),
+    ),
     connect: vi.fn(async () => dbClient),
   };
   mockGraphqlRequest.mockResolvedValue({
@@ -270,12 +285,37 @@ describe("runAnalyzeFlow bilingual invariant (#581)", () => {
     );
   });
 
-  it("existing user-language row (not forced) is a cache hit: no native call, no derive", async () => {
-    cacheRows = [{ requested_at: new Date(EVENT_TIME) }];
+  it("existing TRANSLATED user-language row (not forced) is a cache hit: no native call, no derive", async () => {
+    // A genuine translation (restoration_lang = ENGLISH) of a canonical.
+    cacheRows = [
+      { requested_at: new Date(EVENT_TIME), restoration_lang: DEFAULT_LANG },
+    ];
     const res = await runAnalyzeFlow(baseParams());
     expect(res.kind).toBe("success");
     if (res.kind === "success") expect(res.cached).toBe(true);
     expect(mockGraphqlRequest).not.toHaveBeenCalled();
     expect(mockDeriveTranslation).not.toHaveBeenCalled();
+  });
+
+  it("legacy NATIVE non-English row (not forced) is NOT a cache hit: generates the canonical and derives", async () => {
+    // #581 review R5: a pre-#581 sync request could leave a native Korean row
+    // (restoration_lang IS NULL) with NO English canonical — the exact
+    // pre-existing state the issue calls out. It must NOT be treated as a valid
+    // cache hit; the request falls through to generate the English canonical
+    // and derive a proper translation that supersedes/replaces the legacy row.
+    cacheRows = [
+      { requested_at: new Date(EVENT_TIME), restoration_lang: null },
+    ];
+    canonicalRows = []; // no English canonical yet
+    const res = await runAnalyzeFlow(baseParams());
+    expect(res.kind).toBe("success");
+    if (res.kind === "success") expect(res.cached).toBe(false);
+    // The English canonical is generated natively...
+    expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
+    // ...and the user-language translation is derived (replacing the legacy row).
+    expect(mockDeriveTranslation).toHaveBeenCalledTimes(1);
+    expect(mockDeriveTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ targetLang: "KOREAN" }),
+    );
   });
 });

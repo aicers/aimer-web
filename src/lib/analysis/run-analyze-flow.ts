@@ -772,19 +772,41 @@ export async function analyzeAndStoreEventResult(
           return { kind: "skipped", reason: skipReason };
         }
       }
+      // When writing the ENGLISH canonical, treat every language of the
+      // variant as one supersede/generation domain (see the supersede comment
+      // below). Computed before the MAX query so the canonical's generation is
+      // taken across ALL languages, never English-only.
+      const supersedeAllLangs = params.langForStorage === DEFAULT_LANG;
       const { rows: genRows } = await writeClient.query<{
         next_generation: number;
       }>(
+        // The canonical's generation is `MAX(generation) + 1` over ALL
+        // languages of the variant (`$6` true), not English-only. In a healthy
+        // bilingual state the two language rows share a generation, so the
+        // all-language MAX equals the English-only MAX and this is a no-op. It
+        // only diverges against a LEGACY / native non-English row written by
+        // the pre-#581 sync path with NO English canonical (the exact
+        // pre-existing state #581 calls out): an English-only MAX would put the
+        // new canonical at the SAME generation as that stray row, so the
+        // canonical's all-language supersede below could not retire it
+        // (`generation < nextGeneration` excludes an equal generation) and the
+        // translation INSERT would collide with it on the result PK and
+        // `DO NOTHING`, leaving the legacy native row live forever. Taking the
+        // MAX across all languages puts the canonical strictly above the stray
+        // row so it is superseded and the translation replaces it. A
+        // non-canonical write keeps the per-language MAX (`$6` false).
         `SELECT COALESCE(MAX(generation), 0) + 1 AS next_generation
            FROM event_analysis_result
           WHERE aice_id = $1 AND event_key = $2::numeric
-            AND lang = $3 AND model_name = $4 AND model = $5`,
+            AND model_name = $4 AND model = $5
+            AND ($6::boolean OR lang = $3)`,
         [
           params.aiceId,
           params.eventKey,
           params.langForStorage,
           params.modelName,
           params.model,
+          supersedeAllLangs,
         ],
       );
       nextGeneration = genRows[0]?.next_generation ?? 1;
@@ -792,7 +814,9 @@ export async function analyzeAndStoreEventResult(
       // generation. When writing the ENGLISH canonical, broaden the supersede
       // to EVERY language of the variant — not just English — so advancing the
       // canonical immediately retires any user-language translation pinned to
-      // the now-superseded generation (#581). Without this, a canonical advance
+      // the now-superseded generation (#581). This also retires a legacy native
+      // non-English row (which the all-language generation MAX above placed
+      // strictly below the new canonical). Without this, a canonical advance
       // whose follow-up translation later fails (error/leak) would leave the
       // old user-language row live at the superseded generation: the event
       // detail loader hides that behind its generation-first fallback, but the
@@ -809,7 +833,6 @@ export async function analyzeAndStoreEventResult(
       // the cross-language supersede mutually exclusive with any concurrent
       // translation write. Gated on `langForStorage === DEFAULT_LANG` so a
       // (non-canonical) write never supersedes the English canonical.
-      const supersedeAllLangs = params.langForStorage === DEFAULT_LANG;
       await writeClient.query(
         `UPDATE event_analysis_result
             SET superseded_at = NOW()
@@ -1002,11 +1025,28 @@ export async function runAnalyzeFlow(
 
   let cached = false;
   if (!params.force) {
+    // Only a row in the canonical bilingual shape counts as a cache hit. For a
+    // non-English target this REQUIRES `restoration_lang = ENGLISH` (a genuine
+    // translation of a canonical); for the English target it REQUIRES
+    // `restoration_lang IS NULL` (a native canonical). This deliberately
+    // EXCLUDES a legacy / native non-English row — one written by the pre-#581
+    // sync path with `restoration_lang IS NULL` and NO English canonical (the
+    // exact pre-existing state #581 calls out). Treating that row as cached
+    // would perpetuate the bilingual-invariant violation; falling through
+    // instead regenerates the English canonical and derives a proper
+    // translation that supersedes and replaces the legacy row. A live
+    // translation always mirrors a live canonical at the same generation (the
+    // canonical write supersedes every language together), so the
+    // `restoration_lang` marker alone is a sufficient validity test here.
     const cachedRow = await customerPool.query<{ requested_at: Date }>(
       `SELECT requested_at FROM event_analysis_result r
        WHERE r.aice_id = $1 AND r.event_key = $2::numeric
          AND r.lang = $3 AND r.model_name = $4 AND r.model = $5
          AND r.superseded_at IS NULL
+         AND (
+           ($3 = $6 AND r.restoration_lang IS NULL)
+           OR ($3 <> $6 AND r.restoration_lang = $6)
+         )
          AND EXISTS (
            SELECT 1 FROM detection_events d
            WHERE d.aice_id = $1 AND d.event_key = $2::numeric
@@ -1017,6 +1057,7 @@ export async function runAnalyzeFlow(
         langForStorage,
         params.modelName,
         params.model,
+        DEFAULT_LANG,
       ],
     );
     if (cachedRow.rows.length > 0) cached = true;

@@ -175,9 +175,17 @@ async function readLiveCanonical(
   };
 }
 
-/** Whether a translated row already exists at the given generation (any
- * supersede state — the PK slot being occupied means the translation for
- * that generation is materialized). */
+/** Whether a genuine TRANSLATED row already exists at the given generation
+ * (any supersede state — the PK slot being occupied by a real translation
+ * means the translation for that generation is materialized). The
+ * `restoration_lang = ENGLISH` filter is what makes "real translation"
+ * precise: a LEGACY / native non-English row (`restoration_lang IS NULL`,
+ * written by the pre-#581 sync path) at the same generation must NOT be
+ * treated as a materialized translation, so the derivation supersedes and
+ * replaces it instead of short-circuiting to a no-op. The all-language
+ * canonical generation (`run-analyze-flow.ts`) already keeps a legacy row
+ * strictly below the canonical's generation, so this is defense-in-depth on
+ * the idempotency check. */
 async function translationExistsAtGeneration(
   customerPool: Pool,
   aiceId: string,
@@ -193,8 +201,9 @@ async function translationExistsAtGeneration(
       WHERE aice_id = $1 AND event_key = $2::numeric
         AND lang = $3 AND model_name = $4 AND model = $5
         AND generation = $6
+        AND restoration_lang = $7
       LIMIT 1`,
-    [aiceId, eventKey, targetLang, modelName, model, generation],
+    [aiceId, eventKey, targetLang, modelName, model, generation, DEFAULT_LANG],
   );
   return rows.length > 0;
 }
@@ -473,8 +482,19 @@ export async function deriveEventTranslation(
   // 4. Supersede any prior live translated row and INSERT the fresh
   //    translation AT THE CANONICAL'S GENERATION (never MAX+1) under the
   //    per-variant advisory lock, so the two language rows of one analysis
-  //    share a generation. `ON CONFLICT DO NOTHING` makes a lost race a
-  //    no-op rather than a duplicate.
+  //    share a generation. On a PK conflict the row is CONVERTED only when it
+  //    is a LEGACY / native non-English row (`restoration_lang IS NULL`) — the
+  //    `ON CONFLICT ... DO UPDATE ... WHERE restoration_lang IS NULL` overwrites
+  //    such a pre-#581 row with the real translation (and revives it,
+  //    `superseded_at = NULL`). A genuine translation already at this slot
+  //    (`restoration_lang = ENGLISH`) fails the WHERE, so the conflict is a
+  //    no-op — idempotent, never a duplicate and never an overwrite of a valid
+  //    translation. This is what lets an existing English canonical that
+  //    happens to share a native non-English row's generation replace that row
+  //    rather than be blocked by it (the canonical-generation MAX in
+  //    `run-analyze-flow.ts` already keeps a NEWLY generated canonical above any
+  //    such row; this covers the case where the canonical pre-exists at the same
+  //    generation).
   let inserted: boolean;
   try {
     const writeClient = await customerPool.connect();
@@ -566,7 +586,28 @@ export async function deriveEventTranslation(
                  $24)
          ON CONFLICT
            (aice_id, event_key, lang, model_name, model, generation)
-         DO NOTHING`,
+         DO UPDATE SET
+           restoration_lang = EXCLUDED.restoration_lang,
+           model_actual_version = EXCLUDED.model_actual_version,
+           prompt_version = EXCLUDED.prompt_version,
+           severity_score = EXCLUDED.severity_score,
+           likelihood_score = EXCLUDED.likelihood_score,
+           severity_factors = EXCLUDED.severity_factors,
+           likelihood_factors = EXCLUDED.likelihood_factors,
+           ttp_tags = EXCLUDED.ttp_tags,
+           priority_tier = EXCLUDED.priority_tier,
+           analysis_text = EXCLUDED.analysis_text,
+           event_time = EXCLUDED.event_time,
+           kind = EXCLUDED.kind,
+           redaction_policy_version = EXCLUDED.redaction_policy_version,
+           requested_by = EXCLUDED.requested_by,
+           requested_at = NOW(),
+           origin = EXCLUDED.origin,
+           translation_model_name = EXCLUDED.translation_model_name,
+           translation_model = EXCLUDED.translation_model,
+           translation_prompt_version = EXCLUDED.translation_prompt_version,
+           superseded_at = NULL
+         WHERE event_analysis_result.restoration_lang IS NULL`,
         [
           aiceId,
           eventKey,
@@ -611,7 +652,9 @@ export async function deriveEventTranslation(
   }
 
   if (!inserted) {
-    // A concurrent derivation materialized the same generation first.
+    // The conflict-target row was already a genuine translation
+    // (`restoration_lang = ENGLISH`), so the guarded DO UPDATE matched nothing:
+    // a concurrent derivation materialized this generation first. No-op.
     return { kind: "noop", generation: canonical.generation };
   }
 

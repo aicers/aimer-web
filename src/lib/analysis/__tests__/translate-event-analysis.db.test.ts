@@ -487,6 +487,184 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     expect(rows[0].n).toBe(0);
   });
 
+  it("replaces a LEGACY native non-English row with a real translation (no generation collision)", async () => {
+    // #581 review R5: a pre-#581 sync request could write a NATIVE non-English
+    // row (restoration_lang IS NULL) with NO English canonical — the exact
+    // pre-existing state the issue calls out. After the fix, generating the
+    // English canonical must NOT collide with that legacy row's generation: the
+    // canonical's generation is taken across ALL languages, so it lands ABOVE
+    // the legacy row, the canonical's all-language supersede retires the legacy
+    // row, and the derived translation replaces it. If the canonical instead
+    // reused the legacy generation, its supersede (`generation < N`) could not
+    // retire the equal-generation legacy row and the translation INSERT would
+    // collide on the result PK and `DO NOTHING`, leaving the native row live.
+    const KEY = "400";
+    // Legacy native Korean row at generation 1, no English canonical.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, event_time, kind,
+          redaction_policy_version, requested_by, requested_at, origin)
+       VALUES ($1, $2::numeric, 'KOREAN', NULL, $3, $4,
+               'mv-legacy', 'pv-legacy', 1,
+               0.1, 0.2,
+               $5::jsonb, $6::jsonb, $7::jsonb,
+               'LOW', 'legacy native KO narrative', '2026-05-20T00:00:00Z',
+               'HttpThreat', 'rp-v0', $8::uuid, NOW(), 'manual')`,
+      [
+        AICE,
+        KEY,
+        MODEL_NAME,
+        MODEL,
+        JSON.stringify(["legacy sev"]),
+        JSON.stringify(["legacy lik"]),
+        JSON.stringify(["T0000"]),
+        ACCOUNT,
+      ],
+    );
+
+    // Generate the English canonical natively (as the sync/worker path does).
+    mockGraphqlRequest.mockResolvedValueOnce({
+      analyzeEvent: {
+        severityScore: 0.8,
+        likelihoodScore: 0.6,
+        severityFactors: ["sev <<REDACTED_IP_E1_001>>", "sev two"],
+        likelihoodFactors: ["lik one"],
+        ttpTags: ["T1059", "T1071"],
+        analysis: "Narrative with <<REDACTED_IP_E1_001>>.",
+        promptVersion: "pv-canon",
+        modelActualVersion: "mv-canon",
+      },
+    });
+    const stored = await analyzeAndStoreEventResult({
+      customerPool: pool,
+      aiceId: AICE,
+      eventKey: KEY,
+      redactedEvent: { event_time: "2026-05-20T00:00:00Z" },
+      eventTimeForAimer: "2026-05-20T00:00:00Z",
+      eventKind: null,
+      lang: "ENGLISH",
+      langForStorage: "ENGLISH",
+      modelName: MODEL_NAME,
+      model: MODEL,
+      accountId: ACCOUNT,
+      mergedMap: {},
+      ranges: buildRangeSet([]),
+      ownedDomains: EMPTY_OWNED_DOMAIN_SET,
+      redactionPolicyVersion: "rp-v1",
+      origin: "manual",
+      requestedBy: ACCOUNT,
+      auditBase,
+      force: false,
+    });
+    // The canonical lands ABOVE the legacy generation (all-language MAX + 1),
+    // never colliding with the legacy gen-1 row.
+    expect(stored).toEqual({ kind: "success", generation: 2 });
+
+    // The legacy native Korean row was superseded by the canonical's
+    // all-language supersede.
+    const legacy = await pool.query<{ superseded: boolean }>(
+      `SELECT superseded_at IS NOT NULL AS superseded
+         FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'KOREAN'
+          AND generation = 1`,
+      [AICE, KEY],
+    );
+    expect(legacy.rows[0].superseded).toBe(true);
+
+    // Deriving the translation now writes a real translated row at the
+    // canonical's generation — it does NOT no-op on the legacy row.
+    const res = await derive(KEY);
+    expect(res).toEqual({ kind: "translated", generation: 2 });
+
+    // The canonical's computed tier (from its scores), copied to the
+    // translation — NOT the legacy native row's "LOW".
+    const canonicalTier = await pool.query<{ priority_tier: string }>(
+      `SELECT priority_tier FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'ENGLISH'
+          AND superseded_at IS NULL`,
+      [AICE, KEY],
+    );
+
+    const row = await liveKoreanRow(KEY);
+    expect(row.generation).toBe(2);
+    expect(row.restoration_lang).toBe("ENGLISH");
+    // Scores/tier/TTP copied from the canonical, not the legacy native row.
+    expect(row.priority_tier).toBe(canonicalTier.rows[0].priority_tier);
+    expect(row.priority_tier).not.toBe("LOW");
+    expect(row.ttp_tags).toEqual(["T1059", "T1071"]);
+    expect(row.analysis_text).toBe("KO narrative <<REDACTED_IP_E1_001>>.");
+
+    // Exactly one live Korean row (the legacy row was replaced, not duplicated).
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'KOREAN'
+          AND superseded_at IS NULL`,
+      [AICE, KEY],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it("does not treat a legacy native row at the canonical generation as a materialized translation", async () => {
+    // Defense-in-depth on the idempotency check: even if a non-translation row
+    // (restoration_lang IS NULL) shares the canonical's generation,
+    // `translationExistsAtGeneration` must NOT report the translation as
+    // already materialized — only a genuine restoration_lang = ENGLISH row
+    // counts. Here the canonical and a stray native Korean row both sit at
+    // gen 3; the derive must still translate and supersede/replace the native
+    // row rather than no-op on it.
+    const KEY = "401";
+    await seedCanonical({ eventKey: KEY, generation: 3 });
+    // Stray native Korean row at the SAME generation, older requested_at so the
+    // fresh translation supersedes it.
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, restoration_lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score,
+          severity_factors, likelihood_factors, ttp_tags,
+          priority_tier, analysis_text, event_time, kind,
+          redaction_policy_version, requested_by, requested_at, origin)
+       VALUES ($1, $2::numeric, 'KOREAN', NULL, $3, $4,
+               'mv-legacy', 'pv-legacy', 3,
+               0.1, 0.2,
+               $5::jsonb, $6::jsonb, $7::jsonb,
+               'LOW', 'stray native KO', '2026-05-20T00:00:00Z',
+               'HttpThreat', 'rp-v0', $8::uuid, NOW() - INTERVAL '1 hour',
+               'manual')`,
+      [
+        AICE,
+        KEY,
+        MODEL_NAME,
+        MODEL,
+        JSON.stringify(["legacy sev"]),
+        JSON.stringify(["legacy lik"]),
+        JSON.stringify(["T0000"]),
+        ACCOUNT,
+      ],
+    );
+
+    const res = await derive(KEY);
+    // Not a no-op: a real translation is produced and the aimer call fires.
+    expect(res).toEqual({ kind: "translated", generation: 3 });
+    expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
+
+    const row = await liveKoreanRow(KEY);
+    expect(row.restoration_lang).toBe("ENGLISH");
+    expect(row.analysis_text).toBe("KO narrative <<REDACTED_IP_E1_001>>.");
+    // Exactly one live Korean row — the stray native row was superseded.
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = $2::numeric AND lang = 'KOREAN'
+          AND superseded_at IS NULL`,
+      [AICE, KEY],
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
   it("returns canonical_missing when no English canonical exists", async () => {
     const res = await derive("200");
     expect(res).toEqual({ kind: "canonical_missing" });
