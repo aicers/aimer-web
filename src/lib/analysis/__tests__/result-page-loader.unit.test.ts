@@ -226,13 +226,15 @@ describe("loadAnalysisResultPage", () => {
     if (outcome.kind !== "ok") return;
     expect(outcome.data.lang).toBe("ENGLISH");
 
-    // The non-pinned SELECT orders requested-lang first, English canonical
-    // next, then latest generation — binding the requested lang as $3.
+    // The non-pinned SELECT orders the LATEST generation first, then the
+    // requested lang, then the English canonical — binding the requested lang
+    // as $3. Generation-first ensures a stale lower-generation translation
+    // never shadows a newer English canonical (#581 review R1).
     const call = customerPool.query.mock.calls.find((c) =>
       String(c[0]).includes("FROM event_analysis_result"),
     );
     expect(String(call?.[0])).toContain(
-      "ORDER BY (lang = $3) DESC, (lang = 'ENGLISH') DESC, generation DESC",
+      "ORDER BY generation DESC, (lang = $3) DESC, (lang = 'ENGLISH') DESC",
     );
     expect(String(call?.[0])).not.toContain("AND lang = $3");
     expect(call?.[1]?.[2]).toBe("KOREAN");

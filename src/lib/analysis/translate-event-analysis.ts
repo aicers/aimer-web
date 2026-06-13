@@ -104,8 +104,12 @@ export interface DeriveEventTranslationParams {
 export type DeriveEventTranslationResult =
   // A fresh translated row was written at the canonical's generation.
   | { kind: "translated"; generation: number }
-  // A live translated row already existed at the canonical's generation —
-  // finalize/no-op, no second aimer call, no duplicate row.
+  // Finalize/no-op — no duplicate row and (on the pre-call path) no second
+  // aimer call. Covers two cases: a live translated row already existed at the
+  // canonical's generation, OR the canonical advanced past the generation this
+  // call translated (a concurrent regeneration committed a newer canonical, so
+  // this now-stale translation is abandoned rather than written). `generation`
+  // is the latest live canonical generation the caller should treat as current.
   | { kind: "noop"; generation: number }
   // No live English canonical yet — the caller defers (it cannot translate
   // what does not exist).
@@ -268,7 +272,11 @@ function scanTranslationLeak(
  * any prior live translated row exactly as the native generation path does.
  * Single-row safety under crash/retry and sync-vs-worker races is enforced by
  * the result PK + `ON CONFLICT DO NOTHING`; the pre-call existence check
- * skips the (expensive) aimer call on the common retry path.
+ * skips the (expensive) aimer call on the common retry path. The canonical
+ * generation is also re-validated UNDER the write lock: if a concurrent
+ * regeneration advanced the canonical while this call was translating, the
+ * now-stale translation is abandoned as a no-op rather than written, so no
+ * translated row is ever pinned to a superseded canonical generation.
  */
 export async function deriveEventTranslation(
   params: DeriveEventTranslationParams,
@@ -435,6 +443,34 @@ export async function deriveEventTranslation(
         EVENT_GENERATION_LOCK_NAMESPACE,
         eventVariantLockKey(aiceId, eventKey, targetLang, modelName, model),
       ]);
+      // Re-validate the canonical generation under the lock. The canonical was
+      // read (and the aimer translate call issued) BEFORE this lock, so a
+      // concurrent English regeneration may have committed a newer canonical
+      // (generation N+1) while this call was translating generation N's text.
+      // Writing now would leave a stale live translated row at N alongside the
+      // N+1 derivation. If the canonical advanced, abandon this stale
+      // translation as a no-op — the regenerate path re-derives the user
+      // language synchronously at N+1 (#581), so the newer derivation owns the
+      // live row. If nothing is live, the canonical was fully superseded with
+      // no replacement yet; let the caller defer.
+      const live = await writeClient.query<{ generation: number }>(
+        `SELECT generation FROM event_analysis_result
+          WHERE aice_id = $1 AND event_key = $2::numeric
+            AND lang = $3 AND model_name = $4 AND model = $5
+            AND superseded_at IS NULL
+          ORDER BY generation DESC
+          LIMIT 1`,
+        [aiceId, eventKey, DEFAULT_LANG, modelName, model],
+      );
+      const liveCanonicalGeneration = live.rows[0]?.generation ?? null;
+      if (liveCanonicalGeneration === null) {
+        await writeClient.query("ROLLBACK");
+        return { kind: "canonical_missing" };
+      }
+      if (liveCanonicalGeneration !== canonical.generation) {
+        await writeClient.query("ROLLBACK");
+        return { kind: "noop", generation: liveCanonicalGeneration };
+      }
       await writeClient.query(
         `UPDATE event_analysis_result
             SET superseded_at = NOW()

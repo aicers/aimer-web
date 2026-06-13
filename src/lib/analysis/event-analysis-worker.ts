@@ -34,7 +34,7 @@
 import "server-only";
 
 import type { Pool, PoolClient } from "pg";
-import { appLocaleToReportLanguage, isSupportedLocale } from "@/i18n/locale";
+import { configuredAppDisplayLanguage } from "@/i18n/locale";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
@@ -76,25 +76,16 @@ function resolveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
 }
 
-// `DEFAULT_LOCALE` is the global app UI locale (`en` / `ko`), mirrored from
-// `src/i18n/routing.ts` (same `?? "ko"` fallback) and read directly here so
-// the worker need not pull in next-intl's routing object.
-const DEFAULT_LOCALE = process.env.DEFAULT_LOCALE ?? "ko";
-
 // Bilingual eager set (#581): English canonical ∪ the app default-locale
 // language, deduplicated. English (`DEFAULT_LANG`) is ALWAYS the natively
 // generated canonical; any other entry is ALWAYS a TRANSLATION of that
 // canonical (never natively generated). Collapses to English-only when the
-// app language is English. The locale↔language mapper is typed (`AppLocale`),
-// so a garbled `DEFAULT_LOCALE` validates to the English baseline here rather
-// than folding silently inside the mapper.
+// app language is English. `configuredAppDisplayLanguage()` is the single
+// source of truth for the deployment's user-display language (it validates
+// `DEFAULT_LOCALE` and folds a garbled value to the English baseline), shared
+// with the regenerate / synchronous-analyze re-derivation paths.
 export const EAGER_LANGS: SupportedLang[] = Array.from(
-  new Set<SupportedLang>([
-    DEFAULT_LANG,
-    isSupportedLocale(DEFAULT_LOCALE)
-      ? appLocaleToReportLanguage(DEFAULT_LOCALE)
-      : DEFAULT_LANG,
-  ]),
+  new Set<SupportedLang>([DEFAULT_LANG, configuredAppDisplayLanguage()]),
 );
 
 // Backoff applied when a translation job defers because its English canonical

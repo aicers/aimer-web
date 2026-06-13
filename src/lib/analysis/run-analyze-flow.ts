@@ -3,7 +3,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { ClientError } from "graphql-request";
 import type { Pool, PoolClient } from "pg";
-import { reportLanguageToAppLocale } from "@/i18n/locale";
+import {
+  configuredAppDisplayLanguage,
+  reportLanguageToAppLocale,
+} from "@/i18n/locale";
 import { auditLog } from "@/lib/audit";
 import { authorize } from "@/lib/auth/authorization";
 import { getCustomerByExternalKey } from "@/lib/auth/customers";
@@ -1149,14 +1152,33 @@ export async function runAnalyzeFlow(
     }
   }
 
-  if (langForStorage !== DEFAULT_LANG) {
+  // Derive the user-language translation(s) of the canonical (#581). The
+  // explicit non-English request target is ALWAYS derived — this covers a
+  // translate-only retry where the canonical already existed and was NOT
+  // re-generated above. Additionally, a FORCED regenerate re-derives the
+  // deployment's configured user-display language even on an ENGLISH target:
+  // forcing advances the canonical generation, so a user-language row from the
+  // prior generation would otherwise stay pinned to the now-superseded
+  // canonical with stale scores / factors / text (force-regenerate
+  // consistency). A first-time analysis (no prior canonical) is NOT eagerly
+  // translated here — the sync path is on-demand, so a bare English request
+  // only produces English until the user language is actually requested or the
+  // worker seeds it; there is no prior user-language row to keep aligned.
+  const derivedTargets = new Set<SupportedLang>();
+  if (langForStorage !== DEFAULT_LANG) derivedTargets.add(langForStorage);
+  if (params.force) {
+    const userLang = configuredAppDisplayLanguage();
+    if (userLang !== DEFAULT_LANG) derivedTargets.add(userLang);
+  }
+
+  for (const targetLang of derivedTargets) {
     const derived = await deriveEventTranslation({
       customerPool,
       aiceId: params.aiceId,
       eventKey: params.eventKey,
       modelName: params.modelName,
       model: params.model,
-      targetLang: langForStorage,
+      targetLang,
       accountId: params.accountId,
       graphqlAiceId: params.aiceId,
       requestedBy: params.accountId,

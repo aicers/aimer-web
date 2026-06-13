@@ -247,6 +247,35 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     expect(rows[0].n).toBe(1);
   });
 
+  it("abandons a stale translation as a no-op when the canonical advances mid-call", async () => {
+    // Simulate a concurrent English regeneration: the canonical is read at
+    // gen 3 before the aimer call, but advances to gen 4 (gen 3 superseded)
+    // WHILE the translate call is in flight. The under-lock re-validation must
+    // then abandon the now-stale gen-3 translation as a no-op rather than write
+    // a stale live KOREAN row at gen 3 (#581 review R1).
+    await seedCanonical({ eventKey: "104", generation: 3 });
+    mockGraphqlRequest.mockImplementation(async () => {
+      await pool.query(
+        `UPDATE event_analysis_result SET superseded_at = NOW()
+          WHERE aice_id = $1 AND event_key = '104'::numeric AND generation = 3`,
+        [AICE],
+      );
+      await seedCanonical({ eventKey: "104", generation: 4 });
+      return happyTranslation();
+    });
+
+    const res = await derive("104");
+    // The latest live canonical is gen 4; the gen-3 translation is abandoned.
+    expect(res).toEqual({ kind: "noop", generation: 4 });
+    // No KOREAN row was written at all (the stale gen-3 insert was skipped).
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM event_analysis_result
+        WHERE aice_id = $1 AND event_key = '104'::numeric AND lang = 'KOREAN'`,
+      [AICE],
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
   it("returns canonical_missing when no English canonical exists", async () => {
     const res = await derive("200");
     expect(res).toEqual({ kind: "canonical_missing" });

@@ -362,10 +362,17 @@ export async function loadAnalysisResultPage(
     kind: string | null;
   }>(
     // Non-pinned read resolves the viewer-language variant with a
-    // requested -> English -> any fallback (#581): order so the requested
-    // language wins, then the English canonical, then whatever exists, taking
-    // the latest non-superseded generation. A generation pin is variant-exact
-    // (a report citation pins a precise `(lang, generation)`) — no fallback.
+    // requested -> English -> any fallback (#581), but the LATEST generation
+    // wins FIRST: a translated row shares its canonical's generation and can
+    // never exceed it, so ordering `generation DESC` ahead of the language
+    // preference guarantees a stale lower-generation translation never shadows
+    // a newer English canonical. This is what keeps a force-regenerate (or a
+    // failed/lagging translation that left an older user-language row live)
+    // from displaying superseded scores/factors/text: until the matching
+    // translation lands at the new generation, the reader falls back to the
+    // English canonical. Within one generation the requested language wins,
+    // then English, then whatever exists. A generation pin is variant-exact (a
+    // report citation pins a precise `(lang, generation)`) — no fallback.
     pinnedGeneration === null
       ? `SELECT
            lang,
@@ -391,7 +398,7 @@ export async function loadAnalysisResultPage(
            AND model_name = $4
            AND model = $5
            AND superseded_at IS NULL
-         ORDER BY (lang = $3) DESC, (lang = 'ENGLISH') DESC, generation DESC
+         ORDER BY generation DESC, (lang = $3) DESC, (lang = 'ENGLISH') DESC
          LIMIT 1`
       : `SELECT
            lang,

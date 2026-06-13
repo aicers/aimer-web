@@ -10,7 +10,10 @@
 //     English call, derive only (retry-only-translation semantics)
 //   - canonical succeeds but the translation fails -> request fails (partial)
 //     while the canonical is kept; a retry then runs only the translation
-//   - English target -> native only, never derives a translation
+//   - English target + !force -> native only, never derives a translation
+//   - English target + force -> re-generates the canonical AND re-derives the
+//     configured user language (force-regenerate consistency: a Korean row
+//     from the prior generation must not stay pinned to the superseded one)
 //   - an existing user-language row + !force is a cache hit (no native,
 //     no derive)
 //
@@ -241,11 +244,30 @@ describe("runAnalyzeFlow bilingual invariant (#581)", () => {
       expect(res.errorCode).toBe("aimer_invalid_request");
   });
 
-  it("English target: generates natively and NEVER derives a translation", async () => {
+  it("English target (not forced): generates natively and NEVER derives a translation", async () => {
     const res = await runAnalyzeFlow(baseParams({ lang: "ENGLISH" }));
     expect(res.kind).toBe("success");
     expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
     expect(mockDeriveTranslation).not.toHaveBeenCalled();
+  });
+
+  it("English target (forced): re-generates the canonical AND re-derives the user language", async () => {
+    // Force-regenerating the English canonical advances its generation, so the
+    // configured user-language row (KOREAN here — the test env's DEFAULT_LOCALE
+    // is unset -> "ko") must be re-derived at the new generation rather than
+    // left pinned to the superseded canonical (#581 review R1).
+    canonicalRows = [{ one: 1 }]; // a prior canonical exists
+    const res = await runAnalyzeFlow(
+      baseParams({ lang: "ENGLISH", force: true }),
+    );
+    expect(res.kind).toBe("success");
+    // The English canonical is re-generated natively...
+    expect(mockGraphqlRequest).toHaveBeenCalledTimes(1);
+    // ...and the user-language translation is re-derived from it.
+    expect(mockDeriveTranslation).toHaveBeenCalledTimes(1);
+    expect(mockDeriveTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ targetLang: "KOREAN" }),
+    );
   });
 
   it("existing user-language row (not forced) is a cache hit: no native call, no derive", async () => {

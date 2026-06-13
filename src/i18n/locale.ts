@@ -50,6 +50,24 @@ export function reportLanguageToAppLocale(language: ReportLanguage): AppLocale {
 }
 
 /**
+ * The app's configured user-facing display language as a report-language enum
+ * value, resolved from the `DEFAULT_LOCALE` env with the same `?? "ko"`
+ * fallback as `i18n/routing.ts`. A garbled / unsupported value resolves to the
+ * English baseline (never folds silently inside the mapper).
+ *
+ * This is the single source of truth for the language whose translated
+ * analysis rows a deployment eagerly maintains — the bilingual eager set
+ * (#581). It collapses to `"ENGLISH"` on an English deployment, which callers
+ * use to decide that there is no user-language translation to derive.
+ */
+export function configuredAppDisplayLanguage(): ReportLanguage {
+  const locale = process.env.DEFAULT_LOCALE ?? "ko";
+  return isSupportedLocale(locale)
+    ? appLocaleToReportLanguage(locale)
+    : "ENGLISH";
+}
+
+/**
  * Validate that a value is a real IANA time zone, using the runtime's
  * own zone database. `accounts.timezone` is not CHECK-constrained at the
  * DB level (the IANA set is large and runtime-dependent), so this is the

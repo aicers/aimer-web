@@ -77,7 +77,9 @@ two-column grid:
   copied from the English canonical unchanged — so they are identical in
   both languages. The page shows the language matching your app locale; the
   link's `?lang=en` / `?lang=ko` pins it, and it falls back to English (then
-  any available language) when your language has not been generated yet.
+  any available language) when your language is not yet available for the
+  current version — either never generated, or briefly while a re-generated
+  English canonical is being re-translated.
 
 The remaining fields are **model/prompt provenance** — how the artifact
 was produced — and are restricted to analysts (see [Analyst-only
