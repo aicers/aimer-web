@@ -276,16 +276,16 @@ it is never sent to the report model (a periodic report re-masks any
 fact-scope token before its own prompt). As with `E{i}`, a fact-scope
 token that cannot be restored is passed through unchanged.
 
-## Member suspicious events
+## Member detections
 
-Below the analysis body the page lists the **member suspicious events**
+Below the analysis body the page lists the **member detections**
 correlated into this story, in the story's member order (the member
 ordinal embedded in the redaction token namespace). Each member is a card
 linking down to that event's [Analysis Result page](../analysis-result.md),
 carrying the default `(language, provider, model)` variant so the event
 page resolves the same evidence the card describes. The card is titled by
 the event's time and kind — `{event time} · {kind}` (for example, `6/3,
-2:05 PM · HTTP Threat`), the same label the Suspicious Events lists use —
+2:05 PM · HTTP Threat`), the same label the Detections lists use —
 with the originating `aice_id` on a meta line beneath the title; the opaque
 `event_key` is never shown as a title. A card shows the member's
 priority-tier badge and severity / likelihood scores when the event has a
@@ -298,7 +298,7 @@ This is the downward half of the trust drill-down: a reader can move from
 the story narrative into each cited event, then on to the raw source
 event from the event page.
 
-![The story page's member suspicious-events list, each analyzed member carrying a priority-tier badge and severity / likelihood scores](../../assets/story-member-events.en.png)
+![The story page's member detections list, each analyzed member carrying a priority-tier badge and severity / likelihood scores](../../assets/story-member-events.en.png)
 
 ## Cited by
 

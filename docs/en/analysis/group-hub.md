@@ -5,7 +5,7 @@ surface. A customer group bundles several member customers so their
 periodic security reports can be generated and read together. In this
 version the group hub surfaces **reports only**.
 
-![Placeholder for the group hub — the single Security Reports card with no Threat Stories or Suspicious Events sections — pending a real-data recapture (the group hub requires a stack with a customer group that has generated reports, which the fixture stack cannot reproduce)](../../assets/group-hub.en.png)
+![Placeholder for the group hub — the single Security Reports card with no Threat Stories or Detections sections — pending a real-data recapture (the group hub requires a stack with a customer group that has generated reports, which the fixture stack cannot reproduce)](../../assets/group-hub.en.png)
 
 ## Reaching the hub
 
@@ -27,7 +27,7 @@ The group hub renders a single section card:
   Security Reports](reports.md)). The index, calendar, and detail pages all
   read the group's combined reports.
 
-There are intentionally **no** Threat Stories or Suspicious Events cards: a
+There are intentionally **no** Threat Stories or Detections cards: a
 group owns periodic reports only, so those surfaces are not part of the
 group hub in this version.
 

@@ -2,10 +2,10 @@
 
 The customer hub is the entry point for a single customer's analysis
 surfaces. It links to that customer's periodic reports, threat stories,
-and suspicious events, so every individual analysis has a navigable home
+and detections, so every individual analysis has a navigable home
 rather than being reachable only by knowing its ID.
 
-![The customer hub with the Security Reports, Threat Stories, and Suspicious Events section cards](../../assets/customer-hub.en.png)
+![The customer hub with the Security Reports, Threat Stories, and Detections section cards](../../assets/customer-hub.en.png)
 
 ## Reaching the hub
 
@@ -24,7 +24,7 @@ The hub renders up to three section cards, each linking into a list:
   Security Reports](reports.md)).
 - **Threat Stories** — the customer-scoped [threat stories
   list](threat-stories.md).
-- **Suspicious Events** — the customer-scoped [suspicious events
+- **Detections** — the customer-scoped [detections
   list](suspicious-events.md), where each event is titled by its time and
   kind (`{event time} · {kind}`) rather than the raw `event_key`.
 
@@ -34,7 +34,7 @@ The hub is **member-gated, section-by-section**:
 
 - The **Security Reports** section renders only when the caller has
   `reports:read`.
-- The **Threat Stories** and **Suspicious Events** sections render only
+- The **Threat Stories** and **Detections** sections render only
   when the caller has `analyses:read`.
 
 A caller with only some of these permissions sees only the permitted

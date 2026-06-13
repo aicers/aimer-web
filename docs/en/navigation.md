@@ -34,7 +34,7 @@ cross-customer surface (see [Cross-Customer Overview](cross-customer-overview.md
 - **Reports** — report generation.
 - **Threat Stories** — the highest-priority threat stories across the
     active scope.
-- **Suspicious Events** — suspicious events awaiting review across the
+- **Detections** — detections awaiting review across the
     active scope.
 
 All users see a personal settings item:
@@ -61,7 +61,7 @@ subjects you can access, split into two visually-distinct sub-sections:
 - **Customers** — every customer you can access. Each entry links to
     that customer's [analysis hub](analysis/customer-hub.md)
     (`/subjects/<id>`), which gathers the customer's reports, threat
-    stories, and suspicious-event summaries in one place.
+    stories, and detection summaries in one place.
 - **Groups** — every customer group you can access, marked with a group
     icon. Each entry links to that group's [analysis
     hub](analysis/group-hub.md). A group appears here only when you hold
@@ -165,7 +165,7 @@ session" label.
 ## Cross-customer overview surfaces
 
 The top-level **Overview**, **Reports**, **Threat Stories**, and
-**Suspicious Events** pages merge the highest-risk and most recent items
+**Detections** pages merge the highest-risk and most recent items
 from every customer in the active scope into one ranked list. See
 [Cross-Customer Overview](cross-customer-overview.md) for how they work.
 The earlier placeholder routes (`/dashboard`, `/analysis`, `/events`)

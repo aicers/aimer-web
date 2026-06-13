@@ -1,17 +1,18 @@
-# Suspicious Events
+# Detections
 
-The suspicious events Clumit Insight shows are events that Clumit Security
-detected and passed basic triage, then forwarded from aice-web-next — in
-other words, suspected threats. This is the single place that states this
-provenance; the other analysis pages refer back here.
+The detections Clumit Insight shows are events that Clumit Security
+detected and passed basic triage, then forwarded from aice-web-next —
+events that were detected and analyzed, not unfiltered alerts. This is the
+single place that states this provenance; the other analysis pages refer
+back here.
 
-The suspicious events list is the customer-scoped index of the
+The detections list is the customer-scoped index of the
 **analyzed** subset — events that already have an analysis result —
 linking into the existing [event analysis detail
 page](../analysis-result.md). It is not the full population of forwarded
 events.
 
-![The suspicious events list — priority-sorted rows with the AICE environment, severity and likelihood, a priority badge, and the priority + time-window filter bar](../../assets/suspicious-events-list.en.png)
+![The detections list — priority-sorted rows with the AICE environment, severity and likelihood, a priority badge, and the priority + time-window filter bar](../../assets/suspicious-events-list.en.png)
 
 This is a **new customer-level segment**. The event detail route is
 scoped to a single AICE environment, but a customer-wide list spans many
@@ -79,7 +80,7 @@ Changing a filter resets pagination to the first page.
 
 ## States
 
-- **Empty** — a "no suspicious events match the current filters" notice.
+- **Empty** — a "no detections match the current filters" notice.
 - **Loading** — a loading placeholder while the page resolves.
 - **Error** — an error notice with a **Try again** action.
 

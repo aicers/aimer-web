@@ -1,7 +1,7 @@
 # Analysis Result Page
 
-The analysis result page shows a single LLM analysis of one [suspicious
-event](analysis/suspicious-events.md).
+The analysis result page shows a single LLM analysis of one
+[detection](analysis/suspicious-events.md).
 It is reached from aice-web-next by opening an event detail and following
 the deep link to Clumit Insight, or directly via its customer-scoped URL.
 
@@ -141,7 +141,7 @@ inside a list item or heading.
 
 ## Part of threat stories
 
-When this suspicious event is a member of one or more threat stories, the
+When this detection is a member of one or more threat stories, the
 page shows a **Part of threat story / stories** section near the top with
 a link to each parent story (with its priority-tier badge). This is the
 upward half of the trust drill-down: a reader who arrived at the event

@@ -27,7 +27,7 @@ vi.mock("next-intl", () => ({
     const map: Record<string, string> = {
       home: "Home",
       overview: "Overview",
-      suspiciousEvents: "Suspicious Events",
+      suspiciousEvents: "Detections",
       threatStories: "Threat Stories",
       threatStory: "Threat Story",
       event: "Event",
@@ -117,7 +117,7 @@ describe("Breadcrumbs", () => {
 
   it("renders crumbs for the new top-level cross-customer routes", () => {
     const routes: Array<[string, string]> = [
-      ["/en/suspicious-events", "Suspicious Events"],
+      ["/en/suspicious-events", "Detections"],
       ["/en/threat-stories", "Threat Stories"],
     ];
 

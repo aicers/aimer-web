@@ -12,7 +12,7 @@ There are four surfaces:
 | **Overview** | `/overview` | A combined landing: the top items of each type plus per-type counts. |
 | **Reports** | `/reports` | Recent and high-risk periodic security reports. |
 | **Threat Stories** | `/threat-stories` | Recent and high-risk threat stories. |
-| **Suspicious Events** | `/suspicious-events` | Recent and high-risk analyzed events. |
+| **Detections** | `/suspicious-events` | Recent and high-risk analyzed events. |
 
 ## Scope and permissions
 
@@ -26,7 +26,7 @@ counts and lists customers where you additionally hold its read
 permission:
 
 - **Reports** requires `reports:read`.
-- **Threat Stories** and **Suspicious Events** require `analyses:read`.
+- **Threat Stories** and **Detections** require `analyses:read`.
 
 A customer you can see but not read on a given surface contributes
 neither rows **nor counts** to that surface — the count itself is treated
@@ -46,9 +46,9 @@ Every surface is **highest-risk first**. Rows are ordered by:
 
 Reports show the **priority tier only**; the numeric aggregate score that
 participates in ordering is intentionally not displayed. Threat-story and
-suspicious-event rows may show their severity and likelihood scores.
+detection rows may show their severity and likelihood scores.
 
-Suspicious-event rows are titled by the event's **time and kind** —
+Detection rows are titled by the event's **time and kind** —
 `{event time} · {kind}` (for example, `6/3, 2:05 PM · HTTP Threat`), shown
 in your account timezone — falling back to the time alone when the kind is
 unknown, or to a plain `Event` label when the time is unavailable. The kind
@@ -89,4 +89,4 @@ the active scope and any report parameters on the URL:
 - `/analysis` → `/overview`
 - `/events` → `/suspicious-events`
 
-![The cross-customer Overview page under a multi-customer scope: the sidebar scope selector on the left and the Reports, Threat Stories, and Suspicious Events sections, each with a "View all" link into its dedicated cross-customer page](../assets/cross-customer-overview.en.png)
+![The cross-customer Overview page under a multi-customer scope: the sidebar scope selector on the left and the Reports, Threat Stories, and Detections sections, each with a "View all" link into its dedicated cross-customer page](../assets/cross-customer-overview.en.png)
