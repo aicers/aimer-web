@@ -148,6 +148,29 @@ function goodAimerResponse() {
   };
 }
 
+// A live English-canonical `story_analysis_result` row, as
+// `loadStoryEnglishCanonical` reads it (#580). Scores/tier/TTP/refs are copied
+// verbatim onto the translated row; `analysis_text` + factors are the
+// translate-mutation input.
+function canonicalResultRow() {
+  return {
+    analysis_text:
+      "Suspicious lateral movement involving <<REDACTED_IP_E1_001>>.",
+    severity_factors: ["lateral movement signals", "privileged account use"],
+    likelihood_factors: ["multiple correlated events"],
+    severity_score: 0.7,
+    likelihood_score: 0.5,
+    ttp_tags: ["T1078"],
+    priority_tier: "MEDIUM",
+    input_event_refs: [{ index: 1, aiceId: "aice-1", eventKey: "1001" }],
+    input_fact_refs: [],
+    model_actual_version: "gpt-4o-2024-08-06",
+    prompt_version: "story-v3",
+    input_hash: "deadbeef",
+    redaction_policy_version: "engine:1.0|ranges:abc",
+  };
+}
+
 function sqlIncludes(pool: MockPool, fragment: string): QueryCall | undefined {
   return pool.__calls.find((c) => c.sql.includes(fragment));
 }
@@ -271,43 +294,77 @@ describe("processStoryJob — happy path", () => {
     expect(stateUpdate?.params?.[4]).toBe(0.5);
   });
 
-  it("does NOT denormalize priority/scores for a non-default variant (WS3 #392)", async () => {
-    // `story_analysis_state` holds one row per (customer_id, story_id) and
-    // the Threat Stories list resolves each story to its single canonical
-    // default variant. A finalize for a non-default variant (here a KOREAN
-    // job) must therefore leave the mirror untouched — otherwise a
-    // secondary variant's scores would clobber the canonical row.
+  it("translates a user-language (KOREAN) variant from the English canonical without mirroring (WS3 #392 / #580)", async () => {
+    // A user-language variant is ALWAYS translated from the English canonical
+    // (#580): it copies the canonical's numeric scores / tier / TTP / refs
+    // verbatim and translates only the narrative + factor phrases. It is never
+    // the canonical, so it must NOT write the `story_analysis_state` mirror —
+    // otherwise a secondary variant's scores would clobber the canonical row.
     const authPool = makePool({
       queryPlan: [
-        { rows: [], rowCount: 1 }, // UPDATE → processing
-        { rows: [], rowCount: 1 }, // UPDATE story_analysis_job → done
+        {
+          rows: [{ processing_started_at: "2026-06-13T00:00:00.000Z" }],
+          rowCount: 1,
+        }, // claim
+        { rows: [], rowCount: 1 }, // recordStoryTranslationAudit
+        { rows: [], rowCount: 1 }, // finalizeTranslatedJob → done
       ],
     });
     const customerPool = makePool({
       queryPlan: [
-        { rows: [] }, // probe — no existing result row
-        ...goodMembersQuery(),
+        { rows: [] }, // probe — no existing translated row
+        { rows: [canonicalResultRow()] }, // loadStoryEnglishCanonical
+        ...goodMembersQuery(), // loadCanonicalMembers (story + members)
       ],
       clientQueryPlan: [
         { rows: [] }, // BEGIN
-        { rows: [] }, // INSERT result
+        { rows: [] }, // INSERT translated result
         { rows: [] }, // UPDATE supersede
         { rows: [] }, // COMMIT
       ],
     });
-    const callAnalyzeStory = async () => goodAimerResponse();
+    const translateCalls: Array<{
+      analysis: string;
+      severityFactors: string[];
+      likelihoodFactors: string[];
+      targetLang: string;
+    }> = [];
+    const callTranslateAnalysisNarrative = async (args: {
+      analysis: string;
+      severityFactors: string[];
+      likelihoodFactors: string[];
+      targetLang: string;
+    }) => {
+      translateCalls.push(args);
+      return {
+        analysis: "한국어 분석 <<REDACTED_IP_E1_001>>.",
+        severityFactors: ["측면 이동 신호", "권한 계정 사용"],
+        likelihoodFactors: ["상관된 다수 이벤트"],
+        promptVersion: "translate-v1",
+        modelActualVersion: "gpt-4o-2024-08-06",
+      };
+    };
 
     await processStoryJob(
       { ...baseJob(), lang: "KOREAN" },
       {
         authPool: authPool as never,
-        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
-        callAnalyzeStory: callAnalyzeStory as never,
+        callTranslateAnalysisNarrative: callTranslateAnalysisNarrative as never,
         resolveCustomerPool: () => customerPool as never,
         loadRanges: emptyRangesLoader as never,
         loadOwnedDomains: emptyDomainsLoader as never,
+        loadEnrichmentFacts: async () => [],
       },
     );
+
+    // The canonical's English narrative + factors were sent to the translate
+    // mutation (scores are language-invariant and not sent).
+    expect(translateCalls).toHaveLength(1);
+    expect(translateCalls[0].targetLang).toBe("KOREAN");
+    expect(translateCalls[0].severityFactors).toEqual([
+      "lateral movement signals",
+      "privileged account use",
+    ]);
 
     // The job still finalizes (status='done' on the job table)...
     const finalize = authPool.__calls.find((c) =>
@@ -319,6 +376,24 @@ describe("processStoryJob — happy path", () => {
       c.sql.includes("UPDATE story_analysis_state"),
     );
     expect(stateUpdate).toBeUndefined();
+
+    // The translated row copies the canonical's scores/tier verbatim and pins
+    // restoration_lang = ENGLISH, storing the translated narrative + factors.
+    const insertCall = customerPool.__calls.find((c) =>
+      c.sql.includes("INSERT INTO story_analysis_result"),
+    );
+    expect(insertCall).toBeDefined();
+    // Column order: $4 restoration_lang, $10 severity_score, $11 likelihood,
+    // $12 severity_factors, $15 priority_tier, $16 analysis_text.
+    expect(insertCall?.params?.[3]).toBe("ENGLISH");
+    expect(insertCall?.params?.[9]).toBe(0.7); // canonical severity
+    expect(insertCall?.params?.[10]).toBe(0.5); // canonical likelihood
+    expect(insertCall?.params?.[14]).toBe("MEDIUM"); // canonical tier
+    expect(JSON.parse(insertCall?.params?.[11] as string)).toEqual([
+      "측면 이동 신호",
+      "권한 계정 사용",
+    ]);
+    expect(insertCall?.params?.[15]).toContain("한국어 분석");
   });
 
   it("does NOT mirror priority when the finalize matched zero rows (regenerate race, WS3 #392)", async () => {
@@ -375,6 +450,73 @@ describe("processStoryJob — happy path", () => {
       c.sql.includes("UPDATE story_analysis_state"),
     );
     expect(stateUpdate).toBeUndefined();
+  });
+});
+
+describe("processStoryJob — cross-language supersede on canonical re-gen (#580)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("supersedes lower-generation rows of ANY language when the new English canonical lands", async () => {
+    // Stale-user-language-row invariant (#580). A force/dirty regeneration
+    // produces a new English canonical at a higher generation, but the matching
+    // user-language translation may still be in flight — or fail permanently on
+    // a 4xx / factor-shape / leak. If the native English write superseded only
+    // its OWN language (the prior contract), the previous Korean row would stay
+    // `superseded_at IS NULL` and both the reader and the report input builder
+    // would keep serving stale generation-N Korean scores instead of falling
+    // back to the new canonical. The native write must therefore supersede
+    // EVERY lower-generation row of this `(customer, story, model)` variant,
+    // regardless of language, so the stale translated row is gone the moment the
+    // canonical lands — independent of whether the replacement translation ever
+    // succeeds.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // UPDATE → done (finalize)
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe — no existing result row at this generation
+        ...goodMembersQuery(),
+      ],
+      clientQueryPlan: [
+        { rows: [] }, // BEGIN
+        { rows: [] }, // INSERT result
+        { rows: [] }, // UPDATE supersede
+        { rows: [] }, // COMMIT
+      ],
+    });
+    const callAnalyzeStory = async () => goodAimerResponse();
+
+    // Force-regenerate to a higher generation (the new English canonical).
+    await processStoryJob(
+      {
+        ...baseJob(),
+        generation: 2,
+        force_requested_at: new Date("2026-06-13T00:00:00.000Z"),
+        force_requested_by: "00000000-0000-0000-0000-0000000000ff",
+      },
+      {
+        authPool: authPool as never,
+        checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+        callAnalyzeStory: callAnalyzeStory as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+      },
+    );
+
+    const supersede = sqlIncludes(customerPool, "SET superseded_at");
+    expect(supersede).toBeDefined();
+    // The WHERE clause must NOT scope by language — that is the whole fix.
+    expect(supersede?.sql).not.toMatch(/lang\s*=/);
+    // It still scopes by the model variant and bumps only LOWER generations
+    // (the same-generation translated row, derived from this canonical, is
+    // written afterward and must not be touched).
+    expect(supersede?.sql).toContain("model_name = $3 AND model = $4");
+    expect(supersede?.sql).toContain("generation < $5");
+    expect(supersede?.params?.[4]).toBe(2);
   });
 });
 
@@ -1330,5 +1472,239 @@ describe("processStoryJob — source unavailable", () => {
     );
     expect(failCall?.params?.[6]).toBe(0); // attempts unchanged (no LLM call)
     expect(failCall?.params?.[7]).toBe("source_unavailable");
+  });
+});
+
+describe("processStoryJob — translate path (#580)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const CLAIM_MARKER = "2026-06-13T00:00:00.000Z";
+
+  function goodTranslateResponse() {
+    return {
+      analysis: "한국어 분석 <<REDACTED_IP_E1_001>>.",
+      severityFactors: ["측면 이동 신호", "권한 계정 사용"],
+      likelihoodFactors: ["상관된 다수 이벤트"],
+      promptVersion: "translate-v1",
+      modelActualVersion: "gpt-4o-2024-08-06",
+    };
+  }
+
+  it("defers via next_due_at without consuming the retry budget when the canonical is not ready", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [{ processing_started_at: CLAIM_MARKER }], rowCount: 1 }, // claim
+        { rows: [], rowCount: 1 }, // deferJobForCanonical
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe — no existing translated row
+        { rows: [] }, // loadStoryEnglishCanonical — canonical NOT ready
+      ],
+    });
+    const callTranslate = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(
+      { ...baseJob(), lang: "KOREAN" },
+      {
+        authPool: authPool as never,
+        callTranslateAnalysisNarrative: callTranslate as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+      },
+    );
+    warn.mockRestore();
+
+    // No translate call, no result INSERT.
+    expect(callTranslate).not.toHaveBeenCalled();
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    // The defer sets a bounded next_due_at and does NOT touch attempts or
+    // flip the job to failed (no retry-budget consumption, no hot spin).
+    const defer = authPool.__calls.find((c) =>
+      c.sql.includes("english_canonical_not_ready"),
+    );
+    expect(defer).toBeDefined();
+    expect(defer?.sql).toContain("next_due_at = NOW()");
+    expect(defer?.sql).not.toContain("attempts =");
+    expect(sqlIncludes(authPool, "status = 'failed'")).toBeUndefined();
+  });
+
+  it("fails loudly when the translated factor count diverges from the canonical", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [{ processing_started_at: CLAIM_MARKER }], rowCount: 1 }, // claim
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe
+        { rows: [canonicalResultRow()] }, // canonical (severity_factors length 2)
+        ...goodMembersQuery(),
+      ],
+    });
+    // Translated severityFactors collapses 2 → 1: an element-count change must
+    // fail the job (no filterFactors re-run, no add/drop).
+    const callTranslate = async () => ({
+      ...goodTranslateResponse(),
+      severityFactors: ["측면 이동 신호"],
+    });
+
+    await processStoryJob(
+      { ...baseJob(), lang: "KOREAN" },
+      {
+        authPool: authPool as never,
+        callTranslateAnalysisNarrative: callTranslate as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+        loadEnrichmentFacts: async () => [],
+      },
+    );
+
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1); // attempts bumped (call consumed)
+    expect(failCall?.params?.[7]).toBe("translation_factor_shape_changed");
+  });
+
+  it("leak-scans the translated narrative and fails on an unmapped token", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [{ processing_started_at: CLAIM_MARKER }], rowCount: 1 }, // claim
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe
+        { rows: [canonicalResultRow()] }, // canonical
+        ...goodMembersQuery(),
+      ],
+    });
+    // E9 is not a member index → unmapped token leak in the translated text.
+    const callTranslate = async () => ({
+      ...goodTranslateResponse(),
+      analysis: "측면 이동 <<REDACTED_IP_E9_007>>.",
+    });
+
+    await processStoryJob(
+      { ...baseJob(), lang: "KOREAN" },
+      {
+        authPool: authPool as never,
+        callTranslateAnalysisNarrative: callTranslate as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+        loadEnrichmentFacts: async () => [],
+      },
+    );
+
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[6]).toBe(1);
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
+
+  it("scans the translation against the CANONICAL's tokens, not the latest member set (#580)", async () => {
+    // The allow-list is pinned to the English canonical's STORED text, not to
+    // whatever the latest story version produces. Here the canonical narrative
+    // carries NO redaction token, yet the latest member set (goodMembersQuery)
+    // would yield an `E1` token. A translation that introduces `E1_001` must
+    // therefore FAIL: aimer preserves tokens verbatim, so a token absent from
+    // the canonical cannot legitimately appear in its translation. A
+    // member-derived allow-list (the pre-fix behaviour) would have wrongly
+    // admitted it.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [{ processing_started_at: CLAIM_MARKER }], rowCount: 1 }, // claim
+        { rows: [], rowCount: 1 }, // failJob
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe
+        {
+          rows: [
+            {
+              ...canonicalResultRow(),
+              analysis_text: "Lateral movement detected; no tokens cited.",
+              severity_factors: ["lateral movement signals"],
+              likelihood_factors: ["multiple correlated events"],
+            },
+          ],
+        }, // canonical — token-free narrative
+        ...goodMembersQuery(), // latest members WOULD yield an E1 token
+      ],
+    });
+    const callTranslate = async () => ({
+      ...goodTranslateResponse(),
+      // Element counts preserved (1 severity / 1 likelihood) so the shape gate
+      // passes and the leak scan is what fails the job.
+      analysis: "측면 이동 <<REDACTED_IP_E1_001>>.",
+      severityFactors: ["측면 이동 신호"],
+      likelihoodFactors: ["상관된 다수 이벤트"],
+    });
+
+    await processStoryJob(
+      { ...baseJob(), lang: "KOREAN" },
+      {
+        authPool: authPool as never,
+        callTranslateAnalysisNarrative: callTranslate as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+        loadEnrichmentFacts: async () => [],
+      },
+    );
+
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    const failCall = authPool.__calls.find((c) =>
+      c.sql.includes("status = 'failed'"),
+    );
+    expect(failCall?.params?.[7]).toBe("hallucination_detected");
+  });
+
+  it("aborts before the result insert when the claim was lost mid-translation", async () => {
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [{ processing_started_at: CLAIM_MARKER }], rowCount: 1 }, // claim
+        { rows: [], rowCount: 0 }, // recordStoryTranslationAudit → claim lost
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe
+        { rows: [canonicalResultRow()] }, // canonical
+        ...goodMembersQuery(),
+      ],
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await processStoryJob(
+      { ...baseJob(), lang: "KOREAN" },
+      {
+        authPool: authPool as never,
+        callTranslateAnalysisNarrative: (async () =>
+          goodTranslateResponse()) as never,
+        resolveCustomerPool: () => customerPool as never,
+        loadRanges: emptyRangesLoader as never,
+        loadOwnedDomains: emptyDomainsLoader as never,
+        loadEnrichmentFacts: async () => [],
+      },
+    );
+    warn.mockRestore();
+
+    // The audit UPDATE matched zero rows (watchdog requeued), so the durable
+    // result INSERT must NOT run and the job is not finalized.
+    expect(customerPool.connect).not.toHaveBeenCalled();
+    expect(sqlIncludes(authPool, "status = 'done'")).toBeUndefined();
   });
 });

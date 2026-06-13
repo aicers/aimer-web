@@ -16,7 +16,7 @@ import { AnalysisMarkdown } from "@/components/analysis-body";
 import type { CitationUnit } from "@/lib/analysis/report-result-page-loader";
 import { subjectPages } from "@/lib/navigation/routes";
 import { EventTitle } from "./event-title";
-import { eventPinQuery, pinQuery } from "./sources-panel";
+import { eventPinQuery, storyPinQuery } from "./sources-panel";
 
 // The `analysis`-namespace translator, resolved by the (server-component)
 // caller and passed in so this presentational component stays synchronous.
@@ -99,15 +99,16 @@ function CitationLink({
 }) {
   // Link to the OWNING MEMBER customer's leaf detail (#513), carried on the
   // source — for a group report the leaf lives in a member DB, not the group.
-  // The story reader pins on the enum-form `?lang`; the event reader pins on
-  // the locale form (#581), so each side uses its own variant pin builder.
+  // Both readers now pin on the locale-form `?lang`: stories speak app-locale
+  // via #580 (`storyPinQuery`), events via #581 (`eventPinQuery`), so each side
+  // uses its own variant pin builder.
   const href =
     source.sourceType === "story"
       ? `${subjectPages.story(
           locale,
           source.customerId,
           encodeURIComponent(source.storyId),
-        )}?${pinQuery(source.variant)}`
+        )}?${storyPinQuery(source.variant)}`
       : `${subjectPages.eventAnalysis(
           locale,
           source.customerId,

@@ -463,10 +463,15 @@ export const ${camelToConst(opName)}_SOURCE = \`${escaped}\`;
 
 const document: DocumentNode = parse(${camelToConst(opName)}_SOURCE);
 
-export const ${opName}Document = document as unknown as TypedDocumentNode<
+// The cast lives on its own const so the exported Document declaration never
+// overflows the formatter's line width for a long operation name (the type
+// argument list is always broken across lines, keeping output stable).
+const typedDocument = document as unknown as TypedDocumentNode<
   ${opName}Response,
   ${opName}Variables
 >;
+
+export const ${opName}Document = typedDocument;
 `;
 }
 

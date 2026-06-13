@@ -215,6 +215,26 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       }
     });
 
+    it("story_analysis_result has a nullable restoration_lang column (#580)", async () => {
+      const { rows } = await pool.query<{
+        data_type: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT data_type, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'story_analysis_result'
+            AND column_name = 'restoration_lang'`,
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].data_type).toBe("text");
+      // Nullable: NULL for the native English canonical, ENGLISH for the
+      // translated user-language row.
+      expect(rows[0].is_nullable).toBe("YES");
+      expect(rows[0].column_default).toBeNull();
+    });
+
     it("periodic_report_result has aggregate scores + aggregate_ttp_tags (no factor columns)", async () => {
       const { rows } = await pool.query<{
         column_name: string;

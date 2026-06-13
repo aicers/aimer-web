@@ -36,6 +36,12 @@ const IN_WINDOW = "2026-05-26T02:00:00Z"; // 11:00 KST, inside the day
 // and outside the prior day too. Used to prove dedupe-before-window.
 const OUT_OF_WINDOW = "2026-05-26T16:00:00Z";
 const EN = { tz: TZ, lang: "ENGLISH", modelName: "openai", model: "gpt-4o" };
+// Korean variant of the same model — used by the #580 bilingual-citation
+// regression. A separate report bucket far from the beforeAll fixtures isolates
+// the one bilingual story under test.
+const KO = { tz: TZ, lang: "KOREAN", modelName: "openai", model: "gpt-4o" };
+const BICITE_BUCKET = "2026-05-20";
+const BICITE_WINDOW = "2026-05-20T02:00:00Z";
 
 async function seedStory(
   customerPool: Pool,
@@ -503,6 +509,55 @@ describe.skipIf(!hasPostgres)(
         nowIso: "2026-06-02T00:00:00Z",
       });
       expect(daily.eventRefs.map((r) => r.event_key)).not.toContain("9001");
+    });
+
+    // #580 — a periodic report citing a BILINGUAL story leaf rolls up
+    // identical aggregate scores / tier / TTP regardless of the report's
+    // displayed language. The user-language story row copies the English
+    // canonical's numeric scores verbatim (only narrative + factor phrases
+    // differ), so the report's leaf roll-up — and therefore top-K selection —
+    // is language-invariant. This is the regression the issue mandates without
+    // changing report code: the bilingual leaves merely activate the existing
+    // native non-English report path.
+    it("rolls up consistent scores/tier when citing a bilingual story across display languages (#580)", async () => {
+      // A story isolated to its own DAILY bucket so it is the only cited leaf.
+      await seedStory(customerPool, "7580", "v1", BICITE_WINDOW);
+      await seedStoryMember(customerPool, "7580", "v1", "55800");
+      // English canonical + Korean translated row: seedStoryResult hardcodes
+      // identical scores (0.8 / 0.7) and TTP (T1078) for both — exactly the
+      // bilingual contract (the translated row copies the numbers, differing
+      // only in narrative text).
+      await seedStoryResult(customerPool, "7580", EN, "HIGH", "story 7580 EN");
+      await seedStoryResult(customerPool, "7580", KO, "HIGH", "스토리 7580 KO");
+      await seedState(authPool, "7580", "ready");
+
+      const en = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "DAILY",
+        bucketDate: BICITE_BUCKET,
+        variant: EN,
+        nowIso: "2026-05-21T00:00:00Z",
+      });
+      const ko = await buildPeriodicReportInput({
+        authPool,
+        customerPool,
+        customerId: CUSTOMER_ID,
+        period: "DAILY",
+        bucketDate: BICITE_BUCKET,
+        variant: KO,
+        nowIso: "2026-05-21T00:00:00Z",
+      });
+
+      // The same story leaf is cited in both languages...
+      expect(en.storyRefs.map((r) => r.story_id)).toEqual(["7580"]);
+      expect(ko.storyRefs.map((r) => r.story_id)).toEqual(["7580"]);
+      // ...and the language-invariant roll-up is byte-identical across both.
+      expect(ko.aggregateSeverityScore).toBe(en.aggregateSeverityScore);
+      expect(ko.aggregateLikelihoodScore).toBe(en.aggregateLikelihoodScore);
+      expect(ko.priorityTier).toBe(en.priorityTier);
+      expect(ko.aggregateTtpTags).toEqual(en.aggregateTtpTags);
     });
   },
 );

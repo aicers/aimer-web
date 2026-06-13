@@ -130,6 +130,9 @@ function fixture(
       requestedAt: new Date("2026-05-27T12:00:00Z"),
       isViewerAnalyst,
       canRegenerate: viewer.canRegenerate ?? isViewerAnalyst,
+      requestedLocale: "en",
+      availableLocales: ["en"],
+      languageFallback: null,
       memberEvents: [],
       memberEventVariant: {
         lang: "ENGLISH",
@@ -236,7 +239,7 @@ describe("StoryAnalysisPage — analyst gating (#457)", () => {
 
     // Analytically-meaningful fields stay visible to everyone.
     expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
-    expect(screen.getByText("Language")).toBeTruthy();
+    expect(screen.getAllByText("Language").length).toBeGreaterThan(0);
     expect(screen.getByText("Severity score (if real, how bad)")).toBeTruthy();
 
     // Six provenance fields (provider + model split into two here).
@@ -258,7 +261,7 @@ describe("StoryAnalysisPage — analyst gating (#457)", () => {
 
     // Analytically-meaningful fields remain visible to a non-analyst.
     expect(screen.getByTestId("priority-tier-badge")).toBeTruthy();
-    expect(screen.getByText("Language")).toBeTruthy();
+    expect(screen.getAllByText("Language").length).toBeGreaterThan(0);
     expect(screen.getByText("Severity score (if real, how bad)")).toBeTruthy();
 
     // Provenance fields and the Regenerate button are gone.

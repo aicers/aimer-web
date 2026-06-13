@@ -8,63 +8,60 @@
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { type DocumentNode, parse } from "graphql";
 
-export interface AnalyzeEventVariables {
-  event: string;
-  eventTime: string;
-  name: string;
-  model: string;
-  lang?: "KOREAN" | "ENGLISH" | null;
-}
-
-export interface AnalysisResult {
-  severityScore: number;
-  likelihoodScore: number;
+export interface TranslateAnalysisNarrativeVariables {
+  analysis: string;
   severityFactors: Array<string>;
   likelihoodFactors: Array<string>;
-  ttpTags: Array<string>;
+  targetLang: "KOREAN" | "ENGLISH";
+  name: string;
+  model: string;
+}
+
+export interface AnalysisNarrativeTranslationResult {
   analysis: string;
+  severityFactors: Array<string>;
+  likelihoodFactors: Array<string>;
   promptVersion: string;
   modelActualVersion: string;
 }
 
-export interface AnalyzeEventResponse {
-  analyzeEvent: AnalysisResult;
+export interface TranslateAnalysisNarrativeResponse {
+  translateAnalysisNarrative: AnalysisNarrativeTranslationResult;
 }
 
-export const ANALYZE_EVENT_SOURCE = `mutation AnalyzeEvent(
-  $event: String!
-  $eventTime: DateTime!
+export const TRANSLATE_ANALYSIS_NARRATIVE_SOURCE = `mutation TranslateAnalysisNarrative(
+  $analysis: String!
+  $severityFactors: [String!]!
+  $likelihoodFactors: [String!]!
+  $targetLang: Language!
   $name: String!
   $model: String!
-  $lang: Language
 ) {
-  analyzeEvent(
-    event: $event
-    eventTime: $eventTime
+  translateAnalysisNarrative(
+    analysis: $analysis
+    severityFactors: $severityFactors
+    likelihoodFactors: $likelihoodFactors
+    targetLang: $targetLang
     name: $name
     model: $model
-    lang: $lang
   ) {
-    severityScore
-    likelihoodScore
+    analysis
     severityFactors
     likelihoodFactors
-    ttpTags
-    analysis
     promptVersion
     modelActualVersion
   }
 }
 `;
 
-const document: DocumentNode = parse(ANALYZE_EVENT_SOURCE);
+const document: DocumentNode = parse(TRANSLATE_ANALYSIS_NARRATIVE_SOURCE);
 
 // The cast lives on its own const so the exported Document declaration never
 // overflows the formatter's line width for a long operation name (the type
 // argument list is always broken across lines, keeping output stable).
 const typedDocument = document as unknown as TypedDocumentNode<
-  AnalyzeEventResponse,
-  AnalyzeEventVariables
+  TranslateAnalysisNarrativeResponse,
+  TranslateAnalysisNarrativeVariables
 >;
 
-export const AnalyzeEventDocument = typedDocument;
+export const TranslateAnalysisNarrativeDocument = typedDocument;

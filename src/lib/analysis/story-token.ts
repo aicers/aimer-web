@@ -337,3 +337,30 @@ export function scanStoryAnalysisForLeaks(
 
   return { leaks, hasLeak: leaks.length > 0 };
 }
+
+/**
+ * Extract every story-/fact-scope redaction token already present in a piece
+ * of canonical text. Used by the translate path (#580) to pin the leak-scan
+ * allow-list to the EXACT tokens the English canonical was generated and
+ * already validated against — not to whatever the latest story version
+ * happens to contain at translation time. aimer's narrative-translation
+ * mutation preserves every redaction token verbatim, so a faithful
+ * translation can only ever echo tokens the canonical already carried; any
+ * token outside this set is a hallucination the scan must catch.
+ *
+ * Mirrors the report translate path, which reconstructs its allow-list from
+ * the canonical's recorded cited leaves rather than re-deriving it from
+ * current sources.
+ */
+export function extractRedactionTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  REDACTION_TOKEN_SHAPE_RE.lastIndex = 0;
+  for (
+    let m = REDACTION_TOKEN_SHAPE_RE.exec(text);
+    m !== null;
+    m = REDACTION_TOKEN_SHAPE_RE.exec(text)
+  ) {
+    tokens.add(m[0]);
+  }
+  return tokens;
+}

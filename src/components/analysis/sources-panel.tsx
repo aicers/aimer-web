@@ -12,7 +12,10 @@
 import Link from "next/link";
 import type { useTranslations } from "next-intl";
 import { EventTitle } from "@/components/analysis/event-title";
-import { storedLangToReaderLang } from "@/i18n/locale";
+import {
+  reportLanguageToAppLocale,
+  storedLangToReaderLang,
+} from "@/i18n/locale";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CitedEventSource,
@@ -62,6 +65,24 @@ export function eventPinQuery(variant: CitedLeafVariant): string {
   return new URLSearchParams({
     generation: String(variant.generation),
     lang: storedLangToReaderLang(variant.lang),
+    model_name: variant.modelName,
+    model: variant.model,
+  }).toString();
+}
+
+// Story-leaf variant of {@link pinQuery}: the STORY reader/switcher speaks the
+// report-compatible app-locale `?lang` vocabulary (`en` / `ko`), not the aimer
+// enum, so a cited-story pin must carry the locale form to resolve the exact
+// cited variant rather than falling through to the viewer locale (#580). The
+// stored `variant.lang` is the aimer enum; map it to the locale code here.
+// Event-leaf links use {@link eventPinQuery} (locale form, #581).
+export function storyPinQuery(variant: CitedLeafVariant): string {
+  const locale = reportLanguageToAppLocale(
+    variant.lang === "KOREAN" ? "KOREAN" : "ENGLISH",
+  );
+  return new URLSearchParams({
+    generation: String(variant.generation),
+    lang: locale,
     model_name: variant.modelName,
     model: variant.model,
   }).toString();
@@ -132,7 +153,7 @@ function StorySourceCard({
     locale,
     source.customerId,
     encodeURIComponent(source.storyId),
-  )}?${pinQuery(source.variant)}`;
+  )}?${storyPinQuery(source.variant)}`;
   return (
     <li>
       <Link

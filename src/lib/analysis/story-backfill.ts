@@ -49,6 +49,7 @@ import type { Pool } from "pg";
 import { auditLog } from "../audit";
 import { getAuthPool } from "../db/client";
 import { getCustomerRuntimePool } from "../db/customer-runtime-pool";
+import { EAGER_LANGS } from "./story-worker";
 
 /**
  * Conservative recent-window default (#466 Scope §3): when no time scope is
@@ -533,18 +534,28 @@ export function createBackfillDeps(
       // Coalescing seed: a row that appeared since the scan (a race) is left
       // untouched (DO NOTHING), never force-bumped. No force metadata — this
       // is explicitly NOT the regenerate force path.
-      await authPool.query(
-        `INSERT INTO story_analysis_job
-           (customer_id, story_id, lang, model_name, model,
-            status, generation, dry_run, attempts, last_error,
-            created_at, updated_at)
-         VALUES ($1, $2::bigint, $3, $4, $5,
-                 'queued', 1, FALSE, 0, NULL,
-                 $6::timestamptz, $6::timestamptz)
-         ON CONFLICT (customer_id, story_id, lang, model_name, model)
-         DO NOTHING`,
-        [customerId, storyId, lang, modelName, model, nowIso],
-      );
+      //
+      // Bilingual (#580): the scan is English-canonical-scoped, but a
+      // re-analyzed leaf must be seeded in the full eager set so the
+      // user-language translate variant exists under the new model too (it
+      // derives from the English canonical once that completes). `lang`
+      // (the English canonical) is always in `EAGER_LANGS`, so seeding the
+      // union covers it; ON CONFLICT DO NOTHING leaves any already-present
+      // variant untouched.
+      for (const seedLang of new Set([lang, ...EAGER_LANGS])) {
+        await authPool.query(
+          `INSERT INTO story_analysis_job
+             (customer_id, story_id, lang, model_name, model,
+              status, generation, dry_run, attempts, last_error,
+              created_at, updated_at)
+           VALUES ($1, $2::bigint, $3, $4, $5,
+                   'queued', 1, FALSE, 0, NULL,
+                   $6::timestamptz, $6::timestamptz)
+           ON CONFLICT (customer_id, story_id, lang, model_name, model)
+           DO NOTHING`,
+          [customerId, storyId, seedLang, modelName, model, nowIso],
+        );
+      }
     },
 
     async requeueJob(customerId, storyId, lang, modelName, model) {

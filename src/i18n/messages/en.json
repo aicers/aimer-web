@@ -913,7 +913,12 @@
       "memberEventsDescription": "The detections correlated into this story, in order.",
       "memberUnavailableMeta": "{aiceId} • Event analysis not available at the default variant.",
       "memberEventLabel": "Event",
-      "memberEventMeta": "{aiceId} • severity {severity} • likelihood {likelihood}"
+      "memberEventMeta": "{aiceId} • severity {severity} • likelihood {likelihood}",
+      "languageNavLabel": "Story language",
+      "languageSwitcherLabel": "Language",
+      "languageNameEn": "English",
+      "languageNameKo": "Korean",
+      "languageFallbackNotice": "The {language} analysis isn't available yet — showing the English version."
     },
     "coverage": {
       "incompleteBadge": "Threat-intel coverage incomplete",

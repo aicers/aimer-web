@@ -913,7 +913,12 @@
       "memberEventsDescription": "이 스토리로 연관된 탐지 이벤트를 순서대로 표시합니다.",
       "memberUnavailableMeta": "{aiceId} • 기본 변형에서는 이벤트 분석을 사용할 수 없습니다.",
       "memberEventLabel": "이벤트",
-      "memberEventMeta": "{aiceId} • 심각도 {severity} • 가능성 {likelihood}"
+      "memberEventMeta": "{aiceId} • 심각도 {severity} • 가능성 {likelihood}",
+      "languageNavLabel": "스토리 언어",
+      "languageSwitcherLabel": "언어",
+      "languageNameEn": "영어",
+      "languageNameKo": "한국어",
+      "languageFallbackNotice": "{language} 분석을 아직 사용할 수 없어 영어 버전을 표시합니다."
     },
     "coverage": {
       "incompleteBadge": "위협 인텔리전스 커버리지 불완전",

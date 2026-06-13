@@ -74,8 +74,16 @@ const authPool = {
 const COMPARE_MODEL = "claude-compare";
 let compareResultRows: Array<Record<string, unknown>> = [];
 
+// Languages with a stored, non-superseded row for the resolved model variant,
+// returned by the loader's `SELECT DISTINCT lang` switcher/fallback query
+// (#580). Defaults to English-only so existing tests show the English row.
+let availLangRows: Array<{ lang: string }> = [];
+
 const customerPool = {
   query: vi.fn(async (sql: string, params?: unknown[]) => {
+    if (sql.includes("SELECT DISTINCT lang FROM story_analysis_result")) {
+      return { rows: availLangRows };
+    }
     if (sql.includes("FROM story_analysis_result")) {
       // Primary result params: [customerId, storyId, lang, modelName, model];
       // compare lookup binds the compare model at the same position.
@@ -135,11 +143,13 @@ async function callLoader(
     model?: string;
   },
   variant?: { lang?: string; modelName?: string; model?: string },
+  locale = "en",
 ) {
   const mod = await import("../story-result-page-loader");
   return mod.loadStoryResultPage({
     customerId: CUSTOMER_ID,
     storyId: STORY_ID,
+    locale,
     pin,
     variant,
   });
@@ -151,6 +161,7 @@ beforeEach(() => {
   customerPool.query.mockClear();
   stateRows = [{ status: "ready" }];
   resultRows = [];
+  availLangRows = [{ lang: "ENGLISH" }];
   compareResultRows = [];
   eventDisplayRows = [];
   factMapRows = [];
@@ -178,10 +189,12 @@ describe("loadStoryResultPage — generation/variant pin", () => {
   });
 
   it("pin: resolves the pinned variant and reports its generation/lang", async () => {
+    // The pinned `?lang` is the report-compatible locale form (`ko`), mapped to
+    // the aimer enum internally (#580).
     resultRows = [resultRow({ generation: 2 })];
     const outcome = await callLoader({
       generation: 2,
-      lang: "KOREAN",
+      lang: "ko",
       modelName: "openai",
       model: "gpt-4o",
     });
@@ -191,7 +204,7 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     expect(outcome.data.lang).toBe("KOREAN");
     // The exact pinned generation was bound as a query param (not ORDER BY).
     const call = customerPool.query.mock.calls.find((c) =>
-      String(c[0]).includes("FROM story_analysis_result"),
+      String(c[0]).includes("analysis_text"),
     );
     expect(String(call?.[0])).toContain("generation = $6");
     expect(call?.[1]).toEqual([
@@ -223,8 +236,11 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     // column — latest non-superseded for `(lang, modelName, model)` — not the
     // env default. This is the gap the compare view depends on.
     resultRows = [resultRow({ generation: 4 })];
+    // The user-language variant exists, so the locale-form `?lang=ko` is shown
+    // (not a fallback to English).
+    availLangRows = [{ lang: "KOREAN" }, { lang: "ENGLISH" }];
     const outcome = await callLoader(undefined, {
-      lang: "KOREAN",
+      lang: "ko",
       modelName: "anthropic",
       model: "claude-3-5",
     });
@@ -236,7 +252,7 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     // The primary SELECT bound the variant's model and ran unpinned (latest
     // non-superseded), with no `generation =` bind.
     const call = customerPool.query.mock.calls.find((c) =>
-      String(c[0]).includes("FROM story_analysis_result"),
+      String(c[0]).includes("analysis_text"),
     );
     expect(call?.[1]).toEqual([
       CUSTOMER_ID,
@@ -254,13 +270,67 @@ describe("loadStoryResultPage — generation/variant pin", () => {
     // precedence over a stray `variant`.
     resultRows = [resultRow({ generation: 2 })];
     const outcome = await callLoader(
-      { generation: 2, lang: "ENGLISH", modelName: "openai", model: "gpt-4o" },
-      { lang: "KOREAN", modelName: "anthropic", model: "claude-3-5" },
+      { generation: 2, lang: "en", modelName: "openai", model: "gpt-4o" },
+      { lang: "ko", modelName: "anthropic", model: "claude-3-5" },
     );
     expect(outcome.kind).toBe("ok");
     if (outcome.kind !== "ok") return;
     expect(outcome.data.modelName).toBe("openai");
     expect(outcome.data.lang).toBe("ENGLISH");
+  });
+});
+
+describe("loadStoryResultPage — locale-driven language (#580)", () => {
+  it("shows the user-language variant when the viewer locale's row exists", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    availLangRows = [{ lang: "KOREAN" }, { lang: "ENGLISH" }];
+    const outcome = await callLoader(undefined, undefined, "ko");
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    // Displayed language follows the viewer locale (not ANALYSIS_DEFAULT_LANG).
+    expect(outcome.data.lang).toBe("KOREAN");
+    expect(outcome.data.requestedLocale).toBe("ko");
+    // The switcher lists both available locales; no fallback occurred.
+    expect(outcome.data.availableLocales.sort()).toEqual(["en", "ko"]);
+    expect(outcome.data.languageFallback).toBeNull();
+    // The primary SELECT bound the Korean variant.
+    const call = customerPool.query.mock.calls.find((c) =>
+      String(c[0]).includes("analysis_text"),
+    );
+    expect((call?.[1] as unknown[])?.[2]).toBe("KOREAN");
+  });
+
+  it("falls back to English when the requested user language has no row", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    availLangRows = [{ lang: "ENGLISH" }]; // Korean not generated yet
+    const outcome = await callLoader(undefined, undefined, "ko");
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.lang).toBe("ENGLISH");
+    expect(outcome.data.languageFallback).toEqual({
+      requestedLocale: "ko",
+      shownLocale: "en",
+    });
+    // Only English is offered as available; the switcher still lists it.
+    expect(outcome.data.availableLocales).toEqual(["en"]);
+  });
+
+  it("treats an enum-shaped ?lang=KOREAN as an invalid reader param (falls through to viewer locale)", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    availLangRows = [{ lang: "KOREAN" }, { lang: "ENGLISH" }];
+    // Enum-shaped `?lang` is NOT a supported locale → falls through to the
+    // viewer locale (en here), exactly like the report reader.
+    const outcome = await callLoader(undefined, { lang: "KOREAN" }, "en");
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.lang).toBe("ENGLISH");
+    expect(outcome.data.requestedLocale).toBe("en");
+  });
+
+  it("honors a locale-form ?lang=ko over the viewer locale", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    availLangRows = [{ lang: "KOREAN" }, { lang: "ENGLISH" }];
+    const outcome = await callLoader(undefined, { lang: "ko" }, "en");
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.lang).toBe("KOREAN");
+    expect(outcome.data.requestedLocale).toBe("ko");
   });
 });
 
@@ -419,6 +489,7 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
     const outcome = await mod.loadStoryResultPage({
       customerId: CUSTOMER_ID,
       storyId: STORY_ID,
+      locale: "en",
       compare: { modelName: "anthropic", model: COMPARE_MODEL },
     });
     expect(outcome.kind).toBe("ok");
@@ -432,7 +503,7 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
     // `generation =` bind, ordered by generation DESC.
     const compareCall = customerPool.query.mock.calls.find(
       (c) =>
-        String(c[0]).includes("FROM story_analysis_result") &&
+        String(c[0]).includes("analysis_text") &&
         (c[1] as unknown[])?.[4] === COMPARE_MODEL,
     );
     expect(String(compareCall?.[0])).toContain("superseded_at IS NULL");
@@ -447,6 +518,7 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
     const outcome = await mod.loadStoryResultPage({
       customerId: CUSTOMER_ID,
       storyId: STORY_ID,
+      locale: "en",
       compare: { modelName: "anthropic", model: COMPARE_MODEL },
     });
     expect(outcome.kind).toBe("ok");
@@ -466,6 +538,7 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
     const outcome = await mod.loadStoryResultPage({
       customerId: CUSTOMER_ID,
       storyId: STORY_ID,
+      locale: "en",
       compare: { modelName: "anthropic", model: COMPARE_MODEL },
     });
     expect(outcome.kind).toBe("ok");

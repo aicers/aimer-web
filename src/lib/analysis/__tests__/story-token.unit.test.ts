@@ -6,7 +6,11 @@ import type { RedactionMap } from "@/lib/redaction";
 import { buildOwnedDomainSet } from "../../redaction/domains";
 import { buildRangeSet } from "../../redaction/ranges";
 import type { RangeSet } from "../../redaction/types";
-import { buildStoryTokenMap, scanStoryAnalysisForLeaks } from "../story-token";
+import {
+  buildStoryTokenMap,
+  extractRedactionTokens,
+  scanStoryAnalysisForLeaks,
+} from "../story-token";
 import { restoreStoryAnalysisTokens } from "../story-token-restore";
 
 const EMPTY_RANGES: RangeSet = buildRangeSet([]);
@@ -411,5 +415,35 @@ describe("scanStoryAnalysisForLeaks", () => {
         false,
       );
     });
+  });
+});
+
+describe("extractRedactionTokens (#580)", () => {
+  it("collects every story-, fact-, and report-scope token, deduplicated", () => {
+    const text =
+      "Lateral movement <<REDACTED_IP_E1_001>> then <<REDACTED_DOMAIN_E2_003>>; " +
+      "enriched by <<REDACTED_IP_F1_009>> and cited as <<REDACTED_IP_R1_002>>. " +
+      "Repeat of <<REDACTED_IP_E1_001>>.";
+    expect(extractRedactionTokens(text)).toEqual(
+      new Set([
+        "<<REDACTED_IP_E1_001>>",
+        "<<REDACTED_DOMAIN_E2_003>>",
+        "<<REDACTED_IP_F1_009>>",
+        "<<REDACTED_IP_R1_002>>",
+      ]),
+    );
+  });
+
+  it("returns an empty set for text with no redaction tokens", () => {
+    expect(extractRedactionTokens("Plain narrative, no tokens.").size).toBe(0);
+  });
+
+  it("also matches unknown-kind tokens so the scan can flag them", () => {
+    // The kind-agnostic shape lets a fabricated kind round-trip into the
+    // allow-list extraction; the scan still treats anything outside the
+    // canonical's set as a leak.
+    expect(extractRedactionTokens("x <<REDACTED_HOSTNAME_E1_001>> y")).toEqual(
+      new Set(["<<REDACTED_HOSTNAME_E1_001>>"]),
+    );
   });
 });

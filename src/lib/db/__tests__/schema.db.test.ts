@@ -817,6 +817,41 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       }
     });
 
+    it("story_analysis_job has translation audit + next_due_at columns (#580)", async () => {
+      // Parity with periodic_report_job: the translate-path audit trail
+      // (translation_model_name / translation_model /
+      // translation_prompt_version) plus the per-variant cadence /
+      // canonical-not-ready backoff field (next_due_at). All nullable —
+      // NULL for the native English job.
+      const { rows } = await pool.query<{
+        column_name: string;
+        data_type: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, data_type, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'story_analysis_job'
+            AND column_name IN (
+              'translation_model_name', 'translation_model',
+              'translation_prompt_version', 'next_due_at'
+            )`,
+      );
+      const byName = new Map(rows.map((c) => [c.column_name, c]));
+      for (const col of [
+        "translation_model_name",
+        "translation_model",
+        "translation_prompt_version",
+      ]) {
+        expect(byName.get(col)?.data_type).toBe("text");
+        expect(byName.get(col)?.is_nullable).toBe("YES");
+      }
+      expect(byName.get("next_due_at")?.data_type).toBe(
+        "timestamp with time zone",
+      );
+      expect(byName.get("next_due_at")?.is_nullable).toBe("YES");
+    });
+
     it("event_analysis_job has the budget-accounting DDL contract (#493)", async () => {
       // The auto-baseline path's job lifecycle table. Lock in the
       // columns the per-customer daily cap depends on for correctness.

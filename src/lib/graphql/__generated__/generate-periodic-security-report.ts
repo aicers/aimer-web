@@ -126,7 +126,12 @@ export const PERIODIC_REPORT_SOURCE = `mutation PeriodicReport(
 
 const document: DocumentNode = parse(PERIODIC_REPORT_SOURCE);
 
-export const PeriodicReportDocument = document as unknown as TypedDocumentNode<
+// The cast lives on its own const so the exported Document declaration never
+// overflows the formatter's line width for a long operation name (the type
+// argument list is always broken across lines, keeping output stable).
+const typedDocument = document as unknown as TypedDocumentNode<
   PeriodicReportResponse,
   PeriodicReportVariables
 >;
+
+export const PeriodicReportDocument = typedDocument;

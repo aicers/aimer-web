@@ -2,9 +2,11 @@
 
 The story analysis page shows a single LLM analysis of a multi-event
 story — the unit that aice-web-next groups related detection events into
-before deeper review. Each story is analysed once per default
-`(language, provider, model)` variant by a background worker; the page
-renders the latest non-superseded result.
+before deeper review. Each story is analysed by a background worker in
+two languages: an **English canonical** generated natively, and the app's
+**user-language** variant derived by translating that canonical. The page
+renders the latest non-superseded result in the viewer's language, with a
+[language switcher](#display-language) to move between them.
 
 The page is reached from aice-web-next by opening a story detail and
 following the deep link to Clumit Insight, or directly via its
@@ -30,19 +32,33 @@ The worker pipeline runs the following stages without operator action:
    `ANALYSIS_STORY_MAX_WAIT_HOURS` (read at tick time; see
    [Analysis Worker](../operations/analysis-worker.md)). Non-positive or
    non-numeric overrides fall back to the defaults.
-2. The dispatcher seeds a real `story_analysis_job` row for the default
-   variant against every `ready` or `dirty` state row that lacks one,
-   then picks `queued` rows with `FOR UPDATE SKIP LOCKED`, advisory-
-   locked per `(customer_id, story_id)`.
-3. The worker reads the canonical story version's members (latest
-   `received_at`), rewrites event-scope redaction tokens to
-   story-scope tokens (`<<REDACTED_*_E{i}_*>>`), and calls aimer's
-   `analyzeStory` mutation under mTLS as `system:analysis-worker`.
+2. The dispatcher seeds a real `story_analysis_job` row for every
+   language in the eager set — the English baseline plus the app's
+   user-language — against every `ready` or `dirty` state row that lacks
+   one, then picks `queued` rows with `FOR UPDATE SKIP LOCKED`, advisory-
+   locked per `(customer_id, story_id)`. (When the app language is English
+   the set collapses to a single English variant and nothing is
+   translated.)
+3. The **English canonical** is generated natively: the worker reads the
+   canonical story version's members (latest `received_at`), rewrites
+   event-scope redaction tokens to story-scope tokens
+   (`<<REDACTED_*_E{i}_*>>`), and calls aimer's `analyzeStory` mutation
+   under mTLS as `system:analysis-worker`.
 4. The response is validated (MITRE technique IDs filtered against the
    vendored ATT&CK set, factor chips shape-filtered and capped at five,
    hallucination scan against the LLM narrative) and written to
    `story_analysis_result`. The auth-DB job row is then finalized to
    `status='done'`.
+5. The **user-language** variant is never generated natively — it is
+   always derived from the English canonical: the worker defers (without
+   consuming the retry budget) until the canonical exists, then calls
+   aimer's `translateAnalysisNarrative` mutation to translate the
+   narrative and the score-factor phrases. The numeric severity /
+   likelihood scores, priority tier, MITRE technique codes, and cited
+   member references are **copied from the canonical verbatim**, so the
+   two languages always agree on the numbers and only the human-readable
+   text differs. The translated narrative and factor phrases are
+   leak-scanned against the canonical's tokens before the row is written.
 
 Retryable failures (5xx, transport, mTLS error) re-queue with
 exponential backoff up to `ANALYSIS_MAX_ATTEMPTS`. Fatal failures (4xx,
@@ -66,6 +82,39 @@ every tick. The existing analysis result row is retained; no new LLM
 call is made. Force regenerate is exempt from this cap — operators
 can always issue a fresh LLM call from the **Regenerate** button,
 which is the supported way to advance a capped story.
+
+## Display language
+
+The story is shown in the **viewer's language**, resolved from the page
+locale rather than a server default. A **language switcher** in the header
+lists the supported languages (English / Korean); selecting one sets
+`?lang=en` / `?lang=ko` on the URL (shareable) and the page re-renders that
+variant. The link vocabulary is the app-locale form (`en` / `ko`),
+identical to the periodic-report reader, so links carry consistently
+across the two surfaces.
+
+If the requested language has not been produced yet — for example, the
+user-language translation is still in flight just after a story first
+becomes ready — the page falls back to the English baseline and shows a
+short notice that the requested-language analysis is not available yet.
+The fallback is transient: the translation lands within a worker tick or
+two, after which the requested language renders directly.
+
+Only the **narrative and the score-factor phrases** differ between
+languages. The severity / likelihood scores, priority tier, and MITRE
+ATT&CK technique codes are identical across both languages (the
+user-language row copies them from the English canonical), so switching
+language never changes the numbers, the tier badge, or the story's
+position in the priority-first [Threat Stories](threat-stories.md) list.
+This also keeps periodic reports consistent: a report that cites this
+story rolls up the same leaf scores regardless of the report's own
+language.
+
+<!-- Screenshot placeholder: the story header with the language switcher
+     (English / Korean), and the fallback notice shown when the
+     user-language variant is still translating. Story analysis renders
+     aice-web-next-derived data, so this needs a real-data capture from a
+     stack with a bilingual story loaded, per docs/AUTHORING.md. -->
 
 ## Priority and scores
 
@@ -184,7 +233,9 @@ techniques.
 Below the score fields the page shows the analysis metadata in a
 two-column grid:
 
-- **Language** — `KOREAN` or `ENGLISH`. Visible to every viewer.
+- **Language** — the language of the analysis currently shown (`ENGLISH`
+  or `KOREAN`). Visible to every viewer; use the header
+  [language switcher](#display-language) to change it.
 
 The remaining fields are **model/prompt provenance** — how the artifact
 was produced — and are restricted to analysts (see
@@ -282,8 +333,9 @@ Below the analysis body the page lists the **member detections**
 correlated into this story, in the story's member order (the member
 ordinal embedded in the redaction token namespace). Each member is a card
 linking down to that event's [Analysis Result page](../analysis-result.md),
-carrying the default `(language, provider, model)` variant so the event
-page resolves the same evidence the card describes. The card is titled by
+following the story's shown language where that event variant exists and
+falling back to English otherwise, so the event page resolves the same
+evidence the card describes. The card is titled by
 the event's time and kind — `{event time} · {kind}` (for example, `6/3,
 2:05 PM · HTTP Threat`), the same label the Detections lists use —
 with the originating `aice_id` on a meta line beneath the title; the opaque
@@ -337,9 +389,14 @@ stamp; nothing is overwritten in place.
 Submitting the modal queues a fresh analysis (optionally targeting a
 non-default variant). Behaviour:
 
-- The job row's `generation` is bumped by one (or `1` if no prior row
-  for the variant exists), `status` resets to `queued`, `attempts` resets
-  to `0`, and the LLM call begins on the next worker tick.
+- Force-regenerate operates on the whole bilingual pair: the English
+  canonical **and** the user-language variant are bumped to the same new
+  `generation`, `status` resets to `queued`, `attempts` resets to `0`, and
+  the work begins on the next worker tick. The canonical regenerates
+  natively and the user-language row re-derives its translation from it, so
+  no translated row is ever left pinned to a superseded English
+  generation. The request returns promptly (it does not block on the
+  translation finishing).
 - Bridge sessions (`bridge_write_blocked`, `bridge_not_allowed`) and
   members without `analyses:configure` are rejected with `403` and the
   reason in the response body. A caller that is not a member of the
