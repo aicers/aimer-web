@@ -1248,6 +1248,8 @@ export async function runAnalyzeFlow(
       accountId: params.accountId,
       graphqlAiceId: params.aiceId,
       requestedBy: params.accountId,
+      ranges,
+      ownedDomains,
       auditBase,
     });
     if (derived.kind === "error") {

@@ -33,7 +33,13 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { buildRangeSet, EMPTY_OWNED_DOMAIN_SET } from "@/lib/redaction";
+import {
+  buildOwnedDomainSet,
+  buildRangeSet,
+  EMPTY_OWNED_DOMAIN_SET,
+  type OwnedDomainSet,
+  type RangeSet,
+} from "@/lib/redaction";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/audit", () => ({ auditLog: vi.fn() }));
@@ -171,7 +177,10 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     );
   }
 
-  function derive(eventKey: string) {
+  function derive(
+    eventKey: string,
+    policy?: { ranges?: RangeSet; ownedDomains?: OwnedDomainSet },
+  ) {
     return deriveEventTranslation({
       customerPool: pool,
       aiceId: AICE,
@@ -182,6 +191,8 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
       accountId: ACCOUNT,
       graphqlAiceId: AICE,
       requestedBy: null,
+      ranges: policy?.ranges ?? buildRangeSet([]),
+      ownedDomains: policy?.ownedDomains ?? EMPTY_OWNED_DOMAIN_SET,
       auditBase,
     });
   }
@@ -844,5 +855,73 @@ describe.skipIf(!hasPostgres)("deriveEventTranslation (customer DB)", () => {
     const res = await derive("301");
     expect(res).toMatchObject({ kind: "leak", field: "factor_count" });
     expect(await liveKoreanRow("301")).toBeUndefined();
+  });
+
+  it("fails loudly when the narrative preserves every token but adds a raw private IP, writing no row", async () => {
+    await seedCanonical({ eventKey: "304" });
+    // Tokens match the canonical exactly (the multiset check passes), yet the
+    // translator appends a raw private IP alongside the preserved token — the
+    // exact leak the token-preservation scan cannot see (#581).
+    mockGraphqlRequest.mockResolvedValue({
+      translateAnalysisNarrative: {
+        analysis: "KO narrative <<REDACTED_IP_E1_001>> from 10.0.0.5.",
+        severityFactors: ["ko sev <<REDACTED_IP_E1_001>>", "ko sev two"],
+        likelihoodFactors: ["ko lik one"],
+        promptVersion: "tp-v9",
+        modelActualVersion: "tmv-9",
+      },
+    });
+    const res = await derive("304");
+    expect(res).toMatchObject({ kind: "leak", field: "analysis" });
+    expect(await liveKoreanRow("304")).toBeUndefined();
+  });
+
+  it("fails loudly when a factor phrase adds a raw owned domain, writing no row", async () => {
+    await seedCanonical({ eventKey: "305" });
+    // The factor phrase keeps its token but appends a customer-owned domain in
+    // plaintext. The native generation path never scans factor phrases, so the
+    // translation is the only gate.
+    mockGraphqlRequest.mockResolvedValue({
+      translateAnalysisNarrative: {
+        analysis: "KO narrative <<REDACTED_IP_E1_001>>.",
+        severityFactors: [
+          "ko sev <<REDACTED_IP_E1_001>> at corp.example.com",
+          "ko sev two",
+        ],
+        likelihoodFactors: ["ko lik one"],
+        promptVersion: "tp-v9",
+        modelActualVersion: "tmv-9",
+      },
+    });
+    const res = await derive("305", {
+      ownedDomains: buildOwnedDomainSet(["example.com"]),
+    });
+    expect(res).toMatchObject({ kind: "leak", field: "severity_factors[0]" });
+    expect(await liveKoreanRow("305")).toBeUndefined();
+  });
+
+  it("passes a public out-of-range IP through (no leak) when ranges do not cover it", async () => {
+    await seedCanonical({
+      eventKey: "306",
+      analysis: "Narrative with <<REDACTED_IP_E1_001>> and 8.8.8.8.",
+    });
+    // The canonical legitimately carries a public out-of-range IP (8.8.8.8);
+    // the translation echoes it. With an empty range set the engine would not
+    // redact it, so it must NOT be flagged — mirroring the native policy.
+    mockGraphqlRequest.mockResolvedValue({
+      translateAnalysisNarrative: {
+        analysis: "KO narrative <<REDACTED_IP_E1_001>> and 8.8.8.8.",
+        severityFactors: ["ko sev <<REDACTED_IP_E1_001>>", "ko sev two"],
+        likelihoodFactors: ["ko lik one"],
+        promptVersion: "tp-v9",
+        modelActualVersion: "tmv-9",
+      },
+    });
+    const res = await derive("306");
+    expect(res).toMatchObject({ kind: "translated" });
+    const row = await liveKoreanRow("306");
+    expect(row.analysis_text).toBe(
+      "KO narrative <<REDACTED_IP_E1_001>> and 8.8.8.8.",
+    );
   });
 });

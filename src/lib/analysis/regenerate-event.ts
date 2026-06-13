@@ -271,6 +271,8 @@ export async function regenerateEventLeaf(
       accountId: params.accountId,
       graphqlAiceId: aiceId,
       requestedBy: params.accountId,
+      ranges,
+      ownedDomains,
       auditBase,
     });
     if (derived.kind === "error") {

@@ -38,6 +38,8 @@ import { configuredAppDisplayLanguage } from "@/i18n/locale";
 import { customerLockId } from "@/lib/db/customer-db";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
+import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
+import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import {
   type AnalyzeBaselineEventOutcome,
   analyzeBaselineEventLeaf,
@@ -885,6 +887,14 @@ async function processTranslationJob(
   customerPool: Pool,
 ): Promise<void> {
   const derive = opts.deriveTranslation ?? deriveEventTranslation;
+  // The customer's redaction policy gates the translation leak scan for raw
+  // entities the translator may introduce (#581). Loaded here — same source as
+  // the native generation path (`analyze-baseline-event.ts`).
+  const ranges = await loadCustomerRanges(opts.authPool, job.customer_id);
+  const ownedDomains = await loadCustomerOwnedDomains(
+    opts.authPool,
+    job.customer_id,
+  );
   let outcome: Awaited<ReturnType<typeof deriveEventTranslation>>;
   try {
     outcome = await derive({
@@ -897,6 +907,8 @@ async function processTranslationJob(
       accountId: WORKER_ACCOUNT_ID,
       graphqlAiceId: job.aice_id,
       requestedBy: null,
+      ranges,
+      ownedDomains,
       auditBase: {
         actorId: WORKER_ACCOUNT_ID,
         authContext: "general",

@@ -24,6 +24,11 @@ import type { Pool } from "pg";
 import { auditLog } from "@/lib/audit";
 import { TranslateEventDocument } from "@/lib/graphql/__generated__/translate-event";
 import { graphqlRequest } from "@/lib/graphql/client";
+import {
+  type OwnedDomainSet,
+  type RangeSet,
+  scanHallucinations,
+} from "@/lib/redaction";
 import type { AnalyzeErrorCode } from "./analyze-types";
 import {
   type AuditEmissionBase,
@@ -98,6 +103,15 @@ export interface DeriveEventTranslationParams {
   graphqlAiceId: string;
   /** Value written to the translated row's `requested_by` (NULL for auto). */
   requestedBy: string | null;
+  /**
+   * The customer's redaction policy (public-IP ranges + owned domains), used
+   * to leak-scan the translated narrative + factor phrases for raw redactable
+   * entities the translator may have introduced (#581). Same policy the native
+   * `scanHallucinations` path uses; load via `loadCustomerRanges` /
+   * `loadCustomerOwnedDomains`.
+   */
+  ranges: RangeSet;
+  ownedDomains: OwnedDomainSet;
   auditBase: AuditEmissionBase;
 }
 
@@ -241,6 +255,59 @@ function multisetsEqual(
     if (b.get(token) !== n) return false;
   }
   return true;
+}
+
+/**
+ * Detect a RAW redactable entity introduced by the translator in a single
+ * field. The {@link scanTranslationLeak} multiset check only proves the
+ * canonical's `<<REDACTED_…>>` tokens were preserved one-for-one; it cannot
+ * see a response that keeps every token AND appends a fresh plaintext private
+ * IP / email / MAC / owned domain (e.g. `Blocked <<REDACTED_IP_001>> from
+ * 10.0.0.5`). The native generation path never scans the factor phrases at
+ * all, so the translation is the only gate for those.
+ *
+ * The canonical's tokens have already been confirmed equal (per field) by
+ * {@link scanTranslationLeak}, so strip them first — the tokens are opaque and
+ * could otherwise trip the entity regexes on their internals — then re-run the
+ * redaction engine's own detector over the remainder. An empty redaction map
+ * makes EVERY redactable literal (known-value restatement OR hallucination)
+ * count, so any non-zero count is a raw entity that must NOT reach storage.
+ * Public out-of-range IPs and external domains pass through, mirroring the
+ * engine's policy (they legitimately appear in the canonical too).
+ */
+function fieldHasRawEntity(
+  text: string,
+  ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
+): boolean {
+  const stripped = text.replace(REDACTION_TOKEN_RE, "");
+  const { counts } = scanHallucinations(stripped, {}, ranges, ownedDomains);
+  return counts.ip + counts.email + counts.mac + counts.domain > 0;
+}
+
+/**
+ * Scan every translated field (narrative + each factor phrase) for a raw
+ * redactable entity. Returns the offending field on the first leak.
+ */
+function scanTranslationRawEntities(
+  translated: { analysis: string; severity: string[]; likelihood: string[] },
+  ranges: RangeSet,
+  ownedDomains: OwnedDomainSet,
+): { ok: true } | { ok: false; field: string } {
+  if (fieldHasRawEntity(translated.analysis, ranges, ownedDomains)) {
+    return { ok: false, field: "analysis" };
+  }
+  for (let i = 0; i < translated.severity.length; i += 1) {
+    if (fieldHasRawEntity(translated.severity[i], ranges, ownedDomains)) {
+      return { ok: false, field: `severity_factors[${i}]` };
+    }
+  }
+  for (let i = 0; i < translated.likelihood.length; i += 1) {
+    if (fieldHasRawEntity(translated.likelihood[i], ranges, ownedDomains)) {
+      return { ok: false, field: `likelihood_factors[${i}]` };
+    }
+  }
+  return { ok: true };
 }
 
 /**
@@ -451,7 +518,11 @@ export async function deriveEventTranslation(
   //    any row is written. Do NOT re-run the factor shape-filter: the arrays
   //    are an element-wise translation of the canonical's already-filtered
   //    factors, so a length/order change would silently break the
-  //    factor↔meaning correspondence even though the numbers match.
+  //    factor↔meaning correspondence even though the numbers match. Two leak
+  //    gates run over the narrative AND every factor phrase: (a) the canonical
+  //    redaction tokens are preserved exactly (`scanTranslationLeak`), and
+  //    (b) no raw redactable entity was introduced alongside them
+  //    (`scanTranslationRawEntities`).
   if (
     resp.severityFactors.length !== canonical.severityFactors.length ||
     resp.likelihoodFactors.length !== canonical.likelihoodFactors.length
@@ -492,6 +563,37 @@ export async function deriveEventTranslation(
       kind: "leak",
       field: leak.field,
       message: `redaction-token leak in translated ${leak.field}`,
+    };
+  }
+  // Beyond token preservation: reject a translation that PRESERVES the
+  // canonical's tokens yet introduces a fresh raw redactable entity (a private
+  // IP / email / MAC / owned domain) in the narrative or any factor phrase.
+  // The token multiset check above cannot see such an addition, and the native
+  // path never scans factor phrases — so this is the only gate (#581).
+  const rawLeak = scanTranslationRawEntities(
+    {
+      analysis: resp.analysis,
+      severity: resp.severityFactors,
+      likelihood: resp.likelihoodFactors,
+    },
+    params.ranges,
+    params.ownedDomains,
+  );
+  if (!rawLeak.ok) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.hallucination_detected",
+      targetId,
+      details: {
+        translate: true,
+        lang: targetLang,
+        failure: `raw_entity:${rawLeak.field}`,
+      },
+    });
+    return {
+      kind: "leak",
+      field: rawLeak.field,
+      message: `raw redactable entity in translated ${rawLeak.field}`,
     };
   }
 
