@@ -1,4 +1,38 @@
 """
+Wire-shape response for `translateAnalysisNarrative`.
+
+Carries only the translated human-readable text plus audit metadata. The
+numeric scores and MITRE technique IDs are language-invariant and are
+intentionally absent — aimer-web copies them from the English canonical.
+"""
+type AnalysisNarrativeTranslationResult {
+	"""
+	Translated analysis narrative (Markdown). Redaction tokens preserved
+	verbatim.
+	"""
+	analysis: String!
+	"""
+	Translated severity-factor phrases, one per input phrase, in order.
+	"""
+	severityFactors: [String!]!
+	"""
+	Translated likelihood-factor phrases, one per input phrase, in order.
+	"""
+	likelihoodFactors: [String!]!
+	"""
+	Identifier of the prompt template that produced this response. Bumped
+	whenever `TRANSLATE_ANALYSIS_NARRATIVE_PROMPT` or the JSON schema
+	changes shape.
+	"""
+	promptVersion: String!
+	"""
+	Provider-reported model snapshot for the call. Falls back to the
+	requested `model` argument when the provider does not report one.
+	"""
+	modelActualVersion: String!
+}
+
+"""
 auth-jwt is on removal track per #358; the new severity/likelihood fields are
 exposed only under auth-mtls. Both LLM contract paths converge once auth-jwt
 is deleted.
@@ -252,6 +286,50 @@ input LongTailExemplarInput {
 }
 
 type Mutation {
+	"""
+	Translates the human-readable text of a story analysis or a per-event
+	analysis into `targetLang`, returning the translated `analysis`
+	narrative and the translated `severityFactors` / `likelihoodFactors`
+	arrays, with every redaction token preserved verbatim.
+	
+	This is the bilingual prerequisite for `analyzeStory` and
+	`analyzeEvent`: the English canonical is generated natively, and the
+	user-language row is derived from it by this mutation so the numeric
+	scores never diverge across languages. Accordingly, `severityScore`,
+	`likelihoodScore`, and `ttpTags` are neither accepted nor returned —
+	aimer-web copies them from the canonical.
+	
+	Stateless under `auth-mtls`: aimer stores nothing and performs no
+	caching. The translation model (`name` + `model`) is independent of the
+	generation model. Only narrative prose and factor phrases are
+	translated; MITRE technique IDs and `<<REDACTED_…>>` tokens stay in
+	native form. `targetLang` is limited to the `Language` enum's current
+	variants (Korean / English); `targetLang: ENGLISH` on the English
+	canonical is a no-op round-trip.
+	
+	The input factor arrays are validated (1–5 items, ≤80 chars each)
+	BEFORE the LLM call, so a malformed canonical fails fast instead of
+	paying for a wasted translation, and the translated arrays are
+	validated again after. Exactly one LLM call is issued per invocation
+	(no retry). Two defensive checks run on the response: an element-count
+	check rejects any merge / split / drop / add of either factor array,
+	and a per-corresponding-string redaction-token multiset check rejects
+	any token add / drop / rewrite as well as any token moved to a
+	different field or array index.
+	
+	# Errors
+	
+	Returns an error if:
+	- Input validation fails (empty `model` / `name`, or a factor array
+	that violates the 1–5 item / ≤80 char bounds)
+	- The requested LLM server `name` is not registered
+	- The LLM call fails (transport error, provider error envelope,
+	structured-output payload missing or wrong-shaped)
+	- The translated output changes a factor-array element count or alters
+	the per-string redaction-token multiset (including a token moved
+	between strings or array elements)
+	"""
+	translateAnalysisNarrative(analysis: String!, severityFactors: [String!]!, likelihoodFactors: [String!]!, targetLang: Language!, name: String!, model: String!): AnalysisNarrativeTranslationResult!
 	"""
 	Analyzes a security event using an LLM and returns the threat analysis.
 	

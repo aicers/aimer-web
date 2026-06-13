@@ -139,10 +139,12 @@ function EventRow({
   t: AnalysisTranslations;
 }) {
   // The event detail page 404s without `model_name`/`model` (they are part
-  // of the storage PK), defaulting only `lang`. Carry the canonical
-  // variant's params so the link resolves instead of 404ing.
+  // of the storage PK), defaulting only `lang`. Carry the canonical variant's
+  // model params so the link resolves instead of 404ing. `?lang` is the
+  // VIEWER's locale (`en`/`ko`, #581) — the detail loader resolves the
+  // requested -> English -> any variant from there.
   const query = new URLSearchParams({
-    lang: variant.lang,
+    lang: locale,
     model_name: variant.modelName,
     model: variant.model,
   }).toString();

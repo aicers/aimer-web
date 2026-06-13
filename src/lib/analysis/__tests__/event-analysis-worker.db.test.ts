@@ -703,4 +703,119 @@ describe.skipIf(!hasPostgres)("baseline event auto-analysis worker", () => {
     expect(job?.selection_tier).toBeNull();
     expect(job?.status).toBe("queued");
   });
+
+  // ---- bilingual (#581) -------------------------------------------------
+  // The worker process here runs with DEFAULT_LOCALE unset (-> `ko`), so the
+  // eager set is { ENGLISH, KOREAN }: every loose event seeds an English
+  // canonical job AND a KOREAN translation job.
+
+  async function loadJobLang(eventKey: string, lang: string) {
+    const { rows } = await authPool.query<{
+      status: string;
+      selection_tier: string | null;
+      attempts: number;
+      next_due_at: Date | null;
+    }>(
+      `SELECT status, selection_tier, attempts, next_due_at
+         FROM event_analysis_job
+        WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+          AND lang = $4 AND model_name = $5 AND model = $6`,
+      [CUSTOMER_ID, AICE_ID, eventKey, lang, MODEL_NAME, MODEL],
+    );
+    return rows[0] ?? null;
+  }
+
+  async function pickupLang(eventKey: string, lang: string) {
+    const { rows } = await authPool.query(
+      `SELECT customer_id::text AS customer_id, aice_id,
+              event_key::text AS event_key, lang, model_name, model,
+              baseline_version, selection_tier, budget_day::text AS budget_day,
+              event_time, received_at,
+              generation, attempts, created_at, next_due_at
+         FROM event_analysis_job
+        WHERE customer_id = $1 AND aice_id = $2 AND event_key = $3::numeric
+          AND lang = $4 AND model_name = $5 AND model = $6`,
+      [CUSTOMER_ID, AICE_ID, eventKey, lang, MODEL_NAME, MODEL],
+    );
+    return rows[0];
+  }
+
+  it("seeds both the English canonical and the KOREAN translation job", async () => {
+    await seed(["90"]);
+    const en = await loadJobLang("90", "ENGLISH");
+    const ko = await loadJobLang("90", "KOREAN");
+    expect(en?.status).toBe("queued");
+    expect(en?.selection_tier).toBeNull();
+    expect(ko?.status).toBe("queued");
+    // The translation job never classifies — selection_tier stays NULL.
+    expect(ko?.selection_tier).toBeNull();
+  });
+
+  it("a translation job defers (next_due_at) WITHOUT burning attempts when the canonical is missing", async () => {
+    await seed(["91"]);
+    const deriveTranslation = vi.fn(async () => ({
+      kind: "canonical_missing" as const,
+    }));
+    await processEventJob(
+      await pickupLang("91", "KOREAN"),
+      baseOpts({
+        deriveTranslation:
+          deriveTranslation as unknown as ProcessEventJobOptions["deriveTranslation"],
+      }),
+    );
+    const ko = await loadJobLang("91", "KOREAN");
+    expect(ko?.status).toBe("queued");
+    expect(ko?.selection_tier).toBeNull();
+    // Deferred, not failed: attempts untouched and a future next_due_at set.
+    expect(ko?.attempts).toBe(0);
+    expect(ko?.next_due_at).not.toBeNull();
+    // The translation derivation never ran tier classification / analyze.
+    expect(deriveTranslation).toHaveBeenCalledTimes(1);
+  });
+
+  it("a translation job finalizes (done) once the canonical exists", async () => {
+    // English canonical present → its job is deduped at seed; KOREAN seeds.
+    await seedLiveLeaf("92");
+    await seed(["92"]);
+    expect(await loadJobLang("92", "ENGLISH")).toBeNull();
+    const deriveTranslation = vi.fn(async () => ({
+      kind: "translated" as const,
+      generation: 1,
+    }));
+    await processEventJob(
+      await pickupLang("92", "KOREAN"),
+      baseOpts({
+        deriveTranslation:
+          deriveTranslation as unknown as ProcessEventJobOptions["deriveTranslation"],
+        // A translation job must NOT be re-gated on the live-leaf / story
+        // membership check — fail loudly if it ever calls them here.
+        storyMemberCheck: vi.fn(async () => {
+          throw new Error("translation job must not run storyMemberCheck");
+        }),
+      }),
+    );
+    expect(deriveTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({ targetLang: "KOREAN" }),
+    );
+    const ko = await loadJobLang("92", "KOREAN");
+    expect(ko?.status).toBe("done");
+  });
+
+  it("a translation leak fails the job loudly (terminal failed)", async () => {
+    await seed(["93"]);
+    const deriveTranslation = vi.fn(async () => ({
+      kind: "leak" as const,
+      field: "analysis",
+      message: "token leak",
+    }));
+    await processEventJob(
+      await pickupLang("93", "KOREAN"),
+      baseOpts({
+        deriveTranslation:
+          deriveTranslation as unknown as ProcessEventJobOptions["deriveTranslation"],
+      }),
+    );
+    const ko = await loadJobLang("93", "KOREAN");
+    expect(ko?.status).toBe("failed");
+  });
 });

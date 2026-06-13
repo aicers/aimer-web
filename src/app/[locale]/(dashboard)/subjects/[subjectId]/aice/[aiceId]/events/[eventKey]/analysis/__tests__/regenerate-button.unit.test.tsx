@@ -105,7 +105,7 @@ describe("EventRegenerateButton", () => {
     // Navigates to the new generation using the CURRENT locale (ko), not a
     // hardcoded `en`.
     expect(push).toHaveBeenCalledWith(
-      "/ko/subjects/c1/aice/aice-1/events/1001/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o&generation=3",
+      "/ko/subjects/c1/aice/aice-1/events/1001/analysis?lang=en&model_name=openai&model=gpt-4o&generation=3",
     );
     expect(refresh).toHaveBeenCalled();
     expect(getByTestId("event-regenerate-status").textContent).toContain(
@@ -147,7 +147,7 @@ describe("EventRegenerateButton", () => {
     );
     // Navigation points at the chosen model's new generation, current locale.
     expect(push).toHaveBeenCalledWith(
-      "/ko/subjects/c1/aice/aice-1/events/1001/analysis?lang=ENGLISH&model_name=anthropic&model=claude-3-5&generation=4",
+      "/ko/subjects/c1/aice/aice-1/events/1001/analysis?lang=en&model_name=anthropic&model=claude-3-5&generation=4",
     );
   });
 

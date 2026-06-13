@@ -20,6 +20,7 @@ const mockConnect = vi.fn(() => ({
 }));
 const mockCustomerPoolQuery = vi.fn();
 const mockAnalyzeAndStore = vi.fn();
+const mockDeriveTranslation = vi.fn();
 const mockDecryptRedactionMap = vi.fn();
 const mockLoadRanges = vi.fn();
 const mockLoadDomains = vi.fn();
@@ -75,6 +76,15 @@ vi.mock("@/lib/analysis/run-analyze-flow", () => ({
   analyzeAndStoreEventResult: (...args: unknown[]) =>
     mockAnalyzeAndStore(...args),
   isSupportedLang: (v: string) => v === "KOREAN" || v === "ENGLISH",
+  DEFAULT_LANG: "ENGLISH",
+}));
+
+// Bilingual derivation (#581): a non-English regenerate target re-generates
+// the English canonical natively (mockAnalyzeAndStore) and then derives the
+// user-language row via this mutation.
+vi.mock("@/lib/analysis/translate-event-analysis", () => ({
+  deriveEventTranslation: (...args: unknown[]) =>
+    mockDeriveTranslation(...args),
 }));
 
 vi.mock("@/lib/redaction", () => ({
@@ -124,6 +134,10 @@ beforeEach(() => {
   mockLoadRanges.mockResolvedValue({ normalisedCidrs: [] });
   mockLoadDomains.mockResolvedValue({ normalisedSuffixes: [] });
   mockAnalyzeAndStore.mockResolvedValue({ kind: "success", generation: 2 });
+  mockDeriveTranslation.mockResolvedValue({
+    kind: "translated",
+    generation: 2,
+  });
 });
 
 describe("event regenerate", () => {
@@ -175,17 +189,36 @@ describe("event regenerate", () => {
     );
   });
 
-  it("regenerates the REQUESTED variant, not the default", async () => {
+  it("regenerates the English canonical + derives the requested non-English variant (#581)", async () => {
     const { POST } = await import("../regenerate/route");
     await POST(eventRequest("?lang=KOREAN&model_name=anthropic&model=claude"));
+    // Bilingual invariant: the native generation is ALWAYS the English
+    // canonical, at the requested model variant — never a native KOREAN row.
     expect(mockAnalyzeAndStore).toHaveBeenCalledWith(
       expect.objectContaining({
-        lang: "KOREAN",
-        langForStorage: "KOREAN",
+        lang: "ENGLISH",
+        langForStorage: "ENGLISH",
         modelName: "anthropic",
         model: "claude",
       }),
     );
+    // The KOREAN row is then derived as a translation of that canonical.
+    expect(mockDeriveTranslation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetLang: "KOREAN",
+        modelName: "anthropic",
+        model: "claude",
+      }),
+    );
+  });
+
+  it("regenerates English natively WITHOUT deriving a translation for an English target", async () => {
+    const { POST } = await import("../regenerate/route");
+    await POST(eventRequest("?lang=ENGLISH&model_name=anthropic&model=claude"));
+    expect(mockAnalyzeAndStore).toHaveBeenCalledWith(
+      expect.objectContaining({ lang: "ENGLISH", langForStorage: "ENGLISH" }),
+    );
+    expect(mockDeriveTranslation).not.toHaveBeenCalled();
   });
 
   it("returns 404 when no detection_events row exists", async () => {

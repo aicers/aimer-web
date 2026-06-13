@@ -29,6 +29,7 @@
 // variant params, so the endpoint never builds a URL server-side.
 
 import type { NextRequest } from "next/server";
+import { appLocaleToReportLanguage, isSupportedLocale } from "@/i18n/locale";
 import { analyzeErrorResponse } from "@/lib/analysis/analyze-types";
 import { resolveDefaultModel } from "@/lib/analysis/default-model";
 import { regenerateEventLeaf } from "@/lib/analysis/regenerate-event";
@@ -43,7 +44,14 @@ import { eventKeyString } from "@/lib/event-key";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const DEFAULT_LANG = process.env.ANALYSIS_DEFAULT_LANG ?? "ENGLISH";
+// Default to the app user language (#581): an absent `?lang` regenerates the
+// viewer-facing variant (which derives from the English canonical), not a
+// hard-coded English. The button always forwards an explicit `?lang`, so this
+// only governs direct API calls. The enum contract is unchanged.
+const DEFAULT_LOCALE = process.env.DEFAULT_LOCALE ?? "ko";
+const DEFAULT_LANG = isSupportedLocale(DEFAULT_LOCALE)
+  ? appLocaleToReportLanguage(DEFAULT_LOCALE)
+  : "ENGLISH";
 
 // aimer's `Language` GraphQL enum is closed; the API boundary enforces it
 // so a bad value cannot reach the LLM call.

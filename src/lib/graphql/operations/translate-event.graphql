@@ -1,0 +1,23 @@
+mutation TranslateEvent(
+  $analysis: String!
+  $severityFactors: [String!]!
+  $likelihoodFactors: [String!]!
+  $targetLang: Language!
+  $name: String!
+  $model: String!
+) {
+  translateAnalysisNarrative(
+    analysis: $analysis
+    severityFactors: $severityFactors
+    likelihoodFactors: $likelihoodFactors
+    targetLang: $targetLang
+    name: $name
+    model: $model
+  ) {
+    analysis
+    severityFactors
+    likelihoodFactors
+    promptVersion
+    modelActualVersion
+  }
+}

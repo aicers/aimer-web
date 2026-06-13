@@ -248,6 +248,14 @@ CREATE TABLE event_analysis_result (
     aice_id                  TEXT           NOT NULL,
     event_key                NUMERIC(39, 0) NOT NULL,
     lang                     TEXT           NOT NULL,
+    -- Bilingual marker (#581), same semantics as
+    -- `periodic_report_result.restoration_lang`: NULL on a natively
+    -- generated row (English canonical or a legacy English-only row);
+    -- 'ENGLISH' on a row translated from the English canonical. The
+    -- reader replays the canonical's redaction tokens at this language
+    -- and the row's numeric scores / tier / TTP are copied verbatim from
+    -- the canonical, so they stay byte-identical across the language pair.
+    restoration_lang         TEXT,
     model_name               TEXT           NOT NULL,
     model                    TEXT           NOT NULL,
     model_actual_version     TEXT           NOT NULL,
@@ -269,6 +277,21 @@ CREATE TABLE event_analysis_result (
     superseded_at            TIMESTAMPTZ,
     origin                   TEXT           NOT NULL DEFAULT 'manual'
         CHECK (origin IN ('manual', 'auto_baseline')),
+    -- Translation-audit trio (#581), same semantics as the
+    -- `periodic_report_job` columns: `translation_model_name` /
+    -- `translation_model` hold the CONFIGURED translation-model selector
+    -- the caller used for the aimer#495 `translateAnalysisNarrative` call,
+    -- and `translation_prompt_version` holds that response's
+    -- `promptVersion`. The response's `modelActualVersion` is intentionally
+    -- NOT persisted (matching the report precedent). All three stay NULL on
+    -- a native English row. Unlike reports — whose translation provenance
+    -- lives on the job row — these sit on the result row because the
+    -- manual/sync analyze and synchronous regenerate paths produce a
+    -- translated result with no `event_analysis_job` row, so the result row
+    -- is the only artifact common to every translation path.
+    translation_model_name   TEXT,
+    translation_model        TEXT,
+    translation_prompt_version TEXT,
     PRIMARY KEY (aice_id, event_key, lang, model_name, model, generation)
 );
 

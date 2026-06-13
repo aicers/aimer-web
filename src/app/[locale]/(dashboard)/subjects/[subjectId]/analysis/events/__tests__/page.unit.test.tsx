@@ -105,13 +105,15 @@ describe("suspicious events list page", () => {
   });
   afterEach(() => cleanup());
 
-  it("links rows to the event detail page with the canonical variant params", async () => {
+  it("links rows to the event detail page with the viewer-locale lang + canonical model params (#581)", async () => {
     await renderPage();
     const href = screen
       .getByTestId("event-link-aice-1-123456789")
       .getAttribute("href");
+    // `?lang` is the viewer's locale (`en`), cross-compatible with report /
+    // story links; the model params still pin the canonical variant.
     expect(href).toBe(
-      `/en/subjects/${CUSTOMER_ID}/aice/aice-1/events/123456789/analysis?lang=ENGLISH&model_name=openai&model=gpt-4o`,
+      `/en/subjects/${CUSTOMER_ID}/aice/aice-1/events/123456789/analysis?lang=en&model_name=openai&model=gpt-4o`,
     );
   });
 
