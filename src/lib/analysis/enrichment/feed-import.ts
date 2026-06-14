@@ -526,7 +526,7 @@ export function computeFeedHash(rows: readonly FeedSnapshotRow[]): string {
   const entries = rows
     .map((r) => {
       const base = r.matchValue ?? `cidr:${r.cidr}`;
-      return r.context ? `${base} ${canonicalizeContext(r.context)}` : base;
+      return r.context ? `${base}\0${canonicalizeContext(r.context)}` : base;
     })
     .sort()
     .join("\n");
