@@ -29,6 +29,10 @@ interface NvdCvssData {
 }
 
 interface NvdMetric {
+  // NVD tags each metric `Primary` (the authoritative NVD/CNA score) or
+  // `Secondary`; prefer `Primary` so a secondary metric listed first does not
+  // shadow the canonical base score.
+  type?: string;
   cvssData?: NvdCvssData;
 }
 
@@ -42,6 +46,7 @@ interface NvdCve {
   published?: string;
   descriptions?: { lang?: string; value?: string }[];
   metrics?: {
+    cvssMetricV40?: NvdMetric[];
     cvssMetricV31?: NvdMetric[];
     cvssMetricV30?: NvdMetric[];
     cvssMetricV2?: NvdMetric[];
@@ -62,20 +67,40 @@ function pickDescription(cve: NvdCve): string | null {
   return en?.value ?? any?.value ?? null;
 }
 
-/** Preferred CVSS base score: v3.1 → v3.0 → v2, or null when none present. */
+/** A metric whose `cvssData.baseScore` is a number, or null. */
+function usableMetric(
+  metric: NvdMetric | undefined,
+): { score: number; vector: string | null } | null {
+  const data = metric?.cvssData;
+  if (data && typeof data.baseScore === "number") {
+    return { score: data.baseScore, vector: data.vectorString ?? null };
+  }
+  return null;
+}
+
+/**
+ * Preferred CVSS base score: newest version first (v4.0 → v3.1 → v3.0 → v2),
+ * or null when none present. Within each version bucket a `Primary` metric (the
+ * authoritative NVD/CNA score) wins over a `Secondary` one regardless of array
+ * order; if no `Primary` is present, the first usable metric is used.
+ */
 function pickCvss(
   cve: NvdCve,
 ): { score: number; vector: string | null } | null {
   const metrics = cve.metrics;
   const series = [
+    metrics?.cvssMetricV40,
     metrics?.cvssMetricV31,
     metrics?.cvssMetricV30,
     metrics?.cvssMetricV2,
   ];
   for (const list of series) {
-    const data = list?.[0]?.cvssData;
-    if (data && typeof data.baseScore === "number") {
-      return { score: data.baseScore, vector: data.vectorString ?? null };
+    if (!list || list.length === 0) continue;
+    const primary = usableMetric(list.find((m) => m.type === "Primary"));
+    if (primary) return primary;
+    for (const metric of list) {
+      const usable = usableMetric(metric);
+      if (usable) return usable;
     }
   }
   return null;

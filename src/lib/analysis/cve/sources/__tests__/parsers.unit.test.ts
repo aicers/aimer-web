@@ -26,8 +26,8 @@ describe("parseNvd", () => {
   const byCve = new Map(result.rows.map((r) => [r.cve, r]));
 
   it("surfaces totalResults for paging", () => {
-    expect(result.totalResults).toBe(3);
-    expect(result.rows).toHaveLength(3);
+    expect(result.totalResults).toBe(5);
+    expect(result.rows).toHaveLength(5);
   });
 
   it("extracts CVSS base score (v3.1), vector, CWE, description, publish date", () => {
@@ -56,6 +56,22 @@ describe("parseNvd", () => {
     const row = byCve.get("CVE-2024-23897");
     expect(row?.cvssScore).toBe(9.8);
     expect(row?.cwe).toEqual(["CWE-27"]);
+  });
+
+  it("reads a CVSS v4.0-only metric (not just v3.x/v2)", () => {
+    const row = byCve.get("CVE-2025-40000");
+    expect(row?.cvssScore).toBe(8.7);
+    expect(row?.cvssVector).toBe(
+      "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:N/VA:N/SC:N/SI:N/SA:N",
+    );
+  });
+
+  it("prefers the Primary metric over a Secondary one listed first", () => {
+    const row = byCve.get("CVE-2025-50000");
+    expect(row?.cvssScore).toBe(7.5);
+    expect(row?.cvssVector).toBe(
+      "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+    );
   });
 });
 
