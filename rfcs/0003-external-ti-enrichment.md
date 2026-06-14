@@ -458,7 +458,7 @@ Additional consumers (own track, read against the existing layer — see TI cons
 
 ## Appendix A: Free-feed licensing re-vetting (direct first-party commercial-use lens)
 
-*Recorded 2026-06-14. Re-vets the free-OSINT-feed set that was surfaced while a vendor-central MISP was being considered as the enrichment vehicle. This is a record, not a license; the per-source confirmation gate (Open question 9) still applies before any source is integrated.*
+*Recorded 2026-06-14; revised after review with current-source verification and a MISP default-feed sweep. Re-vets the free-OSINT-feed set that was surfaced while a vendor-central MISP was being considered as the enrichment vehicle, plus additional candidates found in the review. This is a record, not a license; the per-source confirmation gate (Open question 9) still applies before any source is integrated.*
 
 ### Why a re-vetting was needed (the lens shift)
 
@@ -477,11 +477,11 @@ Verdict legend: **USE-OK-DIRECT** = usable for direct first-party internal enric
 
 | Source | Indicators | Prior verdict (redistribution lens) | Re-vetting verdict (direct first-party) | Deciding clause | Conf. |
 | --- | --- | --- | --- | --- | --- |
-| **CIRCL OSINT feed** | IP / domain / URL / hash **+ rich tags & galaxies** | FLAGGED (assumed TLP:GREEN mix) | ✅ **USE-OK-DIRECT** | Feed is marked **TLP:CLEAR** (not GREEN); no restrictive licence anywhere — "no limit on disclosure … shared without restriction" | High |
+| **CIRCL OSINT feed** | IP / domain / URL / hash **+ rich tags & galaxies** | FLAGGED (assumed TLP:GREEN mix) | ⚠️ **NEEDS-CONTACT** (sharing OK, licence not established) | Feed is marked **TLP:CLEAR** (not GREEN), but **TLP is a disclosure-handling marking, not a licence** (FIRST: TLP:CLEAR is "subject to standard copyright rules"). CIRCL ships **no explicit data licence**, so unrestricted *sharing* ≠ a grant to **store and commercially reuse** the curated content — especially the copyrightable tags/galaxies we actually want. Practical risk is low (CIRCL publishes for community use); a one-line CIRCL confirmation resolves it | Med |
 | **Botvrij.eu** | IP / domain / URL / hash | BLOCKED (resell prohibited) | ✅ **USE-OK-DIRECT** | "You can use this data the way you prefer"; the **only** carve-out is "You cannot **resell** the data" — resale ≠ internal use | Med-High |
-| **DigitalSide Threat-Intel** | malware IP / domain / URL / hash | BLOCKED (recorded as CC-BY-NC-SA) | ✅ **USE-OK-DIRECT** *(prior verdict was a factual error)* | Actually **MIT + TLP:WHITE**; no NC clause exists. The CC-NC-SA label appears to have been confused with abuse.ch terms — this is a correction, not a lens change | Med-High |
+| **DigitalSide Threat-Intel** | malware IP / domain / URL / hash | BLOCKED (recorded as CC-BY-NC-SA) | ✅ **USE-OK-DIRECT** *(prior verdict was a factual error)* | Actually **MIT + TLP:WHITE**; no NC clause exists. The CC-NC-SA label appears to have been confused with abuse.ch terms — this is a correction, not a lens change. Confidence tempered: the MIT LICENSE's copyright names a web-template vendor (Blackrock Digital), so MIT's coverage of the *feed data* (vs repo scaffolding) is worth a legal-gate re-confirm | Med |
 | **PhishTank** | phishing URL | BLOCKED (assumed non-commercial free tier) | ⚠️ **licence OK, operationally deferred** | FAQ: commercial use "Yes, it is OK", data free, no paid tier — but **new registration is temporarily disabled**, so the app key needed for automated fetch cannot currently be obtained | Med-High |
-| **CINS / CI Army** | IP (noisy) | BLOCKED (commercial-product use) | ⚠️ **NEEDS-CONTACT** (low value → skip) | Current terms contain **no** NC clause (prior rationale not reproducible); the footer EULA governs Sentinel **software**, not the list — but there is also **no affirmative grant** | Med |
+| **CINS / CI Army** | IP (noisy) | BLOCKED (commercial-product use) | ⚠️ **NEEDS-CONTACT** (low value → skip) | cinsscore.com grants "you can **parse and use [the list] in any way you see fit**" (so the earlier "no affirmative grant" was wrong), but this informal sentence **does not address commercial-product embedding**, and the only formal EULA governs Sentinel **software**, not the list. No NC clause; commercial embedding neither granted nor forbidden | Med |
 | **blocklist.de** | IP (noisy) | FLAGGED (no licence) | ⚠️ **NEEDS-CONTACT / no-grant** (low value → skip) | No licence; "free" is scoped to **reporters** and explicitly excepts "Download der Listen bei zu großem Volumen" — i.e. our automated high-volume fetch pattern | High (that no grant exists) |
 | **Binary Defense banlist** | IP | BLOCKED | ❌ **BLOCKED-DIRECT** (confirmed) | Feed-file header: "Use of these feeds for **commerical** … use is **strictly prohibited**"; bars "products that are charging fees" — a commercial-**use** ban, not a redistribution one | High |
 | **C2IntelFeeds** | C2 IP / domain | BLOCKED (CC-BY-NC) | ❌ **BLOCKED-DIRECT** (confirmed; actually **CC-BY-NC-SA**) | CC NonCommercial bars use "primarily intended for or directed towards commercial advantage"; internal use in a paid product is commercial use, independent of redistribution. ShareAlike adds a copyleft obstacle | High |
@@ -489,19 +489,30 @@ Verdict legend: **USE-OK-DIRECT** = usable for direct first-party internal enric
 | **OpenPhish** (community) | phishing URL | BLOCKED | ❌ **BLOCKED-DIRECT / PAID-ONLY** | "Non-commercial use only"; ToU: "not use any part of the Services for any commercial purposes without … prior written consent". Commercial = paid Premium/Database tier | High |
 | **ET Open** (bundled IP lists) | IP | Partial | ❌ **BLOCKED-DIRECT** (for the IP lists) | `emerging-Block-IPs.txt` commingles **Spamhaus** (commercial use not free; copyright + database right) under ET's BSD wrapper — an aggregator's BSD notice cannot relicense third-party data; `compromised-ips.txt` is unlicensed. The ET **rules** are BSD but are detection signatures, **out of scope** for IOC enrichment | High |
 
+### Additional candidates (MISP default-feed sweep — beyond the original fountel set)
+
+A review surfaced further free feeds outside the original BLOCKED/FLAGGED set; vetted here under the same lens. Note none of the licence-clean ones carries CIRCL-style rich context — they are bare membership feeds.
+
+| Source | Indicators | Re-vetting verdict | Deciding clause | Conf. |
+| --- | --- | --- | --- | --- |
+| **Infoblox Threat Intelligence** | domain-heavy (+ IP / URL / hash / email) | ✅ **USE-OK-DIRECT** | **CC-BY-4.0**; README: the data is provided "to use it for both commercial and non-commercial security purposes, under … attribution to Infoblox". Licence covers the **data** (only the unused `sample-code` folder is GPL). **But content is a bare membership/severity list — no galaxies / actor / malware tags** (rich "decision criteria" is paywalled in Infoblox TIDE), so it is a clean deterministic feed, **not** a thick-context replacement for CIRCL. Attribution is a hard CC-BY obligation | High |
+| **Phishing.Database** | phishing domain / URL / IP | ✅ **USE-OK-DIRECT** | **MIT**, covering the data ("without restriction … sell"); actively updated (~0.5M domains). Bulk membership lists (no context). Low upstream risk — it uses PhishTank/OpenPhish *delisting* decisions, not their feeds; contamination matters only if we ever redistribute | High |
+| **CERT Polska Warning List** | active phishing domains (PL-centric) | ✅ **USE-OK-DIRECT** | API spec grants the data "may be **accessed, used and processed without obtaining special permission or license**"; no commercial bar, no registration for the pull endpoints. Best-effort (no SLA / quality guarantee); v2 endpoint `hole.cert.pl/domains/v2/` | High |
+| **PhishStats** | phishing URL / IP | ⚠️ **NEEDS-CONTACT** (no-grant) | No licence or terms anywhere ("free for research" only); a paid "Premium API" tier is "coming"; CSV deprecated → 20 req/min JSON API behind Cloudflare | High (no grant) |
+| **Threatview.io** | C2 / IP / domain / hash | ⚠️ **NEEDS-CONTACT** (no-grant) | Site footer is "**All rights reserved by Threatview.io**" with no usage terms; "freely usable" is an aggregator's label, not Threatview's own grant | High (no grant) |
+
 ### Outcome and implications for the source catalog
 
-- **Three clean unlocks become candidate Tier 1 sources**, beyond the abuse.ch / Spamhaus / KEV / NVD / MITRE set already in §"Tier 1":
-  - **CIRCL OSINT feed** — highest value: it carries the **rich tags / galaxy context** that makes "thick" C1 narrative facts possible for free. First candidate to add.
-  - **DigitalSide** — malware-focused IP/domain/URL/hash IOCs (MIT/TLP:WHITE).
-  - **Botvrij.eu** — general IOC coverage (internal use granted, resale only forbidden).
-
-  All three are `deterministic_ioc`-capable local feeds and slot into the existing Phase 1a framework as **"add a source" adapters** — the same path abuse.ch already uses — subject to the §"the type-distinction hinge" classification per match.
-- **Operational notes for ingestion:** CIRCL events can carry per-event TLP tags above CLEAR; filter at ingest so anything above TLP:GREEN never surfaces outside per-customer context, and attribute provenance ("CIRCL OSINT Feed") in the evidence record per §"Audit / evidence model".
-- **ET Open adds nothing new:** its only commercially clean atomic IOCs trace back to **abuse.ch (CC0)**, which is already integrated directly — consume abuse.ch at the source rather than the ET-laundered bundle.
-- **Confirmed-blocked feeds** (Binary Defense, C2IntelFeeds, C2-Tracker, OpenPhish, ET Open IP lists) are not pursued under the free/direct model; any future use would require the vendor's paid/commercial path.
-- **CINS and blocklist.de** are gray-zone no-grant feeds carrying only noisy, low-value IPs — **not worth a NEEDS-CONTACT** outreach.
-- **PhishTank** is parked: the licence permits commercial use, so it can be revisited if/when new registration reopens and an app key becomes obtainable.
+- **Clean, commercially usable Tier 1 additions** (beyond the abuse.ch / Spamhaus / KEV / NVD / MITRE set already in §"Tier 1"), each a `deterministic_ioc`-capable local feed that slots into the Phase 1a framework as an **"add a source" adapter** (the path abuse.ch already uses), subject to the §"the type-distinction hinge" per-match classification:
+  - **Infoblox TI** (CC-BY-4.0) — clean commercial grant; DNS/domain-heavy membership + severity. Requires an "Infoblox Threat Intel, CC-BY-4.0" attribution wherever matched indicators surface.
+  - **Phishing.Database** (MIT) and **CERT Polska Warning List** (explicit data grant) — phishing-domain membership, filling the gap left by OpenPhish (blocked) and PhishTank (parked).
+  - **Botvrij.eu** (resale-only restriction) — general IOC coverage.
+  - **DigitalSide** (MIT/TLP:WHITE, confidence Med) — malware-focused IOCs.
+- **The "thick free LLM context" goal is not yet met by any *confirmed-clean* source.** The one source carrying rich galaxy/tag context — **CIRCL OSINT** — is **NEEDS-CONTACT** (TLP:CLEAR licenses *disclosure*, not commercial *reuse*); **Infoblox**, though licence-clean, is a **bare list** (its rich context is paywalled in TIDE). So thick context requires **establishing the CIRCL grant** — a cheap, low-risk one-line ask to CIRCL — rather than assuming it. Until then the clean feeds above serve the **deterministic floor (#361) and membership/phishing coverage**, not rich C1 narrative. (If CIRCL is cleared, apply a per-event TLP filter at ingest so anything above TLP:GREEN never surfaces outside per-customer context, and attribute "CIRCL OSINT Feed" provenance per §"Audit / evidence model".)
+- **Confirmed-blocked feeds** (Binary Defense, C2IntelFeeds, C2-Tracker, OpenPhish, ET Open IP lists) are not pursued under the free/direct model; any future use needs the vendor's paid/commercial path.
+- **ET Open adds nothing new:** its atomic IP lists commingle Spamhaus (commercial use not free), so the bundle is blocked. Its cleanest underlying source is **abuse.ch — already integrated directly**, though abuse.ch's own commercial terms are *conditional*, not CC0 (see correction below), so this is not a free shortcut either.
+- **Correction — abuse.ch is not a blanket "CC0 / commercially clean" source.** Only **Feodo Tracker** states CC0; **URLhaus, ThreatFox, MalwareBazaar** are **conditional** (Auth-Key required; commercial/for-profit use "may require a paid subscription" via the Spamhaus-managed commercial API), and abuse.ch's umbrella Terms of Use gate commercial-volume access. This matches the RFC body's existing §"Tier 1" wording ("⚠️ conditional"); the earlier "abuse.ch CC0" phrasing in this appendix was wrong.
+- **Skip — gray-zone / no-grant, low value or operationally stuck:** CINS and blocklist.de (noisy IPs; CINS grants generic use but not commercial embedding, blocklist.de has no grant) and PhishStats / Threatview.io (no licence at all) — **not worth a NEEDS-CONTACT** outreach. **PhishTank** is parked: its licence permits commercial use, but new registration is disabled, so revisit if/when an app key becomes obtainable.
 
 ### Primary sources
 
@@ -515,4 +526,9 @@ Verdict legend: **USE-OK-DIRECT** = usable for direct first-party internal enric
 - C2IntelFeeds — [License.md (CC-BY-NC-SA-4.0)](https://github.com/drb-ra/C2IntelFeeds/blob/master/License.md)
 - C2-Tracker — [repo (no licence, archived)](https://github.com/montysecurity/C2-Tracker), [Shodan ToS](https://static.shodan.io/legal/terms.html)
 - OpenPhish — [Terms of Use](https://openphish.com/terms.html), [community feed README](https://github.com/openphish/public_feed)
-- ET Open — [emerging-Block-IPs.txt](https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt), [Spamhaus DROP terms](https://www.spamhaus.org/drop/terms/), [abuse.ch Feodo (CC0)](https://feodotracker.abuse.ch/blocklist/)
+- ET Open — [emerging-Block-IPs.txt](https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt), [Spamhaus DROP terms](https://www.spamhaus.org/drop/terms/)
+- abuse.ch (correction) — [Feodo Tracker (CC0)](https://feodotracker.abuse.ch/blocklist/), [URLhaus API (conditional — commercial may require paid)](https://urlhaus.abuse.ch/api/), [abuse.ch Terms of Use](https://abuse.ch/terms-of-use/)
+- Infoblox TI — [LICENSE (CC-BY-4.0)](https://raw.githubusercontent.com/infobloxopen/threat-intelligence/main/LICENSE), [README (commercial-use grant)](https://github.com/infobloxopen/threat-intelligence)
+- Phishing.Database — [LICENSE (MIT)](https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/LICENSE), [repo](https://github.com/Phishing-Database/Phishing.Database)
+- CERT Polska Warning List — [warning list](https://cert.pl/en/warning-list/), [API spec (data grant)](https://raw.githubusercontent.com/CERT-Polska/phishing-api/master/SPECIFICATION.md)
+- PhishStats — [FAQ (no terms)](https://phishstats.info/faq); Threatview.io — [site ("all rights reserved")](https://threatview.io/)
