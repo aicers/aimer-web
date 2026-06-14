@@ -59,6 +59,82 @@ export interface EvidenceRecord {
   coverage?: CoverageReport;
 }
 
+// ---------------------------------------------------------------------------
+// Meaningfulness gate (RFC 0005 Resolved decision 3 / RFC 0003 amendment #589)
+// ---------------------------------------------------------------------------
+
+/**
+ * Confidence at/above which a `soft_reputation` match is promoted to a
+ * structured, user-cited evidence row on its own (single-source). Below it,
+ * the match is promoted only if corroborated by multiple sources
+ * (`SOFT_REPUTATION_MIN_CORROBORATING_SOURCES`), and otherwise stays
+ * audit-only.
+ *
+ * TUNABLE — see RFC 0005 Resolved decision 3 ("Threshold tunable") and issue
+ * #589. Coordinate the value with F6 (per-source context payload) if F6 lands
+ * first. This gate governs ONLY the structured/cited surface; the LLM-priming
+ * fact channel is left ungated (RFC 0003 C1 #440) and genuine noise is the F5
+ * negative layer's job.
+ */
+export const SOFT_REPUTATION_CONFIDENCE_THRESHOLD = 0.7;
+
+/**
+ * Number of DISTINCT sources that must independently hit the same indicator
+ * for a below-threshold `soft_reputation` match to be promoted anyway
+ * (multi-source corroboration). TUNABLE — see issue #589.
+ */
+export const SOFT_REPUTATION_MIN_CORROBORATING_SOURCES = 2;
+
+/**
+ * The meaningfulness gate for `soft_reputation` matches (RFC 0005 Resolved
+ * decision 3, #589). A soft-reputation match becomes a structured, user-cited
+ * evidence row only when it is *meaningful*:
+ *
+ *   - its `confidence` is at/above `SOFT_REPUTATION_CONFIDENCE_THRESHOLD`, OR
+ *   - the same indicator is corroborated by at least
+ *     `SOFT_REPUTATION_MIN_CORROBORATING_SOURCES` distinct sources.
+ *
+ * `siblingMatchesForIndicator` is the full set of matches the dispatcher
+ * produced for the one indicator this match belongs to (`merged.matches`) —
+ * they are all for the same indicator value, so distinct `sourcePolicyId`s
+ * among them count as independent corroboration.
+ *
+ * This is `soft_reputation`-only: floor-supporting and floor-ineligible
+ * `deterministic_ioc` matches are promoted unconditionally (Scope 1) and must
+ * not be passed through this gate. A `false` return means "do not write a
+ * structured evidence row" — the caller leaves the soft signal to the
+ * (ungated) fact channel on the story path and audit-logs the decision.
+ */
+export function surfacesSoftMatch(
+  match: EnrichmentMatch,
+  siblingMatchesForIndicator: readonly EnrichmentMatch[],
+): boolean {
+  if (
+    typeof match.confidence === "number" &&
+    match.confidence >= SOFT_REPUTATION_CONFIDENCE_THRESHOLD
+  ) {
+    return true;
+  }
+  const distinctSources = new Set(
+    siblingMatchesForIndicator.map((m) => m.sourcePolicyId),
+  );
+  return distinctSources.size >= SOFT_REPUTATION_MIN_CORROBORATING_SOURCES;
+}
+
+/**
+ * Whether an evidence record is floor-supporting (`deterministic_ioc` from a
+ * floor-eligible source) — the class that drives `known_ioc_hit`. Non-floor
+ * records (soft-reputation + floor-ineligible deterministic) are evidence-only.
+ * Mirrors `matchSatisfiesFloor` but reads the persisted record fields, so the
+ * persist path can partition rows by class for the class-scoped replace
+ * (#589 Scope 2a).
+ */
+export function evidenceIsFloorSupporting(record: EvidenceRecord): boolean {
+  return (
+    record.hitType === "deterministic_ioc" && record.floorEligible === true
+  );
+}
+
 export interface BuildEvidenceParams {
   match: EnrichmentMatch;
   redactionToken: string;

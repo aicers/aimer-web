@@ -190,6 +190,74 @@ async function importFeodo(feedPool: Pool, sourceUpdatedAt: string) {
   });
 }
 
+// A floor-INELIGIBLE deterministic source — the SHIPPED posture (every
+// current feed is floorEligible:false pending OQ9 licensing). Used to prove a
+// floor-ineligible deterministic hit is ALWAYS promoted as evidence-only (not
+// floor-driving, not gated) per #589 Scope 1.
+const NONFLOORING_DET: SourcePolicy[] = [
+  {
+    sourcePolicyId: "abuse.ch/feodo",
+    label: "abuse.ch Feodo Tracker",
+    entityTypes: ["IP"],
+    deterministicCoverage: true,
+    maxAge: 2 * 24 * 60 * 60 * 1000,
+    floorEligible: false,
+  },
+];
+
+// Soft-reputation IP sources (never floor-driving; deterministicCoverage:false
+// so they do not affect the deterministic coverage status). Two distinct
+// sources so multi-source corroboration can be exercised.
+const SOFT_A: SourcePolicy = {
+  sourcePolicyId: "soft/rep-a",
+  label: "Soft Reputation A",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+const SOFT_B: SourcePolicy = {
+  sourcePolicyId: "soft/rep-b",
+  label: "Soft Reputation B",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+
+async function importSoft(
+  feedPool: Pool,
+  sourcePolicyId: string,
+  confidence: number | undefined,
+  matchValue = "45.66.230.5",
+  sourceUpdatedAt = FRESH,
+) {
+  await importFeedSnapshot(feedPool, {
+    sourcePolicyId,
+    entityType: "IP",
+    hitType: "soft_reputation",
+    classification: "suspicious",
+    confidence,
+    sourceVersion: "2026-06-04",
+    sourceUpdatedAt,
+    rows: [{ matchValue }],
+  });
+}
+
+function optsWithPolicies(
+  authPool: Pool,
+  feedPool: Pool,
+  customerPool: Pool,
+  policies: SourcePolicy[],
+  overrides: Partial<EnrichmentWorkerOptions> = {},
+): EnrichmentWorkerOptions {
+  return opts(authPool, feedPool, customerPool, {
+    buildDispatcher: (fp, now) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), { now, policies }),
+    ...overrides,
+  });
+}
+
 describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
@@ -785,5 +853,249 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
     );
     expect(result.knownIocHit).toBe(true);
     expect(result.coverageStatus).toBe("stale");
+  });
+
+  // -------------------------------------------------------------------------
+  // #589 — soft / non-floor evidence + meaningfulness gate
+  // -------------------------------------------------------------------------
+
+  it("always promotes a floor-ineligible deterministic hit as evidence-only", async () => {
+    // A curated known-bad (deterministic_ioc) hit from a floorEligible:false
+    // source — the shipped posture. It is ALWAYS promoted to evidence (not
+    // subject to the gate), but is evidence-only: it never flips the floor.
+    await importFeodo(feedPool, FRESH);
+    await seedStory(customerPool, "1101", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1101",
+      optsWithPolicies(authPool, feedPool, customerPool, NONFLOORING_DET),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+      source_policy_id: string;
+    }>(
+      `SELECT hit_type, floor_eligible, source_policy_id
+         FROM story_ioc_evidence
+        WHERE story_id = 1101 AND story_version = 'v1'`,
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(false);
+    expect(ev[0].source_policy_id).toBe("abuse.ch/feodo");
+
+    // The floor is untouched.
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1101 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(false);
+  });
+
+  it("only-soft (above gate): promotes soft evidence, keeps known_ioc_hit false", async () => {
+    // A soft-reputation match above the confidence threshold is promoted to a
+    // structured evidence row (floor_eligible:false, hit_type:soft_reputation)
+    // but NEVER flips known_ioc_hit or changes coverage — the floor invariant.
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    await seedStory(customerPool, "1102", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1102",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+      source_policy_id: string;
+    }>(
+      `SELECT hit_type, floor_eligible, source_policy_id
+         FROM story_ioc_evidence
+        WHERE story_id = 1102 AND story_version = 'v1'`,
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("soft_reputation");
+    expect(ev[0].floor_eligible).toBe(false);
+    // Citation DATA: the row carries source_policy_id, resolvable to a label
+    // via the source registry/policy (the consumer rendering is the #591
+    // follow-up; only the data is asserted here).
+    expect(ev[0].source_policy_id).toBe(SOFT_A.sourcePolicyId);
+    expect(SOFT_A.label).toBeTruthy();
+
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1102 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(false);
+  });
+
+  it("promotes a below-threshold soft match corroborated by >= 2 sources", async () => {
+    // Two distinct soft sources hit the same indicator, each below the
+    // confidence threshold. Multi-source corroboration promotes them anyway.
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.1);
+    await importSoft(feedPool, SOFT_B.sourcePolicyId, 0.1);
+    await seedStory(customerPool, "1103", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1103",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A, SOFT_B]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(2);
+
+    const { rows: ev } = await customerPool.query<{ source_policy_id: string }>(
+      `SELECT source_policy_id FROM story_ioc_evidence
+        WHERE story_id = 1103 AND story_version = 'v1'
+        ORDER BY source_policy_id`,
+    );
+    expect(ev.map((r) => r.source_policy_id)).toEqual([
+      SOFT_A.sourcePolicyId,
+      SOFT_B.sourcePolicyId,
+    ]);
+  });
+
+  it("below-gate soft: leaves the fact (primes the LLM) but writes no evidence row", async () => {
+    // The fact / LLM-priming channel is UNGATED (#440): a sub-threshold,
+    // single-source soft match still produces its fact, while it produces NO
+    // structured evidence row, and the not-promoted decision is logged.
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.1);
+      await seedStory(customerPool, "1104", { resp_addr: "45.66.230.5" });
+
+      const result = await runStoryEnrichment(
+        CUSTOMER_ID,
+        "1104",
+        optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+      );
+      expect(result.evidenceCount).toBe(0);
+      expect(result.factCount).toBe(1);
+
+      // No structured evidence row.
+      const { rows: ev } = await customerPool.query(
+        `SELECT 1 FROM story_ioc_evidence
+          WHERE story_id = 1104 AND story_version = 'v1'`,
+      );
+      expect(ev).toHaveLength(0);
+
+      // The fact is still persisted (unchanged from #440).
+      const { rows: facts } = await customerPool.query<{ fact_text: string }>(
+        `SELECT fact_text FROM story_enrichment_fact
+          WHERE story_id = 1104 AND story_version = 'v1'`,
+      );
+      expect(facts).toHaveLength(1);
+      expect(facts[0].fact_text).toContain("45.66.230.5");
+
+      // The not-promoted decision is observable, without leaking the indicator.
+      expect(infoSpy).toHaveBeenCalled();
+      const logged = infoSpy.mock.calls.find((c) =>
+        String(c[0]).includes("not promoted to"),
+      );
+      expect(logged).toBeTruthy();
+      expect(JSON.stringify(logged)).not.toContain("45.66.230.5");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("preserves prior floor evidence on a non-floor-only rerun (monotonic)", async () => {
+    // Run 1: a floor-eligible deterministic hit → floor evidence + true floor.
+    await importFeodo(feedPool, FRESH);
+    await seedStory(customerPool, "1105", { resp_addr: "45.66.230.5" });
+    const first = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1105",
+      opts(authPool, feedPool, customerPool),
+    );
+    expect(first.knownIocHit).toBe(true);
+    expect(first.evidenceCount).toBe(1);
+
+    // Run 2: only a soft match remains (the deterministic feed is gone). The
+    // run produces non-floor evidence only — it must NOT delete the prior
+    // floor row, and the monotonic floor stays true.
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    const second = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1105",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+    );
+    expect(second.knownIocHit).toBe(false);
+
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1105 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(true); // monotonic
+
+    // Both the preserved floor row and the new soft row are present.
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM story_ioc_evidence
+        WHERE story_id = 1105 AND story_version = 'v1'
+        ORDER BY hit_type`,
+    );
+    expect(ev).toHaveLength(2);
+    expect(ev).toContainEqual({
+      hit_type: "deterministic_ioc",
+      floor_eligible: true,
+    });
+    expect(ev).toContainEqual({
+      hit_type: "soft_reputation",
+      floor_eligible: false,
+    });
+  });
+
+  it("clears stale non-floor rows on a successful zero-evidence rerun, keeps floor", async () => {
+    // Run 1 persists a floor row AND a soft non-floor row.
+    await importFeodo(feedPool, FRESH);
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    await seedStory(customerPool, "1106", { resp_addr: "45.66.230.5" });
+    const first = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1106",
+      optsWithPolicies(authPool, feedPool, customerPool, [...FLOORING, SOFT_A]),
+    );
+    expect(first.knownIocHit).toBe(true);
+    expect(first.evidenceCount).toBe(2);
+
+    // Run 2 completes successfully with ZERO matches (all feeds gone). The
+    // non-floor delete is NOT gated on evidence count, so the stale soft row
+    // is cleared; the floor row is preserved and the floor stays true.
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
+    const second = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1106",
+      optsWithPolicies(authPool, feedPool, customerPool, [...FLOORING, SOFT_A]),
+    );
+    expect(second.status).toBe("complete");
+    expect(second.evidenceCount).toBe(0);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM story_ioc_evidence
+        WHERE story_id = 1106 AND story_version = 'v1'`,
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(true);
+
+    const { rows } = await customerPool.query<{ known_ioc_hit: boolean }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1106 AND story_version = 'v1'`,
+    );
+    expect(rows[0].known_ioc_hit).toBe(true);
   });
 });

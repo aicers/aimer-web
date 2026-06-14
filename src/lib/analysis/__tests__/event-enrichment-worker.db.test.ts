@@ -143,6 +143,71 @@ async function importFeodo(
   });
 }
 
+// A floor-INELIGIBLE deterministic source — the SHIPPED posture (every
+// current feed is floorEligible:false pending OQ9 licensing). Proves a
+// floor-ineligible deterministic hit is ALWAYS promoted as evidence-only.
+const NONFLOORING_DET: SourcePolicy[] = [
+  {
+    sourcePolicyId: "abuse.ch/feodo",
+    label: "abuse.ch Feodo Tracker",
+    entityTypes: ["IP"],
+    deterministicCoverage: true,
+    maxAge: 2 * 24 * 60 * 60 * 1000,
+    floorEligible: false,
+  },
+];
+
+// Soft-reputation IP sources (never floor-driving; deterministicCoverage:false).
+const SOFT_A: SourcePolicy = {
+  sourcePolicyId: "soft/rep-a",
+  label: "Soft Reputation A",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+const SOFT_B: SourcePolicy = {
+  sourcePolicyId: "soft/rep-b",
+  label: "Soft Reputation B",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+
+async function importSoft(
+  feedPool: Pool,
+  sourcePolicyId: string,
+  confidence: number | undefined,
+  matchValue = "45.66.230.5",
+  sourceUpdatedAt = FRESH,
+) {
+  await importFeedSnapshot(feedPool, {
+    sourcePolicyId,
+    entityType: "IP",
+    hitType: "soft_reputation",
+    classification: "suspicious",
+    confidence,
+    sourceVersion: "2026-06-04",
+    sourceUpdatedAt,
+    rows: [{ matchValue }],
+  });
+}
+
+function optsWithPolicies(
+  authPool: Pool,
+  feedPool: Pool,
+  customerPool: Pool,
+  policies: SourcePolicy[],
+  overrides: Partial<EventEnrichmentOptions> = {},
+): EventEnrichmentOptions {
+  return opts(authPool, feedPool, customerPool, {
+    buildDispatcher: (fp, now) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), { now, policies }),
+    ...overrides,
+  });
+}
+
 describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
   let authDbName: string;
   let authPool: Pool;
@@ -305,11 +370,12 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     expect(verdict?.knownIocHit).toBe(false);
   });
 
-  it("non-floor-eligible match (non-public IP) → no evidence, no verdict", async () => {
+  it("non-floor-eligible deterministic match (non-public IP) → evidence-only, no verdict", async () => {
     // A doc-range IP (RFC 5737) is reserved → non-public → floorEligible
     // forced false. It IS listed in the feed (so a match occurs and coverage
-    // is complete), but the match does not satisfy the floor, so no evidence
-    // and no tier-A-qualifying verdict.
+    // is complete). The match is still `deterministic_ioc`, so post-#589 it is
+    // ALWAYS promoted to evidence (evidence-only, `floor_eligible = false`) —
+    // but it does not satisfy the floor, so it never flips the verdict.
     await importFeodo(feedPool, FRESH, "203.0.113.10");
     await seedBaselineEvent(customerPool, {
       eventKey: "4",
@@ -323,15 +389,28 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       opts(authPool, feedPool, customerPool),
     );
     expect(result.knownIocHit).toBe(false);
-    expect(result.evidenceCount).toBe(0);
+    expect(result.evidenceCount).toBe(1);
     expect(result.coverageStatus).toBe("complete");
 
-    const { rows } = await customerPool.query(
-      `SELECT 1 FROM event_ioc_evidence
+    const { rows } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM event_ioc_evidence
         WHERE source_aice_id = $1 AND event_key = 4`,
       [AICE_ID],
     );
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].hit_type).toBe("deterministic_ioc");
+    expect(rows[0].floor_eligible).toBe(false);
+
+    // The verdict is NOT flipped by an evidence-only row.
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "4",
+    );
+    expect(verdict?.knownIocHit).toBe(false);
   });
 
   it("soft-reputation match → no evidence, no tier-A-qualifying verdict", async () => {
@@ -691,5 +770,255 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
     );
     expect(stable?.status).toBe("complete");
     expect(stable?.knownIocHit).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #589 — soft / non-floor evidence + meaningfulness gate (event path)
+  // -------------------------------------------------------------------------
+
+  it("always promotes a floor-ineligible deterministic hit as evidence-only", async () => {
+    // A curated known-bad (deterministic_ioc) hit from a floorEligible:false
+    // source is ALWAYS promoted to evidence (not gated), but evidence-only:
+    // it never produces a tier-A-qualifying verdict.
+    await importFeodo(feedPool, FRESH);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "20",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "20",
+      optsWithPolicies(authPool, feedPool, customerPool, NONFLOORING_DET),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+      source_policy_id: string;
+    }>(
+      `SELECT hit_type, floor_eligible, source_policy_id
+         FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 20`,
+      [AICE_ID],
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(false);
+    expect(ev[0].source_policy_id).toBe("abuse.ch/feodo");
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "20",
+    );
+    expect(verdict?.knownIocHit).toBe(false);
+  });
+
+  it("only-soft (above gate): promotes soft evidence, keeps verdict false", async () => {
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "21",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "21",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+      source_policy_id: string;
+    }>(
+      `SELECT hit_type, floor_eligible, source_policy_id
+         FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 21`,
+      [AICE_ID],
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("soft_reputation");
+    expect(ev[0].floor_eligible).toBe(false);
+    // Citation DATA: source_policy_id present + registry-resolvable label.
+    expect(ev[0].source_policy_id).toBe(SOFT_A.sourcePolicyId);
+    expect(SOFT_A.label).toBeTruthy();
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "21",
+    );
+    expect(verdict?.knownIocHit).toBe(false);
+  });
+
+  it("below-gate soft (event): not promoted, audit-logged (no fact channel)", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.1);
+      await seedBaselineEvent(customerPool, {
+        eventKey: "22",
+        rawEvent: { resp_addr: "45.66.230.5" },
+      });
+
+      const result = await runEventEnrichment(
+        CUSTOMER_ID,
+        AICE_ID,
+        "22",
+        optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+      );
+      expect(result.evidenceCount).toBe(0);
+
+      const { rows: ev } = await customerPool.query(
+        `SELECT 1 FROM event_ioc_evidence
+          WHERE source_aice_id = $1 AND event_key = 22`,
+        [AICE_ID],
+      );
+      expect(ev).toHaveLength(0);
+
+      const logged = infoSpy.mock.calls.find((c) =>
+        String(c[0]).includes("not promoted to"),
+      );
+      expect(logged).toBeTruthy();
+      expect(JSON.stringify(logged)).not.toContain("45.66.230.5");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("promotes a below-threshold soft match corroborated by >= 2 sources", async () => {
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.1);
+    await importSoft(feedPool, SOFT_B.sourcePolicyId, 0.1);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "23",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "23",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A, SOFT_B]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(2);
+
+    const { rows: ev } = await customerPool.query<{ source_policy_id: string }>(
+      `SELECT source_policy_id FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 23
+        ORDER BY source_policy_id`,
+      [AICE_ID],
+    );
+    expect(ev.map((r) => r.source_policy_id)).toEqual([
+      SOFT_A.sourcePolicyId,
+      SOFT_B.sourcePolicyId,
+    ]);
+  });
+
+  it("preserves prior floor evidence on a non-floor-only re-check (monotonic)", async () => {
+    await importFeodo(feedPool, FRESH);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "24",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+    const first = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "24",
+      opts(authPool, feedPool, customerPool),
+    );
+    expect(first.knownIocHit).toBe(true);
+    expect(first.evidenceCount).toBe(1);
+
+    // Only a soft match remains. It must not delete the prior floor row.
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    const second = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "24",
+      optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A]),
+    );
+    expect(second.knownIocHit).toBe(false);
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "24",
+    );
+    expect(verdict?.knownIocHit).toBe(true); // monotonic
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 24
+        ORDER BY hit_type`,
+      [AICE_ID],
+    );
+    expect(ev).toHaveLength(2);
+    expect(ev).toContainEqual({
+      hit_type: "deterministic_ioc",
+      floor_eligible: true,
+    });
+    expect(ev).toContainEqual({
+      hit_type: "soft_reputation",
+      floor_eligible: false,
+    });
+  });
+
+  it("clears stale non-floor rows on a successful zero-evidence re-check, keeps floor", async () => {
+    await importFeodo(feedPool, FRESH);
+    await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "25",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+    const first = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "25",
+      optsWithPolicies(authPool, feedPool, customerPool, [...FLOORING, SOFT_A]),
+    );
+    expect(first.knownIocHit).toBe(true);
+    expect(first.evidenceCount).toBe(2);
+
+    // Successful run with ZERO matches: clears the soft row, keeps the floor.
+    await feedPool.query("DELETE FROM ioc_feed_snapshot");
+    const second = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "25",
+      optsWithPolicies(authPool, feedPool, customerPool, [...FLOORING, SOFT_A]),
+    );
+    expect(second.status).toBe("complete");
+    expect(second.evidenceCount).toBe(0);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 25`,
+      [AICE_ID],
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(true);
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "25",
+    );
+    expect(verdict?.knownIocHit).toBe(true);
   });
 });

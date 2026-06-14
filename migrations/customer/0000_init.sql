@@ -457,15 +457,22 @@ CREATE INDEX story_analysis_result_input_event_refs_gin
 --     (enrichment ran, no hit) is distinguishable from `false-unknown`
 --     (incomplete or a deterministic feed was stale/unavailable).
 --
---   * `story_ioc_evidence` — one row per floor-supporting match
---     (RFC 0003 `EvidenceRecord` fields) so a `known_ioc_hit = true`
---     is explainable after the fact. Indicators are stored the same
---     way as the rest of the redaction layer: external indicators raw
---     and customer-asset indicators as tokens, both carried by
---     `redaction_token`. A customer-asset token is event-scoped, so
---     the row also carries the `(source_aice_id, member_event_key)`
---     map key that recovers it. Linked to the canonical story version,
---     NOT to `story_analysis_result`.
+--   * `story_ioc_evidence` — one row per SURFACED match (RFC 0003
+--     `EvidenceRecord` fields) so a `known_ioc_hit = true` is
+--     explainable after the fact. Surfaced = floor-supporting matches
+--     PLUS, per the RFC 0003 evidence-model amendment (#589, RFC 0005
+--     Resolved decisions 2-3), floor-ineligible `deterministic_ioc`
+--     (always) and `soft_reputation` matches that pass the
+--     meaningfulness gate. Rows are distinguished by `hit_type` /
+--     `floor_eligible`; only floor-supporting rows
+--     (`deterministic_ioc AND floor_eligible`) explain `known_ioc_hit`,
+--     the rest are evidence-only and never drive the floor. Indicators
+--     are stored the same way as the rest of the redaction layer:
+--     external indicators raw and customer-asset indicators as tokens,
+--     both carried by `redaction_token`. A customer-asset token is
+--     event-scoped, so the row also carries the `(source_aice_id,
+--     member_event_key)` map key that recovers it. Linked to the
+--     canonical story version, NOT to `story_analysis_result`.
 --
 -- Both are keyed on / FK'd to the canonical `(story_id, story_version)`
 -- and cascade-delete with the story, mirroring `story_member`.
@@ -618,9 +625,14 @@ CREATE TABLE event_enrichment_state (
     PRIMARY KEY (source_aice_id, event_key)
 );
 
--- One row per floor-supporting match, mirroring `story_ioc_evidence`
--- field-for-field minus the story linkage. Floor-supporting matches
--- only; soft-reputation / non-floor-eligible matches never land here.
+-- One row per SURFACED match, mirroring `story_ioc_evidence`
+-- field-for-field minus the story linkage. Surfaced = floor-supporting
+-- matches PLUS, per the RFC 0003 evidence-model amendment (#589),
+-- floor-ineligible `deterministic_ioc` (always) and gate-passing
+-- `soft_reputation` matches; distinguished by `hit_type` /
+-- `floor_eligible`, only floor-supporting rows drive the per-event
+-- verdict. (The event path has no fact channel, #489, so there are no
+-- parallel facts for non-floor rows here.)
 CREATE TABLE event_ioc_evidence (
     id                BIGINT         GENERATED ALWAYS AS IDENTITY
                                      PRIMARY KEY,
