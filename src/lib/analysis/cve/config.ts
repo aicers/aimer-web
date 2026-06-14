@@ -35,6 +35,11 @@ import {
   type FixtureCveData,
 } from "./fixture-catalog";
 import { PgCveCatalog } from "./pg-catalog";
+// Importing the barrel runs each CVE source's `registerCveSource` side effect,
+// so the registry is populated before `cveSourceCatalog` enumerates it (the
+// same pattern `ti-sources.ts` uses for the IOC registry).
+import "./sources";
+import { allCveSourceDescriptors } from "./sources/registry";
 
 function envFlag(raw: string | undefined): boolean {
   if (!raw) return false;
@@ -68,6 +73,70 @@ export function selectEnabledCveSources(_scope?: {
   groupId?: string;
 }): Set<CveSourceId> {
   return new Set<CveSourceId>(ALL_CVE_SOURCES);
+}
+
+// --- F2 enumerable seam: CVE sources as a distinct selection kind (#612) ---
+//
+// #598 surfaces the IOC TI sources to the per-customer/group selection model
+// by mapping `allTiSourceDescriptors()` to a public `TiSourceCatalogEntry`
+// DTO keyed on `sourcePolicyId`. CVE sources must reach the SAME selection
+// model, but they are a SEPARATE namespace and a SEPARATE consumer: CVE ids
+// (`nvd`/`kev`/`epss`) drive `computeCveStatus` via `selectEnabledCveSources`,
+// NOT `buildLocalFeedDispatcher` via the IOC `sourcePolicyId` allowlist. So
+// this seam exposes CVE sources as a DISTINCT source kind (`kind: "cve"`,
+// keyed on `sourceId`) — they must never be appended to #598's IOC
+// `sourcePolicyId` allowlist, or the two enrichment pipelines would be
+// conflated.
+//
+// COORDINATION NOTE — this issue (#612) ships the ENUMERABLE seam only. The
+// kind-discriminated per-customer/group *storage* wiring (a CVE kind in
+// #598's `subject_ti_sources` row / catalog DTO / management routes, or a
+// union those consume) is a deferred follow-up AFTER #598 lands. Until then,
+// `selectEnabledCveSources` (default all-enabled, above) stays the LIVE gating
+// authority for what `computeCveStatus` considers — CVE selection is NOT
+// silently ungated. `cveSourceCatalog` below reads through that seam, so once
+// real per-subject CVE selection is wired into `selectEnabledCveSources`, this
+// catalog DTO reflects it without further change.
+
+/**
+ * One selectable CVE source as exposed to the per-customer/group selection
+ * model — the CVE analogue of #598's `TiSourceCatalogEntry`. Kept a DISTINCT
+ * source kind (`kind: "cve"`, keyed on the closed-union `sourceId`) so CVE ids
+ * never enter the IOC `sourcePolicyId` allowlist. A deliberately NARROW DTO:
+ * only the id/label/enabled a toggle UI needs, never the descriptor internals
+ * (`fetch`/`parse`/`maxAge`), which describe the ingestion engine.
+ */
+export interface CveSourceCatalogEntry {
+  /** Discriminator marking a CVE source, distinct from the IOC source kind. */
+  kind: "cve";
+  /** Closed-union CVE source id (`nvd` | `kev` | `epss`) — NOT a `sourcePolicyId`. */
+  sourceId: CveSourceId;
+  /** Human-facing citation label (`CVE_SOURCE_LABELS[sourceId]`). */
+  label: string;
+  /** Whether this source is enabled under the resolved F2 selection. */
+  enabled: boolean;
+}
+
+/**
+ * Surface the registered CVE sources (#611's `allCveSourceDescriptors()`) to
+ * the selection model as the CVE catalog DTO, each entry flagged `enabled`
+ * against `selectEnabledCveSources(scope)` (default all-enabled). Mirrors how
+ * #598's `toCatalogDto` maps the IOC registry to `TiSourceCatalogEntry`, but
+ * as a distinct kind keyed on `sourceId` — it never leaks a CVE id into the
+ * IOC `sourcePolicyId` namespace. Enumerated in `ALL_CVE_SOURCES` citation
+ * order (the accessor's contract), so the DTO order is deterministic.
+ */
+export function cveSourceCatalog(scope?: {
+  customerId?: string;
+  groupId?: string;
+}): CveSourceCatalogEntry[] {
+  const enabled = selectEnabledCveSources(scope);
+  return allCveSourceDescriptors().map((descriptor) => ({
+    kind: "cve" as const,
+    sourceId: descriptor.id,
+    label: descriptor.label,
+    enabled: enabled.has(descriptor.id),
+  }));
 }
 
 // --- DB-backed catalog + the retained vendored fixture (for tests) --------
