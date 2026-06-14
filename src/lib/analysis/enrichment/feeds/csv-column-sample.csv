@@ -1,0 +1,5 @@
+# Generic CSV fixture (#593) — header row + multi-column indicators.
+id,url,host,first_seen
+"1","http://malware.example/a.exe","malware.example","2026-05-01"
+"2","https://c2.evil.example/gate.php","c2.evil.example","2026-05-02"
+"3","http://phishing.evil.example/login","phishing.evil.example","2026-05-03"

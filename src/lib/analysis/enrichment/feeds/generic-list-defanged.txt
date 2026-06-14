@@ -1,0 +1,4 @@
+# Defanged indicator list fixture (#593) — refang on.
+hxxp://malware[.]example/a[.]exe
+hxxps://c2[.]evil[.]example/gate[.]php
+admin[at]evil[.]example

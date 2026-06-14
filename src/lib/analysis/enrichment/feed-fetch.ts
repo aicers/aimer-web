@@ -669,7 +669,12 @@ export class SelfFetchFeedSource {
       // untouched), while still allowing a genuinely empty / comment-only feed
       // (e.g. Feodo) to legitimately clear the source.
       if (
-        isUnparseableFeedContent(fetchConfig.parse, source.entityType, content)
+        isUnparseableFeedContent(
+          fetchConfig.parse,
+          source.entityType,
+          content,
+          fetchConfig.parseConfig,
+        )
       ) {
         throw new SelfFetchError(
           "Fetched response has data but no recognizable feed entries " +
@@ -680,6 +685,7 @@ export class SelfFetchFeedSource {
       const payload: RawFeedPayload = {
         sourcePolicyId,
         parse: fetchConfig.parse,
+        parseConfig: fetchConfig.parseConfig,
         entityType: source.entityType,
         polarity: source.polarity,
         hitType: source.hitType,
