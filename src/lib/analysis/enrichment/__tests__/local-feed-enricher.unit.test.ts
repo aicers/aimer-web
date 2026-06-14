@@ -18,7 +18,7 @@ import {
 } from "../normalization";
 import type { SourcePolicy } from "../source-policy";
 import { matchSatisfiesFloor } from "../source-policy";
-import type { NormalizedIndicator } from "../types";
+import type { EnrichmentContextPayload, NormalizedIndicator } from "../types";
 
 const SOURCE_UPDATED = "2026-06-04T00:00:00.000Z";
 const fresh = () => new Date("2026-06-04T12:00:00.000Z");
@@ -49,6 +49,7 @@ class FakeFeedStore implements FeedStore {
       cidrs?: Record<string, string[]>;
       meta?: Record<string, FeedSnapshotMeta | null>;
       hitType?: "deterministic_ioc" | "soft_reputation";
+      context?: Record<string, EnrichmentContextPayload>;
     },
   ) {}
 
@@ -64,6 +65,7 @@ class FakeFeedStore implements FeedStore {
     indicator: NormalizedIndicator,
   ): Promise<FeedMatchRow[]> {
     const hitType = this.opts.hitType ?? "deterministic_ioc";
+    const contextPayload = this.opts.context?.[sourcePolicyId];
     const out: FeedMatchRow[] = [];
     const candidates = new Set<string>([...indicator.matchValues]);
     if (indicator.derived) {
@@ -75,12 +77,12 @@ class FakeFeedStore implements FeedStore {
     }
     for (const value of this.opts.exact?.[sourcePolicyId] ?? []) {
       if (candidates.has(value)) {
-        out.push({ hitType, sourceUpdatedAt: SOURCE_UPDATED });
+        out.push({ hitType, contextPayload, sourceUpdatedAt: SOURCE_UPDATED });
       }
     }
     for (const cidr of this.opts.cidrs?.[sourcePolicyId] ?? []) {
       if (indicator.entityType === "IP" && inCidr(indicator.value, cidr)) {
-        out.push({ hitType, sourceUpdatedAt: SOURCE_UPDATED });
+        out.push({ hitType, contextPayload, sourceUpdatedAt: SOURCE_UPDATED });
       }
     }
     return out;
@@ -391,5 +393,95 @@ describe("local-feed enricher — fact generation (#440)", () => {
     );
     // No classification → no trailing "as ...".
     expect(facts[1].text).toBe("malware.example is listed by abuse.ch/urlhaus");
+  });
+
+  // RFC 0003 F6 (#594) — context carried from the store onto the match.
+  it("carries the store's context onto the match and the rich fact", async () => {
+    const context: EnrichmentContextPayload = {
+      actor: "Sandworm",
+      campaign: "BlackEnergy",
+      malwareFamily: "Industroyer",
+      reportUrl: "https://vendor.example/r",
+    };
+    const store = new FakeFeedStore({
+      exact: { "abuse.ch/feodo": ["45.66.230.5"] },
+      context: { "abuse.ch/feodo": context },
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, {
+      now: fresh,
+      policies: FEODO_FLOORING,
+    });
+    const result = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].contextPayload).toEqual(context);
+    expect(result.facts[0].text).toContain("attributed to Sandworm");
+    expect(result.facts[0].text).toContain("see https://vendor.example/r");
+  });
+
+  // RFC 0003 F6 (#594) — source-aware rich fact text.
+  it("buildFactsFromMatches emits rich narrative when context is present", () => {
+    const facts = buildFactsFromMatches(normalizeDomain("c2.evil.example"), [
+      {
+        source: "vendor/unit42",
+        sourcePolicyId: "vendor/unit42",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+        classification: "c2",
+        contextPayload: {
+          actor: "Muddled Libra",
+          campaign: "Scattered Spider",
+          malwareFamily: "AlphV",
+          reportUrl: "https://unit42.example/report",
+        },
+      },
+    ]);
+    expect(facts[0].text).toBe(
+      "c2.evil.example is listed by vendor/unit42 as c2; " +
+        "attributed to Muddled Libra in campaign Scattered Spider " +
+        "(family AlphV); see https://unit42.example/report",
+    );
+    expect(facts[0].redactionTokens).toEqual([]);
+  });
+
+  it("buildFactsFromMatches degrades gracefully for partial context", () => {
+    const [familyOnly] = buildFactsFromMatches(normalizeDomain("a.example"), [
+      {
+        source: "vendor/x",
+        sourcePolicyId: "vendor/x",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+        contextPayload: { malwareFamily: "Emotet" },
+      },
+    ]);
+    expect(familyOnly.text).toBe(
+      "a.example is listed by vendor/x; family Emotet",
+    );
+
+    const [reportOnly] = buildFactsFromMatches(normalizeDomain("b.example"), [
+      {
+        source: "vendor/x",
+        sourcePolicyId: "vendor/x",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+        classification: "malware",
+        contextPayload: { reportUrl: "https://x.example/r" },
+      },
+    ]);
+    expect(reportOnly.text).toBe(
+      "b.example is listed by vendor/x as malware; see https://x.example/r",
+    );
+
+    const [actorOnly] = buildFactsFromMatches(normalizeDomain("c.example"), [
+      {
+        source: "vendor/x",
+        sourcePolicyId: "vendor/x",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+        contextPayload: { actor: "APT28" },
+      },
+    ]);
+    expect(actorOnly.text).toBe(
+      "c.example is listed by vendor/x; attributed to APT28",
+    );
   });
 });

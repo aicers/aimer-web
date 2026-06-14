@@ -28,6 +28,7 @@ import { allTiSourceDescriptors } from "./sources/registry";
 import type {
   Enricher,
   EnricherError,
+  EnrichmentContextPayload,
   EnrichmentFact,
   EnrichmentMatch,
   EnrichmentResult,
@@ -45,17 +46,65 @@ import type {
  * produced for EVERY match, including `soft_reputation` /
  * floor-ineligible ones: a non-flooring hit still has narrative value
  * for the analyst even though it never drives the binary floor.
+ *
+ * Source-aware (RFC 0003 F6, #594): when a match carries a
+ * `contextPayload` (vendor IOC repositories bundle report-level context),
+ * the fact is enriched with the attributed actor / campaign / malware
+ * family and a report link. It degrades gracefully to the bare
+ * "{indicator} is listed by {source} [as {classification}]" one-liner when
+ * no context is present — so the existing five context-less feeds produce
+ * byte-identical facts.
  */
 export function buildFactsFromMatches(
   indicator: NormalizedIndicator,
   matches: ReadonlyArray<EnrichmentMatch>,
 ): EnrichmentFact[] {
   return matches.map((match) =>
-    createEnrichmentFact(
-      `${indicator.value} is listed by ${match.source}` +
-        (match.classification ? ` as ${match.classification}` : ""),
-    ),
+    createEnrichmentFact(buildFactText(indicator, match)),
   );
+}
+
+/** The source-aware narrative for one match (see `buildFactsFromMatches`). */
+function buildFactText(
+  indicator: NormalizedIndicator,
+  match: EnrichmentMatch,
+): string {
+  let text =
+    `${indicator.value} is listed by ${match.source}` +
+    (match.classification ? ` as ${match.classification}` : "");
+  const context = match.contextPayload;
+  if (context) {
+    const attribution = buildAttributionClause(context);
+    if (attribution) text += `; ${attribution}`;
+    if (context.reportUrl) text += `; see ${context.reportUrl}`;
+  }
+  return text;
+}
+
+/**
+ * The attribution clause from a context payload — "attributed to {actor} in
+ * campaign {campaign} (family {malwareFamily})" — degrading to whichever
+ * fields are present (any subset may be absent). Returns "" when none of
+ * actor / campaign / malwareFamily are present (the report link is appended
+ * separately by the caller).
+ */
+function buildAttributionClause(context: EnrichmentContextPayload): string {
+  const parts: string[] = [];
+  if (context.actor) parts.push(`attributed to ${context.actor}`);
+  if (context.campaign) {
+    parts.push(
+      context.actor
+        ? `in campaign ${context.campaign}`
+        : `campaign ${context.campaign}`,
+    );
+  }
+  let clause = parts.join(" ");
+  if (context.malwareFamily) {
+    clause = clause
+      ? `${clause} (family ${context.malwareFamily})`
+      : `family ${context.malwareFamily}`;
+  }
+  return clause;
 }
 
 /** Snapshot-level provenance/freshness for one feed (per `source_policy_id`). */
@@ -73,6 +122,12 @@ export interface FeedMatchRow {
   hitType: HitType;
   classification?: string;
   confidence?: number;
+  /**
+   * Per-row report-level context (RFC 0003 F6, #594), already narrowed from
+   * the snapshot's `context` JSONB by the store. Absent for context-less
+   * feeds.
+   */
+  contextPayload?: EnrichmentContextPayload;
   sourceVersion?: string;
   feedHash?: string;
   sourceUpdatedAt?: string;
@@ -170,6 +225,7 @@ export class LocalFeedEnricher implements Enricher {
       floorEligible: this.policy.floorEligible,
       classification: row.classification,
       confidence: row.confidence,
+      contextPayload: row.contextPayload,
       sourceVersion: row.sourceVersion ?? probe.sourceVersion,
       feedHash: row.feedHash ?? probe.feedHash,
       sourceUpdatedAt: row.sourceUpdatedAt ?? probe.sourceUpdatedAt,

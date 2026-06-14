@@ -93,6 +93,24 @@ export interface NormalizedIndicator {
 }
 
 /**
+ * Structured report-level context bundled with an indicator (RFC 0003 F6,
+ * #594; Appendix A §"Vendor IOC repositories"). Vendor IOC repositories
+ * (Unit 42, ESET, Volexity, …) attach actor / campaign / malware-family /
+ * blog-link context to each indicator — the first confirmed-clean source of
+ * C1 narrative material. All fields are optional; `extra` is a free-form bag
+ * for source-specific keys that have no dedicated field. This is per-row feed
+ * data (stored in `ioc_feed_snapshot.context`), not a source descriptor
+ * field, so context-less feeds simply leave it absent.
+ */
+export interface EnrichmentContextPayload {
+  actor?: string;
+  campaign?: string;
+  malwareFamily?: string;
+  reportUrl?: string;
+  extra?: Record<string, unknown>;
+}
+
+/**
  * One match for one indicator from one source. An indicator can produce
  * MANY of these across sources/feeds/classifications — never collapsed to a
  * single hit/hitType.
@@ -109,6 +127,13 @@ export interface EnrichmentMatch {
   /** Source-native label, e.g. "c2", "malware", "scanner". */
   classification?: string;
   confidence?: number;
+  /**
+   * Structured report-level context for context-bearing sources (vendor IOC
+   * repositories). Absent for context-less feeds (the existing five). Read
+   * from the snapshot's `context` JSONB through a narrowing validator — never
+   * trusted as the raw pg value. Carried here for later #589 / #591 consumers.
+   */
+  contextPayload?: EnrichmentContextPayload;
   /** Feed version / pulse id / engine set. */
   sourceVersion?: string;
   /** Content hash of the matched feed snapshot (audit). */

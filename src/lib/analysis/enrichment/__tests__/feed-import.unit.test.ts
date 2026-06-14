@@ -164,4 +164,97 @@ describe("feed hash", () => {
     const b = computeFeedHash([{ matchValue: "z" }]);
     expect(a).not.toBe(b);
   });
+
+  // RFC 0003 F6 (#594) — context-aware hashing, backward compatible.
+  it("leaves a context-less row's hash byte-identical to before F6", () => {
+    // Pinned pre-F6 hashes: the existing five context-less feeds must keep
+    // their exact feed_hash so F6 causes no spurious re-import / churn.
+    expect(computeFeedHash([{ matchValue: "x" }, { matchValue: "y" }])).toBe(
+      "9ab9de25768ac172235e119b76362ecddad33878fe9a7792cdddbe47236f9a87",
+    );
+    expect(computeFeedHash([{ matchValue: "45.66.230.5" }])).toBe(
+      "a8294758fdbd63d9b18c264f1949f90b434fee055e506925c94bb0bde6a79012",
+    );
+  });
+
+  it("ignores an undefined context (same as no context field)", () => {
+    expect(computeFeedHash([{ matchValue: "x", context: undefined }])).toBe(
+      computeFeedHash([{ matchValue: "x" }]),
+    );
+  });
+
+  it("changes when a row's context changes", () => {
+    const withCtx = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT1" } },
+    ]);
+    const without = computeFeedHash([{ matchValue: "x" }]);
+    const otherCtx = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT2" } },
+    ]);
+    expect(withCtx).not.toBe(without);
+    expect(withCtx).not.toBe(otherCtx);
+  });
+
+  it("treats an undefined-valued context field as absent (matches stored JSON)", () => {
+    // The INSERT stores JSON.stringify(context), which drops undefined
+    // properties, so {actor:"APT1", campaign:undefined} persists identically
+    // to {actor:"APT1"} and must therefore hash identically — otherwise two
+    // byte-identical snapshots would look like a context change.
+    const withUndef = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT1", campaign: undefined } },
+    ]);
+    const without = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT1" } },
+    ]);
+    expect(withUndef).toBe(without);
+  });
+
+  it("treats an all-undefined context as no context (hash unchanged, stays null)", () => {
+    // {actor:undefined} serializes to {} and narrows back to no payload, so it
+    // must neither change feed_hash nor be folded into the hash entry.
+    expect(
+      computeFeedHash([{ matchValue: "x", context: { actor: undefined } }]),
+    ).toBe(computeFeedHash([{ matchValue: "x" }]));
+  });
+
+  it("treats an extra emptied by nested-undefined cleanup as no context", () => {
+    // {extra:{a:undefined}} cleans to {extra:{}}, carrying no usable context.
+    // It must hash like no context (so the row stores NULL and the existing
+    // five feeds keep their feed_hash), not fold a phantom {extra:{}} in.
+    expect(
+      computeFeedHash([
+        { matchValue: "x", context: { extra: { a: undefined } } },
+      ]),
+    ).toBe(computeFeedHash([{ matchValue: "x" }]));
+    // A non-empty extra is still genuine context and does change the hash.
+    expect(
+      computeFeedHash([
+        { matchValue: "x", context: { extra: { tlp: "amber" } } },
+      ]),
+    ).not.toBe(computeFeedHash([{ matchValue: "x" }]));
+  });
+
+  it("hashes the same context identically regardless of key order", () => {
+    const a = computeFeedHash([
+      {
+        matchValue: "x",
+        context: {
+          actor: "APT1",
+          campaign: "Op",
+          extra: { a: 1, b: 2 },
+        },
+      },
+    ]);
+    const b = computeFeedHash([
+      {
+        matchValue: "x",
+        context: {
+          extra: { b: 2, a: 1 },
+          campaign: "Op",
+          actor: "APT1",
+        },
+      },
+    ]);
+    expect(a).toBe(b);
+  });
 });

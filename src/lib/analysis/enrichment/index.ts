@@ -5,6 +5,11 @@
 // `applyLikelihoodFloors`; the C1 issue consumes `facts[]`. See the module
 // READMEs in each file and `rfcs/0003-external-ti-enrichment.md`.
 
+export {
+  canonicalizeContext,
+  narrowContextPayload,
+  normalizeContext,
+} from "./context-payload";
 export { computeCoverage } from "./coverage";
 export {
   type DispatcherOptions,
@@ -63,6 +68,7 @@ export type {
   Enricher,
   EnricherError,
   EnricherErrorKind,
+  EnrichmentContextPayload,
   EnrichmentFact,
   EnrichmentMatch,
   EnrichmentResult,
