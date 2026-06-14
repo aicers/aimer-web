@@ -646,7 +646,7 @@ base.describe.serial("Manual screenshots", () => {
   // viewport + `fullPage` (the dashboard shell's inner `overflow-y-auto` hides
   // below-the-fold rows otherwise) and assert the last source row is on-page so
   // a too-short viewport fails loudly rather than silently clipping a new row.
-  const MANUAL_VIEWPORT = { width: 1280, height: 1000 };
+  const MANUAL_VIEWPORT = { width: 1280, height: 1100 };
 
   base("admin-ti-feeds-table.png", async () => {
     base.skip(
@@ -662,7 +662,7 @@ base.describe.serial("Manual screenshots", () => {
 
     await adminPage.waitForSelector("table tbody tr");
     await expect(
-      adminPage.getByText("infoblox/threat-intelligence"),
+      adminPage.getByText("spamhaus/edrop", { exact: true }),
     ).toBeVisible();
 
     await adminPage.screenshot({
@@ -698,26 +698,23 @@ base.describe.serial("Manual screenshots", () => {
   // freshly-migrated feed DB, so every source reads "Not fetched" — that empty
   // state is the real UI an operator first sees before any Fetch Now.
 
-  // The self-fetch table sits below the Scheduled-refresh + Auth-Key panels,
-  // so every registered source after the first few lands below the 720 px
-  // fold. As the TI source registry fans out (Infoblox, …) the table grows,
-  // and a plain viewport shot would hide the newest rows — defeating the
-  // purpose of documenting them. The dashboard shell is `h-screen` with the
-  // page body in an inner `overflow-y-auto` <main>, so the document never
-  // grows past the viewport and `fullPage` alone cannot reach below-the-fold
-  // content; bump the viewport height (width stays 1280 so layout flow is
-  // unchanged) and capture `fullPage`, the same per-shot override pattern the
-  // account-preferences captures use. Assert the last source row is on-page
-  // before shooting so a too-short viewport fails loudly instead of silently
-  // clipping a new row.
-  const SELFFETCH_VIEWPORT = { width: 1280, height: 1300 };
+  // In self-fetch mode the Fetch Now table sits BELOW the Scheduled-refresh and
+  // Auth-Key panels, so the full per-source list runs past the 720 px fold. The
+  // dashboard shell is `h-screen` with the page body in an inner
+  // `overflow-y-auto` <main>, so `fullPage` alone cannot reach below-the-fold
+  // content — bump the viewport height first (same pattern as the preferences
+  // captures), then `fullPage` so every registered source row (Botvrij,
+  // Infoblox, the three `phishing-database/*` rows, …) is visible. Assert the
+  // last stable-by-id row is on-page before shooting so a too-short viewport
+  // fails loudly instead of silently clipping a new row.
+  const TI_FEEDS_VIEWPORT = { width: 1280, height: 1500 };
 
   base("admin-ti-feeds-selffetch-table.png", async () => {
     base.skip(
       tiFeedMode !== "self-fetch",
       "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
     );
-    await adminPage.setViewportSize(SELFFETCH_VIEWPORT);
+    await adminPage.setViewportSize(TI_FEEDS_VIEWPORT);
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -725,8 +722,9 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
+    // Guard the framing: the last stable-by-id row must be on-page before capture.
     await expect(
-      adminPage.getByText("infoblox/threat-intelligence"),
+      adminPage.getByText("spamhaus/edrop", { exact: true }),
     ).toBeVisible();
 
     await adminPage.screenshot({

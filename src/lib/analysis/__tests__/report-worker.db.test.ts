@@ -399,9 +399,10 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
       priority_tier: string;
       input_story_refs: unknown;
       input_event_refs: unknown;
+      aggregate_cve_refs: unknown;
     }>(
       `SELECT redaction_policy_version, priority_tier,
-              input_story_refs, input_event_refs
+              input_story_refs, input_event_refs, aggregate_cve_refs
          FROM periodic_report_result
         WHERE subject_id = $1 AND period = 'DAILY'
           AND bucket_date = '2026-05-26' AND tz = $2 AND generation = 1`,
@@ -411,6 +412,9 @@ describe.skipIf(!hasPostgres)("periodic report worker (cross-DB)", () => {
     expect(rows[0].redaction_policy_version).toBe("baseline-only");
     expect(rows[0].input_story_refs).toEqual([]);
     expect(rows[0].input_event_refs).toEqual([]);
+    // RFC 0005 — the aggregate CVE column is persisted (empty on a
+    // baseline-only bucket with no cited leaves).
+    expect(rows[0].aggregate_cve_refs).toEqual([]);
 
     const { rows: job } = await authPool.query<{ status: string }>(
       `SELECT status FROM periodic_report_job

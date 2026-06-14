@@ -193,6 +193,8 @@ const PRODUCED: Record<string, string> = {
   // TI feed self-fetch scheduler (#570)
   "system.ti_feed_self_fetch_schedule_updated":
     "src/lib/analysis/enrichment/feed-schedule.ts",
+  // CVE refresh scheduler (RFC 0005, #611)
+  "system.cve_refresh_schedule_updated": "src/lib/analysis/cve/cve-schedule.ts",
   // Story-leaf re-analysis backfill (#466)
   "story_reanalysis.backfill_enqueued": "src/lib/analysis/story-backfill.ts",
   // Report-variant refresh (#469)

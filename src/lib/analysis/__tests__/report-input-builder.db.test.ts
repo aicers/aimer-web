@@ -66,19 +66,22 @@ async function seedStoryResult(
   variant: { lang: string; modelName: string; model: string },
   tier: string,
   analysis: string,
+  // RFC 0005 — bare CVE ids stored as the enriched `cve_refs` record shape
+  // (`{ cve }` is the minimal record `parseCveRefs` accepts).
+  cveRefs: string[] = [],
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO story_analysis_result
        (customer_id, story_id, lang, model_name, model,
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
-        severity_factors, likelihood_factors, ttp_tags,
+        severity_factors, likelihood_factors, ttp_tags, cve_refs,
         priority_tier, analysis_text, input_event_refs, input_fact_refs,
         input_hash, redaction_policy_version)
      VALUES ($1, $2::bigint, $3, $4, $5,
              'mv', 'pv', 1,
              0.8, 0.7,
-             '[]'::jsonb, '[]'::jsonb, '["T1078"]'::jsonb,
+             '[]'::jsonb, '[]'::jsonb, '["T1078"]'::jsonb, $8::jsonb,
              $6, $7, '[]'::jsonb, '[]'::jsonb, 'h', 'policy-A')`,
     [
       CUSTOMER_ID,
@@ -88,6 +91,7 @@ async function seedStoryResult(
       variant.model,
       tier,
       analysis,
+      JSON.stringify(cveRefs.map((cve) => ({ cve }))),
     ],
   );
 }
@@ -134,18 +138,20 @@ async function seedEventResult(
   tier: string,
   analysis: string,
   aiceId = "aice-1",
+  // RFC 0005 — bare CVE ids stored as the enriched `cve_refs` record shape.
+  cveRefs: string[] = [],
 ): Promise<void> {
   await customerPool.query(
     `INSERT INTO event_analysis_result
        (aice_id, event_key, lang, model_name, model,
         model_actual_version, prompt_version, generation,
         severity_score, likelihood_score,
-        severity_factors, likelihood_factors, ttp_tags,
+        severity_factors, likelihood_factors, ttp_tags, cve_refs,
         priority_tier, analysis_text, event_time, redaction_policy_version, requested_by)
      VALUES ($7, $1::numeric, $2, $3, $4,
              'mv', 'pv', 1,
              0.6, 0.6,
-             '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb,
+             '[]'::jsonb, '[]'::jsonb, '["T1110"]'::jsonb, $8::jsonb,
              $5, $6, '2026-05-20T00:00:00Z'::timestamptz, 'policy-A', gen_random_uuid())`,
     [
       eventKey,
@@ -155,6 +161,7 @@ async function seedEventResult(
       tier,
       analysis,
       aiceId,
+      JSON.stringify(cveRefs.map((cve) => ({ cve }))),
     ],
   );
 }
@@ -205,7 +212,9 @@ describe.skipIf(!hasPostgres)(
       // Story 7001: ready + EN result + one member event (key 5001).
       await seedStory(customerPool, "7001", "v1", IN_WINDOW);
       await seedStory(customerPool, "7001", "v2", IN_WINDOW); // canonical
-      await seedStoryResult(customerPool, "7001", EN, "HIGH", "story 7001 EN");
+      await seedStoryResult(customerPool, "7001", EN, "HIGH", "story 7001 EN", [
+        "CVE-2024-0001",
+      ]);
       await seedStoryMember(customerPool, "7001", "v2", "5001");
       await seedState(authPool, "7001", "ready");
 
@@ -277,13 +286,16 @@ describe.skipIf(!hasPostgres)(
         "2026-05-26T03:00:00Z",
       );
 
-      // Event result for 6001 (EN) → eligible top event.
+      // Event result for 6001 (EN) → eligible top event. Carries one CVE
+      // that overlaps story 7001's (dedup) plus one unique to the event.
       await seedEventResult(
         customerPool,
         "6001",
         EN,
         "MEDIUM",
         "event 6001 EN",
+        "aice-1",
+        ["CVE-2024-1234", "CVE-2024-0001"],
       );
       // Event result for 6002 (EN) → would be eligible if the older
       // in-window duplicate were (wrongly) chosen as canonical.
@@ -334,6 +346,22 @@ describe.skipIf(!hasPostgres)(
 
       // TTP union across the one story (T1078) and one event (T1110).
       expect(res.aggregateTtpTags).toEqual(["T1078", "T1110"]);
+
+      // RFC 0005 — CVE refs propagate from the leaf `cve_refs` records onto
+      // each leaf input, and the bundle aggregate is the dedup'd sorted union
+      // (story CVE-2024-0001 + event {CVE-2024-1234, CVE-2024-0001}).
+      expect(res.aimerInputs.storyAnalyses[0].cveRefs).toEqual([
+        "CVE-2024-0001",
+      ]);
+      expect(res.aimerInputs.eventAnalyses[0].cveRefs).toEqual([
+        "CVE-2024-1234",
+        "CVE-2024-0001",
+      ]);
+      expect(res.aggregateCveRefs).toEqual(["CVE-2024-0001", "CVE-2024-1234"]);
+      expect(res.aimerInputs.aggregateCveRefs).toEqual([
+        "CVE-2024-0001",
+        "CVE-2024-1234",
+      ]);
 
       // Redaction policy agrees (policy-A on every consumed leaf).
       expect(res.redaction).toEqual({ kind: "ok", version: "policy-A" });
@@ -527,8 +555,17 @@ describe.skipIf(!hasPostgres)(
       // identical scores (0.8 / 0.7) and TTP (T1078) for both — exactly the
       // bilingual contract (the translated row copies the numbers, differing
       // only in narrative text).
-      await seedStoryResult(customerPool, "7580", EN, "HIGH", "story 7580 EN");
-      await seedStoryResult(customerPool, "7580", KO, "HIGH", "스토리 7580 KO");
+      await seedStoryResult(customerPool, "7580", EN, "HIGH", "story 7580 EN", [
+        "CVE-2024-5580",
+      ]);
+      await seedStoryResult(
+        customerPool,
+        "7580",
+        KO,
+        "HIGH",
+        "스토리 7580 KO",
+        ["CVE-2024-5580"],
+      );
       await seedState(authPool, "7580", "ready");
 
       const en = await buildPeriodicReportInput({
@@ -558,6 +595,9 @@ describe.skipIf(!hasPostgres)(
       expect(ko.aggregateLikelihoodScore).toBe(en.aggregateLikelihoodScore);
       expect(ko.priorityTier).toBe(en.priorityTier);
       expect(ko.aggregateTtpTags).toEqual(en.aggregateTtpTags);
+      // RFC 0005 — aggregate CVE refs are language-invariant too.
+      expect(en.aggregateCveRefs).toEqual(["CVE-2024-5580"]);
+      expect(ko.aggregateCveRefs).toEqual(en.aggregateCveRefs);
     });
   },
 );
@@ -689,6 +729,28 @@ describe.skipIf(!hasPostgres)("#494 event-leaf citation cut", () => {
     // M=3: CRITICAL(300) + HIGH(301) guaranteed, one MEDIUM(302) fills the
     // third slot by ranking; the lower MEDIUM(303) and LOW(304) are excluded.
     expect(await citedKeys("2026-06-01", 3)).toEqual(["300", "301", "302"]);
+  });
+
+  it("yields empty aggregateCveRefs when no leaf carries a CVE (RFC 0005)", async () => {
+    // The cut-suite leaves are seeded with no `cve_refs`, so each cited leaf
+    // input carries `cveRefs: []` and the bundle aggregate is empty — the
+    // empty case mirrors `aggregateTtpTags` and must not error.
+    const res = await buildPeriodicReportInput({
+      authPool,
+      customerPool,
+      customerId: CUT_CUSTOMER_ID,
+      period: "DAILY",
+      bucketDate: "2026-06-01",
+      variant: EN,
+      nowIso: "2026-06-01T20:00:00Z",
+      topEventsK: 3,
+    });
+    expect(res.eventRefs.length).toBeGreaterThan(0);
+    expect(res.aggregateCveRefs).toEqual([]);
+    expect(res.aimerInputs.aggregateCveRefs).toEqual([]);
+    for (const e of res.aimerInputs.eventAnalyses) {
+      expect(e.cveRefs).toEqual([]);
+    }
   });
 
   it("cites exactly the guaranteed tiers when CRITICAL/HIGH == M", async () => {

@@ -268,6 +268,12 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       expect(byName.get("aggregate_ttp_tags")?.column_default).toContain(
         "'[]'",
       );
+      // RFC 0005 — aggregate_cve_refs mirrors aggregate_ttp_tags.
+      expect(byName.get("aggregate_cve_refs")?.data_type).toBe("jsonb");
+      expect(byName.get("aggregate_cve_refs")?.is_nullable).toBe("NO");
+      expect(byName.get("aggregate_cve_refs")?.column_default).toContain(
+        "'[]'",
+      );
 
       // Issue spec: periodic reports do not score themselves and have
       // no factor columns to aggregate. Catch a regression where Phase

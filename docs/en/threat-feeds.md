@@ -1,9 +1,10 @@
 # Threat Feeds
 
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
-feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, and the Botvrij.eu IP / domain /
-URL / hash lists) that observed indicators are matched locally against. Navigate
-to **Threat Feeds** in the admin sidebar to open it.
+feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
+URL / hash lists, and the Phishing.Database domain / URL / IP lists) that
+observed indicators are matched locally against. Navigate to **Threat Feeds**
+in the admin sidebar to open it.
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
 or fetch); the `ti-feed:read` permission is required to view the status table.
@@ -17,7 +18,7 @@ shown — in two modes:
     air-gapped / closed-network deployments.
 - **`self-fetch`** — the instance fetches each feed directly over HTTP and
     imports it on demand. The production refresh path for on-prem /
-    independent / sovereignty deployments, which fetch abuse.ch / Spamhaus
+    independent / sovereignty deployments, which fetch each feed's upstream
     directly (the license-sanctioned path, no redistribution).
 
 In any other mode the nav entry is hidden and the routes return 404, so
@@ -43,6 +44,9 @@ licensing:
 | Botvrij.eu (`botvrij/url`) | URL | Botvrij.eu (no resale) |
 | Botvrij.eu (`botvrij/hash`) | file hash | Botvrij.eu (no resale) |
 | Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | domain, IP, URL, file hash | CC-BY-4.0 — **attribution to Infoblox and the license** |
+| Phishing.Database (`phishing-database/domain`) | domain | MIT |
+| Phishing.Database (`phishing-database/ip`) | IP | MIT |
+| Phishing.Database (`phishing-database/url`) | URL | MIT |
 | Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
 | Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (merged into DROP, 2024) |
 
@@ -134,8 +138,10 @@ on a **background schedule** that is **disabled by default** (see
 ### Per-source fetch configuration
 
 Each source has a built-in fetch URL and a **hard cadence floor** — the minimum
-time between fetches, which nothing overrides. The floor guards against an
-abuse.ch / Spamhaus IP ban from over-fetching:
+time between fetches, which nothing overrides. The floor avoids over-fetching
+each upstream provider: for the abuse.ch / Spamhaus exports it guards against an
+IP ban (5 min), and for the Botvrij.eu and GitHub-hosted Phishing.Database lists
+it is a 1 h courtesy floor:
 
 | Source | Endpoint (variant) | Auth-Key | Cadence floor |
 | --- | --- | --- | --- |
@@ -146,6 +152,9 @@ abuse.ch / Spamhaus IP ban from over-fetching:
 | `botvrij/domain` | Botvrij `ioclist.domain.raw` + `ioclist.hostname.raw` | — | 1 h |
 | `botvrij/url` | Botvrij `ioclist.url.raw` | — | 1 h |
 | `botvrij/hash` | Botvrij `ioclist.md5.raw` + `ioclist.sha1.raw` + `ioclist.sha256.raw` | — | 1 h |
+| `phishing-database/domain` | Phishing.Database active phishing-domains list | — | 1 h |
+| `phishing-database/ip` | Phishing.Database active phishing-IPs list | — | 1 h |
+| `phishing-database/url` | Phishing.Database active phishing-links list | — | 1 h |
 | `spamhaus/drop` | Spamhaus DROP `drop_v4.json` + `drop_v6.json` (NDJSON) | — | 1 h |
 
 Spamhaus **EDROP was merged into DROP** (2024), so `spamhaus/edrop` is no

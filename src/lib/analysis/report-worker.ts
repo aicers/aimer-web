@@ -48,6 +48,7 @@ import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import type { OwnedDomainSet, RangeSet } from "@/lib/redaction/types";
+import { isCveEnrichmentEnabled } from "./cve/config";
 import { getModelCatalog } from "./model-catalog";
 import {
   buildCanonicalPinnedReportInput,
@@ -1160,6 +1161,7 @@ async function runNativeGeneration(args: {
       aggregateSeverityScore: built.aggregateSeverityScore,
       aggregateLikelihoodScore: built.aggregateLikelihoodScore,
       aggregateTtpTags: built.aggregateTtpTags,
+      aggregateCveRefs: built.aggregateCveRefs,
       priorityTier: built.priorityTier,
       sections: parsedSections,
       eventRefs: built.eventRefs,
@@ -1538,6 +1540,7 @@ async function runTranslation(args: {
       aggregateSeverityScore: canonical.aggregateSeverityScore,
       aggregateLikelihoodScore: canonical.aggregateLikelihoodScore,
       aggregateTtpTags: canonical.aggregateTtpTags,
+      aggregateCveRefs: canonical.aggregateCveRefs,
       priorityTier: canonical.priorityTier,
       sections: parsedSections,
       eventRefs: canonical.eventRefs,
@@ -1640,6 +1643,7 @@ interface EnglishCanonical {
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   aggregateTtpTags: string[];
+  aggregateCveRefs: string[];
   priorityTier: string;
   inputHash: string;
   inputWatermark: Date | null;
@@ -1663,6 +1667,7 @@ async function loadEnglishCanonical(
     aggregate_severity_score: number;
     aggregate_likelihood_score: number;
     aggregate_ttp_tags: string[] | null;
+    aggregate_cve_refs: string[] | null;
     priority_tier: string;
     input_hash: string;
     input_watermark: Date | null;
@@ -1673,7 +1678,7 @@ async function loadEnglishCanonical(
             input_exemplar_refs, input_analyzed_event_aggregates,
             model_name, model, model_actual_version, prompt_version,
             aggregate_severity_score, aggregate_likelihood_score,
-            aggregate_ttp_tags, priority_tier,
+            aggregate_ttp_tags, aggregate_cve_refs, priority_tier,
             input_hash, input_watermark, redaction_policy_version
        FROM periodic_report_result
       WHERE subject_id = $1 AND period = $2
@@ -1712,6 +1717,9 @@ async function loadEnglishCanonical(
     aggregateTtpTags: Array.isArray(r.aggregate_ttp_tags)
       ? r.aggregate_ttp_tags
       : [],
+    aggregateCveRefs: Array.isArray(r.aggregate_cve_refs)
+      ? r.aggregate_cve_refs
+      : [],
     priorityTier: r.priority_tier,
     inputHash: r.input_hash,
     inputWatermark: r.input_watermark,
@@ -1747,11 +1755,38 @@ async function callGenerateReport(args: {
       name: args.modelName,
       model: args.model,
       lang: args.lang as "KOREAN" | "ENGLISH",
-      inputs: args.inputs,
+      inputs: gateCveInputFields(args.inputs),
     },
     { accountId: WORKER_ACCOUNT_ID, aiceId: PERIODIC_WORKER_AICE_ID },
   );
   return result.generatePeriodicSecurityReport;
+}
+
+// RFC 0005 deployment guard — the same discipline as the leaf `cveRefs`
+// operation variant (#590). The `cveRefs` / `aggregateCveRefs` input fields
+// only exist on the post-`aimer#499` schema; a pre-#499 backend rejects the
+// whole mutation during input coercion when it sees those unknown fields —
+// even when the arrays are empty. So they are sent only when the CVE backend
+// is known-deployed, gated on the same `CVE_ENRICHMENT_ENABLED` master
+// switch the leaf path uses. When the gate is off (the default) the leaf
+// `cve_refs` are written `[]` anyway, so stripping these fields changes no
+// report content — it only keeps the outbound variables pre-#499-safe. The
+// builder still computes and persists `aggregate_cve_refs` locally
+// regardless of the gate, so the result-page render is unaffected.
+export function gateCveInputFields(
+  inputs: PeriodicReportInputs,
+): PeriodicReportInputs {
+  if (isCveEnrichmentEnabled()) return inputs;
+  const { aggregateCveRefs: _aggregateCveRefs, ...rest } = inputs;
+  return {
+    ...rest,
+    storyAnalyses: inputs.storyAnalyses.map(
+      ({ cveRefs: _cveRefs, ...story }) => story,
+    ),
+    eventAnalyses: inputs.eventAnalyses.map(
+      ({ cveRefs: _cveRefs, ...event }) => event,
+    ),
+  } as PeriodicReportInputs;
 }
 
 // Translate-path call wrapper — aimer's stateless, token-preserving
@@ -1809,6 +1844,7 @@ interface ResultRowValues {
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   aggregateTtpTags: string[];
+  aggregateCveRefs: string[];
   priorityTier: string;
   sections: ReportSectionsJson;
   eventRefs: EventRef[];
@@ -1842,7 +1878,8 @@ async function writeResultRow(
           aggregate_ttp_tags, priority_tier, sections_jsonb,
           input_event_refs, input_story_refs, input_hash, input_watermark,
           redaction_policy_version, requested_by,
-          input_exemplar_refs, input_analyzed_event_aggregates)
+          input_exemplar_refs, input_analyzed_event_aggregates,
+          aggregate_cve_refs)
        VALUES ($1, $2, $3::date, $4, $5, $6,
                $7, $8,
                $9, $10, $11,
@@ -1850,7 +1887,8 @@ async function writeResultRow(
                $14::jsonb, $15, $16::jsonb,
                $17::jsonb, $18::jsonb, $19, $20,
                $21, $22::uuid,
-               $23::jsonb, $24::jsonb)`,
+               $23::jsonb, $24::jsonb,
+               $25::jsonb)`,
       [
         job.subject_id,
         job.period,
@@ -1880,6 +1918,7 @@ async function writeResultRow(
         values.analyzedEventAggregates === null
           ? null
           : JSON.stringify(values.analyzedEventAggregates),
+        JSON.stringify(values.aggregateCveRefs),
       ],
     );
     await client.query(

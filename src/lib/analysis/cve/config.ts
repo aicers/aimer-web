@@ -4,14 +4,18 @@
 // Server-only: reads the vendored fixture JSON at module use. Mirrors the
 // `mitre-ttp.ts` vendoring pattern (pinned JSON + a `*.version` pin).
 //
-// Deployment ordering (RFC 0005): BOTH the `cveRefs` selection AND the
-// `cveLandscape` argument are gated on the #498 backend being deployed to
-// every environment aimer-web talks to. `CVE_ENRICHMENT_ENABLED` is that
-// gate: when off (the default), the worker/flow use the pre-#498-safe
-// `AnalyzeEvent` / `AnalyzeStory` operations (no `cveRefs`, no
-// `cveLandscape`), `cve_refs` is written `[]`, and `cve_status` is left
-// NULL (the "feature not active" render state). Flip it on only once #498
-// is deployed everywhere AND a real CVE catalog is supplied.
+// Deployment ordering (RFC 0005): the leaf `cveRefs` selection, the
+// `cveLandscape` argument, AND the periodic-report `cveRefs` /
+// `aggregateCveRefs` input fields (`aimer#499`) are all gated on the CVE
+// backend being deployed to every environment aimer-web talks to.
+// `CVE_ENRICHMENT_ENABLED` is that gate: when off (the default), the
+// worker/flow use the pre-#498-safe `AnalyzeEvent` / `AnalyzeStory`
+// operations (no `cveRefs`, no `cveLandscape`), the periodic-report mutation
+// omits the `cveRefs` / `aggregateCveRefs` input fields (a pre-#499 backend
+// rejects unknown input fields even when empty — see `gateCveInputFields`),
+// `cve_refs` is written `[]`, and `cve_status` is left NULL (the "feature
+// not active" render state). Flip it on only once #498 AND #499 are deployed
+// everywhere AND a real CVE catalog is supplied.
 
 import "server-only";
 

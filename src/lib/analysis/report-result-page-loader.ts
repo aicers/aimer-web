@@ -301,6 +301,12 @@ export interface ReportResultPageData {
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   ttpTags: Array<{ id: string; name: string | null }>;
+  /**
+   * RFC 0005 — dedup'd sorted union of leaf CVE refs for the period (the
+   * `ttpTags` analogue). Bare canonical CVE ids (e.g. `CVE-2024-12345`),
+   * rendered as the aggregate CVE chip row alongside `ttpTags`.
+   */
+  cveRefs: string[];
   /** LLM narrative sections, with report-scope tokens restored. */
   sections: ReportSections;
   topStoryCount: number;
@@ -996,6 +1002,7 @@ export async function loadReportResultPage(
         id,
         name: lookupTtpName(id),
       })),
+      cveRefs: row.aggregate_cve_refs ?? [],
       sections,
       topStoryCount: storyRefs.length,
       topEventCount: eventRefs.length,
@@ -1033,6 +1040,7 @@ interface ReportResultRow {
   aggregate_severity_score: number;
   aggregate_likelihood_score: number;
   aggregate_ttp_tags: string[];
+  aggregate_cve_refs: string[];
   sections_jsonb: RawReportSections;
   input_story_refs: StoryRef[];
   input_event_refs: EventRef[];
@@ -1047,7 +1055,8 @@ interface ReportResultRow {
 const REPORT_RESULT_COLUMNS = `model_actual_version, prompt_version, generation,
         lang, restoration_lang, model_name, model,
         priority_tier, aggregate_severity_score,
-        aggregate_likelihood_score, aggregate_ttp_tags, sections_jsonb,
+        aggregate_likelihood_score, aggregate_ttp_tags, aggregate_cve_refs,
+        sections_jsonb,
         input_story_refs, input_event_refs, input_exemplar_refs, superseded_at,
         requested_by::text AS requested_by, requested_at`;
 

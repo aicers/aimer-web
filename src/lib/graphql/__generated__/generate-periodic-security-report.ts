@@ -13,6 +13,7 @@ export interface PeriodicReportInputs {
   eventAnalyses: Array<EventAnalysisInput>;
   baselineAggregates: BaselineAggregatesInput;
   aggregateTtpTags: Array<string>;
+  aggregateCveRefs: Array<string>;
   analyzedEventAggregates?: AnalyzedEventAggregatesInput | null;
 }
 
@@ -26,6 +27,7 @@ export interface StoryAnalysisInput {
   severityFactors: Array<string>;
   likelihoodFactors: Array<string>;
   ttpTags: Array<string>;
+  cveRefs: Array<string>;
 }
 
 export interface EventAnalysisInput {
@@ -37,6 +39,7 @@ export interface EventAnalysisInput {
   severityFactors: Array<string>;
   likelihoodFactors: Array<string>;
   ttpTags: Array<string>;
+  cveRefs: Array<string>;
 }
 
 export interface BaselineAggregatesInput {

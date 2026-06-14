@@ -76,6 +76,9 @@ describe.skipIf(!hasPostgres)("Schema verification (group_db)", () => {
     // unconditionally succeeds.
     expect(names).toContain("input_exemplar_refs");
     expect(names).toContain("input_analyzed_event_aggregates");
+    // RFC 0005 — the aggregate CVE column mirrors the customer schema so a
+    // group result write naming it unconditionally succeeds.
+    expect(names).toContain("aggregate_cve_refs");
   });
 
   it("creates periodic_report_result keyed by subject_id (not customer_id)", async () => {

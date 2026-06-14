@@ -477,6 +477,7 @@ export default async function ReportDetailPage({
           <div className="flex flex-wrap items-center gap-2">
             <PriorityBadge tier={data.priorityTier} />
             <TtpChipRow tags={data.ttpTags} ariaLabel={tA("common.ttpTags")} />
+            <CveChipRow refs={data.cveRefs} ariaLabel={tA("common.cveRefs")} />
           </div>
           <div
             className="mt-1 text-xs text-muted-foreground"
@@ -721,6 +722,37 @@ function TtpChipRow({
           className="inline-flex items-center rounded-full border border-indigo-300 bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-900"
         >
           {tag.id}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// RFC 0005 — the period's aggregated CVE references, rendered as chips
+// alongside the TTP row (the `TtpChipRow` analogue). The aggregate carries
+// bare canonical CVE ids (the enriched per-leaf payload lives on the leaf
+// pages), so each chip is just the id.
+function CveChipRow({
+  refs,
+  ariaLabel,
+}: {
+  refs: ReadonlyArray<string>;
+  ariaLabel: string;
+}) {
+  if (refs.length === 0) return null;
+  return (
+    <ul
+      aria-label={ariaLabel}
+      data-testid="cve-refs"
+      className="flex flex-wrap gap-1"
+    >
+      {refs.map((cve) => (
+        <li
+          key={cve}
+          data-cve-id={cve}
+          className="inline-flex items-center rounded-full border border-rose-300 bg-rose-50 px-2 py-0.5 text-xs font-medium text-rose-900"
+        >
+          {cve}
         </li>
       ))}
     </ul>
