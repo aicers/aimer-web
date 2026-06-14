@@ -22,5 +22,13 @@
     "type": "substring",
     "matching_attributes": ["domain", "hostname"],
     "list": ["example.com", "example.net"]
+  },
+  {
+    "name": "Specific expression to ignore",
+    "version": 20260101,
+    "description": "Regex list — the store has no regex match path, so the whole list is skipped silently.",
+    "type": "regex",
+    "matching_attributes": ["ip-src", "ip-dst"],
+    "list": ["^192\\.0\\.2\\.[0-9]+$"]
   }
 ]

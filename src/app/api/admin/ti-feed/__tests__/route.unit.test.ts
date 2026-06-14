@@ -134,11 +134,24 @@ describe("GET /api/admin/ti-feed", () => {
         },
       ],
     });
+    const { TIER1_FEED_SOURCES } = await import(
+      "@/lib/analysis/enrichment/feed-catalog"
+    );
     const { GET } = await import("../route");
     const res = await GET(makeGet());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.sources).toHaveLength(14);
+    // The manual-upload status surface lists every non-vendor catalog source
+    // (vendor-repo sources are self-fetch-only — see `getFeedSourceStatuses`).
+    // Derive the count from the catalog so adding a source does not force a
+    // count-only edit here; assert the new negative source is among the ids.
+    const expectedIds = TIER1_FEED_SOURCES.filter((s) => !s.vendorRepo).map(
+      (s) => s.sourcePolicyId,
+    );
+    expect(body.sources).toHaveLength(expectedIds.length);
+    expect(
+      body.sources.map((s: { sourcePolicyId: string }) => s.sourcePolicyId),
+    ).toEqual(expect.arrayContaining(["misp/warninglists"]));
     const feodo = body.sources.find(
       (s: { sourcePolicyId: string }) => s.sourcePolicyId === "abuse.ch/feodo",
     );
