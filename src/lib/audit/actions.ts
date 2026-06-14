@@ -148,6 +148,9 @@ export type AuditAction =
   | "ai_analysis.aimer_call_succeeded"
   | "ai_analysis.hallucination_detected"
   | "ai_analysis.ttp_tag_dropped"
+  // RFC 0005 — a CVE ref dropped during catalog validation (hallucinated /
+  // unconfirmed), the precision mechanism. Carries the drop reason.
+  | "ai_analysis.cve_ref_dropped"
   | "ai_analysis.factor_dropped"
   // AI analysis bridge (POST /api/analysis/analyze-bridge + /continue)
   | "ai_analysis.bridge_initiated"

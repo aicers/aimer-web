@@ -204,15 +204,23 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
       expect(byName.get("priority_tier")?.is_nullable).toBe("NO");
 
       // Round-11 factor + tag columns — JSONB NOT NULL DEFAULT '[]'.
+      // RFC 0005 adds `cve_refs` with the same shape (the ttp_tags analogue).
       for (const col of [
         "severity_factors",
         "likelihood_factors",
         "ttp_tags",
+        "cve_refs",
       ]) {
         expect(byName.get(col)?.data_type).toBe("jsonb");
         expect(byName.get(col)?.is_nullable).toBe("NO");
         expect(byName.get(col)?.column_default).toContain("'[]'");
       }
+
+      // RFC 0005 — cve_status mirrors coverage_status: nullable TEXT, no
+      // default (NULL = the CVE path did not run).
+      expect(byName.get("cve_status")?.data_type).toBe("text");
+      expect(byName.get("cve_status")?.is_nullable).toBe("YES");
+      expect(byName.get("cve_status")?.column_default ?? null).toBeNull();
     });
 
     it("story_analysis_result has a nullable restoration_lang column (#580)", async () => {
@@ -528,6 +536,85 @@ describe.skipIf(!hasPostgres)("Schema verification (customer_db)", () => {
        WHERE aice_id = 'aice-r1' AND event_key = 1`,
     );
     expect(count[0].c).toBe(3);
+  });
+
+  it("round-trips cve_refs + cve_status on event_analysis_result (RFC 0005)", async () => {
+    const enriched = [
+      {
+        cve: "CVE-2024-3400",
+        cvss: { score: 9.8, source: "nvd" },
+        kev: { knownExploited: true, source: "kev" },
+        epss: { score: 0.94, percentile: 0.99, source: "epss" },
+        summary: "PAN-OS RCE",
+        inTheWild: true,
+        sources: ["nvd", "kev", "epss"],
+      },
+    ];
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, event_time, redaction_policy_version,
+          requested_by, cve_refs, cve_status)
+       VALUES ('aice-cve', 1, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 1,
+               0.9, 0.8, 'CRITICAL',
+               'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
+               gen_random_uuid(), $1::jsonb, 'complete')`,
+      [JSON.stringify(enriched)],
+    );
+    const { rows } = await pool.query<{
+      cve_refs: typeof enriched;
+      cve_status: string;
+    }>(
+      `SELECT cve_refs, cve_status FROM event_analysis_result
+        WHERE aice_id = 'aice-cve' AND event_key = 1`,
+    );
+    expect(rows[0].cve_refs).toEqual(enriched);
+    expect(rows[0].cve_status).toBe("complete");
+
+    // The CHECK constraint rejects an out-of-enum cve_status.
+    await expect(
+      pool.query(
+        `INSERT INTO event_analysis_result
+           (aice_id, event_key, lang, model_name, model,
+            model_actual_version, prompt_version, generation,
+            severity_score, likelihood_score, priority_tier,
+            analysis_text, event_time, redaction_policy_version,
+            requested_by, cve_status)
+         VALUES ('aice-cve', 2, 'ENGLISH', 'openai', 'gpt-4o',
+                 'mv', 'pv', 1,
+                 0.1, 0.1, 'LOW',
+                 'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
+                 gen_random_uuid(), 'bogus')`,
+      ),
+    ).rejects.toThrow();
+
+    // Omitting both columns defaults cve_refs to '[]' and cve_status to NULL
+    // (the "feature not active" state).
+    await pool.query(
+      `INSERT INTO event_analysis_result
+         (aice_id, event_key, lang, model_name, model,
+          model_actual_version, prompt_version, generation,
+          severity_score, likelihood_score, priority_tier,
+          analysis_text, event_time, redaction_policy_version,
+          requested_by)
+       VALUES ('aice-cve', 3, 'ENGLISH', 'openai', 'gpt-4o',
+               'mv', 'pv', 1,
+               0.1, 0.1, 'LOW',
+               'x', '2026-05-20T00:00:00Z'::timestamptz, 'engine:1.0.0|ranges:empty',
+               gen_random_uuid())`,
+    );
+    const { rows: defaults } = await pool.query<{
+      cve_refs: unknown[];
+      cve_status: string | null;
+    }>(
+      `SELECT cve_refs, cve_status FROM event_analysis_result
+        WHERE aice_id = 'aice-cve' AND event_key = 3`,
+    );
+    expect(defaults[0].cve_refs).toEqual([]);
+    expect(defaults[0].cve_status).toBeNull();
   });
 
   it("event_analysis_result round-11 columns: NOT NULL DEFAULT '[]' jsonb arrays", async () => {

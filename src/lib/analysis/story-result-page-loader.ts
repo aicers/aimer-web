@@ -25,6 +25,7 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import { type CveRefView, parseCveRefs } from "./cve/view";
 import { type ModelPair, resolveDefaultModel } from "./default-model";
 import { restoreStoryFactTokens } from "./fact-token";
 import { lookupTtpName } from "./mitre-ttp";
@@ -71,6 +72,10 @@ export interface StoryCompareColumn {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: Array<{ id: string; name: string | null }>;
+  /** RFC 0005 — validated + enriched CVE references for the chip row. */
+  cveRefs: CveRefView[];
+  /** RFC 0005 — CVE coverage status; NULL = CVE path did not run. */
+  cveStatus: CoverageStatus | null;
   analysisText: string;
 }
 
@@ -109,6 +114,20 @@ export interface StoryResultPageData {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: Array<{ id: string; name: string | null }>;
+  /**
+   * RFC 0005 — validated + enriched CVE references rendered as the CVE chip
+   * row alongside `ttpTags`. Each carries its CVSS / KEV / EPSS payload +
+   * validating source citations.
+   */
+  cveRefs: CveRefView[];
+  /**
+   * RFC 0005 — CVE coverage status gating the no-CVE render state (Scope
+   * 4). NULL = the CVE path did not run (feature inactive) → the CVE
+   * surface is fully absent. `complete` = authoritative (a zero result is a
+   * confirmed no-match); `unknown`/`stale` = degraded (could-not-verify).
+   * Distinct from {@link coverageStatus} (IOC enrichment), which it mirrors.
+   */
+  cveStatus: CoverageStatus | null;
   /**
    * IOC-enrichment coverage status for the story's *current canonical*
    * `(story_id, story_version)` (RFC 0003 #498). Surfaces the transparency
@@ -555,6 +574,8 @@ export async function loadStoryResultPage(
       severityFactors,
       likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      cveRefs: parseCveRefs(row.cve_refs),
+      cveStatus: row.cve_status,
       coverageStatus,
       analysisText,
       requestedBy: row.requested_by,
@@ -594,6 +615,8 @@ interface StoryResultRow {
   severity_factors: string[];
   likelihood_factors: string[];
   ttp_tags: string[];
+  cve_refs: unknown;
+  cve_status: CoverageStatus | null;
   analysis_text: string;
   input_event_refs: Array<{ index: number; aiceId: string; eventKey: string }>;
   input_fact_refs: Array<{ index: number; factId: string }>;
@@ -613,6 +636,8 @@ const STORY_RESULT_COLUMNS = `severity_score,
          severity_factors,
          likelihood_factors,
          ttp_tags,
+         cve_refs,
+         cve_status,
          analysis_text,
          input_event_refs,
          input_fact_refs,
@@ -807,6 +832,8 @@ async function resolveStoryCompareColumn(
       severityFactors,
       likelihoodFactors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      cveRefs: parseCveRefs(row.cve_refs),
+      cveStatus: row.cve_status,
       analysisText,
     },
   };

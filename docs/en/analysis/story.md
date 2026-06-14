@@ -228,6 +228,60 @@ was written against an older MITRE bundle and the ID alone is shown as
 a fallback. The chip row is omitted when the LLM returned no
 techniques.
 
+## CVE references
+
+Below the MITRE chips, the page renders a row of **CVE chips** for the
+CVEs the analysis associated with the story. A CVE never comes from the
+detection itself — detection is anomaly/novelty-based and carries no CVE
+identifiers — so each CVE starts as the LLM's hypothesis and is then
+**validated against authoritative catalogs** (NVD, CISA KEV, FIRST EPSS)
+before it is shown. A hypothesized CVE that does not exist in the
+catalogs is dropped (and audit-logged), so every chip on screen is a
+real, catalog-confirmed CVE.
+
+Each chip shows the canonical CVE id (e.g. `CVE-2024-3400`), with a
+`KEV` marker when the CVE is on CISA's Known Exploited Vulnerabilities
+list. Expanding a chip reveals its enrichment payload with the source of
+each datum cited inline, for example:
+
+> `CVSS 9.8 [NVD] · KEV [CISA] · EPSS 0.94 / p99 [FIRST]`
+
+plus a one-line summary and a **Validated by** footer naming the sources
+that confirmed the CVE. An in-the-wild signal that the `KEV` marker did
+not already convey is shown as `In the wild [CISA]`. The inline
+`[NVD]` / `[CISA]` / `[FIRST]` citations and the footer are the
+provenance for every value (and satisfy the upstream attribution
+requirements by construction), so a chip never expands without a visible
+validating source.
+
+### When no CVE applies
+
+A threat that matches **no** CVE is a normal, expected outcome — the
+platform never forces a CVE match. How the empty state renders depends
+on whether the CVE check actually completed:
+
+- **Confirmed no match (significant threat)** — when the catalogs were
+  available and the analysis is significant (a `HIGH`/`CRITICAL` tier)
+  but no CVE validated, the page shows a **"No known CVE association"**
+  caution: the absence is itself meaningful and may indicate a novel,
+  variant, or zero-day threat with no published CVE. Treat it with
+  heightened caution rather than as benign.
+- **Confirmed no match (not significant)** — for a lower-tier,
+  CVE-irrelevant analysis the row is simply omitted.
+- **Could not verify** — when a catalog was unavailable or stale, the
+  page shows a **"CVE enrichment unavailable"** notice instead. Absence
+  of a CVE here is *unverified* — it is not a confident "no known CVE"
+  result, and the caution narrative above is deliberately **not** shown.
+
+When the CVE enrichment pipeline is not active for a deployment, the CVE
+surface is fully absent (no chip row, no status, no caution state).
+
+<!-- Screenshot placeholder: the story header with the CVE chip row
+     (a chip expanded to its CVSS / KEV / EPSS payload + source
+     citations). Requires a real-data capture from a stack where the CVE
+     pipeline is active and a real CVE catalog is loaded, per
+     docs/AUTHORING.md. -->
+
 ## Metadata fields
 
 Below the score fields the page shows the analysis metadata in a

@@ -265,6 +265,9 @@ CREATE TABLE event_analysis_result (
     severity_factors         JSONB          NOT NULL DEFAULT '[]',   -- short noun phrases articulating severity_score; see RFC 0002 §"Score factor articulation"
     likelihood_factors       JSONB          NOT NULL DEFAULT '[]',   -- same shape, articulating likelihood_score
     ttp_tags                 JSONB          NOT NULL DEFAULT '[]',   -- validated MITRE ATT&CK technique IDs; see RFC 0002 §"MITRE ATT&CK TTP tagging"
+    cve_refs                 JSONB          NOT NULL DEFAULT '[]',   -- RFC 0005 — validated + enriched CVE refs (the ttp_tags analogue); each element is a structured record (CVSS/KEV/EPSS/summary/in-the-wild + sources), not a bare id. Event PROMOTES the LLM's threat_classification.cve_numbers here.
+    cve_status               TEXT
+        CHECK (cve_status IN ('complete', 'partial', 'unknown', 'stale')),   -- RFC 0005 Scope 3a — CVE coverage status, mirroring coverage_status. NULL = CVE path did not run (feature inactive); 'complete' = authoritative (a zero result is a confirmed no-match); 'unknown'/'stale' = degraded (a catalog was unavailable/stale)
     priority_tier            TEXT NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),   -- derived via 4x4 matrix; see RFC 0002 §"Priority tiering"
     analysis_text            TEXT           NOT NULL,
@@ -333,6 +336,9 @@ CREATE TABLE story_analysis_result (
     severity_factors         JSONB            NOT NULL DEFAULT '[]',
     likelihood_factors       JSONB            NOT NULL DEFAULT '[]',
     ttp_tags                 JSONB            NOT NULL DEFAULT '[]',
+    cve_refs                 JSONB            NOT NULL DEFAULT '[]',   -- RFC 0005 — validated + enriched CVE refs (the ttp_tags analogue); each element is a structured record (CVSS/KEV/EPSS/summary/in-the-wild + sources), not a bare id. Story ADDS this field.
+    cve_status               TEXT
+        CHECK (cve_status IN ('complete', 'partial', 'unknown', 'stale')),   -- RFC 0005 Scope 3a — CVE coverage status, mirroring coverage_status. NULL = CVE path did not run (feature inactive); 'complete' = authoritative; 'unknown'/'stale' = degraded
     priority_tier            TEXT             NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
     analysis_text            TEXT             NOT NULL,

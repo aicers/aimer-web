@@ -196,6 +196,8 @@ function okOutcome(
       severityFactors: ["broad blast radius"],
       likelihoodFactors: ["lateral movement"],
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
+      cveRefs: [],
+      cveStatus: null,
       analysisText: "narrative",
       origin: viewer.origin ?? "manual",
       requestedBy:

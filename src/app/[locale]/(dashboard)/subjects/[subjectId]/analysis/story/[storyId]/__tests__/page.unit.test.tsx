@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CoverageStatus,
+  StoryResultPageData,
   StoryResultPageOutcome,
 } from "@/lib/analysis/story-result-page-loader";
 
@@ -104,6 +105,8 @@ function fixture(
     isViewerAnalyst?: boolean;
     canRegenerate?: boolean;
     coverageStatus?: CoverageStatus | null;
+    cveRefs?: StoryResultPageData["cveRefs"];
+    cveStatus?: CoverageStatus | null;
   } = {},
 ): StoryResultPageOutcome {
   const isViewerAnalyst = viewer.isViewerAnalyst ?? true;
@@ -125,6 +128,8 @@ function fixture(
       severityFactors: ["broad host coverage", "elevated identity reuse"],
       likelihoodFactors: ["repeated outbound C2 beacons"],
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
+      cveRefs: viewer.cveRefs ?? [],
+      cveStatus: viewer.cveStatus ?? null,
       analysisText: "Narrative body.",
       requestedBy: null,
       requestedAt: new Date("2026-05-27T12:00:00Z"),

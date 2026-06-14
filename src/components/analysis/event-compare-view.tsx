@@ -13,7 +13,15 @@
 // leaf-coverage caveat to render here (#379 does not apply).
 
 import type { useTranslations } from "next-intl";
+import { CveCompareCell } from "@/components/analysis/cve-section";
 import { AnalysisBody } from "@/components/analysis-body";
+import type { CveStatus } from "@/lib/analysis/cve/catalog";
+import {
+  type CveRefView,
+  cveRowHasSurface,
+  cveRowState,
+  isCveSignificant,
+} from "@/lib/analysis/cve/view";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type { EventCompareOutcome } from "@/lib/analysis/result-page-loader";
 
@@ -31,6 +39,14 @@ interface EventColumn {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: Array<{ id: string; name: string | null }>;
+  /** RFC 0005 — validated + enriched CVE refs for the side-by-side row. */
+  cveRefs: CveRefView[];
+  /**
+   * RFC 0005 — CVE coverage status gating this column's no-CVE render state;
+   * NULL = the CVE path did not run (feature inactive) → the column's CVE
+   * surface is fully absent (no row, no dash, no caution state).
+   */
+  cveStatus: CveStatus | null;
   analysisText: string;
 }
 
@@ -179,6 +195,27 @@ export function EventCompareView({
   const hasCompare = compareData !== null;
   const grid = `grid grid-cols-1 gap-4 ${hasCompare ? "sm:grid-cols-2" : ""}`;
 
+  // RFC 0005 — gate the CVE row per column on `cve_status`, mirroring
+  // `CveSection`: a `cve_status NULL` (feature-not-active) column must leak
+  // NO CVE surface — not even a `—` — and a degraded zero-CVE column must
+  // show "could not verify", never a blank that reads as "checked, none".
+  // The shared heading appears only when at least one column has a surface.
+  const primaryCveState = cveRowState({
+    refs: [...primary.cveRefs],
+    status: primary.cveStatus,
+    significant: isCveSignificant(primary.priorityTier),
+  });
+  const compareCveState = compareData
+    ? cveRowState({
+        refs: [...compareData.cveRefs],
+        status: compareData.cveStatus,
+        significant: isCveSignificant(compareData.priorityTier),
+      })
+    : null;
+  const showCveRow =
+    cveRowHasSurface(primaryCveState) ||
+    (compareCveState !== null && cveRowHasSurface(compareCveState));
+
   return (
     <section className="mt-8" data-testid="compare-view">
       <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -304,6 +341,53 @@ export function EventCompareView({
           ) : null}
         </div>
       </div>
+
+      {/* RFC 0005 — CVE row, side by side, mirroring the TTP row but gated
+          per column on `cve_status` (Scope 4): the row is omitted entirely
+          when neither column has a CVE surface, so a feature-not-active
+          (`cve_status NULL`) compare never leaks a `—`. */}
+      {showCveRow ? (
+        <div className="mt-6">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            {t("common.cveRefs")}
+          </h3>
+          <div className={grid}>
+            {/* Each column gets an explicit grid cell. A surfaceless column
+                (`absent` / `irrelevant`) renders an empty placeholder rather
+                than `null` — otherwise the grid would collapse it and the
+                next column's cell would slide left into the primary slot,
+                misattributing the compared model's CVE state to the primary
+                model. */}
+            {cveRowHasSurface(primaryCveState) ? (
+              <CveCompareCell
+                state={primaryCveState}
+                cveStatus={primary.cveStatus}
+                ariaLabel={t("common.cveRefs")}
+                testid="compare-primary-cve"
+                t={t}
+              />
+            ) : (
+              <div data-testid="compare-primary-cve-empty" aria-hidden="true" />
+            )}
+            {compareData ? (
+              compareCveState && cveRowHasSurface(compareCveState) ? (
+                <CveCompareCell
+                  state={compareCveState}
+                  cveStatus={compareData.cveStatus}
+                  ariaLabel={t("common.cveRefs")}
+                  testid="compare-compare-cve"
+                  t={t}
+                />
+              ) : (
+                <div
+                  data-testid="compare-compare-cve-empty"
+                  aria-hidden="true"
+                />
+              )
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

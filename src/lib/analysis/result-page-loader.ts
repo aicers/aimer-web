@@ -26,6 +26,8 @@ import { validateSession } from "@/lib/auth/session-validator";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
+import type { CveStatus } from "./cve/catalog";
+import { type CveRefView, parseCveRefs } from "./cve/view";
 import { resolveDefaultModel } from "./default-model";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
@@ -91,6 +93,10 @@ export interface EventCompareColumn {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: Array<{ id: string; name: string | null }>;
+  /** RFC 0005 — validated + enriched CVE references for the chip row. */
+  cveRefs: CveRefView[];
+  /** RFC 0005 — CVE coverage status; NULL = CVE path did not run. */
+  cveStatus: CveStatus | null;
   analysisText: string;
 }
 
@@ -149,6 +155,19 @@ export interface AnalysisResultPageData {
    * `name === null`.
    */
   ttpTags: Array<{ id: string; name: string | null }>;
+  /**
+   * RFC 0005 — validated + enriched CVE references rendered as the CVE
+   * chip row, alongside `ttpTags`. Each carries its CVSS / KEV / EPSS
+   * payload + validating source citations.
+   */
+  cveRefs: CveRefView[];
+  /**
+   * RFC 0005 — CVE coverage status gating the no-CVE render state. NULL =
+   * the CVE path did not run (feature inactive) → the CVE surface is fully
+   * absent. `complete` = authoritative (a zero result is a confirmed
+   * no-match); `unknown`/`stale` = degraded (could-not-verify).
+   */
+  cveStatus: CveStatus | null;
   /** Token-restored analysis text — safe to render as-is. */
   analysisText: string;
   /**
@@ -348,6 +367,8 @@ export async function loadAnalysisResultPage(
     severity_factors: string[];
     likelihood_factors: string[];
     ttp_tags: string[];
+    cve_refs: unknown;
+    cve_status: CveStatus | null;
     analysis_text: string;
     model_actual_version: string;
     prompt_version: string;
@@ -382,6 +403,8 @@ export async function loadAnalysisResultPage(
            severity_factors,
            likelihood_factors,
            ttp_tags,
+           cve_refs,
+           cve_status,
            analysis_text,
            model_actual_version,
            prompt_version,
@@ -408,6 +431,8 @@ export async function loadAnalysisResultPage(
            severity_factors,
            likelihood_factors,
            ttp_tags,
+           cve_refs,
+           cve_status,
            analysis_text,
            model_actual_version,
            prompt_version,
@@ -598,6 +623,8 @@ export async function loadAnalysisResultPage(
       severityFactors: row.severity_factors,
       likelihoodFactors: row.likelihood_factors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      cveRefs: parseCveRefs(row.cve_refs),
+      cveStatus: row.cve_status,
       analysisText: restoredText,
       origin: row.origin,
       requestedBy: row.requested_by,
@@ -641,6 +668,8 @@ async function resolveEventCompareColumn(
        severity_factors,
        likelihood_factors,
        ttp_tags,
+       cve_refs,
+       cve_status,
        analysis_text,
        model_actual_version,
        prompt_version,
@@ -666,6 +695,8 @@ async function resolveEventCompareColumn(
     severity_factors: string[];
     likelihood_factors: string[];
     ttp_tags: string[];
+    cve_refs: unknown;
+    cve_status: CveStatus | null;
     analysis_text: string;
     model_actual_version: string;
     prompt_version: string;
@@ -686,6 +717,8 @@ async function resolveEventCompareColumn(
       severityFactors: row.severity_factors,
       likelihoodFactors: row.likelihood_factors,
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
+      cveRefs: parseCveRefs(row.cve_refs),
+      cveStatus: row.cve_status,
       analysisText: restoreRedactedTokens(row.analysis_text, redactionMap),
     },
   };

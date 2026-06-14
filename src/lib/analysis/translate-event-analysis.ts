@@ -78,6 +78,9 @@ interface CanonicalRow {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: string[];
+  /** RFC 0005 — language-invariant; copied verbatim onto the translation. */
+  cveRefs: unknown;
+  cveStatus: string | null;
   priorityTier: string;
   analysisText: string;
   eventTime: Date;
@@ -147,6 +150,8 @@ async function readLiveCanonical(
     severity_factors: string[];
     likelihood_factors: string[];
     ttp_tags: string[];
+    cve_refs: unknown;
+    cve_status: string | null;
     priority_tier: string;
     analysis_text: string;
     event_time: Date;
@@ -158,6 +163,7 @@ async function readLiveCanonical(
   }>(
     `SELECT generation, severity_score, likelihood_score,
             severity_factors, likelihood_factors, ttp_tags,
+            cve_refs, cve_status,
             priority_tier, analysis_text, event_time, kind,
             redaction_policy_version, model_actual_version, prompt_version,
             origin
@@ -178,6 +184,8 @@ async function readLiveCanonical(
     severityFactors: row.severity_factors,
     likelihoodFactors: row.likelihood_factors,
     ttpTags: row.ttp_tags,
+    cveRefs: Array.isArray(row.cve_refs) ? row.cve_refs : [],
+    cveStatus: row.cve_status,
     priorityTier: row.priority_tier,
     analysisText: row.analysis_text,
     eventTime: row.event_time,
@@ -696,7 +704,8 @@ export async function deriveEventTranslation(
             redaction_policy_version, requested_by,
             origin,
             translation_model_name, translation_model,
-            translation_prompt_version)
+            translation_prompt_version,
+            cve_refs, cve_status)
          VALUES ($1, $2::numeric, $3, $4, $5, $6,
                  $7, $8, $9,
                  $10, $11,
@@ -706,7 +715,8 @@ export async function deriveEventTranslation(
                  $19, $20::uuid,
                  $21,
                  $22, $23,
-                 $24)
+                 $24,
+                 $25::jsonb, $26)
          ON CONFLICT
            (aice_id, event_key, lang, model_name, model, generation)
          DO UPDATE SET
@@ -729,6 +739,8 @@ export async function deriveEventTranslation(
            translation_model_name = EXCLUDED.translation_model_name,
            translation_model = EXCLUDED.translation_model,
            translation_prompt_version = EXCLUDED.translation_prompt_version,
+           cve_refs = EXCLUDED.cve_refs,
+           cve_status = EXCLUDED.cve_status,
            superseded_at = NULL
          WHERE event_analysis_result.restoration_lang IS NULL`,
         [
@@ -756,6 +768,9 @@ export async function deriveEventTranslation(
           translationModelName,
           translationModel,
           resp.promptVersion, // aimer#495 response promptVersion
+          // RFC 0005 — CVE refs/status are language-invariant; copy verbatim.
+          JSON.stringify(canonical.cveRefs ?? []),
+          canonical.cveStatus,
         ],
       );
       inserted = (ins.rowCount ?? 0) > 0;
