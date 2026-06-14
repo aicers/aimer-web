@@ -24,6 +24,7 @@ import "./spamhaus-drop";
 import "./spamhaus-edrop";
 import "./unit42";
 import "./volexity";
+import "./zscaler";
 
 export {
   allTiSourceDescriptors,

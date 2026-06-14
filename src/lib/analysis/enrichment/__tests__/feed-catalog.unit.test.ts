@@ -29,6 +29,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "spamhaus/edrop",
       "unit42/threat-intel",
       "volexity/threat-intel",
+      "zscaler/threatlabz",
     ]);
   });
 

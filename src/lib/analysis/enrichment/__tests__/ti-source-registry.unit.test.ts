@@ -388,6 +388,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         maxAge: FEED_MAX_AGE_MS,
         floorEligible: false,
       },
+      {
+        sourcePolicyId: "zscaler/threatlabz",
+        label: "Zscaler ThreatLabz (MIT)",
+        entityTypes: ["IP", "DOMAIN", "URL", "HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
     ]);
   });
 });

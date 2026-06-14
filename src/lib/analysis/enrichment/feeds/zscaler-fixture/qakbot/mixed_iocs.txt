@@ -1,0 +1,3 @@
+# Qakbot mixed indicators (fixture, defanged)
+cdn[.]turla[.]test
+hxxps://exfil[.]turla[.]test/x

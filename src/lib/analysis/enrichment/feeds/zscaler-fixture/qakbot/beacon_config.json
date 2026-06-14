@@ -1,0 +1,5 @@
+{
+  "_comment": "fixture Cobalt Strike beacon-config sentinel — the allowlist must NEVER fetch this .json; its host token must not reach the snapshot",
+  "c2": "cs-beacon.should-never-be-fetched.test",
+  "port": 443
+}

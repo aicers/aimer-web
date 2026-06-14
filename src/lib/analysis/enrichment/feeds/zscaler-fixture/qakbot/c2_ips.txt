@@ -1,0 +1,3 @@
+# Qakbot C2 IPs (fixture, inconsistently defanged)
+185[.]100[.]87[.]202:8080
+45.155.205.99

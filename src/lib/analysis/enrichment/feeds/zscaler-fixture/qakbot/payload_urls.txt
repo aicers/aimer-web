@@ -1,0 +1,5 @@
+# Qakbot payload URLs (fixture — concatenated-domain DEFECT; this whole file is
+# excluded by the allowlist pathPattern negative lookahead and must NEVER be
+# fetched. The line below is two domains run together into one valid-looking
+# DOMAIN token the free-text scanner would otherwise import as garbage.)
+anukulvivah.comnobeltech.com.pk
