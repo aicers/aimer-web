@@ -1,0 +1,10 @@
+# CERT Polska Warning List active phishing-domains list (PINNED FIXTURE)
+#
+# Committed test subset, NOT a live download. Uses RFC 2606 `.example`
+# documentation names so the fixture references no real CERT Polska entries
+# (no live attacker infrastructure committed). Format mirrors the published
+# v2 list: one active domain per line, plain text. (`#`/`;` comment lines are
+# stripped by the generic-list parser; the real list ships with none.)
+platnosc-oszustwo.example
+bank-logowanie.example
+paczka-doplata.example

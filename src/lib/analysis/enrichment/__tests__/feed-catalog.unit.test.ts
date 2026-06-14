@@ -17,6 +17,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "botvrij/hash",
       "botvrij/ip",
       "botvrij/url",
+      "cert-pl/warninglist",
       "eset/malware-ioc",
       "infoblox/threat-intelligence",
       "misp/warninglists",
@@ -110,6 +111,15 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
         entityType: "URL",
         hitType: "deterministic_ioc",
         classification: "misc",
+      },
+      {
+        sourcePolicyId: "cert-pl/warninglist",
+        file: "cert-pl-warninglist.txt",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list" },
+        entityType: "DOMAIN",
+        hitType: "deterministic_ioc",
+        classification: "phishing",
       },
       {
         sourcePolicyId: "infoblox/threat-intelligence",

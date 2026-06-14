@@ -151,7 +151,9 @@ describe("GET /api/admin/ti-feed", () => {
     expect(body.sources).toHaveLength(expectedIds.length);
     expect(
       body.sources.map((s: { sourcePolicyId: string }) => s.sourcePolicyId),
-    ).toEqual(expect.arrayContaining(["misp/warninglists"]));
+    ).toEqual(
+      expect.arrayContaining(["misp/warninglists", "cert-pl/warninglist"]),
+    );
     const feodo = body.sources.find(
       (s: { sourcePolicyId: string }) => s.sourcePolicyId === "abuse.ch/feodo",
     );

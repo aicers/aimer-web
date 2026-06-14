@@ -2,11 +2,11 @@
 
 위협 피드 페이지에서는 시스템 관리자가 관측된 지표를 로컬에서 매칭하는 데
 사용하는 Tier-1 위협 인텔리전스 피드(abuse.ch Feodo / URLhaus, Spamhaus
-DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Database
-도메인 / URL / IP 목록)와 **Palo Alto Unit 42** 및 **ESET** 벤더 IOC 저장소를
-관리할 수 있습니다. 또한 **MISP warninglists** 오탐 억제 계층도 관리합니다(
-[부정 소스 (오탐 억제)](#부정-소스-오탐-억제) 참고). 관리자 사이드바에서
-**위협 피드**로 이동하여 엽니다.
+DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, Phishing.Database
+도메인 / URL / IP 목록, 그리고 CERT Polska Warning List)와 **Palo Alto Unit 42**
+및 **ESET** 벤더 IOC 저장소를 관리할 수 있습니다. 또한 **MISP warninglists** 오탐
+억제 계층도 관리합니다([부정 소스 (오탐 억제)](#부정-소스-오탐-억제) 참고).
+관리자 사이드바에서 **위협 피드**로 이동하여 엽니다.
 
 평면 Tier-1 피드는 게시된 단일 파일이지만, **벤더 IOC 저장소**(예: Unit 42
 또는 ESET)는 보고서별 파일들로 구성된 전체 Git 저장소이며 하나의 단위로
@@ -47,6 +47,7 @@ DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Databa
 | Botvrij.eu (`botvrij/domain`) | 도메인 | Botvrij.eu (재판매 금지) |
 | Botvrij.eu (`botvrij/url`) | URL | Botvrij.eu (재판매 금지) |
 | Botvrij.eu (`botvrij/hash`) | 파일 해시 | Botvrij.eu (재판매 금지) |
+| CERT Polska Warning List (`cert-pl/warninglist`) | 도메인 | CERT Polska (베스트 에포트, SLA 없음) |
 | Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | 도메인, IP, URL, 파일 해시 | CC-BY-4.0 — **Infoblox 및 라이선스 출처 표기** |
 | Phishing.Database (`phishing-database/domain`) | 도메인 | MIT |
 | Phishing.Database (`phishing-database/ip`) | IP | MIT |
@@ -66,6 +67,15 @@ DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Databa
 (CC-BY-4.0)"** 출처 표기를 기본으로 담고 있습니다. 이 소스는 현재 커밋된 픽스처 /
 수동 업로드로 공급되며, self-fetch 엔드포인트는 없습니다(콘텐츠가 캠페인별 다수
 파일로 흩어져 있어 안정적인 "최신" URL이 없습니다).
+
+**CERT Polska Warning List**는 폴란드 중심의 활성 피싱 도메인 목록으로, "한 줄당
+하나의 도메인" 형식의 일반 텍스트 파일로 게시됩니다. 베스트 에포트 피드(SLA
+없음)이므로, 오래되었거나 도달할 수 없는 스냅샷은 조용한 정상 판정이 아니라
+`unknown` / `stale` 커버리지를 유발합니다. 현재는 커밋된 픽스처 / 수동 업로드로만
+공급되며, **self-fetch는 아직 연결되어 있지 않습니다** — 아카이브된 CERT Polska
+스펙의 데이터 사용 허가가 현재 v2 엔드포인트에 대해 재확인되지 않았기
+때문입니다(라이브 가져오기는 이 재확인을 전제로 게이트됩니다). 따라서 아래
+self-fetch 표에는 케이던스 행이 없습니다.
 
 ### 부정 소스 (오탐 억제)
 

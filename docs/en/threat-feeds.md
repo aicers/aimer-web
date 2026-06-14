@@ -2,12 +2,12 @@
 
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
-URL / hash lists, and the Phishing.Database domain / URL / IP lists) plus the
-**Palo Alto Unit 42** and **ESET** vendor IOC repositories that observed
-indicators are matched locally against. It also manages the **MISP warninglists**
-false-positive suppression layer (see [Negative sources (false-positive
-suppression)](#negative-sources-false-positive-suppression)). Navigate to **Threat
-Feeds** in the admin sidebar to open it.
+URL / hash lists, the Phishing.Database domain / URL / IP lists, and the CERT
+Polska Warning List) plus the **Palo Alto Unit 42** and **ESET** vendor IOC
+repositories that observed indicators are matched locally against. It also
+manages the **MISP warninglists** false-positive suppression layer (see [Negative
+sources (false-positive suppression)](#negative-sources-false-positive-suppression)).
+Navigate to **Threat Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
 (such as Unit 42 or ESET) is instead a whole Git repository of per-report files
@@ -51,6 +51,7 @@ licensing:
 | Botvrij.eu (`botvrij/domain`) | domain | Botvrij.eu (no resale) |
 | Botvrij.eu (`botvrij/url`) | URL | Botvrij.eu (no resale) |
 | Botvrij.eu (`botvrij/hash`) | file hash | Botvrij.eu (no resale) |
+| CERT Polska Warning List (`cert-pl/warninglist`) | domain | CERT Polska (best-effort, no SLA) |
 | Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | domain, IP, URL, file hash | CC-BY-4.0 — **attribution to Infoblox and the license** |
 | Phishing.Database (`phishing-database/domain`) | domain | MIT |
 | Phishing.Database (`phishing-database/ip`) | IP | MIT |
@@ -72,6 +73,15 @@ the **"Infoblox Threat Intelligence (CC-BY-4.0)"** attribution by construction.
 This source is supplied via the committed fixture / manual upload today; it has
 no self-fetch endpoint (its content is many per-campaign files with no stable
 "latest" URL).
+
+**CERT Polska Warning List** is a PL-centric list of active phishing domains,
+published as a plain-text "one domain per line" file. It is a best-effort feed
+(no SLA), so a stale or unreachable snapshot drives `unknown` / `stale` coverage,
+never a silent clean. It is currently supplied via the committed fixture /
+manual upload only; **self-fetch is not yet wired** because the data grant in the
+archived CERT Polska spec has not been re-confirmed for the current v2 endpoints
+(the live fetch is gated on that re-confirmation). It therefore has no cadence
+row in the self-fetch table below.
 
 ### Negative sources (false-positive suppression)
 
