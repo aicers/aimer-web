@@ -10,6 +10,7 @@
 import "server-only";
 
 import type { Pool } from "pg";
+import { narrowContextPayload } from "./context-payload";
 import { selfFetchModeActive } from "./feed-fetch";
 import {
   candidateValues,
@@ -119,11 +120,12 @@ export class PgFeedStore implements FeedStore {
       hit_type: HitType;
       classification: string | null;
       confidence: number | null;
+      context: unknown;
       source_version: string | null;
       feed_hash: string | null;
       source_updated_at: Date | null;
     }>(
-      `SELECT hit_type, classification, confidence,
+      `SELECT hit_type, classification, confidence, context,
               source_version, feed_hash, source_updated_at
          FROM ioc_feed_snapshot
         WHERE source_policy_id = $1
@@ -138,11 +140,12 @@ export class PgFeedStore implements FeedStore {
         hit_type: HitType;
         classification: string | null;
         confidence: number | null;
+        context: unknown;
         source_version: string | null;
         feed_hash: string | null;
         source_updated_at: Date | null;
       }>(
-        `SELECT hit_type, classification, confidence,
+        `SELECT hit_type, classification, confidence, context,
                 source_version, feed_hash, source_updated_at
            FROM ioc_feed_snapshot
           WHERE source_policy_id = $1
@@ -157,6 +160,9 @@ export class PgFeedStore implements FeedStore {
       hitType: row.hit_type,
       classification: row.classification ?? undefined,
       confidence: row.confidence ?? undefined,
+      // The `context` JSONB is `unknown` at runtime — narrow it through the
+      // validator before it reaches the match; never trust the pg row as-is.
+      contextPayload: narrowContextPayload(row.context),
       sourceVersion: row.source_version ?? undefined,
       feedHash: row.feed_hash ?? undefined,
       sourceUpdatedAt: toIso(row.source_updated_at),

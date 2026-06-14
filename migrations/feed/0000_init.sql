@@ -43,6 +43,11 @@ CREATE TABLE ioc_feed_snapshot (
         CHECK (hit_type IN ('deterministic_ioc', 'soft_reputation')),
     classification    TEXT,
     confidence        DOUBLE PRECISION,
+    -- Optional per-row report-level context (RFC 0003 F6, #594): vendor IOC
+    -- repositories bundle actor / campaign / malware family / report link
+    -- with each indicator. NULL for context-less feeds (the existing five).
+    -- Read back as `unknown` and narrowed before use — never trusted as-is.
+    context           JSONB,
     -- Snapshot provenance / freshness (audit + stale-coverage policy).
     source_version    TEXT,
     feed_hash         TEXT,

@@ -14,6 +14,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import ipaddr from "ipaddr.js";
 import type { Pool } from "pg";
+import { canonicalizeContext } from "./context-payload";
 import type { FeedParseKind, FeedSource, RawFeedPayload } from "./feed-source";
 import {
   NormalizationError,
@@ -22,7 +23,7 @@ import {
   normalizeIp,
   normalizeUrl,
 } from "./normalization";
-import type { EntityType, HitType } from "./types";
+import type { EnrichmentContextPayload, EntityType, HitType } from "./types";
 
 // ---------------------------------------------------------------------------
 // Parsers (pure)
@@ -212,6 +213,14 @@ export interface FeedSnapshotRow {
    * as `URL` and their hosts as `DOMAIN` — under a single `source_policy_id`.
    */
   entityType?: EntityType;
+  /**
+   * Optional per-row report-level context (RFC 0003 F6, #594). A
+   * context-bearing parser (vendor IOC repositories) attaches actor /
+   * campaign / malware-family / report-link context to the row; bare feeds
+   * and the existing parsers leave it absent, so the `context` column stays
+   * NULL and `feed_hash` is unaffected.
+   */
+  context?: EnrichmentContextPayload;
 }
 
 /**
@@ -357,9 +366,10 @@ export async function importFeedSnapshot(
       await client.query(
         `INSERT INTO ioc_feed_snapshot
            (source_policy_id, entity_type, match_value, cidr, hit_type,
-            classification, confidence, source_version, feed_hash,
+            classification, confidence, context, source_version, feed_hash,
             source_updated_at)
-         VALUES ($1, $2, $3, $4::cidr, $5, $6, $7, $8, $9, $10::timestamptz)`,
+         VALUES ($1, $2, $3, $4::cidr, $5, $6, $7, $8::jsonb, $9, $10,
+                 $11::timestamptz)`,
         [
           params.sourcePolicyId,
           row.entityType ?? params.entityType,
@@ -368,6 +378,7 @@ export async function importFeedSnapshot(
           params.hitType,
           params.classification ?? null,
           params.confidence ?? null,
+          row.context ? JSON.stringify(row.context) : null,
           params.sourceVersion ?? null,
           feedHash,
           params.sourceUpdatedAt ?? null,
@@ -499,10 +510,24 @@ export async function importFromFeedSource(
   }
 }
 
-/** Deterministic content hash of a snapshot's rows (sorted for stability). */
+/**
+ * Deterministic content hash of a snapshot's rows (sorted for stability).
+ *
+ * Context (RFC 0003 F6, #594) is folded into a row's hash entry ONLY when
+ * that row carries it, appended after a NUL separator, so a context-less row
+ * hashes byte-for-byte as it did before this change — the existing five
+ * feeds keep their exact `feed_hash` (no spurious re-import). Context is
+ * serialized with `canonicalizeContext` (sorted keys), not a bare
+ * `JSON.stringify`, so the same context with a different key-insertion order
+ * hashes identically and does not trigger a phantom re-import; a genuine
+ * context change does change the hash and re-imports.
+ */
 export function computeFeedHash(rows: readonly FeedSnapshotRow[]): string {
   const entries = rows
-    .map((r) => r.matchValue ?? `cidr:${r.cidr}`)
+    .map((r) => {
+      const base = r.matchValue ?? `cidr:${r.cidr}`;
+      return r.context ? `${base} ${canonicalizeContext(r.context)}` : base;
+    })
     .sort()
     .join("\n");
   return createHash("sha256").update(entries).digest("hex");
