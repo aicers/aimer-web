@@ -146,6 +146,15 @@ export interface TiSourceDescriptor {
    */
   fetch?: TiSourceFetchConfig;
   /**
+   * Why a source has no self-fetch config (`fetch` absent). Drives the
+   * self-fetch table badge so each non-fetchable source reads accurately:
+   * `"merged"` ⇒ superseded upstream (e.g. `spamhaus/edrop` folded into
+   * DROP); when omitted the source is simply fixture-/manual-upload-only with
+   * no aggregate "latest" endpoint (e.g. `infoblox/threat-intelligence`).
+   * Ignored when `fetch` is present.
+   */
+  selfFetchUnavailable?: "merged";
+  /**
    * Vendor IOC repository extraction config (RFC 0003 F4, #603). Present for a
    * vendor-repo source (Unit 42 / ESET / Volexity / PRODAFT / Zscaler /
    * Huntress / Meta), absent for the flat Tier-1 feeds. A source carrying this

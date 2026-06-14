@@ -17,5 +17,6 @@ registerTiSource({
   entityType: "IP",
   hitType: "deterministic_ioc",
   classification: "edrop",
+  selfFetchUnavailable: "merged",
   fixtureFile: "spamhaus-edrop.txt",
 });

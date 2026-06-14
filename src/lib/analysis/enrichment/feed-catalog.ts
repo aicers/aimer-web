@@ -69,6 +69,12 @@ export interface Tier1FeedSource {
    */
   fetch?: TiSourceFetchConfig;
   /**
+   * Why a source has no self-fetch (`fetch` absent): `"merged"` ⇒ superseded
+   * upstream (EDROP into DROP); omitted ⇒ fixture-/manual-upload-only with no
+   * aggregate endpoint (e.g. Infoblox). Drives the self-fetch table badge.
+   */
+  selfFetchUnavailable?: "merged";
+  /**
    * Vendor IOC repository config (RFC 0003 F4, #603). Present for a vendor-repo
    * source; such a source is fetched + imported through the vendor-repo engine
    * (tree enumerate → allowlisted blobs → per-source batch replace), NOT the
@@ -95,6 +101,7 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
+    selfFetchUnavailable: descriptor.selfFetchUnavailable,
     vendorRepo: descriptor.vendorRepo,
   }));
 
@@ -115,6 +122,7 @@ export function getTier1FeedSource(
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
+    selfFetchUnavailable: descriptor.selfFetchUnavailable,
     vendorRepo: descriptor.vendorRepo,
   };
 }

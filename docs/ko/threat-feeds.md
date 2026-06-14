@@ -27,6 +27,40 @@ DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Databa
 
 ---
 
+## 소스
+
+알려진 Tier-1 소스, 각 소스가 제공하는 지표 유형, 라이선스는 다음과 같습니다.
+
+| 소스 (정책 id) | 지표 유형 | 라이선스 / 출처 표기 |
+| --- | --- | --- |
+| abuse.ch Feodo Tracker (`abuse.ch/feodo`) | IP | abuse.ch |
+| abuse.ch URLhaus (`abuse.ch/urlhaus`) | URL, 도메인 | abuse.ch |
+| abuse.ch URLhaus 페이로드 (`abuse.ch/urlhaus-payloads`) | 파일 해시 | abuse.ch |
+| Botvrij.eu (`botvrij/ip`) | IP | Botvrij.eu (재판매 금지) |
+| Botvrij.eu (`botvrij/domain`) | 도메인 | Botvrij.eu (재판매 금지) |
+| Botvrij.eu (`botvrij/url`) | URL | Botvrij.eu (재판매 금지) |
+| Botvrij.eu (`botvrij/hash`) | 파일 해시 | Botvrij.eu (재판매 금지) |
+| Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | 도메인, IP, URL, 파일 해시 | CC-BY-4.0 — **Infoblox 및 라이선스 출처 표기** |
+| Phishing.Database (`phishing-database/domain`) | 도메인 | MIT |
+| Phishing.Database (`phishing-database/ip`) | IP | MIT |
+| Phishing.Database (`phishing-database/url`) | URL | MIT |
+| Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
+| Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (2024년 DROP에 통합) |
+
+**Infoblox Threat Intelligence**는 도메인 중심의 멤버십 + 분류 피드로, 하나의
+혼합 CSV 스키마(`type,indicator,classification,…`)로 게시됩니다. 지표 유형은
+행 단위로 표기되며(`domain` / `ip` / `ipv4` / `url` / `sha256` / …) 값은
+디팽(defang)되어 있습니다. aimer-web은 분류가 알려진 위협 라벨(예: `malicious`,
+`phishing`, `malware`)인 행만 가져옵니다. `legitimate`, `parked` 같은 비위협
+라벨은 가져오지 않으며, 로컬에 대응 유형이 없는 지표 유형(`email`, `telfhash`)은
+건너뜁니다. **CC-BY-4.0**으로 배포되므로 매칭된 지표가 표시되는 모든 곳에 출처
+표기가 필요합니다. 따라서 소스 라벨이 **"Infoblox Threat Intelligence
+(CC-BY-4.0)"** 출처 표기를 기본으로 담고 있습니다. 이 소스는 현재 커밋된 픽스처 /
+수동 업로드로 공급되며, self-fetch 엔드포인트는 없습니다(콘텐츠가 캠페인별 다수
+파일로 흩어져 있어 안정적인 "최신" URL이 없습니다).
+
+---
+
 ## 수동 업로드 모드
 
 이것은 **수동 업로드** 공급 모드(`TI_FEED_MODE=manual-upload`)입니다. 운영자가

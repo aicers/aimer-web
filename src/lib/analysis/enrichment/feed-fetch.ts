@@ -384,6 +384,13 @@ export interface SelfFetchSourceStatus {
   label: string;
   /** `true` when the source has a self-fetch config (EDROP, merged, is not). */
   fetchable: boolean;
+  /**
+   * Why a non-fetchable source has no self-fetch, so the UI can label it
+   * accurately. `"merged"` ⇒ superseded upstream (EDROP into DROP);
+   * `"fixture-only"` ⇒ fixture-/manual-upload-only, no aggregate endpoint
+   * (e.g. Infoblox). `null` for fetchable sources.
+   */
+  unavailableReason: "merged" | "fixture-only" | null;
   /** Display URL(s) — the placeholder template, never the real Auth-Key. */
   fetchUrl: string | null;
   /** Whether this source needs an Auth-Key, and whether one is set. */
@@ -456,10 +463,14 @@ export async function getSelfFetchSourceStatuses(
       source.fetch?.authKeyName ?? source.vendorRepo?.authKeyName ?? null;
     const authKeyRequired = source.fetch?.authKeyName != null;
     const vendorRepo = source.vendorRepo;
+    const fetchable = source.fetch !== undefined || vendorRepo !== undefined;
     return {
       sourcePolicyId: source.sourcePolicyId,
       label: source.label,
-      fetchable: source.fetch !== undefined || vendorRepo !== undefined,
+      fetchable,
+      unavailableReason: fetchable
+        ? null
+        : (source.selfFetchUnavailable ?? "fixture-only"),
       fetchUrl: source.fetch
         ? source.fetch.urls.join(", ")
         : vendorRepo

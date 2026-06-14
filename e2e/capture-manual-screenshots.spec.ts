@@ -641,11 +641,19 @@ base.describe.serial("Manual screenshots", () => {
 
   const tiFeedMode = process.env.TI_FEED_MODE;
 
+  // The manual-upload table lists every registered source; as the TI source
+  // registry fans out it outgrows the 720 px fold, so capture at a taller
+  // viewport + `fullPage` (the dashboard shell's inner `overflow-y-auto` hides
+  // below-the-fold rows otherwise) and assert the last source row is on-page so
+  // a too-short viewport fails loudly rather than silently clipping a new row.
+  const MANUAL_VIEWPORT = { width: 1280, height: 1100 };
+
   base("admin-ti-feeds-table.png", async () => {
     base.skip(
       tiFeedMode !== "manual-upload",
       "manual-upload mode only (set TI_FEED_MODE=manual-upload)",
     );
+    await adminPage.setViewportSize(MANUAL_VIEWPORT);
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -653,10 +661,15 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
+    await expect(
+      adminPage.getByText("spamhaus/edrop", { exact: true }),
+    ).toBeVisible();
 
     await adminPage.screenshot({
       path: resolve(ASSETS, "admin-ti-feeds-table.png"),
+      fullPage: true,
     });
+    await adminPage.setViewportSize(VIEWPORT);
   });
 
   base("admin-ti-feeds-upload-dialog.png", async () => {
@@ -690,8 +703,10 @@ base.describe.serial("Manual screenshots", () => {
   // dashboard shell is `h-screen` with the page body in an inner
   // `overflow-y-auto` <main>, so `fullPage` alone cannot reach below-the-fold
   // content — bump the viewport height first (same pattern as the preferences
-  // captures), then `fullPage` so every registered source row (including the
-  // three `phishing-database/*` rows the per-source table documents) is visible.
+  // captures), then `fullPage` so every registered source row (Botvrij,
+  // Infoblox, the three `phishing-database/*` rows, …) is visible. Assert the
+  // last stable-by-id row is on-page before shooting so a too-short viewport
+  // fails loudly instead of silently clipping a new row.
   const TI_FEEDS_VIEWPORT = { width: 1280, height: 1500 };
 
   base("admin-ti-feeds-selffetch-table.png", async () => {
@@ -707,9 +722,9 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
-    // Guard the framing: the last fan-out row must be on-page before capture.
+    // Guard the framing: the last stable-by-id row must be on-page before capture.
     await expect(
-      adminPage.getByText("phishing-database/url", { exact: true }),
+      adminPage.getByText("spamhaus/edrop", { exact: true }),
     ).toBeVisible();
 
     await adminPage.screenshot({

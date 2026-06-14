@@ -6,6 +6,7 @@
 // stored context is dropped by the narrowing validator (never trusted as-is)
 // and that a context-less row yields no `contextPayload`.
 
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,12 +20,21 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
+import { getTier1FeedSource } from "../feed-catalog";
 import { importFeedSnapshot, importRawFeedPayload } from "../feed-import";
 import { PgFeedStore } from "../feed-store";
-import { normalizeIp } from "../normalization";
+import { normalizeDomain, normalizeIp } from "../normalization";
 
 const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const FEED_LOCK_ID = 5942;
+const FEEDS_DIR = join(
+  process.cwd(),
+  "src",
+  "lib",
+  "analysis",
+  "enrichment",
+  "feeds",
+);
 
 describe.skipIf(!hasPostgres)("PgFeedStore context round-trip (DB)", () => {
   let feedDbName: string;
@@ -97,6 +107,53 @@ describe.skipIf(!hasPostgres)("PgFeedStore context round-trip (DB)", () => {
     );
     expect(matches).toHaveLength(1);
     expect(matches[0].contextPayload).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // RFC 0003 fan-out (#605) — Infoblox row-typed csv-column import + match
+  // -------------------------------------------------------------------------
+
+  it("imports the Infoblox fixture and matches a threat indicator (hit/miss)", async () => {
+    const source = getTier1FeedSource("infoblox/threat-intelligence");
+    if (!source) throw new Error("infoblox source not registered");
+    await importRawFeedPayload(feedPool, {
+      sourcePolicyId: source.sourcePolicyId,
+      parse: source.parse,
+      parseConfig: source.parseConfig,
+      entityType: source.entityType,
+      hitType: source.hitType,
+      classification: source.classification,
+      content: readFileSync(
+        join(FEEDS_DIR, "infoblox-threat-intelligence.csv"),
+        "utf8",
+      ),
+      provenance: { mode: "manual-upload", origin: "test" },
+    });
+
+    const store = new PgFeedStore(feedPool);
+
+    // Hit: a refanged `malicious` domain row lands as a DOMAIN match.
+    const domainHit = await store.match(
+      "infoblox/threat-intelligence",
+      normalizeDomain("4ktv-live.blogspot.example"),
+    );
+    expect(domainHit).toHaveLength(1);
+    expect(domainHit[0].hitType).toBe("deterministic_ioc");
+
+    // Hit: an `ipv4`-typed row imports under the IP entity type.
+    const ipHit = await store.match(
+      "infoblox/threat-intelligence",
+      normalizeIp("185.222.58.0"),
+    );
+    expect(ipHit).toHaveLength(1);
+
+    // Miss: a `legitimate`-classified domain is dropped at import, so it is
+    // absent from the snapshot — no false-positive match.
+    const legitimateMiss = await store.match(
+      "infoblox/threat-intelligence",
+      normalizeDomain("good-site.example"),
+    );
+    expect(legitimateMiss).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------

@@ -257,6 +257,117 @@ describe("parseCsvColumns (#593)", () => {
   });
 });
 
+describe("parseCsvColumns row-typed mode (#605, Infoblox)", () => {
+  // The Infoblox schema: a per-row `type` column selects the entity type, a
+  // `classification` allowlist filters rows, and values are defanged.
+  const infobloxConfig: CsvColumnParseConfig = {
+    kind: "csv-column",
+    typeColumn: {
+      value: { name: "indicator" },
+      type: { name: "type" },
+      typeMap: {
+        domain: "DOMAIN",
+        ip: "IP",
+        ipv4: "IP",
+        url: "URL",
+        sha256: "HASH",
+      },
+    },
+    rowFilter: {
+      column: { name: "classification" },
+      allow: ["malicious", "phishing", "malware", "malvertising"],
+    },
+    refang: true,
+    skipHeader: true,
+  };
+
+  it("maps each row's type to an entity type (ipv4 → IP), refanging values", () => {
+    const text = [
+      "type,indicator,classification,detected_date",
+      "domain,bad[.]example,malicious,2025-05-20",
+      "ipv4,185.222.58[.]0,phishing,2025-12-01",
+      "ip,203.0.113[.]7,malware,2024-01-15",
+      "url,hxxp://malware[.]example/gate[.]php,malvertising,2025-03-10",
+    ].join("\n");
+    expect(parseCsvColumns(text, infobloxConfig)).toEqual([
+      { entityType: "DOMAIN", value: "bad.example" },
+      { entityType: "IP", value: "185.222.58.0" },
+      { entityType: "IP", value: "203.0.113.7" },
+      { entityType: "URL", value: "http://malware.example/gate.php" },
+    ]);
+  });
+
+  it("skips rows whose type is not in the map (email, telfhash, drift)", () => {
+    const text = [
+      "type,indicator,classification,detected_date",
+      "email,admin[at]evil[.]example,malicious,2025-02-02",
+      "telfhash,t1abcdef,malware,2023-07-14",
+      "future-type,whatever[.]example,malicious,2025-01-01",
+      "domain,kept[.]example,malicious,2025-01-01",
+    ].join("\n");
+    // Only the mapped `domain` row survives the type skip.
+    expect(parseCsvColumns(text, infobloxConfig)).toEqual([
+      { entityType: "DOMAIN", value: "kept.example" },
+    ]);
+  });
+
+  it("drops rows whose classification is outside the allowlist", () => {
+    const text = [
+      "type,indicator,classification,detected_date",
+      "domain,threat[.]example,malicious,2025-01-01",
+      "domain,good[.]example,legitimate,2025-01-01",
+      "domain,parked[.]example,other,2025-01-01",
+    ].join("\n");
+    // `legitimate` / `other` are not threats → dropped; only `malicious` kept.
+    expect(parseCsvColumns(text, infobloxConfig)).toEqual([
+      { entityType: "DOMAIN", value: "threat.example" },
+    ]);
+  });
+
+  it("resolves the header on a BOM-prefixed file", () => {
+    // The fixture begins with a UTF-8 BOM before `type`; the parser must strip
+    // it so the `indexOf("type")` header lookup still resolves.
+    expect(fixture("infoblox-bom.csv").charCodeAt(0)).toBe(0xfeff);
+    expect(
+      parseCsvColumns(fixture("infoblox-bom.csv"), infobloxConfig),
+    ).toEqual([
+      { entityType: "DOMAIN", value: "vault-viper.example" },
+      { entityType: "IP", value: "198.51.100.23" },
+    ]);
+  });
+
+  it("rejects a config that sets both columns and typeColumn", () => {
+    const bad: CsvColumnParseConfig = {
+      ...infobloxConfig,
+      columns: [{ name: "indicator", entityType: "DOMAIN" }],
+    };
+    expect(() => parseCsvColumns("type,indicator\n", bad)).toThrow(
+      FeedParseError,
+    );
+  });
+
+  it("throws when the value/type column header is absent", () => {
+    const text = "kind,value\ndomain,bad[.]example\n";
+    expect(() => parseCsvColumns(text, infobloxConfig)).toThrow(FeedParseError);
+  });
+});
+
+describe("parseCsvColumns static mode refang (#605)", () => {
+  it("refangs extracted values when refang is set", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 0, entityType: "DOMAIN" }],
+      refang: true,
+    };
+    expect(
+      parseCsvColumns("evil[.]example,x\nc2(.)bad[.]example,y", cfg),
+    ).toEqual([
+      { entityType: "DOMAIN", value: "evil.example" },
+      { entityType: "DOMAIN", value: "c2.bad.example" },
+    ]);
+  });
+});
+
 describe("parseFreeTextIocs (#603)", () => {
   it("extracts IOCs embedded in a sentence (where generic-list cannot)", () => {
     const prose =
@@ -364,6 +475,49 @@ describe("parseFeedContent generic kinds → normalized rows", () => {
       { matchValue: "malware.example", entityType: "DOMAIN" },
       { matchValue: "c2.evil.example", entityType: "DOMAIN" },
       { matchValue: "phishing.evil.example", entityType: "DOMAIN" },
+    ]);
+  });
+
+  it("normalizes the Infoblox fixture: multi-entity, refanged, skips applied", () => {
+    const infobloxConfig: CsvColumnParseConfig = {
+      kind: "csv-column",
+      typeColumn: {
+        value: { name: "indicator" },
+        type: { name: "type" },
+        typeMap: {
+          domain: "DOMAIN",
+          ip: "IP",
+          ipv4: "IP",
+          url: "URL",
+          sha256: "HASH",
+        },
+      },
+      rowFilter: {
+        column: { name: "classification" },
+        allow: ["malicious", "phishing", "malware", "malvertising"],
+      },
+      refang: true,
+      skipHeader: true,
+    };
+    const rows = parseFeedContent(
+      "csv-column",
+      "DOMAIN",
+      fixture("infoblox-threat-intelligence.csv"),
+      infobloxConfig,
+    );
+    // Grouped by first-seen entity type (DOMAIN, IP, URL, HASH). The `email` /
+    // `telfhash` rows are type-skipped; the `legitimate` / `other` rows are
+    // classification-skipped; defanged values are refanged before normalizing.
+    expect(rows).toEqual([
+      { matchValue: "4ktv-live.blogspot.example", entityType: "DOMAIN" },
+      { matchValue: "185.222.58.0", entityType: "IP" },
+      { matchValue: "203.0.113.7", entityType: "IP" },
+      { matchValue: "http://malware.example/gate.php", entityType: "URL" },
+      {
+        matchValue:
+          "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+        entityType: "HASH",
+      },
     ]);
   });
 });
@@ -520,6 +674,91 @@ describe("isUnparseableFeedContent", () => {
     expect(
       isUnparseableFeedContent("csv-column", "URL", "id,url,host\n", badIndex),
     ).toBe(true);
+  });
+
+  it("treats a header-only row-typed csv-column body as a legitimate clear (#605)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      typeColumn: {
+        value: { name: "indicator" },
+        type: { name: "type" },
+        typeMap: { domain: "DOMAIN" },
+      },
+      skipHeader: true,
+    };
+    // Lone header line, no data rows: the header is consumed, not data, so the
+    // source is legitimately cleared rather than flagged unparseable.
+    expect(
+      isUnparseableFeedContent(
+        "csv-column",
+        "DOMAIN",
+        "type,indicator,classification,detected_date\n",
+        cfg,
+      ),
+    ).toBe(false);
+  });
+
+  it("flags a row-typed csv-column body whose header is absent (#605)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      typeColumn: {
+        value: { name: "indicator" },
+        type: { name: "type" },
+        typeMap: { domain: "DOMAIN" },
+      },
+      skipHeader: true,
+    };
+    // The configured `type`/`indicator` headers are absent: the parser must be
+    // invoked so this surfaces as a parse error / unparseable, not a clear.
+    expect(
+      isUnparseableFeedContent(
+        "csv-column",
+        "DOMAIN",
+        "kind,value\ndomain,bad.example\n",
+        cfg,
+      ),
+    ).toBe(true);
+  });
+
+  it("treats an Infoblox body of only skipped rows as a valid empty import (#605)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      typeColumn: {
+        value: { name: "indicator" },
+        type: { name: "type" },
+        typeMap: { domain: "DOMAIN", ip: "IP", ipv4: "IP" },
+      },
+      rowFilter: {
+        column: { name: "classification" },
+        allow: ["malicious", "phishing"],
+      },
+      refang: true,
+      skipHeader: true,
+    };
+    // A header PLUS many data rows that are all intentionally skipped — every
+    // row excluded by the classification allowlist (`legitimate`/`other`) and/or
+    // an unmapped type (`email`/`telfhash`). The parser correctly yields zero
+    // rows; this is a recognized, valid body (an all-`legitimate` upstream file
+    // really exists) and must NOT be rejected as unparseable, or manual upload /
+    // a future self-fetch would wrongly drop a good source.
+    const allSkipped =
+      "type,indicator,classification,detected_date\n" +
+      "domain,a[.]example,legitimate,2025-05-20\n" +
+      "ipv4,185.222.58[.]0,other,2025-12-01\n" +
+      "email,abuse@example[.]com,malicious,2024-01-01\n" +
+      "telfhash,t1fde0f101c9395f39ecd16430b41041a5,malware,2023-07-14\n";
+    expect(
+      isUnparseableFeedContent("csv-column", "DOMAIN", allSkipped, cfg),
+    ).toBe(false);
+    // Sanity: the same parser does emit rows once a row clears both gates, so
+    // the "valid empty import" verdict is not masking a broken config.
+    const oneKept = `${allSkipped}domain,bad[.]example,malicious,2025-06-01\n`;
+    expect(isUnparseableFeedContent("csv-column", "DOMAIN", oneKept, cfg)).toBe(
+      false,
+    );
+    expect(parseCsvColumns(oneKept, cfg)).toEqual([
+      { entityType: "DOMAIN", value: "bad.example" },
+    ]);
   });
 
   it("uses the configured comment prefix for the data-line check", () => {

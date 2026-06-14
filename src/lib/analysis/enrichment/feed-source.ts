@@ -125,30 +125,95 @@ export interface GenericListParseConfig {
 }
 
 /**
- * One indicator column selected from a CSV by `csv-column` (#593). Exactly one
- * of `name` (header name) / `index` (zero-based column index) identifies the
- * column; `entityType` is the entity type of the values it yields.
+ * A reference to one CSV column, by header `name` or zero-based `index`.
+ * Exactly one of the two identifies the column; a `name` requires the CSV to
+ * carry a header row.
  */
-export interface CsvColumnSpec {
+export interface CsvColumnRef {
   /** Column header name — requires the CSV to carry a header row. */
   name?: string;
   /** Zero-based column index — an alternative to `name`. */
   index?: number;
+}
+
+/**
+ * One indicator column selected from a CSV by `csv-column` (#593). Exactly one
+ * of `name` (header name) / `index` (zero-based column index) identifies the
+ * column; `entityType` is the entity type of the values it yields.
+ */
+export interface CsvColumnSpec extends CsvColumnRef {
   /** Entity type for the values extracted from this column. */
   entityType: EntityType;
 }
 
 /**
- * Config for the `csv-column` parser (#593): pick indicator column(s) from a
- * CSV by header name or index, with per-column `entityType`. Column extraction
- * only — it does NOT derive one indicator from another (URLhaus' URL→host
- * derivation stays bespoke). A configured header name that is absent, or an
- * index out of range, is a hard parse error (never a silent 0 rows).
+ * Row-typed extraction (#605): one value column whose `EntityType` is read
+ * from a separate per-row `type` column via `typeMap`, instead of a static
+ * per-column type. The Infoblox feed carries its indicator type as a data
+ * value (`domain` / `ip` / `ipv4` / `url` / `sha256` / …), so a single value
+ * column emits more than one entity type. A row whose `type` value is absent
+ * from `typeMap` (e.g. `email`, `telfhash`, or a future upstream value) is
+ * **skipped**, never errored, so type drift never breaks or clears the source.
+ * Mutually exclusive with `CsvColumnParseConfig.columns`.
+ */
+export interface CsvTypeColumnSpec {
+  /** The value column holding the indicator itself. */
+  value: CsvColumnRef;
+  /** The per-row type column whose value selects the entity type. */
+  type: CsvColumnRef;
+  /** Map a row's `type` value → `EntityType`; unmapped types are skipped. */
+  typeMap: Readonly<Record<string, EntityType>>;
+}
+
+/**
+ * Row-level allowlist filter (#605): keep only rows whose `column` value is in
+ * `allow`. The Infoblox `classification` column mixes threat labels
+ * (`malicious`, `phishing`, …) with non-threat / status labels (`legitimate`,
+ * `parked`, …), so importing every row as a deterministic IOC would inject
+ * false positives. Expressed as an **allowlist** (not a denylist) so a *new*
+ * upstream value is excluded by default until consciously added.
+ */
+export interface CsvRowFilterSpec {
+  /** The column whose value is tested against the allowlist. */
+  column: CsvColumnRef;
+  /** Allowed values; a row whose value is not listed is dropped. */
+  allow: readonly string[];
+}
+
+/**
+ * Config for the `csv-column` parser (#593, generalized #605): pick indicator
+ * column(s) from a CSV. Two extraction modes, mutually exclusive:
+ *
+ * - **static per-column** (`columns`) — each column carries a fixed
+ *   `entityType` (Spamhaus / the sample fixtures). The default; unchanged.
+ * - **row-typed** (`typeColumn`) — one value column whose entity type is read
+ *   from a per-row `type` column (Infoblox).
+ *
+ * Optional `rowFilter` (allowlist on another column), `refang` (refang
+ * extracted values before normalization), a configurable `delimiter`,
+ * header-row skip, and comment-prefix skip apply to either mode. A leading
+ * UTF-8 BOM on the first line is stripped. Column extraction only — it does
+ * NOT derive one indicator from another (URLhaus' URL→host stays bespoke). A
+ * configured header name that is absent, or an index out of range, is a hard
+ * parse error (never a silent 0 rows); an unmapped row `type` or a row the
+ * `rowFilter` drops is a silent per-row skip (expected, not an error).
  */
 export interface CsvColumnParseConfig {
   kind: "csv-column";
-  /** Indicator column(s) to extract (at least one). */
-  columns: readonly CsvColumnSpec[];
+  /**
+   * Static per-column indicator extraction (at least one column). Mutually
+   * exclusive with `typeColumn`; exactly one of the two must be present.
+   */
+  columns?: readonly CsvColumnSpec[];
+  /** Row-typed extraction (#605). Mutually exclusive with `columns`. */
+  typeColumn?: CsvTypeColumnSpec;
+  /** Optional row allowlist filter on another column (#605). */
+  rowFilter?: CsvRowFilterSpec;
+  /**
+   * Refang defanged indicators before emitting (`hxxp`→`http`, `[.]`→`.`,
+   * `[at]`→`@`). Off by default. Applied to extracted values in both modes.
+   */
+  refang?: boolean;
   /** Field delimiter (defaults to `,`). */
   delimiter?: string;
   /** Treat (and skip) the first non-comment line as a header row. */

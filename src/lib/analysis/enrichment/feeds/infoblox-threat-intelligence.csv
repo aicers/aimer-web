@@ -1,0 +1,10 @@
+type,indicator,classification,detected_date
+domain,4ktv-live[.]blogspot[.]example,malicious,2025-05-20
+ipv4,185.222.58[.]0,phishing,2025-12-01
+ip,203.0.113[.]7,malware,2024-01-15
+url,hxxp://malware[.]example/gate[.]php,malvertising,2025-03-10
+sha256,9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08,malware,2023-07-14
+email,admin[at]evil[.]example,malicious,2025-02-02
+telfhash,t1fde0f101c9395f39ecd16430b41041a59107caa5ad60f3a1f8f0a1f5e2c0d1e,malware,2023-07-14
+domain,good-site[.]example,legitimate,2025-01-01
+domain,parked-host[.]example,other,2025-01-01

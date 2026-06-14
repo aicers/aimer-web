@@ -491,6 +491,7 @@
     "notFetched": "Not fetched",
     "notFetchable": "Not fetchable",
     "merged": "Merged into DROP",
+    "fixtureOnly": "Fixture only",
     "fetchImported": "Fetched and imported {count} entries.",
     "fetchNotModified": "Feed unchanged since the last fetch.",
     "fetchTooSoon": "Fetched too recently — please wait before fetching again.",
