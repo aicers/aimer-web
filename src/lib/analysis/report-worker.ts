@@ -48,6 +48,7 @@ import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
 import type { OwnedDomainSet, RangeSet } from "@/lib/redaction/types";
+import { isCveEnrichmentEnabled } from "./cve/config";
 import { getModelCatalog } from "./model-catalog";
 import {
   buildCanonicalPinnedReportInput,
@@ -1754,11 +1755,38 @@ async function callGenerateReport(args: {
       name: args.modelName,
       model: args.model,
       lang: args.lang as "KOREAN" | "ENGLISH",
-      inputs: args.inputs,
+      inputs: gateCveInputFields(args.inputs),
     },
     { accountId: WORKER_ACCOUNT_ID, aiceId: PERIODIC_WORKER_AICE_ID },
   );
   return result.generatePeriodicSecurityReport;
+}
+
+// RFC 0005 deployment guard — the same discipline as the leaf `cveRefs`
+// operation variant (#590). The `cveRefs` / `aggregateCveRefs` input fields
+// only exist on the post-`aimer#499` schema; a pre-#499 backend rejects the
+// whole mutation during input coercion when it sees those unknown fields —
+// even when the arrays are empty. So they are sent only when the CVE backend
+// is known-deployed, gated on the same `CVE_ENRICHMENT_ENABLED` master
+// switch the leaf path uses. When the gate is off (the default) the leaf
+// `cve_refs` are written `[]` anyway, so stripping these fields changes no
+// report content — it only keeps the outbound variables pre-#499-safe. The
+// builder still computes and persists `aggregate_cve_refs` locally
+// regardless of the gate, so the result-page render is unaffected.
+export function gateCveInputFields(
+  inputs: PeriodicReportInputs,
+): PeriodicReportInputs {
+  if (isCveEnrichmentEnabled()) return inputs;
+  const { aggregateCveRefs: _aggregateCveRefs, ...rest } = inputs;
+  return {
+    ...rest,
+    storyAnalyses: inputs.storyAnalyses.map(
+      ({ cveRefs: _cveRefs, ...story }) => story,
+    ),
+    eventAnalyses: inputs.eventAnalyses.map(
+      ({ cveRefs: _cveRefs, ...event }) => event,
+    ),
+  } as PeriodicReportInputs;
 }
 
 // Translate-path call wrapper — aimer's stateless, token-preserving

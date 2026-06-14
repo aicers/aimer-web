@@ -444,6 +444,8 @@ enriched per-CVE detail (CVSS, KEV, EPSS, and validating sources) lives
 on the individual story and event analysis pages, not on this rolled-up
 period view.
 
+![Placeholder for the aggregated-CVE chip row on the periodic report detail page, pending a real-data recapture — the row only renders when leaf analyses carry CVE references, which depend on the CVE source catalog (#601) and the enrichment gate, neither of which the fixture pipeline can reproduce](../../assets/report-aggregate-cve.en.png)
+
 ## Report sections
 
 The body renders the five narrative sections the LLM returns as Markdown —
