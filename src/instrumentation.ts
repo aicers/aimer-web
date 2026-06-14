@@ -49,5 +49,9 @@ export async function register() {
       "@/lib/instrumentation/self-fetch-worker"
     );
     installSelfFetchWorker();
+    const { installCveRefreshWorker } = await import(
+      "@/lib/instrumentation/cve-refresh-worker"
+    );
+    installCveRefreshWorker();
   }
 }

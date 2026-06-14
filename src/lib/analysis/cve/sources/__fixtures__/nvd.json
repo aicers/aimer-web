@@ -1,0 +1,88 @@
+{
+  "resultsPerPage": 2000,
+  "startIndex": 0,
+  "totalResults": 3,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2026-06-14T00:00:00.000",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2024-3400",
+        "published": "2024-04-12T08:15:06.230",
+        "lastModified": "2024-07-15T13:00:00.000",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "A command injection in the GlobalProtect feature of PAN-OS allows an unauthenticated attacker to execute arbitrary code."
+          },
+          { "lang": "es", "value": "Una inyeccion de comandos en PAN-OS." }
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "cvssData": {
+                "baseScore": 10.0,
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "description": [
+              { "lang": "en", "value": "CWE-77" },
+              { "lang": "en", "value": "NVD-CWE-noinfo" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-0001",
+        "published": "2026-06-13T20:00:00.000",
+        "lastModified": "2026-06-13T20:00:00.000",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "A very recently published vulnerability that has not yet been scored by NVD."
+          }
+        ],
+        "metrics": {},
+        "weaknesses": []
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2024-23897",
+        "published": "2024-01-24T18:15:09.000",
+        "lastModified": "2024-02-01T00:00:00.000",
+        "descriptions": [
+          {
+            "lang": "en",
+            "value": "Jenkins allows reading arbitrary files through the CLI command parser."
+          }
+        ],
+        "metrics": {
+          "cvssMetricV30": [
+            {
+              "cvssData": {
+                "baseScore": 9.8,
+                "vectorString": "CVSS:3.0/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "description": [
+              { "lang": "en", "value": "CWE-27" },
+              { "lang": "en", "value": "CWE-27" }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

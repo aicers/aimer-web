@@ -136,6 +136,8 @@ export type AuditAction =
   | "system.settings_updated"
   // TI feed self-fetch scheduler (#570)
   | "system.ti_feed_self_fetch_schedule_updated"
+  // CVE refresh scheduler (RFC 0005, #611)
+  | "system.cve_refresh_schedule_updated"
   // Phase 2 ingest
   | "phase2.ingest"
   | "phase2.ingest_failed"
