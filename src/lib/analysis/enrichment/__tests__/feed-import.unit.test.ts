@@ -195,6 +195,28 @@ describe("feed hash", () => {
     expect(withCtx).not.toBe(otherCtx);
   });
 
+  it("treats an undefined-valued context field as absent (matches stored JSON)", () => {
+    // The INSERT stores JSON.stringify(context), which drops undefined
+    // properties, so {actor:"APT1", campaign:undefined} persists identically
+    // to {actor:"APT1"} and must therefore hash identically — otherwise two
+    // byte-identical snapshots would look like a context change.
+    const withUndef = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT1", campaign: undefined } },
+    ]);
+    const without = computeFeedHash([
+      { matchValue: "x", context: { actor: "APT1" } },
+    ]);
+    expect(withUndef).toBe(without);
+  });
+
+  it("treats an all-undefined context as no context (hash unchanged, stays null)", () => {
+    // {actor:undefined} serializes to {} and narrows back to no payload, so it
+    // must neither change feed_hash nor be folded into the hash entry.
+    expect(
+      computeFeedHash([{ matchValue: "x", context: { actor: undefined } }]),
+    ).toBe(computeFeedHash([{ matchValue: "x" }]));
+  });
+
   it("hashes the same context identically regardless of key order", () => {
     const a = computeFeedHash([
       {

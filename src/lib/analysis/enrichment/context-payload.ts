@@ -1,13 +1,22 @@
 // RFC 0003 F6 (#594) — runtime helpers for the per-row report-context
 // payload (`EnrichmentContextPayload`).
 //
-// Two concerns live here, both keeping `types.ts` pure-types:
+// Three concerns live here, all keeping `types.ts` pure-types:
 //   - `narrowContextPayload` — the trust boundary. The `context` JSONB on
 //     `ioc_feed_snapshot` is `unknown` at runtime (whatever a parser wrote,
 //     or a hand-edited row); it is NEVER placed on an `EnrichmentMatch`
 //     as-is. This validator narrows it to a typed payload, dropping any
 //     field of an unexpected shape and collapsing an empty result to
 //     `undefined`.
+//   - `normalizeContext` — the single normalization both the hash and the
+//     INSERT must agree on. It produces exactly the JSON shape the `context`
+//     JSONB column stores (`JSON.stringify` drops `undefined`/non-JSON
+//     properties), and collapses an all-empty payload to `undefined`. Without
+//     it, `{ actor: "APT1", campaign: undefined }` would persist identically
+//     to `{ actor: "APT1" }` yet hash differently, and `{ actor: undefined }`
+//     would store a non-null `{}` row while narrowing back to no payload —
+//     both undermining hash stability and the "context-less row stays null"
+//     guarantee.
 //   - `canonicalizeContext` — a stable, sorted-key serialization used by
 //     `computeFeedHash`. A bare `JSON.stringify` would hash differently for
 //     the same context written with a different key-insertion order,
@@ -40,9 +49,31 @@ export function narrowContextPayload(
 }
 
 /**
+ * Normalize a context payload to the exact JSON shape the `context` JSONB
+ * column will store, so the feed hash and the INSERT agree on which
+ * properties exist. Mirrors `JSON.stringify` (the insert path): properties
+ * whose value is `undefined` — or any other non-JSON value — are dropped,
+ * recursively. Returns `undefined` when nothing JSON-serializable survives,
+ * so an all-`undefined` payload neither changes `feed_hash` nor leaves a
+ * non-null `{}` context row. Callers must use the returned value for *both*
+ * hashing and insertion.
+ */
+export function normalizeContext(
+  context: EnrichmentContextPayload,
+): EnrichmentContextPayload | undefined {
+  const serialized = JSON.stringify(context);
+  if (serialized === undefined) return undefined;
+  const cleaned = JSON.parse(serialized) as EnrichmentContextPayload;
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+/**
  * Canonical, stable serialization of a context payload for hashing. Object
  * keys are sorted recursively (so the `extra` bag is order-independent too),
  * unlike a bare `JSON.stringify` whose output follows key-insertion order.
+ * Expects an already-`normalizeContext`-ed payload, so it never sees an
+ * `undefined`-valued property (which it would otherwise serialize as `null`,
+ * diverging from the persisted JSON).
  */
 export function canonicalizeContext(context: EnrichmentContextPayload): string {
   return stableStringify(context);

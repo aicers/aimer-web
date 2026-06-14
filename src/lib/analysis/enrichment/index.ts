@@ -8,6 +8,7 @@
 export {
   canonicalizeContext,
   narrowContextPayload,
+  normalizeContext,
 } from "./context-payload";
 export { computeCoverage } from "./coverage";
 export {

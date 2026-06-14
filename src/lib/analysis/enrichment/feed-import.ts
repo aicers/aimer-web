@@ -14,7 +14,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import ipaddr from "ipaddr.js";
 import type { Pool } from "pg";
-import { canonicalizeContext } from "./context-payload";
+import { canonicalizeContext, normalizeContext } from "./context-payload";
 import type { FeedParseKind, FeedSource, RawFeedPayload } from "./feed-source";
 import {
   NormalizationError,
@@ -363,6 +363,10 @@ export async function importFeedSnapshot(
       [params.sourcePolicyId],
     );
     for (const row of params.rows) {
+      // Same normalization the hash uses, so the persisted JSONB and the
+      // hash always agree on which context properties exist (and an
+      // all-`undefined` payload stores NULL, not a non-null `{}`).
+      const context = row.context ? normalizeContext(row.context) : undefined;
       await client.query(
         `INSERT INTO ioc_feed_snapshot
            (source_policy_id, entity_type, match_value, cidr, hit_type,
@@ -378,7 +382,7 @@ export async function importFeedSnapshot(
           params.hitType,
           params.classification ?? null,
           params.confidence ?? null,
-          row.context ? JSON.stringify(row.context) : null,
+          context ? JSON.stringify(context) : null,
           params.sourceVersion ?? null,
           feedHash,
           params.sourceUpdatedAt ?? null,
@@ -526,7 +530,8 @@ export function computeFeedHash(rows: readonly FeedSnapshotRow[]): string {
   const entries = rows
     .map((r) => {
       const base = r.matchValue ?? `cidr:${r.cidr}`;
-      return r.context ? `${base}\0${canonicalizeContext(r.context)}` : base;
+      const ctx = r.context ? normalizeContext(r.context) : undefined;
+      return ctx ? `${base}\0${canonicalizeContext(ctx)}` : base;
     })
     .sort()
     .join("\n");
