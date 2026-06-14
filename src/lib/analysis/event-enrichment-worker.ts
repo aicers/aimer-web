@@ -39,6 +39,8 @@ import type { EnrichmentDispatcher } from "./enrichment/dispatcher";
 import {
   buildEvidenceRecord,
   type EvidenceRecord,
+  evidenceIsFloorSupporting,
+  surfacesSoftMatch,
 } from "./enrichment/evidence";
 import { PgFeedStore } from "./enrichment/feed-store";
 import { extractIndicators } from "./enrichment/indicator-extraction";
@@ -134,8 +136,9 @@ export async function isStoryMember(
 /**
  * Enrich one loose baseline event and persist the per-event verdict.
  * Idempotent and concurrency-safe: the `known_ioc_hit` write is a monotonic
- * OR, evidence is replaced only when the run produces supporting matches (so
- * a retained monotonic `true` never loses its explaining evidence), and the
+ * OR, floor-supporting evidence is replaced only when the run produces floor
+ * matches (so a retained monotonic `true` never loses its explaining
+ * evidence) while non-floor evidence is replaced every run, and the
  * evidence replace + state upsert are serialized per `(source_aice_id,
  * event_key)` by a transaction-scoped advisory lock so overlapping runs
  * cannot duplicate evidence. Returns `skipped` when the event has no stored
@@ -258,12 +261,31 @@ async function enrichLooseEvent(
     coverage = worseCoverage(coverage, merged.coverage.status);
     for (const match of merged.matches) {
       // The v1 per-event floor mirrors the story floor exactly: a match
-      // qualifies iff `matchSatisfiesFloor` (deterministic_ioc &&
-      // floorEligible; non-public IPs already forced ineligible). Soft-
-      // reputation / floor-ineligible matches never enter evidence and
-      // never produce a tier-A-qualifying verdict.
-      if (!matchSatisfiesFloor(match)) continue;
-      knownIocHit = true;
+      // drives `known_ioc_hit` iff `matchSatisfiesFloor` (deterministic_ioc &&
+      // floorEligible; non-public IPs already forced ineligible). Non-floor
+      // matches no longer fall straight through — they are promoted to
+      // evidence by class (#589 Scope 1): floor-ineligible `deterministic_ioc`
+      // always (evidence-only), `soft_reputation` only above the meaningfulness
+      // gate. The event path has no fact channel (#489), so a below-gate soft
+      // event match is simply not promoted and is audit-logged. The floor
+      // verdict is unchanged: only `matchSatisfiesFloor` flips `knownIocHit`.
+      const floorSupporting = matchSatisfiesFloor(match);
+      if (floorSupporting) {
+        knownIocHit = true;
+      } else if (match.hitType === "soft_reputation") {
+        if (!surfacesSoftMatch(match, merged.matches)) {
+          console.info(
+            "[event-enrichment-worker] soft_reputation match not promoted " +
+              "to evidence (below meaningfulness gate)",
+            {
+              sourcePolicyId: match.sourcePolicyId,
+              confidence: match.confidence,
+              eventKey,
+            },
+          );
+          continue;
+        }
+      }
       evidence.push(
         buildEvidenceRecord({
           match,
@@ -349,22 +371,35 @@ async function persistEventEnrichment(
       eventEnrichmentLockId2(args.sourceAiceId, args.eventKey),
     ]);
 
-    // Evidence must stay consistent with the monotonic verdict: a `true`
-    // floor has to remain explainable. Replace this event's evidence ONLY
-    // when the current run produced supporting matches — those are fresh and
-    // accurate for the retained `true`. When the run produced NO supporting
-    // match (feed snapshot unavailable, a refreshed feed no longer lists the
-    // IOC, a policy made ineligible) we leave any prior evidence in place:
-    // the `known_ioc_hit OR` below keeps a prior `true`, so deleting evidence
-    // would leave a `true` floor with nothing to explain it. A prior `false`
-    // has no evidence to preserve, so this is a no-op there.
-    if (args.evidence.length > 0) {
+    // Evidence is replaced CLASS-PARTITIONED (#589 Scope 2a), mirroring the
+    // story path: the array now carries floor-supporting rows AND non-floor
+    // rows (soft + floor-ineligible deterministic) with different monotonicity.
+    //
+    //   * Floor-supporting rows (`deterministic_ioc AND floor_eligible`) keep
+    //     the monotonic semantics: replace them ONLY when this run produced
+    //     floor matches, so a run with no floor hit (feed unavailable, IOC
+    //     delisted, policy made ineligible) leaves prior floor rows in place —
+    //     the `known_ioc_hit OR` below keeps a prior `true`, so deleting its
+    //     evidence would leave a `true` floor with nothing to explain it.
+    //   * Non-floor rows have no monotonic guarantee: replace them on EVERY
+    //     successful run — not gated on evidence count — so a successful run
+    //     that promotes zero non-floor evidence still CLEARS stale non-floor
+    //     rows while the floor rows survive.
+    const producedFloorEvidence = args.evidence.some(evidenceIsFloorSupporting);
+    if (producedFloorEvidence) {
       await client.query(
         `DELETE FROM event_ioc_evidence
-          WHERE source_aice_id = $1 AND event_key = $2::numeric`,
+          WHERE source_aice_id = $1 AND event_key = $2::numeric
+            AND hit_type = 'deterministic_ioc' AND floor_eligible = TRUE`,
         [args.sourceAiceId, args.eventKey],
       );
     }
+    await client.query(
+      `DELETE FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = $2::numeric
+          AND NOT (hit_type = 'deterministic_ioc' AND floor_eligible = TRUE)`,
+      [args.sourceAiceId, args.eventKey],
+    );
     for (const e of args.evidence) {
       await client.query(
         `INSERT INTO event_ioc_evidence

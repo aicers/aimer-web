@@ -232,6 +232,24 @@ Matching is only as good as normalization. A normalized indicator is the value a
 
 This makes "false but complete" and "false because a source was down" distinguishable in storage. Storing only the boolean makes later explanation impossible; the evidence record + coverage status are part of this RFC's scope, not an afterthought.
 
+#### Amendment: soft / non-floor evidence + meaningfulness gate (#589, RFC 0005 Resolved decisions 2–3)
+
+The original model above persisted a structured evidence record (`story_ioc_evidence` / `event_ioc_evidence`) **only for floor-supporting matches**, so a `soft_reputation` match — or a floor-ineligible `deterministic_ioc` hit — left only narrative fact text behind, with no queryable, source-cited row. RFC 0005 names this the **shared provenance gap**. This amendment closes it; it is the **shared provenance foundation** referenced by both this RFC and RFC 0005.
+
+**What is now surfaced as structured evidence (the consumer surface, channels 1–2):**
+
+- **Floor-supporting `deterministic_ioc` (`floorEligible: true`)** — unchanged: evidence **and** floor.
+- **Floor-ineligible `deterministic_ioc` (`floorEligible: false`)** — a curated known-bad hit that does not drive the floor for policy/licensing reasons only (today, every shipped feed pending OQ9). **Always** promoted to evidence (evidence-only). The meaningfulness gate does **not** apply.
+- **`soft_reputation`** — promoted to evidence **only when it passes a meaningfulness gate** (RFC 0005 Resolved decision 3): `confidence ≥ SOFT_REPUTATION_CONFIDENCE_THRESHOLD`, **or** the same indicator is corroborated by ≥ `SOFT_REPUTATION_MIN_CORROBORATING_SOURCES` distinct sources. Below the gate it writes no evidence row and the not-promoted decision is audit-logged. Both constants are tunable (`src/lib/analysis/enrichment/evidence.ts`, `surfacesSoftMatch`).
+
+Each surfaced row carries its intrinsic `hit_type` and `floor_eligible`, plus `source_policy_id` and a source label resolvable from the source registry, so the data is **citable**. (No production consumer reads these tables yet; the user-facing citation rendering is the follow-up #591.)
+
+**The floor invariant is unchanged.** `known_ioc_hit` and `coverage_status` are still derived **exclusively** from `matchSatisfiesFloor` (`deterministic_ioc && floorEligible`). Soft / floor-ineligible rows are evidence-only: they never flip `known_ioc_hit`, never change coverage, never affect `applyLikelihoodFloors`.
+
+**Class-partitioned replace (monotonicity).** Because the evidence array now mixes classes, the persist path partitions the replace: floor-supporting rows keep the monotonic "replace only when this run produced floor evidence" rule (a no-floor run never deletes them), while non-floor rows are replaced on **every** successful run (even a zero-evidence run clears stale non-floor rows) — so a still-true monotonic floor never loses its explaining rows.
+
+**The gate is scoped to the structured/cited surface only.** It does **not** touch the LLM-priming fact channel (`story_enrichment_fact`, the `analyzeStory` priming payload), which stays exactly per RFC 0003 C1 (#440): soft facts are still generated, persisted, and primed, because the reasoning model is the component best able to weigh weak evidence (recall). On the story path this yields the invariant **"an evidence row implies a fact exists, but a fact does not imply an evidence row"** (facts are the recall superset; structured evidence the precision subset). The **event path has no fact channel** (#489), so a below-gate soft event match is simply not promoted and is audit-logged. Genuine noise (public resolvers, CDNs, bogons) is suppressed across **all** channels by the separate **F5 negative layer**, not by this gate — so "low-confidence but real" (keep priming) is never conflated with "junk" (suppress everywhere). This is why #589 does **not** supersede #440.
+
 ### Caching, freshness, and feed-refresh policy
 
 - **Cache / evidence key is customer- and source-policy-scoped**, not bare indicator. The same indicator can yield different results and different usability across customers, because per-customer opt-in, customer-supplied keys, the matched source, `sourcePolicyId`, and floor eligibility all vary. Key on **`customerId + normalizedIndicator + sourcePolicyId (source) + normalizationVersion`**, with `expiresAt` TTL. ("Enrich once" therefore means once *per this key*, not once globally per indicator.)

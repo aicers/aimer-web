@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { computeCoverage } from "../coverage";
-import { buildEvidenceRecord } from "../evidence";
+import {
+  buildEvidenceRecord,
+  evidenceIsFloorSupporting,
+  SOFT_REPUTATION_CONFIDENCE_THRESHOLD,
+  surfacesSoftMatch,
+} from "../evidence";
 import { type SourcePolicy, SourcePolicyRegistry } from "../source-policy";
 import type { EnrichmentMatch } from "../types";
 
@@ -90,5 +95,95 @@ describe("evidence record", () => {
   it("omits coverage when none is supplied (single-enricher, pre-merge)", () => {
     const record = buildRecord();
     expect(record.coverage).toBeUndefined();
+  });
+});
+
+describe("meaningfulness gate (surfacesSoftMatch, #589)", () => {
+  function soft(overrides: Partial<EnrichmentMatch> = {}): EnrichmentMatch {
+    return {
+      source: "soft/source-a",
+      sourcePolicyId: "soft/source-a",
+      hitType: "soft_reputation",
+      floorEligible: false,
+      ...overrides,
+    };
+  }
+
+  it("promotes a soft match at/above the confidence threshold (single source)", () => {
+    const m = soft({ confidence: SOFT_REPUTATION_CONFIDENCE_THRESHOLD });
+    expect(surfacesSoftMatch(m, [m])).toBe(true);
+  });
+
+  it("does not promote a below-threshold single-source soft match", () => {
+    const m = soft({ confidence: SOFT_REPUTATION_CONFIDENCE_THRESHOLD - 0.1 });
+    expect(surfacesSoftMatch(m, [m])).toBe(false);
+  });
+
+  it("does not promote a soft match with no confidence and one source", () => {
+    const m = soft();
+    expect(surfacesSoftMatch(m, [m])).toBe(false);
+  });
+
+  it("promotes a below-threshold soft match corroborated by >= 2 distinct sources", () => {
+    const a = soft({ sourcePolicyId: "soft/source-a", confidence: 0.1 });
+    const b = soft({ sourcePolicyId: "soft/source-b", confidence: 0.1 });
+    // Same indicator hit by two distinct sources → corroborated.
+    expect(surfacesSoftMatch(a, [a, b])).toBe(true);
+  });
+
+  it("does not count repeated hits from the SAME source as corroboration", () => {
+    const a = soft({ sourcePolicyId: "soft/source-a", confidence: 0.1 });
+    const dup = soft({ sourcePolicyId: "soft/source-a", confidence: 0.1 });
+    expect(surfacesSoftMatch(a, [a, dup])).toBe(false);
+  });
+});
+
+describe("evidenceIsFloorSupporting (#589)", () => {
+  it("is true only for floor-eligible deterministic_ioc rows", () => {
+    expect(
+      evidenceIsFloorSupporting(
+        buildEvidenceRecord({
+          match: {
+            source: "s",
+            sourcePolicyId: "s",
+            hitType: "deterministic_ioc",
+            floorEligible: true,
+          },
+          redactionToken: "1.2.3.4",
+          sourceAiceId: "aice-1",
+          memberEventKey: "1",
+          checkedAt: "2026-06-04T12:00:00.000Z",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is false for floor-ineligible deterministic and for soft rows", () => {
+    const ineligibleDet = buildEvidenceRecord({
+      match: {
+        source: "s",
+        sourcePolicyId: "s",
+        hitType: "deterministic_ioc",
+        floorEligible: false,
+      },
+      redactionToken: "1.2.3.4",
+      sourceAiceId: "aice-1",
+      memberEventKey: "1",
+      checkedAt: "2026-06-04T12:00:00.000Z",
+    });
+    const softRow = buildEvidenceRecord({
+      match: {
+        source: "s",
+        sourcePolicyId: "s",
+        hitType: "soft_reputation",
+        floorEligible: false,
+      },
+      redactionToken: "1.2.3.4",
+      sourceAiceId: "aice-1",
+      memberEventKey: "1",
+      checkedAt: "2026-06-04T12:00:00.000Z",
+    });
+    expect(evidenceIsFloorSupporting(ineligibleDet)).toBe(false);
+    expect(evidenceIsFloorSupporting(softRow)).toBe(false);
   });
 });
