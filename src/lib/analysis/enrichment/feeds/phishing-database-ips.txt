@@ -1,0 +1,8 @@
+# Phishing.Database active phishing-IPs list (PINNED FIXTURE)
+#
+# Committed test subset, NOT a live download. Uses RFC 5737 TEST-NET
+# documentation ranges so the fixture references no real infrastructure.
+# Format mirrors the published list: one IP per line, plain text.
+203.0.113.20
+198.51.100.77
+192.0.2.123

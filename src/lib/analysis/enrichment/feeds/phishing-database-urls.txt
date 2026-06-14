@@ -1,0 +1,10 @@
+# Phishing.Database active phishing-links list (PINNED FIXTURE)
+#
+# Committed test subset, NOT a live download. Uses RFC 2606 `.example`
+# documentation names so the fixture references no real infrastructure.
+# Format mirrors the published list: one URL per line, plain text.
+# http/https only: the real list also has ftp:// rows, but indicator
+# extraction only surfaces http(s) URLs, so an ftp:// row would be dead.
+http://phishing-login.example/signin
+https://secure-update.example/account/verify
+http://account-verify.example/login.php
