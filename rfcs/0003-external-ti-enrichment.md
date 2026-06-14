@@ -411,7 +411,7 @@ Severity-axis use of TI (whether deterministic hits may raise `severity_score`, 
 6. **Caching / freshness**: per-indicator cache TTL; how Tier 1 feed refresh cadence is scheduled.
 7. **Cost / rate limiting**: per-enricher budgets for Tier 2 (ties to RFC 0002 Phase 4 cost monitoring).
 8. **MISP adoption trigger**: when (if ever) we stand up MISP centrally vs only integrating customer-run instances.
-9. **Licensing confirmation**: per-source legal review of commercial-product-use terms (abuse.ch for-profit, AbuseIPDB/GreyNoise non-commercial free tiers, VT public-API ban, Spamhaus DROP/EDROP) before any source is integrated. Resolves the provisional license tables above.
+9. **Licensing confirmation**: per-source legal review of commercial-product-use terms (abuse.ch for-profit, AbuseIPDB/GreyNoise non-commercial free tiers, VT public-API ban, Spamhaus DROP/EDROP) before any source is integrated. Resolves the provisional license tables above. The free-OSINT-feed subset surfaced by the vendor-central-MISP pivot has been re-vetted under the direct first-party model — see Appendix A.
 10. **Severity-axis influence**: may a `deterministic_ioc` hit raise `severity_score` (e.g. known ransomware hash), or does TI affect *likelihood only* as today? If yes, define a severity-side mechanism analogous to the likelihood floor (and keep stored raw scores untouched, per #292).
 11. **Selective-retention semantics (①)**: exactly which retention/priority decisions TI may influence, confirmed against RFC 0002's ingest/readiness state machine; reaffirm that enrichment is async and never gates raw ingest.
 12. **Periodic-report TI sections (⑤)**: which aggregates belong in LIVE/DAILY/WEEKLY/MONTHLY reports, computed purely from stored evidence records (no report-time TI calls).
@@ -453,3 +453,132 @@ Additional consumers (own track, read against the existing layer — see TI cons
 - [ ] **(consumer ⑤)** Periodic-report TI aggregation from stored evidence records — no report-time TI calls (Open question 12).
 - [ ] **(consumer ⑥)** Interactive / on-demand TI lookup tied to #318 F1 (Open question 13).
 - [ ] **(decision)** Severity-axis influence of deterministic hits (Open question 10) — resolve before building a severity-side mechanism.
+
+---
+
+## Appendix A: Free-feed licensing re-vetting (direct first-party commercial-use lens)
+
+*Recorded 2026-06-14; revised after review with current-source verification. Re-vets the free-OSINT-feed set surfaced while a vendor-central MISP was being considered as the enrichment vehicle, plus a broader sweep of additional candidates — MISP default feeds, vendor IOC repositories, a negative (false-positive-suppression) source, and CVE/vulnerability-context sources. This is a record, not a license; the per-source confirmation gate (Open question 9) still applies before any source is integrated.*
+
+### Why a re-vetting was needed (the lens shift)
+
+The earlier survey of these feeds assumed a **redistribution** model: a central MISP fetching feeds and **redistributing** them to the customer fleet. Under that standard almost every free feed was blocked, because nearly all free OSINT feeds forbid commercial **redistribution**.
+
+RFC 0003 does not redistribute. The enrichment layer lives **inside aimer-web** (§"Pluggable enricher interface"), and Tier 1 works by **importing feed files into local storage and matching locally** — the instance fetches each feed **directly** and uses the indicators internally to enrich its own analysis output, without handing the raw feed to customers or third parties (§"Source taxonomy: two tiers by egress"). That is **first-party use, not redistribution**, so the governing licence test shifts:
+
+- **Redistribution-only restrictions** (resale / no-resharing) — **may now be satisfied**, because we neither resell nor reshare the raw feed.
+- **Commercial-*use* prohibitions, NonCommercial (CC-NC*) licences, and no-licence / no-grant feeds** — **still blocked**, because the limiting factor is the commercial *nature of the use* (or the absence of any grant), which direct fetching does not change.
+
+This is the same axis RFC 0003 already names as the "real trap" in §"Source catalog" (free-to-use ≠ free-to-embed-in-a-commercial-product). The re-vetting applies that test, feed by feed, against each source's **current** primary terms.
+
+### Per-feed verdicts
+
+Verdict legend: **USE-OK-DIRECT** = usable for direct first-party internal enrichment as scoped above; **BLOCKED-DIRECT** = not usable even first-party; **NEEDS-CONTACT** = no affirmative grant, requires written permission; **PAID-ONLY** = commercial use requires the vendor's paid tier; **TIER2-SOFT-ONLY** = usable only as an opt-in egress soft-reputation lookup, never a local deterministic floor source.
+
+| Source | Indicators | Prior verdict (redistribution lens) | Re-vetting verdict (direct first-party) | Deciding clause | Conf. |
+| --- | --- | --- | --- | --- | --- |
+| **CIRCL OSINT feed** | IP / domain / URL / hash **+ rich tags & galaxies** | FLAGGED (assumed TLP:GREEN mix) | ⚠️ **NEEDS-CONTACT** (sharing OK, licence not established) | Feed is marked **TLP:CLEAR** (not GREEN), but **TLP is a disclosure-handling marking, not a licence** (FIRST: TLP:CLEAR is "subject to standard copyright rules"). CIRCL ships **no explicit data licence**, so unrestricted *sharing* ≠ a grant to **store and commercially reuse** the curated content — especially the copyrightable tags/galaxies we actually want. Practical risk is low (CIRCL publishes for community use); a one-line CIRCL confirmation resolves it | Med |
+| **Botvrij.eu** | IP / domain / URL / hash | BLOCKED (resell prohibited) | ✅ **USE-OK-DIRECT** | "You can use this data the way you prefer"; the **only** carve-out is "You cannot **resell** the data" — resale ≠ internal use | Med-High |
+| **DigitalSide Threat-Intel** | malware IP / domain / URL / hash | BLOCKED (recorded as CC-BY-NC-SA) | ✅ **USE-OK-DIRECT** *(prior verdict was a factual error)* | Actually **MIT + TLP:WHITE**; no NC clause exists. The CC-NC-SA label appears to have been confused with abuse.ch terms — this is a correction, not a lens change. Confidence tempered: the MIT LICENSE's copyright names a web-template vendor (Blackrock Digital), so MIT's coverage of the *feed data* (vs repo scaffolding) is worth a legal-gate re-confirm | Med |
+| **PhishTank** | phishing URL | BLOCKED (assumed non-commercial free tier) | ⚠️ **licence OK, operationally deferred** | FAQ: commercial use "Yes, it is OK", data free, no paid tier — but **new registration is temporarily disabled**, so the app key needed for automated fetch cannot currently be obtained | Med-High |
+| **CINS / CI Army** | IP (noisy) | BLOCKED (commercial-product use) | ⚠️ **NEEDS-CONTACT** (low value → skip) | cinsscore.com grants "you can **parse and use [the list] in any way you see fit**" (so the earlier "no affirmative grant" was wrong), but this informal sentence **does not address commercial-product embedding**, and the only formal EULA governs Sentinel **software**, not the list. No NC clause; commercial embedding neither granted nor forbidden | Med |
+| **blocklist.de** | IP (noisy) | FLAGGED (no licence) | ⚠️ **NEEDS-CONTACT / no-grant** (low value → skip) | No licence; "free" is scoped to **reporters** and explicitly excepts "Download der Listen bei zu großem Volumen" — i.e. our automated high-volume fetch pattern | High (that no grant exists) |
+| **Binary Defense banlist** | IP | BLOCKED | ❌ **BLOCKED-DIRECT** (confirmed) | Feed-file header: "Use of these feeds for **commerical** … use is **strictly prohibited**"; bars "products that are charging fees" — a commercial-**use** ban, not a redistribution one | High |
+| **C2IntelFeeds** | C2 IP / domain | BLOCKED (CC-BY-NC) | ❌ **BLOCKED-DIRECT** (confirmed; actually **CC-BY-NC-SA**) | CC NonCommercial bars use "primarily intended for or directed towards commercial advantage"; internal use in a paid product is commercial use, independent of redistribution. ShareAlike adds a copyleft obstacle | High |
+| **C2-Tracker** | C2 IP | BLOCKED (no licence) | ❌ **BLOCKED-DIRECT** (confirmed + dead) | **No licence** (default all-rights-reserved); data is **Shodan-owned** upstream (Shodan ToS §10.1/§6.5); repo **archived 2026-04** → stale/"data death" | High |
+| **OpenPhish** (community) | phishing URL | BLOCKED | ❌ **BLOCKED-DIRECT / PAID-ONLY** | "Non-commercial use only"; ToU: "not use any part of the Services for any commercial purposes without … prior written consent". Commercial = paid Premium/Database tier | High |
+| **ET Open** (bundled IP lists) | IP | Partial | ❌ **BLOCKED-DIRECT** (for the IP lists) | `emerging-Block-IPs.txt` commingles **Spamhaus** (commercial use not free; copyright + database right) under ET's BSD wrapper — an aggregator's BSD notice cannot relicense third-party data; `compromised-ips.txt` is unlicensed. The ET **rules** are BSD but are detection signatures, **out of scope** for IOC enrichment | High |
+
+### Additional candidates (MISP default-feed sweep — beyond the original fountel set)
+
+A review surfaced further free feeds outside the original BLOCKED/FLAGGED set; vetted here under the same lens. Note none of the licence-clean ones carries CIRCL-style rich context — they are bare membership feeds.
+
+| Source | Indicators | Re-vetting verdict | Deciding clause | Conf. |
+| --- | --- | --- | --- | --- |
+| **Infoblox Threat Intelligence** | domain-heavy (+ IP / URL / hash / email) | ✅ **USE-OK-DIRECT** | **CC-BY-4.0**; README: the data is provided "to use it for both commercial and non-commercial security purposes, under … attribution to Infoblox". Licence covers the **data** (only the unused `sample-code` folder is GPL). **But content is a bare membership/severity list — no galaxies / actor / malware tags** (rich "decision criteria" is paywalled in Infoblox TIDE), so it is a clean deterministic feed, **not** a thick-context replacement for CIRCL. Attribution is a hard CC-BY obligation | High |
+| **Phishing.Database** | phishing domain / URL / IP | ✅ **USE-OK-DIRECT** | **MIT**, covering the data ("without restriction … sell"); actively updated (~0.5M domains). Bulk membership lists (no context). Low upstream risk — community-contributed and PyFunceble-validated (it is itself a VirusTotal data vendor), not a republication of a restricted feed; contamination would matter only if we ever redistribute | High |
+| **CERT Polska Warning List** | active phishing domains (PL-centric) | ✅ **USE-OK-DIRECT** | The grant — data "may be **accessed, used and processed without obtaining special permission or license**" — is in the CERT-Polska/phishing-api spec, **now an archived repo**; the current cert.pl warning-list page exposes the v2 endpoints (`hole.cert.pl/domains/v2/`) but carries **no licence text**, so re-confirm the grant before relying on it. No commercial bar / no registration for the pull endpoints; best-effort (no SLA) | Med |
+| **PhishStats** | phishing URL / IP | ⚠️ **NEEDS-CONTACT** (no-grant) | No licence or terms anywhere ("free for research" only); a paid "Premium API" tier is "coming"; CSV deprecated → 20 req/min JSON API behind Cloudflare | High (no grant) |
+| **Threatview.io** | C2 / IP / domain / hash | ⚠️ **NEEDS-CONTACT** (no-grant) | Site footer is "**All rights reserved by Threatview.io**" with no usage terms; "freely usable" is an aggregator's label, not Threatview's own grant | High (no grant) |
+
+### Vendor IOC repositories (first-party research — cleaner licences, report-level context)
+
+Public vendor/research IOC repos are higher-provenance than community blocklists and ship indicators **bundled with report context** (threat actor, campaign, malware family, blog link) — clean-licensed narrative material that partially fills the gap left by CIRCL. All are first-party research (no upstream laundering); licences were verified verbatim. The cost is a **generic GitHub IOC parser**: formats are heterogeneous per report, and several carry ingestion hazards.
+
+| Repo | Licence (verified) | Verdict | Content / context | Ingestion caveat |
+| --- | --- | --- | --- | --- |
+| **Unit 42** (Palo Alto) | Unlicense (public domain) | ✅ USE-OK-DIRECT | richest narrative (prose notes, actor IDs) | defanged free-text + a PDF — highest parser cost |
+| **ESET** malware-ioc | BSD-2-Clause (README applies it to the data) | ✅ USE-OK-DIRECT | report-context (AsciiDoc tables + hash lists + YARA/Snort) | AsciiDoc-table parsing |
+| **Volexity** threat-intel | BSD-2-Clause (in `LICENSE.txt`) | ✅ USE-OK-DIRECT | report-context (`iocs.csv` with described roles) | licence in `LICENSE.txt` → SPDX scanners read NOASSERTION; "rules" wording vs CSV data is the one soft spot |
+| **PRODAFT** malware-ioc | MIT | ✅ USE-OK-DIRECT | richest report-context (per-campaign READMEs) | **ships 16 live `.exe` malware samples** — allowlist parseable IOC files, never write/execute binaries |
+| **Zscaler** ThreatLabz | MIT | ✅ USE-OK-DIRECT | folder/filename context, bare lists | defanged `[.]`; skip `.php`/`.hta` artifacts |
+| **Huntress** threat-intel | MIT (README reaffirms) | ✅ USE-OK-DIRECT | report-context but **~90% Sigma/YARA detections, low atomic-IOC yield** | low IOC volume; author disclaims correctness |
+| **Meta** threat-research | MIT (README applies it to the data) | ✅ USE-OK-DIRECT *(filtered)* | mostly **CIB / influence-ops**, not malicious infrastructure | **classification hazard** — ingest only the malware-report CSVs; CIB indicators (social URLs, account counts) must NOT be `deterministic_ioc` |
+
+These are the first **confirmed-clean** source of C1 narrative context: their report-level context (actor/campaign/family) is coarser than CIRCL's per-indicator galaxies but is first-party and licence-clean. Genuine compromise IOCs within them are also `deterministic_ioc`-capable per the §"the type-distinction hinge" classification.
+
+### Negative source (false-positive suppression)
+
+| Source | Licence | Verdict | Role |
+| --- | --- | --- | --- |
+| **MISP warninglists** | CC0 | ✅ USE-OK-DIRECT | **NOT a known-bad feed** — known-good / known-noisy lists (public resolvers, CDNs, bogons, top-sites) used as an **exclude / down-weight layer** to raise floor quality. Must never feed `known_ioc_hit` |
+
+### Vulnerability / CVE-context sources (separate consumer track)
+
+These match **CVE** indicators, not IOCs — they feed C1 narrative and a future vulnerability-enrichment + severity track (OQ10), **not** the #361 deterministic floor. The CVE *consumer build* remains its own effort (the RFC's "KEV/NVD not P1a" note); only the **source licences** are vetted here.
+
+| Source | Licence | Verdict | Note |
+| --- | --- | --- | --- |
+| **GitHub Advisory Database** | CC-BY-4.0 | ✅ USE-OK-DIRECT | whole DB (reviewed + NVD-imported); attribution by link |
+| **OSV** (osv.dev) | per-source (CC-BY / CC0 / MIT / Apache; **Ubuntu CC-BY-SA**) | ✅ USE-OK-DIRECT | aggregation layer; honour each record's upstream licence; Ubuntu ShareAlike only bites on redistribution |
+| **FIRST EPSS** | "granted … freely to the public" | ✅ USE-OK-DIRECT | exploit-probability score; attribution requested (soft); webpage grant — snapshot at integration |
+| **Google Project Zero 0days** | Apache-2.0 | ✅ USE-OK-DIRECT | in-the-wild-0day context; low cadence, narrow coverage |
+| **CISA Vulnrichment** | CC0-1.0 | ✅ USE-OK-DIRECT *(optional)* | SSVC / KEV / CVSS / CWE enrichment of CVEs; README notes it is **redundant if already consuming live CVE data**, so optional |
+
+### Held / excluded (broader sweep)
+
+| Source | Verdict | Reason |
+| --- | --- | --- |
+| **Cisco Talos IOCs** | ⚠️ NEEDS-CONTACT | No licence file, but README invites use "in your blocklists (or other relevant security software)" — the best candidate to flip with a one-line Cisco confirmation on commercial ingestion |
+| **SophosLabs IoCs** | ⚠️ NEEDS-CONTACT | No grant at all (and Sophos is a direct competitor) |
+| **JPCERT phishurl-list** | ⚠️ NEEDS-CONTACT | No grant in the repo; JPCERT's site policy may not extend to this dataset |
+| **ThreatMiner** | ⛔ TIER2-SOFT-ONLY | Site is CC-BY-4.0 but it **aggregates VirusTotal / Hybrid-Analysis / OTX** — a CC-BY wrapper cannot relicense upstream-restricted data, so it is unsafe as a deterministic floor; at best a low-trust Tier-2 soft lookup. Liveness shaky |
+| **urlscan.io** | ⛔ PAID-ONLY | Free tier: "Commercial use of any part of our service requires express written permission" |
+| **Pulsedive** | ⛔ PAID-ONLY / NEEDS-CONTACT | No clean free-tier commercial grant ("re-selling / paid client access → custom licensing"); free key 100 req/month |
+
+### Outcome and implications for the source catalog
+
+- **Clean, commercially usable Tier 1 additions** (beyond the abuse.ch / Spamhaus / KEV / NVD / MITRE set already in §"Tier 1"), each a `deterministic_ioc`-capable local feed that slots into the Phase 1a framework as an **"add a source" adapter** (the path abuse.ch already uses), subject to the §"the type-distinction hinge" per-match classification:
+  - **Infoblox TI** (CC-BY-4.0) — clean commercial grant; DNS/domain-heavy membership + severity. Requires an "Infoblox Threat Intel, CC-BY-4.0" attribution wherever matched indicators surface.
+  - **Phishing.Database** (MIT) and **CERT Polska Warning List** (archived-spec data grant, re-confirm) — phishing-domain membership, filling the gap left by OpenPhish (blocked) and PhishTank (parked).
+  - **Botvrij.eu** (resale-only restriction) — general IOC coverage.
+  - **DigitalSide** (MIT/TLP:WHITE, confidence Med) — malware-focused IOCs.
+- **Thick LLM context now has a *confirmed-clean* path — vendor IOC repositories.** CIRCL OSINT (the one *per-indicator* galaxy/tag source) is still **NEEDS-CONTACT** and Infoblox is a bare list, but the **vendor research repos** (Unit 42, ESET, Volexity, PRODAFT, Zscaler, Huntress, Meta — Unlicense / BSD / MIT) ship IOCs **bundled with report context** (actor, campaign, malware family) under clean, verified licences. That context is coarser than CIRCL's per-indicator galaxies but is **first-party and licence-clean**, so it is the first confirmed-clean source of C1 narrative material. CIRCL remains worth a one-line grant ask for finer per-indicator tags; if cleared, apply a per-event TLP filter so anything above TLP:GREEN never surfaces outside per-customer context, and attribute "CIRCL OSINT Feed" provenance per §"Audit / evidence model".
+- **Broader sweep (see the four tables above).** Vendor IOC repos are licence-clean and high-provenance but need a **generic GitHub IOC parser** plus ingestion guards — PRODAFT ships live `.exe`, Meta is mostly influence-ops/CIB that must **not** be classed `deterministic_ioc`, several feeds are defanged, and Huntress is low-yield. **MISP warninglists** (CC0) is a **negative / FP-suppression** layer that raises floor quality (never a known_ioc_hit). **CVE-context sources** (GitHub Advisory, OSV, EPSS, Project Zero, CISA Vulnrichment) are all licence-clean but feed the **separate CVE / severity track**, not the IOC floor. **Held / excluded:** Talos / Sophos / JPCERT (no grant → NEEDS-CONTACT; Talos closest to flippable), ThreatMiner (aggregation-laundering → Tier-2 soft only), urlscan.io / Pulsedive (commercial = paid).
+- **Confirmed-blocked feeds** (Binary Defense, C2IntelFeeds, C2-Tracker, OpenPhish, ET Open IP lists) are not pursued under the free/direct model; any future use needs the vendor's paid/commercial path.
+- **ET Open adds nothing new:** its atomic IP lists commingle Spamhaus (commercial use not free), so the bundle is blocked. Its cleanest underlying source is **abuse.ch — already integrated directly**, though abuse.ch's own commercial terms are *conditional*, not CC0 (see correction below), so this is not a free shortcut either.
+- **Correction — abuse.ch is not a blanket "CC0 / commercially clean" source.** Only **Feodo Tracker** states CC0; **URLhaus, ThreatFox, MalwareBazaar** are **conditional** (Auth-Key required; commercial/for-profit use "may require a paid subscription" via the Spamhaus-managed commercial API), and abuse.ch's umbrella Terms of Use gate commercial-volume access. This matches the RFC body's existing §"Tier 1" wording ("⚠️ conditional"); the earlier "abuse.ch CC0" phrasing in this appendix was wrong.
+- **Skip — gray-zone / no-grant, low value or operationally stuck:** CINS and blocklist.de (noisy IPs; CINS grants generic use but not commercial embedding, blocklist.de has no grant) and PhishStats / Threatview.io (no licence at all) — **not worth a NEEDS-CONTACT** outreach. **PhishTank** is parked: its licence permits commercial use, but new registration is disabled, so revisit if/when an app key becomes obtainable.
+
+### Primary sources
+
+- CIRCL OSINT — [misp-circl-feed repo / README (TLP:CLEAR)](https://codeberg.org/adulau/misp-circl-feed), [CIRCL MISP service](https://www.circl.lu/services/misp-malware-information-sharing-platform/), [FIRST TLP](https://www.first.org/tlp/)
+- Botvrij.eu — [homepage "Terms of use" footer](https://www.botvrij.eu/)
+- DigitalSide — [LICENSE (MIT)](https://raw.githubusercontent.com/davidonzo/Threat-Intel/master/LICENSE), [feed manifest (TLP:WHITE)](https://raw.githubusercontent.com/davidonzo/Threat-Intel/master/digitalside-misp-feed/manifest.json)
+- PhishTank — [FAQ (commercial OK / free)](https://phishtank.org/faq.php), [registration disabled](https://www.phishtank.com/register.php)
+- CINS / CI Army — [cinsscore.com](http://cinsscore.com/), [cinsarmy.com](https://cinsarmy.com/), [software EULA (PDF)](https://cinsarmy.com/wp-content/uploads/2017/10/EULA_2017.pdf)
+- blocklist.de — [terms (EN/DE)](https://www.blocklist.de/en/terms.html), [imprint](https://www.blocklist.de/de/imprint.html)
+- Binary Defense — [banlist.txt (header terms)](https://www.binarydefense.com/banlist.txt)
+- C2IntelFeeds — [License.md (CC-BY-NC-SA-4.0)](https://github.com/drb-ra/C2IntelFeeds/blob/master/License.md)
+- C2-Tracker — [repo (no licence, archived)](https://github.com/montysecurity/C2-Tracker), [Shodan ToS](https://static.shodan.io/legal/terms.html)
+- OpenPhish — [Terms of Use](https://openphish.com/terms.html), [community feed README](https://github.com/openphish/public_feed)
+- ET Open — [emerging-Block-IPs.txt](https://rules.emergingthreats.net/fwrules/emerging-Block-IPs.txt), [Spamhaus DROP terms](https://www.spamhaus.org/drop/terms/)
+- abuse.ch (correction) — [Feodo Tracker (CC0)](https://feodotracker.abuse.ch/blocklist/), [URLhaus API (conditional — commercial may require paid)](https://urlhaus.abuse.ch/api/), [abuse.ch Terms of Use](https://abuse.ch/terms-of-use/)
+- Infoblox TI — [LICENSE (CC-BY-4.0)](https://raw.githubusercontent.com/infobloxopen/threat-intelligence/main/LICENSE), [README (commercial-use grant)](https://github.com/infobloxopen/threat-intelligence)
+- Phishing.Database — [LICENSE (MIT)](https://raw.githubusercontent.com/Phishing-Database/Phishing.Database/master/LICENSE), [repo](https://github.com/Phishing-Database/Phishing.Database)
+- CERT Polska Warning List — [warning list page (v2 endpoints; no licence text)](https://cert.pl/en/warning-list/), [API spec with the data grant — **archived repo**](https://raw.githubusercontent.com/CERT-Polska/phishing-api/master/SPECIFICATION.md)
+- PhishStats — [FAQ (no terms)](https://phishstats.info/faq); Threatview.io — [site ("all rights reserved")](https://threatview.io/)
+- Vendor IOC repos — [Unit 42 (Unlicense)](https://github.com/PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information), [ESET (BSD-2, README)](https://github.com/eset/malware-ioc), [Volexity (BSD-2, `LICENSE.txt`)](https://github.com/volexity/threat-intel), [PRODAFT (MIT)](https://github.com/prodaft/malware-ioc), [Zscaler ThreatLabz (MIT)](https://github.com/threatlabz/iocs), [Huntress (MIT)](https://github.com/huntresslabs/threat-intel), [Meta (MIT)](https://github.com/facebook/threat-research)
+- MISP warninglists — [README (CC0)](https://github.com/MISP/misp-warninglists)
+- CVE-context — [GitHub Advisory DB (CC-BY-4.0)](https://docs.github.com/en/github/site-policy/github-terms-for-additional-products-and-features), [OSV data sources](https://google.github.io/osv.dev/data/), [EPSS FAQ](https://www.first.org/epss/faq), [Project Zero 0days (Apache-2.0)](https://github.com/googleprojectzero/0days-in-the-wild), [CISA Vulnrichment (CC0-1.0)](https://github.com/cisagov/vulnrichment)
+- Held / excluded — [Cisco Talos IOCs](https://github.com/Cisco-Talos/IOCs), [SophosLabs IoCs](https://github.com/sophoslabs/IoCs), [JPCERT phishurl-list](https://github.com/JPCERTCC/phishurl-list), [ThreatMiner (CC-BY, aggregator)](https://www.threatminer.org/api.php), [urlscan.io terms](https://urlscan.io/terms/), [Pulsedive terms](https://pulsedive.com/terms)
