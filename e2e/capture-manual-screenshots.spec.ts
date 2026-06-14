@@ -641,11 +641,19 @@ base.describe.serial("Manual screenshots", () => {
 
   const tiFeedMode = process.env.TI_FEED_MODE;
 
+  // The manual-upload table lists every registered source; as the TI source
+  // registry fans out it outgrows the 720 px fold, so capture at a taller
+  // viewport + `fullPage` (the dashboard shell's inner `overflow-y-auto` hides
+  // below-the-fold rows otherwise) and assert the last source row is on-page so
+  // a too-short viewport fails loudly rather than silently clipping a new row.
+  const MANUAL_VIEWPORT = { width: 1280, height: 1000 };
+
   base("admin-ti-feeds-table.png", async () => {
     base.skip(
       tiFeedMode !== "manual-upload",
       "manual-upload mode only (set TI_FEED_MODE=manual-upload)",
     );
+    await adminPage.setViewportSize(MANUAL_VIEWPORT);
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -653,10 +661,15 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
+    await expect(
+      adminPage.getByText("infoblox/threat-intelligence"),
+    ).toBeVisible();
 
     await adminPage.screenshot({
       path: resolve(ASSETS, "admin-ti-feeds-table.png"),
+      fullPage: true,
     });
+    await adminPage.setViewportSize(VIEWPORT);
   });
 
   base("admin-ti-feeds-upload-dialog.png", async () => {
@@ -697,7 +710,7 @@ base.describe.serial("Manual screenshots", () => {
   // account-preferences captures use. Assert the last source row is on-page
   // before shooting so a too-short viewport fails loudly instead of silently
   // clipping a new row.
-  const SELFFETCH_VIEWPORT = { width: 1280, height: 1100 };
+  const SELFFETCH_VIEWPORT = { width: 1280, height: 1300 };
 
   base("admin-ti-feeds-selffetch-table.png", async () => {
     base.skip(

@@ -1,0 +1,6 @@
+# Coordinated Inauthentic Behavior network (fixture) — NOT malware infrastructure.
+# Excluded by the allowlist: this file matches no file rule, so it is never
+# fetched. CIB social URLs / account handles must never reach the snapshot.
+handle,platform,url
+@fakepersona01,example-social,https://social.example/fakepersona01
+@fakepersona02,example-social,https://social.example/fakepersona02

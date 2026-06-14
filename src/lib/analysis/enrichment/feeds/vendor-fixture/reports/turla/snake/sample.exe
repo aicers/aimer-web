@@ -1,0 +1,7 @@
+SENTINEL PLACEHOLDER — NOT A REAL BINARY.
+
+This file stands in for a vendor repo's live `.exe` malware sample (PRODAFT
+ships 16 of them). It exists only to exercise the binary-skip allowlist: the
+importer must NEVER fetch, write, or execute it. A test asserts its path is
+never read. It is committed as plain text on purpose — no real malware bytes
+ever live in this repository.

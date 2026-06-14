@@ -16,7 +16,12 @@
 // is reserved for parts 3-4 (`self-fetch` / `managed`), which add their
 // implementations without re-plumbing the downstream.
 
-import type { EntityType, HitType, SourcePolarity } from "./types";
+import type {
+  EnrichmentContextPayload,
+  EntityType,
+  HitType,
+  SourcePolarity,
+} from "./types";
 
 /**
  * Deployment-level TI feed supply mode (`TI_FEED_MODE`). The value space is
@@ -92,7 +97,12 @@ export type FeedParseKind =
   // from a CSV. The cleared plain/CSV Tier-1 fan-out feeds parse by
   // *configuring* these rather than adding a new `FeedParseKind` case.
   | "generic-list"
-  | "csv-column";
+  | "csv-column"
+  // Free-text atomic IOC scanner (#603) — pulls IP / DOMAIN / URL / HASH
+  // indicators embedded inside prose (vendor-repo blog notes, READMEs), where
+  // `generic-list` (one-line-equals-one-indicator) cannot reach them. Configured
+  // via `FreeTextParseConfig` (refang on by default for defanged prose).
+  | "free-text";
 
 /**
  * Config for the `generic-list` parser (#593): one indicator per line, with
@@ -213,12 +223,32 @@ export interface CsvColumnParseConfig {
 }
 
 /**
+ * Config for the `free-text` scanner (#603): extract atomic IOCs from prose.
+ * Unlike `generic-list` (one indicator per line), the scanner tokenizes the
+ * whole body and pulls IP / DOMAIN / URL / HASH indicators embedded inside
+ * sentences. `refang` defaults to ON (vendor prose publishes defanged IOCs);
+ * each extracted token self-classifies its entity type, so the import-time
+ * `entityType` default is only a fallback the scanner does not need.
+ */
+export interface FreeTextParseConfig {
+  kind: "free-text";
+  /**
+   * Refang defanged indicators before scanning (`hxxp`→`http`, `[.]`→`.`,
+   * `[at]`→`@`). Defaults to ON — vendor-repo prose is defanged by convention.
+   */
+  refang?: boolean;
+}
+
+/**
  * Parser configuration carried alongside a `FeedParseKind` for the
- * parameterized parsers (#593), keyed by `kind` so a carrier threads one
+ * parameterized parsers (#593, #603), keyed by `kind` so a carrier threads one
  * optional object. The bespoke string kinds (`ip-blocklist` / `urlhaus-csv` /
  * `spamhaus-drop*`) carry no config — `parseConfig` is absent for them.
  */
-export type FeedParseConfig = GenericListParseConfig | CsvColumnParseConfig;
+export type FeedParseConfig =
+  | GenericListParseConfig
+  | CsvColumnParseConfig
+  | FreeTextParseConfig;
 
 /**
  * Where a raw payload's bytes came from, recorded for audit / freshness.
@@ -268,10 +298,167 @@ export interface RawFeedPayload {
   hitType?: HitType;
   /** Optional classification tag for the rows. */
   classification?: string;
+  /**
+   * Optional report-level context (RFC 0003 F4, #603) stamped onto every row
+   * this payload produces — actor / campaign / malware-family / report link for
+   * the vendor IOC repositories. F6 (#594) built the persistence half (the
+   * `context` column + `FeedSnapshotRow.context`); this is the producer wiring
+   * the parse path threads onto rows. Absent for the context-less Tier-1 feeds.
+   */
+  context?: EnrichmentContextPayload;
+  /**
+   * Central CIB guard (RFC 0003 F4, #603). When `false`, every row this payload
+   * produces is forced to `soft_reputation` in the import path regardless of
+   * `hitType` — so non-malware / influence-ops content (Meta CIB) can NEVER
+   * become a deterministic / floor-eligible match. Absent / `true` ⇒ rows keep
+   * their declared `hitType`. Enforced centrally (not by payload self-trust),
+   * driven by the descriptor's per-repo / per-file guard config.
+   */
+  deterministicAllowed?: boolean;
   /** Raw feed content as published by the origin — NOT parsed. */
   content: string;
   /** Origin provenance (audit + freshness). */
   provenance: FeedProvenance;
+}
+
+/**
+ * One allowlist + extraction rule for a class of files in a vendor IOC repo
+ * (RFC 0003 F4, #603). A repo tree's blob is fetched + parsed ONLY when its
+ * path matches a rule's `pathPattern`; a blob matching no rule is skipped and
+ * never fetched (the enforce-by-default binary / rule-file / CIB-folder skip).
+ */
+export interface VendorRepoFileRule {
+  /** Human label for diagnostics (e.g. "iocs-csv", "prose-note"). */
+  label?: string;
+  /** RegExp source matched against the repo-relative (POSIX) file path. */
+  pathPattern: string;
+  /** Parser kind for matching files (`csv-column` / `generic-list` / `free-text`). */
+  parse: FeedParseKind;
+  /** Config for a parameterized parser, when the kind needs one. */
+  parseConfig?: FeedParseConfig;
+  /** Default entity type for parsed rows (self-classifying parsers may ignore it). */
+  entityType: EntityType;
+  /** Per-row hit-type override; defaults to the descriptor's `hitType`. */
+  hitType?: HitType;
+  /** Per-row classification override; defaults to the descriptor's `classification`. */
+  classification?: string;
+  /**
+   * Content-class tag (e.g. `"malware"`, `"cib"`) — an explicit guard label,
+   * distinct from the free-form `classification` string. Diagnostic / audit.
+   */
+  contentClass?: string;
+  /**
+   * Per-file CIB guard. `false` forces this file's rows to `soft_reputation`.
+   * Absent ⇒ inherit the repo-level `VendorRepoConfig.deterministicAllowed`.
+   */
+  deterministicAllowed?: boolean;
+}
+
+/**
+ * Per-folder context extracted from a README / markdown file's CONTENT (RFC 0003
+ * F4, #603). The path-only `contextPattern` cannot reach an actor / campaign /
+ * family / report link that lives only in a per-report README (a named
+ * PRODAFT-style input), so the engine optionally reads the matching README
+ * blobs and applies these CONTENT regexes. A README's captures apply to every
+ * IOC file under the README's folder (the most specific enclosing README wins),
+ * filling fields the file's own path captures do not already provide.
+ */
+export interface VendorRepoReadmeContextRule {
+  /**
+   * RegExp source matched against the repo-relative (POSIX) path to select the
+   * README / context files to read (e.g. `README\\.md$`). These blobs are
+   * fetched for CONTEXT only — they do not themselves yield IOC rows unless a
+   * separate `files` rule also matches them.
+   */
+  pathPattern: string;
+  /**
+   * RegExp source run against the README content to capture the `actor`. The
+   * first capture group (or a named `value` group) is the value; absent ⇒ the
+   * field is not derived from the README.
+   */
+  actorPattern?: string;
+  /** RegExp source capturing the `campaign` from the README content. */
+  campaignPattern?: string;
+  /** RegExp source capturing the `malwareFamily` from the README content. */
+  malwareFamilyPattern?: string;
+  /** RegExp source capturing the `reportUrl` from the README content. */
+  reportUrlPattern?: string;
+}
+
+/**
+ * Vendor IOC repository extraction config (RFC 0003 F4, #603) carried on a
+ * `TiSourceDescriptor`. A vendor repo is a Git tree of per-report folders with
+ * heterogeneous formats (not a single flat file), so the importer enumerates
+ * the tree (paths/types only), fetches only allowlisted blobs, extracts atomic
+ * IOCs per file, captures report context from the path, and aggregates every
+ * file's rows into ONE snapshot replace per source. The seven per-repo
+ * descriptors (Unit 42 / ESET / Volexity / PRODAFT / Zscaler / Huntress / Meta)
+ * are the fan-out; this is the shared config shape they declare.
+ */
+export interface VendorRepoConfig {
+  /** GitHub repo owner (org / user). */
+  owner: string;
+  /** GitHub repo name. */
+  repo: string;
+  /** Git ref (branch / tag / commit) to pin the tree to. */
+  ref: string;
+  /**
+   * Allowlist of parseable file rules. A blob whose path matches NO rule is
+   * skipped and never fetched — `.exe`/binaries, Sigma/YARA rule files, and
+   * excluded CIB folders all fall here.
+   */
+  files: readonly VendorRepoFileRule[];
+  /**
+   * Repo-level CIB guard default a file rule may override. Default `true`
+   * (rows keep their declared `hitType`); set `false` for a repo whose content
+   * is non-malware by default.
+   */
+  deterministicAllowed?: boolean;
+  /**
+   * Named-capture RegExp source matched against a file path to derive report
+   * context. Recognized groups: `actor` / `campaign` / `malwareFamily`.
+   */
+  contextPattern?: string;
+  /**
+   * `reportUrl` template; `{name}` tokens are substituted from the
+   * `contextPattern` captures plus the built-ins `{path}` / `{owner}` /
+   * `{repo}` / `{ref}`.
+   */
+  reportUrlTemplate?: string;
+  /** Static context defaults, merged UNDER any path-derived captures. */
+  context?: {
+    actor?: string;
+    campaign?: string;
+    malwareFamily?: string;
+  };
+  /**
+   * Optional per-folder context extraction from README / markdown CONTENT. When
+   * set, the engine first reads the matching README blobs and derives
+   * folder-scoped context, merged BETWEEN the static `context` defaults and the
+   * path-derived `contextPattern` captures (path captures win, README fills
+   * gaps the path does not cover). Absent ⇒ context comes from path + statics
+   * only.
+   */
+  readmeContext?: VendorRepoReadmeContextRule;
+  /**
+   * Hard cadence floor (ms) for the operator / scheduler self-fetch of this
+   * repo: nothing fetches it more often than this, guarding the optional GitHub
+   * token's 5000 req/hr (and the keyless 60 req/hr) budget across a daily
+   * refresh. Absent ⇒ `VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS`.
+   */
+  cadenceFloorMs?: number;
+  /**
+   * `feed_source_secret.key_name` of the OPTIONAL GitHub token that lifts the
+   * unauthenticated 60 req/hr ceiling to 5000/hr. Keyless still works
+   * (rate-limited); fixture / offline tests need no token. Never logged or
+   * UI-returnable — mirrors the NVD key (#611).
+   */
+  authKeyName?: string;
+  /**
+   * Committed fixture-tree directory (relative to `../feeds/`) the fixture
+   * provider reads so tests run offline — no GitHub calls in CI.
+   */
+  fixtureDir?: string;
 }
 
 /**

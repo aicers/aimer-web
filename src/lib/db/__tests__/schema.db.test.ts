@@ -1653,6 +1653,14 @@ describe.skipIf(!hasPostgres)("Schema verification (feed_db)", () => {
       await pool.query(
         "GRANT SELECT, INSERT, UPDATE ON feed_source_secret TO aimer_feed",
       );
+      // CVE catalog (#601): cve_snapshot is replace-only (no UPDATE);
+      // cve_fetch_state is upserted (ON CONFLICT DO UPDATE).
+      await pool.query(
+        "GRANT SELECT, INSERT, DELETE ON cve_snapshot TO aimer_feed",
+      );
+      await pool.query(
+        "GRANT SELECT, INSERT, UPDATE ON cve_fetch_state TO aimer_feed",
+      );
 
       rolePool = createRolePool(dbName, "aimer_feed", "changeme", "feed");
     });
@@ -1709,6 +1717,42 @@ describe.skipIf(!hasPostgres)("Schema verification (feed_db)", () => {
         "SELECT wrapped_dek FROM feed_source_secret WHERE key_name = 'urlhaus'",
       );
       expect(rows[0].wrapped_dek).toBe("w2");
+    });
+
+    it("can INSERT, SELECT, and DELETE on cve_snapshot (#601)", async () => {
+      // The per-source CVE refresh replaces a source's rows (DELETE + INSERT),
+      // exactly like ioc_feed_snapshot.
+      await rolePool.query(
+        "INSERT INTO cve_snapshot (source_id, cve, cvss_score) VALUES ('nvd', 'CVE-2024-3400', 10.0)",
+      );
+      const { rows } = await rolePool.query(
+        "SELECT COUNT(*) FROM cve_snapshot",
+      );
+      expect(Number(rows[0].count)).toBeGreaterThan(0);
+      await rolePool.query("DELETE FROM cve_snapshot WHERE source_id = 'nvd'");
+    });
+
+    it("cannot UPDATE on cve_snapshot (#601)", async () => {
+      // Snapshots are immutable between wholesale per-source replacements.
+      await expect(
+        rolePool.query(
+          "UPDATE cve_snapshot SET cvss_score = 1.0 WHERE cve = 'CVE-2024-3400'",
+        ),
+      ).rejects.toThrow();
+    });
+
+    it("can SELECT, INSERT, and UPDATE cve_fetch_state (#601)", async () => {
+      // The CVE fetch engine (#611) upserts fetch bookkeeping.
+      await rolePool.query(
+        "INSERT INTO cve_fetch_state (source_id, last_status) VALUES ('nvd', 'ok')",
+      );
+      await rolePool.query(
+        "UPDATE cve_fetch_state SET last_status = 'not-modified' WHERE source_id = 'nvd'",
+      );
+      const { rows } = await rolePool.query(
+        "SELECT last_status FROM cve_fetch_state WHERE source_id = 'nvd'",
+      );
+      expect(rows[0].last_status).toBe("not-modified");
     });
   });
 });

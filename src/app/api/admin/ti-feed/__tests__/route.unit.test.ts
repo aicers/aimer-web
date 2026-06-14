@@ -138,7 +138,7 @@ describe("GET /api/admin/ti-feed", () => {
     const res = await GET(makeGet());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.sources).toHaveLength(6);
+    expect(body.sources).toHaveLength(10);
     const feodo = body.sources.find(
       (s: { sourcePolicyId: string }) => s.sourcePolicyId === "abuse.ch/feodo",
     );

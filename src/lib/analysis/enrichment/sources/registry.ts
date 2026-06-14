@@ -19,7 +19,11 @@
 // CVE-context sources (RFC 0005) register against #590's `CveCatalog`, NOT this
 // registry.
 
-import type { FeedParseConfig, FeedParseKind } from "../feed-source";
+import type {
+  FeedParseConfig,
+  FeedParseKind,
+  VendorRepoConfig,
+} from "../feed-source";
 import type { EntityType, HitType, SourcePolarity } from "../types";
 
 /**
@@ -150,6 +154,14 @@ export interface TiSourceDescriptor {
    * Ignored when `fetch` is present.
    */
   selfFetchUnavailable?: "merged";
+  /**
+   * Vendor IOC repository extraction config (RFC 0003 F4, #603). Present for a
+   * vendor-repo source (Unit 42 / ESET / Volexity / PRODAFT / Zscaler /
+   * Huntress / Meta), absent for the flat Tier-1 feeds. A source carrying this
+   * is imported through the vendor-repo engine (tree enumerate → allowlisted
+   * blobs → per-source batch replace), not the flat `parse`/`fetch` path.
+   */
+  vendorRepo?: VendorRepoConfig;
   /** Committed fixture filename under `../feeds/`, if this source ships one. */
   fixtureFile?: string;
 }

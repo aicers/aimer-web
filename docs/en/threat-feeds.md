@@ -1,9 +1,9 @@
 # Threat Feeds
 
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
-feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP) that observed indicators are
-matched locally against. Navigate to **Threat Feeds** in the admin sidebar to
-open it.
+feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, and the Botvrij.eu IP / domain /
+URL / hash lists) that observed indicators are matched locally against. Navigate
+to **Threat Feeds** in the admin sidebar to open it.
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
 or fetch); the `ti-feed:read` permission is required to view the status table.
@@ -38,6 +38,10 @@ licensing:
 | abuse.ch Feodo Tracker (`abuse.ch/feodo`) | IP | abuse.ch |
 | abuse.ch URLhaus (`abuse.ch/urlhaus`) | URL, domain | abuse.ch |
 | abuse.ch URLhaus payloads (`abuse.ch/urlhaus-payloads`) | file hash | abuse.ch |
+| Botvrij.eu (`botvrij/ip`) | IP | Botvrij.eu (no resale) |
+| Botvrij.eu (`botvrij/domain`) | domain | Botvrij.eu (no resale) |
+| Botvrij.eu (`botvrij/url`) | URL | Botvrij.eu (no resale) |
+| Botvrij.eu (`botvrij/hash`) | file hash | Botvrij.eu (no resale) |
 | Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | domain, IP, URL, file hash | CC-BY-4.0 — **attribution to Infoblox and the license** |
 | Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
 | Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (merged into DROP, 2024) |
@@ -138,12 +142,24 @@ abuse.ch / Spamhaus IP ban from over-fetching:
 | `abuse.ch/feodo` | Feodo recommended plain-text IP blocklist | — | 5 min |
 | `abuse.ch/urlhaus` | URLhaus URL CSV export | required | 5 min |
 | `abuse.ch/urlhaus-payloads` | URLhaus payloads CSV export | required | 5 min |
+| `botvrij/ip` | Botvrij `ioclist.ip-dst.raw` + `ioclist.ip-src.raw` | — | 1 h |
+| `botvrij/domain` | Botvrij `ioclist.domain.raw` + `ioclist.hostname.raw` | — | 1 h |
+| `botvrij/url` | Botvrij `ioclist.url.raw` | — | 1 h |
+| `botvrij/hash` | Botvrij `ioclist.md5.raw` + `ioclist.sha1.raw` + `ioclist.sha256.raw` | — | 1 h |
 | `spamhaus/drop` | Spamhaus DROP `drop_v4.json` + `drop_v6.json` (NDJSON) | — | 1 h |
 
 Spamhaus **EDROP was merged into DROP** (2024), so `spamhaus/edrop` is no
 longer fetched independently — it shows as **Merged into DROP** with no Fetch
 Now button. DROP is fetched as NDJSON (one JSON object per line) over the
 `drop_v4.json` + `drop_v6.json` endpoints.
+
+Botvrij.eu publishes general IOC coverage (IP / domain / URL / hash) as plain
+per-type lists. aimer-web fetches the bare **`.raw`** variant of each list (one
+indicator per line, no header or inline annotation) — not the default
+`ioclist.<type>` files, whose trailing per-line comments would not parse. The IP,
+domain, and hash sources each concatenate several `.raw` files into one source
+(for hashes, the MD5 / SHA-1 / SHA-256 lists are distinguished by digest length).
+Botvrij refreshes irregularly, so a conservative 1 h cadence floor is used.
 
 ### URLhaus Auth-Key
 

@@ -13,7 +13,11 @@
 // "add a descriptor file" with no edit to any array here.
 
 import "./sources";
-import type { FeedParseConfig, FeedParseKind } from "./feed-source";
+import type {
+  FeedParseConfig,
+  FeedParseKind,
+  VendorRepoConfig,
+} from "./feed-source";
 import {
   allTiSourceDescriptors,
   getTiSourceDescriptor,
@@ -70,6 +74,14 @@ export interface Tier1FeedSource {
    * aggregate endpoint (e.g. Infoblox). Drives the self-fetch table badge.
    */
   selfFetchUnavailable?: "merged";
+  /**
+   * Vendor IOC repository config (RFC 0003 F4, #603). Present for a vendor-repo
+   * source; such a source is fetched + imported through the vendor-repo engine
+   * (tree enumerate → allowlisted blobs → per-source batch replace), NOT the
+   * flat `fetch` path. Carried through the catalog so the operator / scheduler
+   * self-fetch path can route to the vendor engine.
+   */
+  vendorRepo?: VendorRepoConfig;
 }
 
 /**
@@ -90,6 +102,7 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
     selfFetchUnavailable: descriptor.selfFetchUnavailable,
+    vendorRepo: descriptor.vendorRepo,
   }));
 
 /** Look up a catalog source by `source_policy_id` (undefined if unknown). */
@@ -110,5 +123,6 @@ export function getTier1FeedSource(
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
     selfFetchUnavailable: descriptor.selfFetchUnavailable,
+    vendorRepo: descriptor.vendorRepo,
   };
 }

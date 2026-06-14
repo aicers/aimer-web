@@ -37,6 +37,7 @@ import {
   readSelfFetchSchedule,
   type SelfFetchSchedule,
 } from "../analysis/enrichment/feed-schedule";
+import { VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS } from "../analysis/enrichment/feed-vendor-repo";
 import { getAuthPool, getFeedPool } from "../db/client";
 import { getCurrentTimestamp } from "./time";
 
@@ -103,14 +104,18 @@ export async function runSelfFetchTickOnce(
   const now = (deps.now ?? getCurrentTimestamp)();
 
   for (const catalogSource of TIER1_FEED_SOURCES) {
-    const fetchConfig = catalogSource.fetch;
-    // Skip non-fetchable sources (e.g. `spamhaus/edrop`, merged into DROP).
-    if (!fetchConfig) continue;
+    // A source is schedulable via either a flat self-fetch config or a
+    // vendor-repo config; each carries its own hard cadence floor. Skip a
+    // source with neither (e.g. `spamhaus/edrop`, merged into DROP).
+    const cadenceFloorMs =
+      catalogSource.fetch?.cadenceFloorMs ??
+      (catalogSource.vendorRepo
+        ? (catalogSource.vendorRepo.cadenceFloorMs ??
+          VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS)
+        : undefined);
+    if (cadenceFloorMs === undefined) continue;
 
-    const cadence = effectiveCadenceMs(
-      schedule.intervalMs,
-      fetchConfig.cadenceFloorMs,
-    );
+    const cadence = effectiveCadenceMs(schedule.intervalMs, cadenceFloorMs);
     const state = await readFeedFetchState(
       feedPool,
       catalogSource.sourcePolicyId,
