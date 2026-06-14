@@ -48,6 +48,15 @@ describe("narrowContextPayload", () => {
     expect(narrowContextPayload({})).toBeUndefined();
     expect(narrowContextPayload({ nope: true })).toBeUndefined();
   });
+
+  it("drops an empty extra so it does not leave a meaningless {extra:{}}", () => {
+    // A legacy / hand-edited row storing {extra:{}} carries no usable
+    // context; it must narrow to undefined, not {extra:{}}.
+    expect(narrowContextPayload({ extra: {} })).toBeUndefined();
+    expect(narrowContextPayload({ actor: "APT1", extra: {} })).toEqual({
+      actor: "APT1",
+    });
+  });
 });
 
 describe("normalizeContext", () => {
@@ -70,6 +79,23 @@ describe("normalizeContext", () => {
   it("collapses an all-undefined payload to undefined (no non-null {} row)", () => {
     expect(normalizeContext({ actor: undefined })).toBeUndefined();
     expect(normalizeContext({})).toBeUndefined();
+  });
+
+  it("prunes an extra emptied by nested-undefined cleanup", () => {
+    // {extra:{a:undefined}} cleans to {extra:{}}, which carries no usable
+    // context; it must collapse to undefined like an all-undefined payload,
+    // so the INSERT stores NULL and the hash sees no context (no phantom
+    // provenance churn through the nested `extra` bag).
+    expect(normalizeContext({ extra: { a: undefined } })).toBeUndefined();
+    expect(
+      normalizeContext({ actor: "APT1", extra: { a: undefined } }),
+    ).toEqual({ actor: "APT1" });
+  });
+
+  it("preserves a non-empty extra", () => {
+    expect(normalizeContext({ extra: { tlp: "amber" } })).toEqual({
+      extra: { tlp: "amber" },
+    });
   });
 
   it("yields the same JSON the INSERT path stores", () => {

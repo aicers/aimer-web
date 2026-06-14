@@ -44,7 +44,12 @@ export function narrowContextPayload(
     result.malwareFamily = value.malwareFamily;
   }
   if (typeof value.reportUrl === "string") result.reportUrl = value.reportUrl;
-  if (isPlainObject(value.extra)) result.extra = value.extra;
+  // An empty `extra` carries no usable context, so it is dropped rather than
+  // left as a meaningless `{ extra: {} }` on the match — matching how
+  // `normalizeContext` prunes an emptied `extra` on the persist/hash side.
+  if (isPlainObject(value.extra) && Object.keys(value.extra).length > 0) {
+    result.extra = value.extra;
+  }
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
@@ -53,10 +58,14 @@ export function narrowContextPayload(
  * column will store, so the feed hash and the INSERT agree on which
  * properties exist. Mirrors `JSON.stringify` (the insert path): properties
  * whose value is `undefined` — or any other non-JSON value — are dropped,
- * recursively. Returns `undefined` when nothing JSON-serializable survives,
- * so an all-`undefined` payload neither changes `feed_hash` nor leaves a
- * non-null `{}` context row. Callers must use the returned value for *both*
- * hashing and insertion.
+ * recursively. After that cleanup an `extra` bag that became empty (e.g.
+ * `{ extra: { vendorField: undefined } }` → `{ extra: {} }`) is itself
+ * pruned, so it cannot store a non-null context, get folded into the hash,
+ * and narrow back to a meaningless `{ extra: {} }` — the same phantom
+ * provenance churn as a stray top-level field. Returns `undefined` when
+ * nothing JSON-serializable survives, so an all-`undefined` payload neither
+ * changes `feed_hash` nor leaves a non-null context row. Callers must use the
+ * returned value for *both* hashing and insertion.
  */
 export function normalizeContext(
   context: EnrichmentContextPayload,
@@ -64,6 +73,12 @@ export function normalizeContext(
   const serialized = JSON.stringify(context);
   if (serialized === undefined) return undefined;
   const cleaned = JSON.parse(serialized) as EnrichmentContextPayload;
+  // `JSON.stringify` drops nested `undefined`, but an `extra` left empty by
+  // that drop is still a present key; remove it so it does not count as
+  // surviving context below.
+  if (cleaned.extra && Object.keys(cleaned.extra).length === 0) {
+    delete cleaned.extra;
+  }
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 

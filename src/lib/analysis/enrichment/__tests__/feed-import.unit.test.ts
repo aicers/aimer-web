@@ -217,6 +217,23 @@ describe("feed hash", () => {
     ).toBe(computeFeedHash([{ matchValue: "x" }]));
   });
 
+  it("treats an extra emptied by nested-undefined cleanup as no context", () => {
+    // {extra:{a:undefined}} cleans to {extra:{}}, carrying no usable context.
+    // It must hash like no context (so the row stores NULL and the existing
+    // five feeds keep their feed_hash), not fold a phantom {extra:{}} in.
+    expect(
+      computeFeedHash([
+        { matchValue: "x", context: { extra: { a: undefined } } },
+      ]),
+    ).toBe(computeFeedHash([{ matchValue: "x" }]));
+    // A non-empty extra is still genuine context and does change the hash.
+    expect(
+      computeFeedHash([
+        { matchValue: "x", context: { extra: { tlp: "amber" } } },
+      ]),
+    ).not.toBe(computeFeedHash([{ matchValue: "x" }]));
+  });
+
   it("hashes the same context identically regardless of key order", () => {
     const a = computeFeedHash([
       {
