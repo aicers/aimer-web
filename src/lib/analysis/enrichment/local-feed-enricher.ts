@@ -21,6 +21,10 @@ import { EnrichmentDispatcher } from "./dispatcher";
 import { createEnrichmentFact } from "./fact";
 import type { SourcePolicy } from "./source-policy";
 import { SourcePolicyRegistry } from "./source-policy";
+// Importing the barrel runs every source's `registerTiSource` side effect, so
+// the registry is populated before `LOCAL_FEED_POLICIES` derives from it below.
+import "./sources";
+import { allTiSourceDescriptors } from "./sources/registry";
 import type {
   Enricher,
   EnricherError,
@@ -191,61 +195,27 @@ export class LocalFeedEnricher implements Enricher {
   }
 }
 
-// Feed staleness bound: the Tier-1 feeds refresh roughly daily, so a
-// snapshot older than two days is treated as stale (drives `stale`
-// coverage). The feed-refresh worker that keeps these current is a
-// separate RFC 0003 P1a follow-up.
-const FEED_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
-
 /**
- * Default Tier-1 source policies (RFC 0003 §"Source catalog"). All ship
- * `floorEligible: false` pending per-source licensing confirmation (Open
- * Q#9) — they produce matches for narrative/coverage but cannot drive the
- * floor until cleared. Flipping one to `true` once its terms are
- * confirmed is a config change here, requiring no code change elsewhere.
+ * Default Tier-1 source policies (RFC 0003 §"Source catalog"), derived from
+ * the self-registering source registry (#588). All ship `floorEligible: false`
+ * pending per-source licensing confirmation (Open Q#9) — they produce matches
+ * for narrative/coverage but cannot drive the floor until cleared. Flipping one
+ * to `true` once its terms are confirmed is a change to that source's
+ * descriptor, requiring no code change here.
+ *
+ * Derived from the registry rather than declared inline so adding a source is
+ * "add a descriptor file" with no edit to this array. Order is the registry's
+ * deterministic stable-by-id ordering.
  */
-export const LOCAL_FEED_POLICIES: readonly SourcePolicy[] = [
-  {
-    sourcePolicyId: "abuse.ch/feodo",
-    label: "abuse.ch Feodo Tracker",
-    entityTypes: ["IP"],
-    deterministicCoverage: true,
-    maxAge: FEED_MAX_AGE_MS,
-    floorEligible: false,
-  },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus",
-    label: "abuse.ch URLhaus",
-    entityTypes: ["URL", "DOMAIN"],
-    deterministicCoverage: true,
-    maxAge: FEED_MAX_AGE_MS,
-    floorEligible: false,
-  },
-  {
-    sourcePolicyId: "abuse.ch/urlhaus-payloads",
-    label: "abuse.ch URLhaus (payloads)",
-    entityTypes: ["HASH"],
-    deterministicCoverage: true,
-    maxAge: FEED_MAX_AGE_MS,
-    floorEligible: false,
-  },
-  {
-    sourcePolicyId: "spamhaus/drop",
-    label: "Spamhaus DROP",
-    entityTypes: ["IP"],
-    deterministicCoverage: true,
-    maxAge: FEED_MAX_AGE_MS,
-    floorEligible: false,
-  },
-  {
-    sourcePolicyId: "spamhaus/edrop",
-    label: "Spamhaus EDROP",
-    entityTypes: ["IP"],
-    deterministicCoverage: true,
-    maxAge: FEED_MAX_AGE_MS,
-    floorEligible: false,
-  },
-];
+export const LOCAL_FEED_POLICIES: readonly SourcePolicy[] =
+  allTiSourceDescriptors().map((descriptor) => ({
+    sourcePolicyId: descriptor.sourcePolicyId,
+    label: descriptor.label,
+    entityTypes: descriptor.entityTypes,
+    deterministicCoverage: descriptor.deterministicCoverage,
+    maxAge: descriptor.maxAge,
+    floorEligible: descriptor.floorEligible,
+  }));
 
 /**
  * Wire a ready-to-use dispatcher backed by `store`: a registry of the
