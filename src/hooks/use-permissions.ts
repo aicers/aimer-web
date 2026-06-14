@@ -20,6 +20,9 @@ export interface Permissions {
   /** Per-customer default analysis model (#473) — Analyst (assigned) only. */
   canViewDefaultModel: boolean;
   canWriteDefaultModel: boolean;
+  /** Per-subject TI source selection (#598) — Analyst (assigned) only. */
+  canViewTiSources: boolean;
+  canWriteTiSources: boolean;
   canUseAnalystFeatures: boolean;
 }
 
@@ -51,6 +54,7 @@ export function usePermissions(customerId?: string): Permissions {
     );
     const canViewRetention = hasPermission("customer-retention:read");
     const canViewDefaultModel = hasPermission("customer-default-model:read");
+    const canViewTiSources = hasPermission("ti-sources:read");
 
     return {
       role,
@@ -63,13 +67,18 @@ export function usePermissions(customerId?: string): Permissions {
       // page renders each section read-only or with controls based on
       // the section-specific keys.
       canViewCustomerSettings:
-        canViewRedactionRanges || canViewRetention || canViewDefaultModel,
+        canViewRedactionRanges ||
+        canViewRetention ||
+        canViewDefaultModel ||
+        canViewTiSources,
       canViewRedactionRanges,
       canWriteRedactionRanges: hasPermission("customer-redaction-ranges:write"),
       canViewRetention,
       canWriteRetention: hasPermission("customer-retention:write"),
       canViewDefaultModel,
       canWriteDefaultModel: hasPermission("customer-default-model:write"),
+      canViewTiSources,
+      canWriteTiSources: hasPermission("ti-sources:write"),
       canUseAnalystFeatures: isAnalyst,
     };
   }, [customers, resolvedId]);

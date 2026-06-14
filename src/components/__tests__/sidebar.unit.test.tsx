@@ -201,6 +201,8 @@ function mockPermissions(
     canWriteRetention: true,
     canViewDefaultModel: true,
     canWriteDefaultModel: true,
+    canViewTiSources: true,
+    canWriteTiSources: true,
     canUseAnalystFeatures: false,
     ...overrides,
   });

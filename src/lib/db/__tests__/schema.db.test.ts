@@ -63,16 +63,18 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
     //   Administrator (+1); write → Manager, System Administrator (+1)
     //   per-customer default-model keys (#473) — read + write →
     //   Analyst, System Administrator only (+2 each)
+    //   per-subject ti-sources keys (#598) — read + write → Analyst,
+    //   System Administrator only (+2 each)
     //   ti-feed keys (#566) — read + write → System Administrator only (+2)
     //   Manager extras — customer-settings + customer-members (+4)
     //   Analyst extras — advanced-analysis keys (+5)
     expect(rows).toEqual([
-      { name: "Analyst", auth_context: "general", perm_count: 17 },
+      { name: "Analyst", auth_context: "general", perm_count: 19 },
       { name: "Manager", auth_context: "general", perm_count: 17 },
       {
         name: "System Administrator",
         auth_context: "admin",
-        perm_count: 25,
+        perm_count: 27,
       },
       { name: "User", auth_context: "general", perm_count: 10 },
     ]);
@@ -188,6 +190,41 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
       "System Administrator",
     ]);
     expect(grouped["customer-default-model:write"]).toEqual([
+      "Analyst",
+      "System Administrator",
+    ]);
+  });
+
+  it("seeds per-subject ti-sources permissions on the right roles", async () => {
+    const { rows } = await pool.query<{
+      name: string;
+      permission: string;
+    }>(
+      `SELECT r.name, rp.permission
+       FROM roles r
+       JOIN role_permissions rp ON rp.role_id = r.id
+       WHERE rp.permission IN (
+         'ti-sources:read',
+         'ti-sources:write'
+       )
+       ORDER BY rp.permission, r.name`,
+    );
+
+    const grouped: Record<string, string[]> = {};
+    for (const row of rows) {
+      if (!grouped[row.permission]) grouped[row.permission] = [];
+      grouped[row.permission].push(row.name);
+    }
+    for (const key of Object.keys(grouped)) grouped[key].sort();
+
+    // Per the #598 matrix: per-subject TI source selection is analyst-facing
+    // — read and write seeded only to Analyst and System Administrator, never
+    // Manager or User. The admin-global default route reuses system-settings.
+    expect(grouped["ti-sources:read"]).toEqual([
+      "Analyst",
+      "System Administrator",
+    ]);
+    expect(grouped["ti-sources:write"]).toEqual([
       "Analyst",
       "System Administrator",
     ]);
@@ -1406,6 +1443,8 @@ describe.skipIf(!hasPostgres)("Schema verification (auth_db)", () => {
         "periodic_report_job",
         // Per-customer default analysis model (#473).
         "customer_default_model",
+        // Per-subject TI source selection (RFC 0003 F2, #598).
+        "subject_ti_sources",
       ];
       for (const table of crudTables) {
         const { rows } = await rolePool.query(`SELECT COUNT(*) FROM ${table}`);

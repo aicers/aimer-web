@@ -54,9 +54,28 @@ import {
   extractIndicators,
   type RecoverToken,
 } from "./enrichment/indicator-extraction";
-import { buildLocalFeedDispatcher } from "./enrichment/local-feed-enricher";
+import {
+  buildLocalFeedDispatcher,
+  LOCAL_FEED_POLICIES,
+} from "./enrichment/local-feed-enricher";
 import { matchSatisfiesFloor } from "./enrichment/source-policy";
 import type { CoverageStatus, EnrichmentFact } from "./enrichment/types";
+import { resolveEnabledSources } from "./ti-sources";
+
+/**
+ * Scope the shipped policy set to a customer's enabled sources (RFC 0003 F2,
+ * #598). The default (all-enabled) selection keeps every policy, so there is
+ * no behavior change until a subject is narrowed. A disabled source is simply
+ * absent from the dispatcher, so it contributes NO new matches/facts/evidence
+ * — the persist path's class-partitioned replace then clears its non-floor
+ * rows while preserving an already-established floor (forward-only, Scope 6).
+ */
+export function scopeFeedPolicies(
+  enabledSourceIds: readonly string[],
+): typeof LOCAL_FEED_POLICIES {
+  const enabled = new Set(enabledSourceIds);
+  return LOCAL_FEED_POLICIES.filter((p) => enabled.has(p.sourcePolicyId));
+}
 
 /**
  * A fact after DB-write redaction: the redacted narrative `text` (with
@@ -263,8 +282,19 @@ export interface EnrichmentWorkerOptions {
   /** Override the customer-DB pool resolver — used by tests. */
   resolveCustomerPool?: (customerId: string) => Pool;
   /** Override the dispatcher builder — used by tests (in-memory feed store).
-   * Receives the resolved feed pool (`feedPool ?? getFeedPool()`). */
-  buildDispatcher?: (feedPool: Pool, now: () => Date) => EnrichmentDispatcher;
+   * Receives the resolved feed pool (`feedPool ?? getFeedPool()`), the clock,
+   * and the customer's resolved enabled source ids (#598) so a test builder
+   * can observe / honor the per-customer scoping. */
+  buildDispatcher?: (
+    feedPool: Pool,
+    now: () => Date,
+    enabledSourceIds: string[],
+  ) => EnrichmentDispatcher;
+  /**
+   * Override the per-customer enabled-source resolver (RFC 0003 F2, #598) —
+   * used by tests. Defaults to `resolveEnabledSources` against `authPool`.
+   */
+  resolveEnabledSources?: (subjectId: string, db: Pool) => Promise<string[]>;
   /** Injectable clock for deterministic `checkedAt` / stale computation. */
   now?: () => Date;
   /** Override redaction-map recovery — used by tests (no OpenBao). */
@@ -307,10 +337,20 @@ export async function runStoryEnrichment(
   );
   const now = opts.now ?? (() => new Date());
   const loadMap = opts.loadRedactionMap ?? defaultLoadRedactionMap;
+  // Per-customer source scoping (RFC 0003 F2, #598): build the dispatcher
+  // from only this customer's enabled sources. Default (no row / no admin
+  // default) resolves to all sources, so there is no behavior change until a
+  // subject is narrowed.
+  const enabledSourceIds = await (
+    opts.resolveEnabledSources ?? resolveEnabledSources
+  )(customerId, opts.authPool);
   const buildDispatcher =
     opts.buildDispatcher ??
-    ((feedPool, clock) =>
-      buildLocalFeedDispatcher(new PgFeedStore(feedPool), { now: clock }));
+    ((feedPool, clock, enabledIds) =>
+      buildLocalFeedDispatcher(new PgFeedStore(feedPool), {
+        now: clock,
+        policies: scopeFeedPolicies(enabledIds),
+      }));
 
   const canonical = await loadCanonicalVersion(customerPool, storyId);
   if (!canonical) {
@@ -336,7 +376,7 @@ export async function runStoryEnrichment(
       now,
       loadMap,
       buildDispatcher: () =>
-        buildDispatcher(opts.feedPool ?? getFeedPool(), now),
+        buildDispatcher(opts.feedPool ?? getFeedPool(), now, enabledSourceIds),
       authPool: opts.authPool,
       loadRanges: opts.loadRanges ?? loadCustomerRanges,
       loadOwnedDomains: opts.loadOwnedDomains ?? loadCustomerOwnedDomains,

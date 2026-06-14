@@ -112,6 +112,16 @@ export interface TiSourceDescriptor {
   hitType: HitType;
   /** Optional classification tag for the rows. */
   classification?: string;
+  /**
+   * RFC 0003 F2 Tier-2 seam (#598). `true` marks a source that needs a
+   * customer-supplied paid key before it can enrich — distinct from the
+   * operator-side feed-fetch Auth-Key (`TiSourceFetchConfig.authKeyName`),
+   * which is the operator's credential, not the customer's. This is ONLY a
+   * shape placeholder: no key storage/plumbing exists yet, so no current
+   * source sets it. The per-subject selection DTO surfaces it so the UI can
+   * render such a source as unavailable-without-key once Tier 2 lands.
+   */
+  requiresCustomerKey?: boolean;
   // --- optional supply-mode config ---
   /**
    * Self-fetch HTTP config (#568). Absent for sources that cannot be
