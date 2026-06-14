@@ -117,6 +117,12 @@ function isCommentLine(line: string, prefixes: readonly string[]): boolean {
  * Lowercased tokens that are file extensions, not TLDs — so the domain scanner
  * does not read `payload.exe` / `gate.php` / `analysis.md` as a DOMAIN. A bare
  * dotted token whose last label is one of these is dropped before normalization.
+ *
+ * Deliberately excludes `com`: although `.COM` is a legacy DOS executable
+ * extension, `.com` is by far the most common real-world TLD, so dropping every
+ * `c2[.]evil[.]com`-style prose IOC to catch a rare `command.com` reference is
+ * the wrong trade — `normalizeDomain` remains the final arbiter for the rare
+ * collision.
  */
 const FILE_EXTENSION_TOKENS: ReadonlySet<string> = new Set([
   "exe",
@@ -125,7 +131,6 @@ const FILE_EXTENSION_TOKENS: ReadonlySet<string> = new Set([
   "dat",
   "sys",
   "scr",
-  "com",
   "msi",
   "dmg",
   "iso",

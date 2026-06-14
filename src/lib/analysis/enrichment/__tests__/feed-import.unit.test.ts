@@ -281,6 +281,21 @@ describe("parseFreeTextIocs (#603)", () => {
     ]);
   });
 
+  it("keeps a defanged bare .com domain (com is a TLD, not a file extension)", () => {
+    // Regression: `com` must not live in the file-extension drop set, or every
+    // real-world `.com` IOC in prose would be silently lost.
+    const prose = "resolved c2[.]evil[.]com before exfil to 203[.]0[.]113[.]9";
+    expect(parseFreeTextIocs(prose)).toEqual([
+      { entityType: "IP", value: "203.0.113.9" },
+      { entityType: "DOMAIN", value: "c2.evil.com" },
+    ]);
+  });
+
+  it("still drops a filename-looking token whose tail is a true extension", () => {
+    // The filter's purpose survives: `payload.exe` is not read as a DOMAIN.
+    expect(parseFreeTextIocs("dropped payload.exe onto disk")).toEqual([]);
+  });
+
   it("normalizes free-text rows through parseFeedContent, stamping entity types", () => {
     const rows = parseFeedContent(
       "free-text",

@@ -581,7 +581,20 @@ export class LiveVendorRepoProvider implements VendorRepoProvider {
       `${encodeURIComponent(ref)}?recursive=1`;
     const body = await this.getJson<{
       tree?: { path?: string; type?: string; sha?: string }[];
+      truncated?: boolean;
     }>(url);
+    // A truncated recursive tree means GitHub omitted entries (the repo exceeds
+    // the tree-API item/size ceiling). Importing it would silently replace the
+    // source snapshot with a PARTIAL row set, yet `runVendorRepoFetch` would
+    // still record the attempt `ok`. For this engine a partial tree is closer to
+    // format drift / fetch failure than a clean refresh, so fail stale: throw
+    // and leave the previous good snapshot untouched rather than half-import.
+    if (body.truncated === true) {
+      throw new VendorRepoFetchError(
+        "git tree response is truncated (repo exceeds tree-API limits); " +
+          "refusing to import a partial tree",
+      );
+    }
     const entries: VendorRepoTreeEntry[] = [];
     for (const node of body.tree ?? []) {
       if (!node.path) continue;

@@ -340,6 +340,28 @@ describe("LiveVendorRepoProvider (request shape, mocked transport)", () => {
     );
   });
 
+  it("rejects a truncated tree (fail stale, never half-import)", async () => {
+    // GitHub flags an over-limit recursive tree with `truncated: true` and omits
+    // entries. Importing it would replace the snapshot with a partial row set,
+    // so the provider must throw rather than silently enumerate a subset.
+    const treeBody = JSON.stringify({
+      truncated: true,
+      tree: [
+        { path: "reports/turla/snake/iocs.csv", type: "blob", sha: "sha-csv" },
+      ],
+    });
+    const { transport } = recordingTransport({
+      "/git/trees/": resp(200, treeBody),
+    });
+    const provider = new LiveVendorRepoProvider(VENDOR_CONFIG, {
+      transport,
+      apiBase: "https://api.test",
+    });
+    await expect(provider.listTree()).rejects.toThrowError(
+      VendorRepoFetchError,
+    );
+  });
+
   it("wraps a transport rejection in VendorRepoFetchError", async () => {
     const transport: FetchTransport = async () => {
       throw new Error("ECONNRESET");
