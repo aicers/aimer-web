@@ -21,7 +21,6 @@ import "server-only";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { TIER1_FEED_SOURCES } from "./feed-catalog";
 import { importFromFeedSource } from "./feed-import";
 import {
   type FeedParseKind,
@@ -30,6 +29,8 @@ import {
   resolveTiFeedMode,
   type TiFeedMode,
 } from "./feed-source";
+import "./sources";
+import { allTiSourceDescriptors } from "./sources/registry";
 import type { EntityType, HitType } from "./types";
 
 const FEEDS_DIR = join(
@@ -50,39 +51,25 @@ interface FixtureFeedSpec {
   classification?: string;
 }
 
-/** The committed fixture file for each Tier-1 source (keyed by policy id). */
-const FIXTURE_FILES: Readonly<Record<string, string>> = {
-  "abuse.ch/feodo": "feodo-ipblocklist.txt",
-  "abuse.ch/urlhaus": "urlhaus.csv",
-  "abuse.ch/urlhaus-payloads": "urlhaus-payloads.csv",
-  "spamhaus/drop": "spamhaus-drop.txt",
-  "spamhaus/edrop": "spamhaus-edrop.txt",
-};
-
 /**
  * Manifest of the committed Tier-1 fixtures and how to import each. Derived
- * from the shared `TIER1_FEED_SOURCES` catalog (re-attaching each fixture
- * `file`) so the `sourcePolicyId → parse/entityType/hitType/classification`
- * mapping is defined once and the upload feature reads the same manifest.
+ * from the self-registering source registry (#588): every source that declares
+ * a `fixtureFile` contributes one spec, re-attaching its
+ * `parse/entityType/hitType/classification` mapping so the manifest is defined
+ * once and the upload feature reads the same values. Order follows the
+ * registry's deterministic stable-by-id ordering.
  */
-export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] = TIER1_FEED_SOURCES.map(
-  (source) => {
-    const file = FIXTURE_FILES[source.sourcePolicyId];
-    if (!file) {
-      throw new Error(
-        `No fixture file mapped for source "${source.sourcePolicyId}"`,
-      );
-    }
-    return {
-      sourcePolicyId: source.sourcePolicyId,
-      file,
-      parse: source.parse,
-      entityType: source.entityType,
-      hitType: source.hitType,
-      classification: source.classification,
-    };
-  },
-);
+export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] =
+  allTiSourceDescriptors()
+    .filter((descriptor) => descriptor.fixtureFile !== undefined)
+    .map((descriptor) => ({
+      sourcePolicyId: descriptor.sourcePolicyId,
+      file: descriptor.fixtureFile as string,
+      parse: descriptor.parse,
+      entityType: descriptor.entityType,
+      hitType: descriptor.hitType,
+      classification: descriptor.classification,
+    }));
 
 /** Options stamping fixture provenance (freshness drives stale coverage). */
 export interface FixtureFeedSourceOptions {
