@@ -2,9 +2,14 @@
 
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
-URL / hash lists, and the Phishing.Database domain / URL / IP lists) that
-observed indicators are matched locally against. Navigate to **Threat Feeds**
-in the admin sidebar to open it.
+URL / hash lists, and the Phishing.Database domain / URL / IP lists) plus the
+**Palo Alto Unit 42** vendor IOC repository that observed indicators are matched
+locally against. Navigate to **Threat Feeds** in the admin sidebar to open it.
+
+The flat Tier-1 feeds are single published files; a **vendor IOC repository**
+(such as Unit 42) is instead a whole Git repository of per-report files that is
+imported as one unit. Vendor repositories are **self-fetch only** — see
+[Vendor IOC repositories](#vendor-ioc-repositories).
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
 or fetch); the `ti-feed:read` permission is required to view the status table.
@@ -93,6 +98,13 @@ This is also how a source that was cleared by an empty upload appears: status
 is derived purely from the imported rows, so a cleared source looks identical
 to one that was never uploaded.
 
+Vendor IOC repositories (Unit 42) are **not** listed here. A repository is a
+whole tree of files imported as one unit, so a single uploaded file could only
+ever write a partial, context-stripped snapshot — manual upload of a vendor
+repository is therefore rejected, and the source is hidden from this table.
+Vendor repositories are refreshed in `self-fetch` mode only (see
+[Vendor IOC repositories](#vendor-ioc-repositories)).
+
 ### Uploading a feed
 
 1. Click the **Upload** button in the row for the source you want to update.
@@ -169,6 +181,41 @@ indicator per line, no header or inline annotation) — not the default
 domain, and hash sources each concatenate several `.raw` files into one source
 (for hashes, the MD5 / SHA-1 / SHA-256 lists are distinguished by digest length).
 Botvrij refreshes irregularly, so a conservative 1 h cadence floor is used.
+
+### Vendor IOC repositories
+
+A **vendor IOC repository** is a whole GitHub repository of per-report files —
+indicators bundled with article-level report context (actor / cluster / malware
+family / report link) — rather than a single published feed file. aimer-web
+imports one through a dedicated path: it enumerates the repository tree, fetches
+**only** the allowlisted text files (never binaries, scripts, or rule files),
+extracts indicators from each, captures the report context, and replaces the
+source's snapshot with every file's rows in one transaction.
+
+| Source | Repository | License | Auth-Key | Cadence floor |
+| --- | --- | --- | --- | --- |
+| `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain) | none (keyless) | 1 h |
+
+Notes specific to vendor repositories:
+
+- **Self-fetch only.** A repository cannot be supplied by manual upload (a
+    single file would write a partial, context-stripped snapshot), so vendor
+    sources appear only in `self-fetch` mode and are hidden from the
+    manual-upload table.
+- **Allowlisted files only.** For Unit 42, only the defanged `.txt` indicator
+    lists are parsed (with refanging — `hxxp`/`hXXp` → `http`, `[.]`/`(.)` → `.`).
+    The repository's PDF report, Python scripts, multi-megabyte CSVs, and
+    Markdown appendices are deliberately **not** fetched or parsed — their
+    "indicators" are host artifacts (file paths, registry keys, DLL names), not
+    network IOCs.
+- **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
+    accepted for Unit 42 — and relies on GitHub's unauthenticated rate limit,
+    which is ample for the 1 h cadence floor. An operator GitHub token to lift
+    that rate limit is **not** wired up in this release; token support is
+    deferred to a follow-up.
+- **Report context.** Each imported indicator carries the per-file GitHub blob
+    URL and, where the filename encodes a cluster id (for example
+    `CL-STA-0910`), the campaign id — surfaced as the indicator's provenance.
 
 ### URLhaus Auth-Key
 

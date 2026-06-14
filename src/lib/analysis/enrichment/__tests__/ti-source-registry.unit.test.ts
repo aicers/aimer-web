@@ -338,6 +338,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         maxAge: FEED_MAX_AGE_MS,
         floorEligible: false,
       },
+      {
+        sourcePolicyId: "unit42/threat-intel",
+        label: "Palo Alto Unit 42 (Unlicense)",
+        entityTypes: ["IP", "DOMAIN", "URL", "HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
     ]);
   });
 });

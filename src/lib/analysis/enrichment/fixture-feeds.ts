@@ -30,6 +30,10 @@ import {
   resolveTiFeedMode,
   type TiFeedMode,
 } from "./feed-source";
+import {
+  FixtureVendorRepoProvider,
+  importVendorRepo,
+} from "./feed-vendor-repo";
 import "./sources";
 import { allTiSourceDescriptors } from "./sources/registry";
 import type { EntityType, HitType, SourcePolarity } from "./types";
@@ -122,16 +126,62 @@ export class FixtureFeedSource implements FeedSource {
 }
 
 /**
+ * Manifest of the committed vendor-repo fixture trees and how to import each.
+ * A vendor-repo source (RFC 0003 F4, #603) declares a `fixtureDir` (not a flat
+ * `fixtureFile`), so it is invisible to `FIXTURE_FEEDS` and the flat
+ * `FixtureFeedSource` path: its tree must be walked by the vendor-repo engine
+ * instead. Derived from the registry so a new vendor-repo source is seeded with
+ * no edit here.
+ */
+export const FIXTURE_VENDOR_REPOS = allTiSourceDescriptors().filter(
+  (descriptor) => descriptor.vendorRepo?.fixtureDir !== undefined,
+);
+
+/**
+ * Seed every vendor-repo fixture tree into `ioc_feed_snapshot` via the
+ * vendor-repo engine (tree enumerate → allowlisted blobs → ONE per-source
+ * replace), reading the committed tree under `feeds/<fixtureDir>` so tests run
+ * offline. Without this a `deterministicCoverage: true` vendor-repo source would
+ * never have a snapshot in a fixture-backed stack and its coverage would read
+ * `unavailable`/`unknown`. Shares the fixture `sourceUpdatedAt` so freshness
+ * drives stale coverage the same way the flat feeds do.
+ */
+export async function seedFixtureVendorRepos(
+  pool: Pool,
+  options: FixtureFeedSourceOptions,
+): Promise<void> {
+  for (const descriptor of FIXTURE_VENDOR_REPOS) {
+    const vendorRepo = descriptor.vendorRepo;
+    // Guarded by the `FIXTURE_VENDOR_REPOS` filter above.
+    if (!vendorRepo?.fixtureDir) continue;
+    const provider = new FixtureVendorRepoProvider(
+      join(FEEDS_DIR, vendorRepo.fixtureDir),
+    );
+    await importVendorRepo(pool, provider, {
+      sourcePolicyId: descriptor.sourcePolicyId,
+      entityType: descriptor.entityType,
+      hitType: descriptor.hitType,
+      classification: descriptor.classification,
+      vendorRepo,
+      sourceVersion: options.sourceVersion,
+      sourceUpdatedAt: options.sourceUpdatedAt,
+    });
+  }
+}
+
+/**
  * Seed every fixture feed into `ioc_feed_snapshot` (replace-all per
- * source) via the `FixtureFeedSource`. `sourceUpdatedAt` stamps the
- * snapshot freshness — pass a value relative to the test clock to control
- * fresh vs stale coverage.
+ * source) via the `FixtureFeedSource`, then seed the vendor-repo fixture trees
+ * through the vendor-repo engine. `sourceUpdatedAt` stamps the snapshot
+ * freshness — pass a value relative to the test clock to control fresh vs stale
+ * coverage.
  */
 export async function seedFixtureFeeds(
   pool: Pool,
   options: FixtureFeedSourceOptions,
 ): Promise<void> {
   await importFromFeedSource(pool, new FixtureFeedSource(options));
+  await seedFixtureVendorRepos(pool, options);
 }
 
 /**
@@ -186,5 +236,12 @@ export async function importConfiguredFeed(
   pool: Pool,
   options: FixtureFeedSourceOptions,
 ): Promise<void> {
-  await importFromFeedSource(pool, resolveConfiguredFeedSource(options));
+  const source = resolveConfiguredFeedSource(options);
+  await importFromFeedSource(pool, source);
+  // The flat `FixtureFeedSource` cannot seed a vendor-repo tree (it declares a
+  // `fixtureDir`, not a `fixtureFile`), so the engine must walk it separately —
+  // only in the `fixture` mode, the one offline-seeded mode.
+  if (source.mode === "fixture") {
+    await seedFixtureVendorRepos(pool, options);
+  }
 }

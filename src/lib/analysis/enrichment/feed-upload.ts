@@ -61,6 +61,19 @@ export function buildManualUploadPayload(args: {
   if (!source) {
     throw new FeedUploadError(`Unknown source: ${args.sourcePolicyId}`);
   }
+  // A vendor-repo source (RFC 0003 F4, #603) is a Git tree of many files
+  // aggregated into ONE snapshot replace, with per-file path/README context.
+  // A single uploaded file would write a partial, context-stripped snapshot,
+  // bypassing the repo-level aggregate — so manual upload is rejected outright
+  // (vendor-repo sources are self-fetch-only in v1). They are also hidden from
+  // the upload catalog/UI (see `getFeedSourceStatuses`), so this guards the API
+  // against a hand-crafted request targeting one.
+  if (source.vendorRepo) {
+    throw new FeedUploadError(
+      `Source "${args.sourcePolicyId}" is a vendor repository and cannot be ` +
+        "manually uploaded (it is fetched as a whole repo, not a single file)",
+    );
+  }
   return {
     sourcePolicyId: source.sourcePolicyId,
     parse: source.parse,
@@ -141,23 +154,31 @@ export async function getFeedSourceStatuses(
   );
   const byId = new Map(rows.map((r) => [r.source_policy_id, r]));
 
-  return TIER1_FEED_SOURCES.map((source) => {
-    const row = byId.get(source.sourcePolicyId);
-    const rowCount = row ? Number(row.row_count) : 0;
-    const present = rowCount > 0;
-    const sourceUpdatedAt = present ? toIso(row?.source_updated_at) : null;
-    const stale =
-      present && sourceUpdatedAt !== null
-        ? now.getTime() - new Date(sourceUpdatedAt).getTime() > source.maxAge
-        : false;
-    return {
-      sourcePolicyId: source.sourcePolicyId,
-      label: source.label,
-      present,
-      rowCount,
-      sourceUpdatedAt,
-      feedHash: present ? (row?.feed_hash ?? null) : null,
-      stale,
-    };
-  });
+  // Vendor-repo sources (RFC 0003 F4) are self-fetch-only — they cannot be
+  // filled by a single-file upload, so hiding them from the manual-upload
+  // catalog/UI avoids offering an operator a control that can only ever write a
+  // partial, context-stripped snapshot. (The active coverage policy set drops
+  // them too in this mode — see `scopeFeedPolicies` — so coverage does not sit
+  // permanently at `unknown` with no remedy.)
+  return TIER1_FEED_SOURCES.filter((source) => !source.vendorRepo).map(
+    (source) => {
+      const row = byId.get(source.sourcePolicyId);
+      const rowCount = row ? Number(row.row_count) : 0;
+      const present = rowCount > 0;
+      const sourceUpdatedAt = present ? toIso(row?.source_updated_at) : null;
+      const stale =
+        present && sourceUpdatedAt !== null
+          ? now.getTime() - new Date(sourceUpdatedAt).getTime() > source.maxAge
+          : false;
+      return {
+        sourcePolicyId: source.sourcePolicyId,
+        label: source.label,
+        present,
+        rowCount,
+        sourceUpdatedAt,
+        feedHash: present ? (row?.feed_hash ?? null) : null,
+        stale,
+      };
+    },
+  );
 }

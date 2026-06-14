@@ -1,0 +1,4 @@
+%PDF-1.4 fixture sentinel — a binary the allowlist must NEVER fetch.
+Contains a sentinel token that must not reach the snapshot:
+binary-only.should-never-be-fetched.test
+%%EOF

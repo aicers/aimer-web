@@ -9,6 +9,7 @@ import {
   readSelfFetchSchedule,
 } from "@/lib/analysis/enrichment/feed-schedule";
 import { getFeedSourceStatuses } from "@/lib/analysis/enrichment/feed-upload";
+import { VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS } from "@/lib/analysis/enrichment/feed-vendor-repo";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { withAuth } from "@/lib/auth/guards";
@@ -70,8 +71,19 @@ export const GET = withAuth(
         readSelfFetchSchedule(authPool),
       ]);
       const sources = statuses.map((status) => {
-        const fetchConfig = getTier1FeedSource(status.sourcePolicyId)?.fetch;
-        if (!fetchConfig) {
+        const source = getTier1FeedSource(status.sourcePolicyId);
+        // A source's cadence floor comes from its flat `fetch` config or, for a
+        // vendor-repo source, the `vendorRepo` branch (default
+        // `VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS`) — mirroring the worker, which
+        // schedules both. Without the vendor-repo branch a fetchable vendor-repo
+        // source would render `dueNow:false` / cadence "—" despite being fetched.
+        const cadenceFloorMs = source?.fetch
+          ? source.fetch.cadenceFloorMs
+          : source?.vendorRepo
+            ? (source.vendorRepo.cadenceFloorMs ??
+              VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS)
+            : undefined;
+        if (cadenceFloorMs === undefined) {
           return {
             ...status,
             effectiveCadenceMs: null,
@@ -79,10 +91,7 @@ export const GET = withAuth(
             dueNow: false,
           };
         }
-        const cadence = effectiveCadenceMs(
-          schedule.intervalMs,
-          fetchConfig.cadenceFloorMs,
-        );
+        const cadence = effectiveCadenceMs(schedule.intervalMs, cadenceFloorMs);
         // Next-due mirrors the worker's `nextFetchAllowedAt(state, cadence)`.
         // A never-fetched source has no concrete next-due timestamp, but the
         // worker treats it as due on the next tick. Surface that explicitly as
@@ -93,7 +102,15 @@ export const GET = withAuth(
               new Date(status.lastFetchedAt).getTime() + cadence,
             ).toISOString()
           : null;
-        const dueNow = status.lastFetchedAt === null;
+        // `dueNow` mirrors the worker's scheduling predicate exactly:
+        // `allowedAt === null || now >= allowedAt` (self-fetch-worker.ts). A
+        // never-fetched source (no next-due) is due on the next tick, AND a
+        // previously-fetched source becomes due once its next-due elapses.
+        // Deriving `dueNow` only from "never fetched" would leave a long-idle
+        // fetchable source rendering as not-due with a stale past timestamp.
+        const dueNow =
+          nextFetchDueAt === null ||
+          new Date(nextFetchDueAt).getTime() <= now.getTime();
         return {
           ...status,
           effectiveCadenceMs: cadence,

@@ -18,6 +18,7 @@ import "./infoblox";
 import "./phishing-database";
 import "./spamhaus-drop";
 import "./spamhaus-edrop";
+import "./unit42";
 
 export {
   allTiSourceDescriptors,

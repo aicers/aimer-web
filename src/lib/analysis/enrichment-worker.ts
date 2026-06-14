@@ -54,7 +54,9 @@ import {
   evidenceIsFloorSupporting,
   surfacesSoftMatch,
 } from "./enrichment/evidence";
+import { VENDOR_REPO_SOURCE_IDS } from "./enrichment/feed-catalog";
 import { PgFeedStore } from "./enrichment/feed-store";
+import { manualUploadModeActive } from "./enrichment/feed-upload";
 import {
   extractIndicators,
   type RecoverToken,
@@ -80,7 +82,21 @@ export function scopeFeedPolicies(
   enabledSourceIds: readonly string[],
 ): typeof LOCAL_FEED_POLICIES {
   const enabled = new Set(enabledSourceIds);
-  return LOCAL_FEED_POLICIES.filter((p) => enabled.has(p.sourcePolicyId));
+  // Mode-aware vendor-repo exclusion (RFC 0003 F4, #623). A vendor-repo source
+  // is `deterministicCoverage: true`, so it registers as a coverage policy; but
+  // in `manual-upload` mode it can NEVER be filled (it is hidden from the upload
+  // UI and rejected by the upload route — it is whole-repo self-fetch only).
+  // Leaving its policy active would probe `present:false` → `unavailable` →
+  // coverage permanently `unknown` with no operator remedy. So drop vendor-repo
+  // policies from the active set ONLY in manual-upload mode. Fixture / self-fetch
+  // modes seed it (fixture tree / scheduler), so it stays in those — this is a
+  // filter on the dispatcher's policies, NOT a change to the global registry.
+  const excludeVendorRepo = manualUploadModeActive();
+  return LOCAL_FEED_POLICIES.filter(
+    (p) =>
+      enabled.has(p.sourcePolicyId) &&
+      !(excludeVendorRepo && VENDOR_REPO_SOURCE_IDS.has(p.sourcePolicyId)),
+  );
 }
 
 /**
