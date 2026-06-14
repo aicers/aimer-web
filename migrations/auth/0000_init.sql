@@ -1149,6 +1149,35 @@ CREATE TABLE group_retention_policy (
     updated_by    UUID         NOT NULL
 );
 
+-- ---------------------------------------------------------------
+-- subject_ti_sources (RFC 0003 F2, #598)
+-- ---------------------------------------------------------------
+-- Per-subject (customer OR group) selection of which Tier-1 TI sources
+-- enrichment runs against — the first tier of the three-tier resolution
+-- `subject -> admin-set global (system_settings.ti_sources_default) ->
+-- all-enabled` (`resolveEnabledSources`). A subject-keyed peer of
+-- `group_retention_policy` / `customer_default_model`, living in the auth
+-- DB. It applies to both subject kinds, but v1 management routes/auth are
+-- customer-only (group surface lands with #542).
+--
+-- Storage is an ALLOWLIST: `enabled_source_ids` is a JSONB array of the
+-- enabled `sourcePolicyId`s. The ABSENCE of a row means "all sources
+-- enabled" (the default — no behavior change until a subject is narrowed).
+-- A PRESENT row is AUTHORITATIVE: a source not listed is disabled for that
+-- subject, INCLUDING a source registered after the row was written (a new
+-- source — even a future Tier-2 paid one — never silently activates egress
+-- for a curated subject). A present row must list at least one source; an
+-- empty array is rejected at write (it would make the coverage model report
+-- a vacuous `complete`), enforced in the service, not by a DB CHECK.
+-- Validated against the live source registry at save time — no DB-level
+-- CHECK against the code-derived registry is possible.
+CREATE TABLE subject_ti_sources (
+  subject_id         UUID         PRIMARY KEY REFERENCES subjects(id) ON DELETE CASCADE,
+  enabled_source_ids JSONB        NOT NULL,
+  updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_by         UUID         NOT NULL
+);
+
 -- ===================================================================
 -- Trigger functions + triggers
 -- ===================================================================
@@ -1392,6 +1421,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON customer_groups TO aimer_auth;
 -- No UPDATE grant: membership is immutable. SELECT/INSERT/DELETE only.
 GRANT SELECT, INSERT, DELETE ON customer_group_members TO aimer_auth;
 GRANT SELECT, INSERT, UPDATE, DELETE ON group_retention_policy TO aimer_auth;
+GRANT SELECT, INSERT, UPDATE, DELETE ON subject_ti_sources TO aimer_auth;
 
 -- ===================================================================
 -- Seeds
@@ -1426,6 +1456,7 @@ LATERAL (VALUES
   ('customer-retention:read'), ('customer-retention:write'),
   ('customer-owned-domains:read'), ('customer-owned-domains:write'),
   ('customer-default-model:read'), ('customer-default-model:write'),
+  ('ti-sources:read'), ('ti-sources:write'),
   ('ti-feed:read'), ('ti-feed:write')
 ) AS p(permission)
 WHERE r.name = 'System Administrator';
@@ -1467,9 +1498,10 @@ LATERAL (VALUES
 WHERE r.name = 'Manager';
 
 -- Analyst permissions (general context, includes User base). The
--- per-customer default-model keys are analyst-facing (#473): seeded
--- ONLY to Analyst and System Administrator — Manager and User receive
--- neither and cannot view or change the per-customer default.
+-- per-customer default-model keys are analyst-facing (#473), as are the
+-- per-subject TI-source-selection keys (#598): both are seeded ONLY to
+-- Analyst and System Administrator — Manager and User receive neither and
+-- cannot view or change the per-customer default model or TI sources.
 INSERT INTO role_permissions (role_id, permission)
 SELECT r.id, p.permission
 FROM roles r,
@@ -1484,6 +1516,7 @@ LATERAL (VALUES
   ('customer-redaction-ranges:read'),
   ('customer-retention:read'),
   ('customer-owned-domains:read'),
-  ('customer-default-model:read'), ('customer-default-model:write')
+  ('customer-default-model:read'), ('customer-default-model:write'),
+  ('ti-sources:read'), ('ti-sources:write')
 ) AS p(permission)
 WHERE r.name = 'Analyst';

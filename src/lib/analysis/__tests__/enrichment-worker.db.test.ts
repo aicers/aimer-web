@@ -56,6 +56,7 @@ import {
   runStoryEnrichment,
   tickStoryEnrichmentOnce,
 } from "../enrichment-worker";
+import { resolveEnabledSources } from "../ti-sources";
 
 const AUTH_MIGRATIONS_DIR = join(process.cwd(), "migrations", "auth");
 const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
@@ -255,6 +256,67 @@ function optsWithPolicies(
     buildDispatcher: (fp, now) =>
       buildLocalFeedDispatcher(new PgFeedStore(fp), { now, policies }),
     ...overrides,
+  });
+}
+
+// --- Per-customer source scoping (RFC 0003 F2, #598) --------------------
+//
+// Two shipped source ids matching the SAME indicator: a FLOOR-eligible
+// deterministic source and a NON-floor (floor-ineligible) deterministic one.
+// `scopingOpts` honors the customer's resolved enabled set (the REAL
+// `resolveEnabledSources` reads `subject_ti_sources` in the auth DB) by
+// filtering this pair, so disabling a source removes it from the dispatcher.
+const SCOPED_FLOOR = "abuse.ch/feodo";
+const SCOPED_NONFLOOR = "spamhaus/drop";
+const SCOPED_POLICIES: SourcePolicy[] = [
+  {
+    sourcePolicyId: SCOPED_FLOOR,
+    label: "abuse.ch Feodo Tracker",
+    entityTypes: ["IP"],
+    deterministicCoverage: true,
+    maxAge: 2 * 24 * 60 * 60 * 1000,
+    floorEligible: true,
+  },
+  {
+    sourcePolicyId: SCOPED_NONFLOOR,
+    label: "Spamhaus DROP",
+    entityTypes: ["IP"],
+    deterministicCoverage: true,
+    maxAge: 2 * 24 * 60 * 60 * 1000,
+    floorEligible: false,
+  },
+];
+
+async function importScopedSource(
+  feedPool: Pool,
+  sourcePolicyId: string,
+  matchValue = "45.66.230.5",
+): Promise<void> {
+  await importFeedSnapshot(feedPool, {
+    sourcePolicyId,
+    entityType: "IP",
+    hitType: "deterministic_ioc",
+    classification: "c2",
+    sourceVersion: "2026-06-04",
+    sourceUpdatedAt: FRESH,
+    rows: [{ matchValue }],
+  });
+}
+
+function scopingOpts(
+  authPool: Pool,
+  feedPool: Pool,
+  customerPool: Pool,
+): EnrichmentWorkerOptions {
+  return opts(authPool, feedPool, customerPool, {
+    // Honor the resolved enabled set (the default resolver reads the auth DB).
+    buildDispatcher: (fp, now, enabledIds) =>
+      buildLocalFeedDispatcher(new PgFeedStore(fp), {
+        now,
+        policies: SCOPED_POLICIES.filter((p) =>
+          enabledIds.includes(p.sourcePolicyId),
+        ),
+      }),
   });
 }
 
@@ -1097,5 +1159,129 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
         WHERE story_id = 1106 AND story_version = 'v1'`,
     );
     expect(rows[0].known_ioc_hit).toBe(true);
+  });
+
+  // --- Per-customer source scoping (RFC 0003 F2, #598) ------------------
+
+  async function setSelection(ids: string[] | null): Promise<void> {
+    if (ids === null) {
+      await authPool.query(
+        `DELETE FROM subject_ti_sources WHERE subject_id = $1`,
+        [CUSTOMER_ID],
+      );
+      return;
+    }
+    await authPool.query(
+      `INSERT INTO subject_ti_sources (subject_id, enabled_source_ids, updated_by)
+       VALUES ($1, $2::jsonb, $1)
+       ON CONFLICT (subject_id)
+       DO UPDATE SET enabled_source_ids = $2::jsonb`,
+      [CUSTOMER_ID, JSON.stringify(ids)],
+    );
+  }
+
+  async function evidenceSourceIds(storyId: string): Promise<string[]> {
+    const { rows } = await customerPool.query<{ source_policy_id: string }>(
+      `SELECT source_policy_id FROM story_ioc_evidence
+        WHERE story_id = $1::bigint AND story_version = 'v1'
+        ORDER BY source_policy_id`,
+      [storyId],
+    );
+    return rows.map((r) => r.source_policy_id);
+  }
+
+  it("default (no selection) enriches against ALL sources", async () => {
+    await setSelection(null);
+    await importScopedSource(feedPool, SCOPED_FLOOR);
+    await importScopedSource(feedPool, SCOPED_NONFLOOR);
+    await seedStory(customerPool, "1201", { resp_addr: "45.66.230.5" });
+
+    // The REAL resolver returns all shipped ids for a subject with no row,
+    // so both scoped sources match.
+    expect(await resolveEnabledSources(CUSTOMER_ID, authPool)).toContain(
+      SCOPED_FLOOR,
+    );
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1201",
+      scopingOpts(authPool, feedPool, customerPool),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(await evidenceSourceIds("1201")).toEqual(
+      [SCOPED_FLOOR, SCOPED_NONFLOOR].sort(),
+    );
+  });
+
+  it("disabling the floor source is forward-only: floor + its evidence preserved", async () => {
+    await setSelection(null);
+    await importScopedSource(feedPool, SCOPED_FLOOR);
+    await importScopedSource(feedPool, SCOPED_NONFLOOR);
+    await seedStory(customerPool, "1202", { resp_addr: "45.66.230.5" });
+
+    // Run 1 (all enabled): floor established, both sources stored.
+    await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1202",
+      scopingOpts(authPool, feedPool, customerPool),
+    );
+
+    // Disable the floor source; only the non-floor source stays enabled.
+    await setSelection([SCOPED_NONFLOOR]);
+    const second = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1202",
+      scopingOpts(authPool, feedPool, customerPool),
+    );
+
+    // This run produced NO new floor match (the floor source is disabled), so
+    // the per-run outcome reports no hit — the disabled source contributes
+    // nothing going forward. But the already-established floor in the DB stays
+    // true (monotonic OR) and its floor-supporting evidence is preserved; the
+    // non-floor source's evidence is refreshed.
+    expect(second.knownIocHit).toBe(false);
+    const { rows: storyRows } = await customerPool.query<{
+      known_ioc_hit: boolean;
+    }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1202 AND story_version = 'v1'`,
+    );
+    expect(storyRows[0].known_ioc_hit).toBe(true);
+    expect(await evidenceSourceIds("1202")).toEqual(
+      [SCOPED_FLOOR, SCOPED_NONFLOOR].sort(),
+    );
+  });
+
+  it("disabling a non-floor source clears its non-floor evidence on re-run", async () => {
+    await setSelection(null);
+    await importScopedSource(feedPool, SCOPED_FLOOR);
+    await importScopedSource(feedPool, SCOPED_NONFLOOR);
+    await seedStory(customerPool, "1203", { resp_addr: "45.66.230.5" });
+
+    // Run 1 (all enabled): both sources stored.
+    await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1203",
+      scopingOpts(authPool, feedPool, customerPool),
+    );
+    expect(await evidenceSourceIds("1203")).toEqual(
+      [SCOPED_FLOOR, SCOPED_NONFLOOR].sort(),
+    );
+
+    // Disable the non-floor source; the floor source stays enabled.
+    await setSelection([SCOPED_FLOOR]);
+    const second = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1203",
+      scopingOpts(authPool, feedPool, customerPool),
+    );
+
+    // The disabled source contributes no new matches; its non-floor evidence
+    // is cleared. The floor source re-derives its floor evidence; floor stays.
+    expect(second.knownIocHit).toBe(true);
+    expect(await evidenceSourceIds("1203")).toEqual([SCOPED_FLOOR]);
+
+    // Clean up the row so later runs of the suite default to all-enabled.
+    await setSelection(null);
   });
 });

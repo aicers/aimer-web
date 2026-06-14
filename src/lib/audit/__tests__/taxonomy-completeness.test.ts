@@ -185,6 +185,11 @@ const PRODUCED: Record<string, string> = {
   "customer_default_model.cleared": "src/lib/analysis/default-model.ts",
   "system.default_model_updated": "src/lib/analysis/default-model.ts",
   "system.default_model_cleared": "src/lib/analysis/default-model.ts",
+  // Per-subject TI source selection (RFC 0003 F2, #598)
+  "subject_ti_sources.updated": "src/lib/analysis/ti-sources.ts",
+  "subject_ti_sources.cleared": "src/lib/analysis/ti-sources.ts",
+  "system.ti_sources_default_updated": "src/lib/analysis/ti-sources.ts",
+  "system.ti_sources_default_cleared": "src/lib/analysis/ti-sources.ts",
   // TI feed self-fetch scheduler (#570)
   "system.ti_feed_self_fetch_schedule_updated":
     "src/lib/analysis/enrichment/feed-schedule.ts",

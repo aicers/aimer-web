@@ -82,6 +82,12 @@ export type AuditAction =
   | "customer_default_model.cleared"
   | "system.default_model_updated"
   | "system.default_model_cleared"
+  // Per-subject TI source selection (RFC 0003 F2, #598). Named for the
+  // `subject_ti_sources` table (both subject kinds), not the subject kind.
+  | "subject_ti_sources.updated"
+  | "subject_ti_sources.cleared"
+  | "system.ti_sources_default_updated"
+  | "system.ti_sources_default_cleared"
   // Story-leaf re-analysis backfill (#466)
   | "story_reanalysis.backfill_enqueued"
   // Report-variant refresh (#469)

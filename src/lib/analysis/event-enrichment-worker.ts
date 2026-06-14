@@ -56,8 +56,10 @@ import {
   defaultLoadRedactionMap,
   type EnrichmentWorkerOptions,
   type LoadRedactionMap,
+  scopeFeedPolicies,
   worseCoverage,
 } from "./enrichment-worker";
+import { resolveEnabledSources } from "./ti-sources";
 
 /**
  * Injectable options for the per-event primitive. The same surface the
@@ -159,10 +161,18 @@ export async function runEventEnrichment(
   );
   const now = opts.now ?? (() => new Date());
   const loadMap = opts.loadRedactionMap ?? defaultLoadRedactionMap;
+  // Per-customer source scoping (RFC 0003 F2, #598) — same seam as the story
+  // worker. Default resolves to all sources (no behavior change).
+  const enabledSourceIds = await (
+    opts.resolveEnabledSources ?? resolveEnabledSources
+  )(customerId, opts.authPool);
   const buildDispatcher =
     opts.buildDispatcher ??
-    ((feedPool, clock) =>
-      buildLocalFeedDispatcher(new PgFeedStore(feedPool), { now: clock }));
+    ((feedPool, clock, enabledIds) =>
+      buildLocalFeedDispatcher(new PgFeedStore(feedPool), {
+        now: clock,
+        policies: scopeFeedPolicies(enabledIds),
+      }));
 
   const baseline = await loadLatestBaselineEvent(
     customerPool,
@@ -204,7 +214,7 @@ export async function runEventEnrichment(
       now,
       loadMap,
       buildDispatcher: () =>
-        buildDispatcher(opts.feedPool ?? getFeedPool(), now),
+        buildDispatcher(opts.feedPool ?? getFeedPool(), now, enabledSourceIds),
     });
   } catch (err) {
     await persistEventEnrichmentFailure(customerPool, {
