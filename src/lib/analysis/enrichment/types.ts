@@ -140,7 +140,7 @@ export interface EnrichmentMatch {
   confidence?: number;
   /**
    * Structured report-level context for context-bearing sources (vendor IOC
-   * repositories). Absent for context-less feeds (the existing five). Read
+   * repositories). Absent for context-less feeds (the Tier-1 IOC feeds). Read
    * from the snapshot's `context` JSONB through a narrowing validator — never
    * trusted as the raw pg value. Carried here for later #589 / #591 consumers.
    */

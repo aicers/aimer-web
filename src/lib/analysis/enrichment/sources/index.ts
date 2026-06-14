@@ -13,6 +13,7 @@
 import "./abuse-ch-feodo";
 import "./abuse-ch-urlhaus";
 import "./abuse-ch-urlhaus-payloads";
+import "./infoblox";
 import "./spamhaus-drop";
 import "./spamhaus-edrop";
 

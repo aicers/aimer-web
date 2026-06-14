@@ -53,7 +53,7 @@ import type {
  * the fact is enriched with the attributed actor / campaign / malware
  * family and a report link. It degrades gracefully to the bare
  * "{indicator} is listed by {source} [as {classification}]" one-liner when
- * no context is present — so the existing five context-less feeds produce
+ * no context is present — so the context-less feeds produce
  * byte-identical facts.
  */
 export function buildFactsFromMatches(

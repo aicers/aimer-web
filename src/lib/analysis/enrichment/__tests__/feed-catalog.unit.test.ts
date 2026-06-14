@@ -8,11 +8,12 @@ import { getTier1FeedSource, TIER1_FEED_SOURCES } from "../feed-catalog";
 import { LOCAL_FEED_POLICIES } from "../local-feed-enricher";
 
 describe("TIER1_FEED_SOURCES", () => {
-  it("covers exactly the five known Tier-1 sources, in order", () => {
+  it("covers exactly the known Tier-1 sources, in stable-by-id order", () => {
     expect(TIER1_FEED_SOURCES.map((s) => s.sourcePolicyId)).toEqual([
       "abuse.ch/feodo",
       "abuse.ch/urlhaus",
       "abuse.ch/urlhaus-payloads",
+      "infoblox/threat-intelligence",
       "spamhaus/drop",
       "spamhaus/edrop",
     ]);
@@ -36,7 +37,7 @@ describe("TIER1_FEED_SOURCES", () => {
 });
 
 describe("FIXTURE_FEEDS derived from the catalog", () => {
-  it("still produces the same five fixture specs (seeding unchanged)", async () => {
+  it("still produces the expected fixture specs (seeding unchanged)", async () => {
     const { FIXTURE_FEEDS } = await import("../fixture-feeds");
 
     expect(FIXTURE_FEEDS).toEqual([
@@ -63,6 +64,57 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
         entityType: "HASH",
         hitType: "deterministic_ioc",
         classification: "malware_payload",
+      },
+      {
+        sourcePolicyId: "infoblox/threat-intelligence",
+        file: "infoblox-threat-intelligence.csv",
+        parse: "csv-column",
+        parseConfig: {
+          kind: "csv-column",
+          typeColumn: {
+            value: { name: "indicator" },
+            type: { name: "type" },
+            typeMap: {
+              domain: "DOMAIN",
+              ip: "IP",
+              ipv4: "IP",
+              url: "URL",
+              sha256: "HASH",
+            },
+          },
+          rowFilter: {
+            column: { name: "classification" },
+            allow: [
+              "malicious",
+              "suspicious",
+              "malware",
+              "phishing",
+              "smishing",
+              "scam",
+              "spam",
+              "malvertising",
+              "redirect",
+              "monetizer",
+              "rexpush",
+              "bropush",
+              "richads",
+              "help_tds",
+              "partners_house",
+              "ddga",
+              "propaganda",
+              "vextrio",
+              "vextrio_affiliate",
+              "vextrio_dns_c2_set1",
+              "vextrio_dns_c2_set2",
+              "vextrio_dns_txt_redirect",
+            ],
+          },
+          refang: true,
+          skipHeader: true,
+        },
+        entityType: "DOMAIN",
+        hitType: "deterministic_ioc",
+        classification: "infoblox",
       },
       {
         sourcePolicyId: "spamhaus/drop",

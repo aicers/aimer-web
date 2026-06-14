@@ -113,29 +113,93 @@ function isCommentLine(line: string, prefixes: readonly string[]): boolean {
 }
 
 /**
- * `csv-column` (#593): extract indicator column(s) from a CSV by header name
- * or zero-based index, each with its own `entityType`. Honors a configurable
- * delimiter, header-row skip, and comment-prefix skip. Returns `{ entityType,
- * value }` pairs in row-then-column order (normalization happens at import).
+ * Whether a `csv-column` config uses the row-typed (`typeColumn`) extraction
+ * mode (#605) rather than the static per-column (`columns`) mode. Exactly one
+ * of the two must be present.
+ */
+function isRowTypedCsv(config: CsvColumnParseConfig): boolean {
+  return config.typeColumn !== undefined;
+}
+
+/** Whether any column reference in a `csv-column` config selects by header name. */
+function csvConfigUsesNames(config: CsvColumnParseConfig): boolean {
+  if (config.typeColumn) {
+    const { value, type } = config.typeColumn;
+    if (value.name !== undefined || type.name !== undefined) return true;
+    return config.rowFilter?.column.name !== undefined;
+  }
+  return (config.columns ?? []).some((c) => c.name !== undefined);
+}
+
+/**
+ * Resolve one `CsvColumnRef` to a concrete column index against the header
+ * (when selecting by name) or the row width (when selecting by index). A
+ * missing header name / out-of-range index raises `FeedParseError` so a
+ * misconfiguration or upstream format drift surfaces instead of a silent skip.
+ */
+function resolveCsvRef(
+  ref: { name?: string; index?: number },
+  headerFields: string[] | undefined,
+  refWidth: number,
+): number {
+  if (ref.name !== undefined) {
+    const index = headerFields?.indexOf(ref.name) ?? -1;
+    if (index < 0) {
+      throw new FeedParseError(`csv-column: header "${ref.name}" not found`);
+    }
+    return index;
+  }
+  if (ref.index === undefined) {
+    throw new FeedParseError("csv-column: a column needs a name or index");
+  }
+  if (ref.index < 0 || ref.index >= refWidth) {
+    throw new FeedParseError(
+      `csv-column: index ${ref.index} out of range (width ${refWidth})`,
+    );
+  }
+  return ref.index;
+}
+
+/**
+ * `csv-column` (#593, generalized #605): extract indicator column(s) from a
+ * CSV. Two modes (mutually exclusive, see `CsvColumnParseConfig`): static
+ * per-column (`columns`, each with its own `entityType`) and row-typed
+ * (`typeColumn`, one value column whose entity type comes from a per-row
+ * `type` column via `typeMap`). Honors a configurable delimiter, header-row
+ * skip, comment-prefix skip, an optional `rowFilter` allowlist on another
+ * column, and `refang` of extracted values. A leading UTF-8 BOM on the first
+ * line is stripped (some Infoblox files are BOM-prefixed). Returns
+ * `{ entityType, value }` pairs in row-then-column order (normalization
+ * happens at import).
  *
  * Validation (never a silent 0 rows): a configured header `name` that the
  * header row lacks, or an `index` beyond the row width, raises `FeedParseError`
- * — so a misconfiguration or upstream format drift surfaces instead of
- * quietly clearing the source.
+ * — so a misconfiguration or upstream format drift surfaces instead of quietly
+ * clearing the source. A row whose `type` is unmapped, or that the `rowFilter`
+ * drops, is a silent per-row skip (expected, not an error).
  */
 export function parseCsvColumns(
   text: string,
   config: CsvColumnParseConfig,
 ): { entityType: EntityType; value: string }[] {
-  if (config.columns.length === 0) {
+  const rowTyped = isRowTypedCsv(config);
+  if (rowTyped && config.columns && config.columns.length > 0) {
+    throw new FeedParseError(
+      "csv-column: `columns` and `typeColumn` are mutually exclusive",
+    );
+  }
+  if (!rowTyped && (config.columns ?? []).length === 0) {
     throw new FeedParseError("csv-column: at least one column is required");
   }
   const delimiter = config.delimiter ?? ",";
-  const usesNames = config.columns.some((c) => c.name !== undefined);
+  const refang = config.refang ?? false;
+  const usesNames = csvConfigUsesNames(config);
 
-  // Keep only the non-blank, non-comment lines, in order.
+  // Strip a leading UTF-8 BOM so a header-name lookup (`indexOf("type")`)
+  // resolves on BOM-prefixed files, then keep only non-blank, non-comment
+  // lines in order.
   const lines: string[] = [];
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
     const line = raw.trim();
     if (line.length === 0) continue;
     if (config.commentPrefix && line.startsWith(config.commentPrefix)) continue;
@@ -149,35 +213,56 @@ export function parseCsvColumns(
   const hasHeader = usesNames || config.skipHeader === true;
   const headerFields = hasHeader ? splitCsv(lines[0], delimiter) : undefined;
   const dataStart = hasHeader ? 1 : 0;
-
-  // Resolve each column to a concrete index up front, so a missing header name
-  // / out-of-range index fails as a parse error rather than a silent skip.
   const refWidth = (headerFields ?? splitCsv(lines[0], delimiter)).length;
-  const resolved = config.columns.map((col) => {
-    if (col.name !== undefined) {
-      const index = headerFields?.indexOf(col.name) ?? -1;
-      if (index < 0) {
-        throw new FeedParseError(`csv-column: header "${col.name}" not found`);
-      }
-      return { index, entityType: col.entityType };
-    }
-    if (col.index === undefined) {
-      throw new FeedParseError("csv-column: a column needs a name or index");
-    }
-    if (col.index < 0 || col.index >= refWidth) {
-      throw new FeedParseError(
-        `csv-column: index ${col.index} out of range (width ${refWidth})`,
-      );
-    }
-    return { index: col.index, entityType: col.entityType };
-  });
+
+  const emit = refang
+    ? (value: string): string => refangIndicator(value)
+    : (value: string): string => value;
+
+  // The optional row allowlist filter resolves to a column index + a set.
+  const filterIndex = config.rowFilter
+    ? resolveCsvRef(config.rowFilter.column, headerFields, refWidth)
+    : -1;
+  const allow = config.rowFilter ? new Set(config.rowFilter.allow) : undefined;
+  const passesFilter = (fields: string[]): boolean => {
+    if (!allow) return true;
+    const v = fields[filterIndex];
+    return v !== undefined && allow.has(v);
+  };
 
   const out: { entityType: EntityType; value: string }[] = [];
+
+  if (rowTyped) {
+    const tc = config.typeColumn as NonNullable<
+      CsvColumnParseConfig["typeColumn"]
+    >;
+    const valueIndex = resolveCsvRef(tc.value, headerFields, refWidth);
+    const typeIndex = resolveCsvRef(tc.type, headerFields, refWidth);
+    for (let i = dataStart; i < lines.length; i += 1) {
+      const fields = splitCsv(lines[i], delimiter);
+      if (!passesFilter(fields)) continue;
+      const typeValue = fields[typeIndex];
+      if (!typeValue) continue;
+      // Unmapped type (e.g. `email`, `telfhash`, future drift) → skip, not error.
+      const entityType = tc.typeMap[typeValue];
+      if (!entityType) continue;
+      const value = fields[valueIndex];
+      if (value) out.push({ entityType, value: emit(value) });
+    }
+    return out;
+  }
+
+  // Static per-column mode: resolve each column to a concrete index up front.
+  const resolved = (config.columns ?? []).map((col) => ({
+    index: resolveCsvRef(col, headerFields, refWidth),
+    entityType: col.entityType,
+  }));
   for (let i = dataStart; i < lines.length; i += 1) {
     const fields = splitCsv(lines[i], delimiter);
+    if (!passesFilter(fields)) continue;
     for (const col of resolved) {
       const value = fields[col.index];
-      if (value) out.push({ entityType: col.entityType, value });
+      if (value) out.push({ entityType: col.entityType, value: emit(value) });
     }
   }
   return out;
@@ -714,8 +799,7 @@ function parserSkipsHeader(
   return (
     parse === "csv-column" &&
     config?.kind === "csv-column" &&
-    (config.skipHeader === true ||
-      config.columns.some((c) => c.name !== undefined))
+    (config.skipHeader === true || csvConfigUsesNames(config))
   );
 }
 
@@ -816,7 +900,7 @@ export async function importFromFeedSource(
  *
  * Context (RFC 0003 F6, #594) is folded into a row's hash entry ONLY when
  * that row carries it, appended after a NUL separator, so a context-less row
- * hashes byte-for-byte as it did before this change — the existing five
+ * hashes byte-for-byte as it did before this change — the context-less
  * feeds keep their exact `feed_hash` (no spurious re-import). Context is
  * serialized with `canonicalizeContext` (sorted keys), not a bare
  * `JSON.stringify`, so the same context with a different key-insertion order

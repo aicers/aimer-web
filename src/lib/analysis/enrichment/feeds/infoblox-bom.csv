@@ -1,0 +1,5 @@
+﻿type,indicator,classification,detected_date
+domain,vault-viper[.]example,malicious,2025-10-16
+ipv4,198.51.100[.]23,phishing,2025-10-16
+email,abuse[at]vault[.]example,malicious,2025-10-16
+domain,parked-thing[.]example,parked,2025-10-16

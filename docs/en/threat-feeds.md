@@ -28,6 +28,36 @@ the per-source **Fetch Now** action plus the URLhaus **Auth-Key** control in
 
 ---
 
+## Sources
+
+The known Tier-1 sources, the indicator types each contributes, and their
+licensing:
+
+| Source (policy id) | Indicator types | License / attribution |
+| --- | --- | --- |
+| abuse.ch Feodo Tracker (`abuse.ch/feodo`) | IP | abuse.ch |
+| abuse.ch URLhaus (`abuse.ch/urlhaus`) | URL, domain | abuse.ch |
+| abuse.ch URLhaus payloads (`abuse.ch/urlhaus-payloads`) | file hash | abuse.ch |
+| Infoblox Threat Intelligence (`infoblox/threat-intelligence`) | domain, IP, URL, file hash | CC-BY-4.0 — **attribution to Infoblox and the license** |
+| Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
+| Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (merged into DROP, 2024) |
+
+**Infoblox Threat Intelligence** is a domain-heavy membership + classification
+feed published as one mixed CSV schema (`type,indicator,classification,…`),
+where the indicator type is carried per row (`domain` / `ip` / `ipv4` / `url` /
+`sha256` / …) and the values are defanged. aimer-web imports only the rows whose
+classification is a recognized threat label (for example `malicious`,
+`phishing`, `malware`); non-threat labels such as `legitimate` and `parked` are
+not imported, and indicator types with no local equivalent (`email`,
+`telfhash`) are skipped. It is released under **CC-BY-4.0**, which requires
+attribution wherever a matched indicator surfaces — so its source label carries
+the **"Infoblox Threat Intelligence (CC-BY-4.0)"** attribution by construction.
+This source is supplied via the committed fixture / manual upload today; it has
+no self-fetch endpoint (its content is many per-campaign files with no stable
+"latest" URL).
+
+---
+
 ## Manual-upload mode
 
 This is the **manual-upload** supply mode (`TI_FEED_MODE=manual-upload`): the
