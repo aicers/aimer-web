@@ -8,7 +8,7 @@ import { getTier1FeedSource, TIER1_FEED_SOURCES } from "../feed-catalog";
 import { LOCAL_FEED_POLICIES } from "../local-feed-enricher";
 
 describe("TIER1_FEED_SOURCES", () => {
-  it("covers exactly the nine known Tier-1 sources, in order", () => {
+  it("covers exactly the twelve known Tier-1 sources, in order", () => {
     expect(TIER1_FEED_SOURCES.map((s) => s.sourcePolicyId)).toEqual([
       "abuse.ch/feodo",
       "abuse.ch/urlhaus",
@@ -17,6 +17,9 @@ describe("TIER1_FEED_SOURCES", () => {
       "botvrij/hash",
       "botvrij/ip",
       "botvrij/url",
+      "phishing-database/domain",
+      "phishing-database/ip",
+      "phishing-database/url",
       "spamhaus/drop",
       "spamhaus/edrop",
     ]);
@@ -40,7 +43,7 @@ describe("TIER1_FEED_SOURCES", () => {
 });
 
 describe("FIXTURE_FEEDS derived from the catalog", () => {
-  it("produces a fixture spec per source, including the four Botvrij sources", async () => {
+  it("produces a fixture spec per source, including the Botvrij and Phishing.Database sources", async () => {
     const { FIXTURE_FEEDS } = await import("../fixture-feeds");
 
     expect(FIXTURE_FEEDS).toEqual([
@@ -103,6 +106,30 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
         entityType: "URL",
         hitType: "deterministic_ioc",
         classification: "misc",
+      },
+      {
+        sourcePolicyId: "phishing-database/domain",
+        file: "phishing-database-domains.txt",
+        parse: "generic-list",
+        entityType: "DOMAIN",
+        hitType: "deterministic_ioc",
+        classification: "phishing",
+      },
+      {
+        sourcePolicyId: "phishing-database/ip",
+        file: "phishing-database-ips.txt",
+        parse: "generic-list",
+        entityType: "IP",
+        hitType: "deterministic_ioc",
+        classification: "phishing",
+      },
+      {
+        sourcePolicyId: "phishing-database/url",
+        file: "phishing-database-urls.txt",
+        parse: "generic-list",
+        entityType: "URL",
+        hitType: "deterministic_ioc",
+        classification: "phishing",
       },
       {
         sourcePolicyId: "spamhaus/drop",

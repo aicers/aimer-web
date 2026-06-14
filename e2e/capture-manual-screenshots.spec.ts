@@ -685,11 +685,21 @@ base.describe.serial("Manual screenshots", () => {
   // freshly-migrated feed DB, so every source reads "Not fetched" — that empty
   // state is the real UI an operator first sees before any Fetch Now.
 
+  // In self-fetch mode the Fetch Now table sits BELOW the Scheduled-refresh and
+  // Auth-Key panels, so the full per-source list runs past the 720 px fold. The
+  // dashboard shell is `h-screen` with the page body in an inner
+  // `overflow-y-auto` <main>, so `fullPage` alone cannot reach below-the-fold
+  // content — bump the viewport height first (same pattern as the preferences
+  // captures), then `fullPage` so every registered source row (including the
+  // three `phishing-database/*` rows the per-source table documents) is visible.
+  const TI_FEEDS_VIEWPORT = { width: 1280, height: 1500 };
+
   base("admin-ti-feeds-selffetch-table.png", async () => {
     base.skip(
       tiFeedMode !== "self-fetch",
       "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
     );
+    await adminPage.setViewportSize(TI_FEEDS_VIEWPORT);
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -697,10 +707,16 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
+    // Guard the framing: the last fan-out row must be on-page before capture.
+    await expect(
+      adminPage.getByText("phishing-database/url", { exact: true }),
+    ).toBeVisible();
 
     await adminPage.screenshot({
       path: resolve(ASSETS, "admin-ti-feeds-selffetch-table.png"),
+      fullPage: true,
     });
+    await adminPage.setViewportSize(VIEWPORT);
   });
 
   base("admin-ti-feeds-selffetch-authkey-dialog.png", async () => {

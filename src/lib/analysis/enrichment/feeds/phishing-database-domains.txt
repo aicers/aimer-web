@@ -1,0 +1,10 @@
+# Phishing.Database active phishing-domains list (PINNED FIXTURE)
+#
+# Committed test subset, NOT a live download. Uses RFC 2606 `.example`
+# documentation names so the fixture references no real infrastructure.
+# Format mirrors the published list: one domain per line, plain text.
+# (`#` comment lines are stripped by the generic-list parser; the real
+# list ships with none.)
+phishing-login.example
+secure-update.example
+account-verify.example
