@@ -8,11 +8,15 @@ import { getTier1FeedSource, TIER1_FEED_SOURCES } from "../feed-catalog";
 import { LOCAL_FEED_POLICIES } from "../local-feed-enricher";
 
 describe("TIER1_FEED_SOURCES", () => {
-  it("covers exactly the five known Tier-1 sources, in order", () => {
+  it("covers exactly the nine known Tier-1 sources, in order", () => {
     expect(TIER1_FEED_SOURCES.map((s) => s.sourcePolicyId)).toEqual([
       "abuse.ch/feodo",
       "abuse.ch/urlhaus",
       "abuse.ch/urlhaus-payloads",
+      "botvrij/domain",
+      "botvrij/hash",
+      "botvrij/ip",
+      "botvrij/url",
       "spamhaus/drop",
       "spamhaus/edrop",
     ]);
@@ -36,7 +40,7 @@ describe("TIER1_FEED_SOURCES", () => {
 });
 
 describe("FIXTURE_FEEDS derived from the catalog", () => {
-  it("still produces the same five fixture specs (seeding unchanged)", async () => {
+  it("produces a fixture spec per source, including the four Botvrij sources", async () => {
     const { FIXTURE_FEEDS } = await import("../fixture-feeds");
 
     expect(FIXTURE_FEEDS).toEqual([
@@ -63,6 +67,42 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
         entityType: "HASH",
         hitType: "deterministic_ioc",
         classification: "malware_payload",
+      },
+      {
+        sourcePolicyId: "botvrij/domain",
+        file: "botvrij-domain.txt",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list" },
+        entityType: "DOMAIN",
+        hitType: "deterministic_ioc",
+        classification: "misc",
+      },
+      {
+        sourcePolicyId: "botvrij/hash",
+        file: "botvrij-hash.txt",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list" },
+        entityType: "HASH",
+        hitType: "deterministic_ioc",
+        classification: "misc",
+      },
+      {
+        sourcePolicyId: "botvrij/ip",
+        file: "botvrij-ip.txt",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list" },
+        entityType: "IP",
+        hitType: "deterministic_ioc",
+        classification: "misc",
+      },
+      {
+        sourcePolicyId: "botvrij/url",
+        file: "botvrij-url.txt",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list" },
+        entityType: "URL",
+        hitType: "deterministic_ioc",
+        classification: "misc",
       },
       {
         sourcePolicyId: "spamhaus/drop",

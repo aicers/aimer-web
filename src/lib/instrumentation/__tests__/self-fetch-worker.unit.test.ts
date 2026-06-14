@@ -26,14 +26,28 @@ const FIVE_MIN = 5 * 60 * 1000;
 const ONE_HOUR = 60 * 60 * 1000;
 
 // Catalog fetchable sources: feodo/urlhaus/urlhaus-payloads (5 min floor),
-// spamhaus/drop (1 h floor). spamhaus/edrop is NOT fetchable.
+// spamhaus/drop and the four botvrij/* lists (1 h floor). spamhaus/edrop is
+// NOT fetchable.
 const FEODO = "abuse.ch/feodo";
 const URLHAUS = "abuse.ch/urlhaus";
 const URLHAUS_PAYLOADS = "abuse.ch/urlhaus-payloads";
 const DROP = "spamhaus/drop";
 const EDROP = "spamhaus/edrop";
+const BOTVRIJ_IP = "botvrij/ip";
+const BOTVRIJ_DOMAIN = "botvrij/domain";
+const BOTVRIJ_URL = "botvrij/url";
+const BOTVRIJ_HASH = "botvrij/hash";
 
-const FETCHABLE = [FEODO, URLHAUS, URLHAUS_PAYLOADS, DROP];
+const FETCHABLE = [
+  FEODO,
+  URLHAUS,
+  URLHAUS_PAYLOADS,
+  DROP,
+  BOTVRIJ_IP,
+  BOTVRIJ_DOMAIN,
+  BOTVRIJ_URL,
+  BOTVRIJ_HASH,
+];
 
 const NOW = new Date("2026-06-13T12:00:00.000Z");
 
