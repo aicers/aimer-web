@@ -150,45 +150,76 @@ The header section shows three score-related fields:
 | 0.4 ≤ S < 0.6 | LOW    | LOW           | MEDIUM        | MEDIUM   |
 | S < 0.4      | LOW    | LOW           | LOW           | LOW      |
 
-## Threat-intel coverage
+## Threat-intel IOC evidence
 
-The `known_ioc_hit` floor signal is only as trustworthy as the threat-
-intelligence coverage it was evaluated under. When the Tier-1 local feeds
-that produce the signal are unavailable or stale at the moment a story is
-enriched, the platform records that the check ran on **incomplete
-coverage** rather than silently treating the absence of a match as a
-clean result. Crucially, analysis still proceeds — a down or empty feed
-yields `known_ioc_hit = false` so the story is never blocked, but the
-coverage is flagged so the `false` is not mistaken for a confirmed miss.
+The `known_ioc_hit` floor signal is produced by matching the story's
+observed indicators against Tier-1 local threat-intelligence feeds (see
+[Priority and scores](#priority-and-scores)). The page surfaces that work
+as a **Threat-intel IOC evidence** section above the score fields: a
+**verdict banner** that is always shown for transparency, followed by the
+**feed-source citations** for the indicators that matched.
 
-When the canonical version's enrichment ran under incomplete coverage,
-the page shows a **"Threat-intel coverage incomplete"** notice above the
-score fields. It distinguishes two outcomes that otherwise look
-identical:
+### The verdict banner
 
-- **No notice (complete coverage)** — the indicators were fully checked
-  against the Tier-1 feeds and no known IOC matched. A genuine clean
-  miss.
-- **Notice shown (incomplete coverage)** — the check ran while a feed was
-  unavailable, stale, or only partially covered, so "no known IOC" here
-  may reflect a thin or degraded signal rather than a confirmed clean
-  result. Treat the IOC dimension of a `LOW`/`MEDIUM` story with caution
-  when this notice is present.
+The signal is only as trustworthy as the coverage it was evaluated under,
+and "no match" can mean two very different things. The banner makes the
+distinction legible with four states:
 
-The notice reflects the coverage status of the **current canonical
-version** of the story, and only once that version's enrichment has
-**completed**. A story whose enrichment has not finished yet — or whose
-canonical version hard-failed before completing — shows no notice, since
-"not checked yet" is a different state from a completed-but-degraded
-check. The priority tier, scores, and factors are **unchanged** by
-coverage — the floor reads only the boolean signal, and this notice is a
-transparency surface layered on top, never an input to tier derivation.
+- **Known IOC detected** — a known indicator of compromise matched the
+  story against the Tier-1 feeds. This is the hit that raised the
+  `known_ioc_hit` floor; the matching feeds are listed in the citations
+  below.
+- **No known IOC (fully checked)** — the indicators were fully checked
+  against the feeds (`complete` coverage) and nothing matched. A genuine
+  clean miss.
+- **No known IOC (unverified)** — the check ran while a feed was
+  unavailable, stale, or only partially covered, so the absence of a
+  match is **not** a confirmed clean result. Treat the IOC dimension of a
+  `LOW`/`MEDIUM` story with caution here.
+- **IOC enrichment not run** — enrichment has not run or could not
+  complete for the story's current canonical version, so no verdict is
+  available. This is deliberately distinct from "fully checked, no IOC" —
+  a not-run state is **never** rendered as a clean result.
 
-<!-- Screenshot placeholder: the story header with the "Threat-intel
-     coverage incomplete" notice shown above the score fields. Requires a
-     real-data capture from a stack where a Tier-1 feed was unavailable at
-     enrichment time (coverage data originates from aice-web-next-fed
-     enrichment), per docs/AUTHORING.md. -->
+The verdict reflects the **current canonical version** of the story
+(resolved by the same rule the rest of the page uses) and comes from the
+enrichment-state row, which exists even when zero indicators matched — so
+a clean, fully-checked story still reads as "fully checked" rather than
+falling back to the not-run state. The priority tier, scores, and factors
+are **unchanged** by the verdict: the floor reads only the boolean
+signal, and this section is a transparency surface layered on top, never
+an input to tier derivation.
+
+### Feed-source citations
+
+When indicators matched, each one is cited with the feed that backed it,
+distinguished by class:
+
+- **Floor-supporting** — a deterministic match from a license-cleared
+  feed; these are the matches that drove `known_ioc_hit`, shown
+  prominently.
+- **Supporting (deterministic)** — a deterministic match from a source
+  that does not raise the floor (for example a non-public indicator),
+  shown as context.
+- **Supporting (reputation)** — a softer reputation match surfaced for
+  context; it never raises the floor.
+
+Each citation names the **source** (the human-readable feed label, or the
+raw source id if a feed has since been retired), the feed **version** /
+**hash** snapshot it was checked against, and the **checked** timestamp.
+The indicator itself is shown redaction-consistently: an external
+indicator (an attacker host, a public IP) appears directly, while a
+customer-asset indicator is restored to its original value only within
+the event scope it was recorded under. When that restoration is not
+available, the indicator degrades to its redaction token rather than
+leaking a wrong value.
+
+<!-- Screenshot placeholder: the story header with the Threat-intel IOC
+     evidence section — the verdict banner plus a feed-source citation
+     showing the source label, version/hash, and checked time. Requires a
+     real-data capture from a stack with a Tier-1 feed loaded and a story
+     that matched an indicator (IOC evidence originates from
+     aice-web-next-fed enrichment), per docs/AUTHORING.md. -->
 
 ## Score factors
 

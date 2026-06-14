@@ -11,6 +11,7 @@ import {
 import { CveSection } from "@/components/analysis/cve-section";
 import { EventCompareView } from "@/components/analysis/event-compare-view";
 import { EventTitle } from "@/components/analysis/event-title";
+import { IocEvidenceSection } from "@/components/analysis/ioc-evidence-section";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbEventLabelRegistrar } from "@/components/breadcrumb-label-store";
 import { Timestamp } from "@/components/timestamp";
@@ -243,6 +244,12 @@ export default async function AnalysisResultPage({
         parentStories={data.parentStories}
         t={tA}
       />
+
+      {/* TI IOC evidence + feed-source citations (#591). Always renders the
+          verdict banner (known-IOC hit / fully-checked-clean / couldn't-check /
+          not-run — a manual-only event with no enrichment-state row reads as
+          "not run / unavailable") plus the supporting feed-source citations. */}
+      <IocEvidenceSection enrichment={data.iocEnrichment} t={tA} />
 
       {/* RFC 0005 — CVE chip row / gated no-CVE state. Renders nothing when
           the CVE path did not run (cveStatus null) or the analysis is

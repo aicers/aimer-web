@@ -28,6 +28,8 @@ import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
 import { type CveRefView, parseCveRefs } from "./cve/view";
 import { type ModelPair, resolveDefaultModel } from "./default-model";
 import { restoreStoryFactTokens } from "./fact-token";
+import type { CoverageStatus, IocEnrichment } from "./ioc-evidence";
+import { loadStoryIocEnrichment } from "./ioc-evidence-loader";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreStoryAnalysisTokens } from "./story-token-restore";
@@ -50,8 +52,11 @@ const ENGLISH_BASELINE = "ENGLISH";
  * version (enrichment has not completed). The loader surfaces this so an
  * operator can distinguish false-complete from false-unknown; it never feeds
  * the floor (the floor reads only the boolean, in the worker).
+ *
+ * Canonically defined in `ioc-evidence.ts` (shared with the IOC evidence
+ * surface, #591) and re-exported here for the existing importers.
  */
-export type CoverageStatus = "complete" | "partial" | "unknown" | "stale";
+export type { CoverageStatus };
 
 /**
  * One compare column's rendered data for the side-by-side story view (#458):
@@ -141,6 +146,16 @@ export interface StoryResultPageData {
    * the version the displayed result was analysed on (issue #498 scope).
    */
   coverageStatus: CoverageStatus | null;
+  /**
+   * TI IOC evidence + feed-source citation surface for the story's *current
+   * canonical* `(story_id, story_version)` (#591). Carries the
+   * enrichment-state verdict (`known_ioc_hit` + `coverage_status`, present
+   * even with zero evidence; `verdict: null` = enrichment not run) AND the
+   * supporting evidence rows resolved to indicator + redaction scope + source
+   * label + provenance + class flags. Read-only consumer of the #589 tables;
+   * resolved on the SAME canonical version as {@link coverageStatus}.
+   */
+  iocEnrichment: IocEnrichment;
   /** Token-restored analysis text. Story-scope
    * `<<REDACTED_*_E{i}_*>>` tokens are resolved back to plaintext via
    * `input_event_refs` + each referenced event's redaction map. Tokens
@@ -530,15 +545,20 @@ export async function loadStoryResultPage(
     defaultPair,
   );
 
-  // IOC-enrichment coverage for the *current canonical* version (#498).
-  // `story_analysis_result` carries no `story_version`, so resolve the
-  // canonical `(story_id, story_version)` by the worker's rule and join
-  // `story_enrichment_state` on it. Additive surfacing only — independent of
-  // the floored `priorityTier` already loaded above.
-  const coverageStatus = await loadCanonicalCoverageStatus(
+  // IOC-enrichment surface for the *current canonical* version (#498/#591).
+  // `story_analysis_result` carries no `story_version`, so the loader resolves
+  // the canonical `(story_id, story_version)` by the worker's rule and joins
+  // `story_enrichment_state` + `story_ioc_evidence` on it. Additive surfacing
+  // only — independent of the floored `priorityTier` already loaded above.
+  // `coverageStatus` is derived from the same verdict so the existing #498
+  // banner keeps its meaning (a `complete` verdict → its coverage; a not-run /
+  // failed canonical version → `null`).
+  const iocEnrichment = await loadStoryIocEnrichment(
     customerPool,
+    input.customerId,
     input.storyId,
   );
+  const coverageStatus = iocEnrichment.verdict?.coverageStatus ?? null;
 
   // Analyst-only compare column (#458): a read-only EXACT, unpinned model-only
   // lookup of the compare model at the primary's language. Unlike the story
@@ -577,6 +597,7 @@ export async function loadStoryResultPage(
       cveRefs: parseCveRefs(row.cve_refs),
       cveStatus: row.cve_status,
       coverageStatus,
+      iocEnrichment,
       analysisText,
       requestedBy: row.requested_by,
       requestedAt: row.requested_at,
@@ -837,47 +858,6 @@ async function resolveStoryCompareColumn(
       analysisText,
     },
   };
-}
-
-/**
- * Resolve the IOC-enrichment coverage status for a story's *current
- * canonical* version (#498). `story_analysis_result` is keyed on `story_id`
- * only, whereas `story_enrichment_state` is keyed on `(story_id,
- * story_version)`, so this follows the worker's canonical rule
- * (`story-worker.ts` `loadCanonicalMembers`): pick the latest
- * `(story_id, story_version)` from `story` by `received_at DESC,
- * story_version DESC`, then LEFT JOIN `story_enrichment_state` on it. Both
- * tables live in the same customer DB, so this is one in-DB join. The join is
- * gated on `ses.status = 'complete'` so only a *completed* enrichment run
- * surfaces coverage: a hard failure persists `status = 'failed',
- * coverage_status = 'unknown'` (`enrichment-worker.ts`
- * `persistEnrichmentFailure`), which is "not checked yet" — not the
- * false-unknown (completed-but-degraded) case this banner is for — so a
- * `failed` row is treated as no coverage. Returns `null` when the story has
- * no row (already ruled out upstream), when no enrichment-state row exists
- * for the canonical version, or when that row has not completed. Never
- * throws the page — it is additive transparency.
- */
-async function loadCanonicalCoverageStatus(
-  // biome-ignore lint/suspicious/noExplicitAny: pg Pool minimal surface
-  customerPool: any,
-  storyId: string,
-): Promise<CoverageStatus | null> {
-  const { rows } = await customerPool.query(
-    `SELECT ses.coverage_status
-       FROM story s
-       LEFT JOIN story_enrichment_state ses
-         ON ses.story_id = s.story_id
-        AND ses.story_version = s.story_version
-        AND ses.status = 'complete'
-      WHERE s.story_id = $1::bigint
-      ORDER BY s.received_at DESC, s.story_version DESC
-      LIMIT 1`,
-    [storyId],
-  );
-  if (rows.length === 0) return null;
-  return (rows[0] as { coverage_status: CoverageStatus | null })
-    .coverage_status;
 }
 
 /**

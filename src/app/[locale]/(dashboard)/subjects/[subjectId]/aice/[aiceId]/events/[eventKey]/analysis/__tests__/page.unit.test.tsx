@@ -8,6 +8,7 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { IocEnrichment } from "@/lib/analysis/ioc-evidence";
 import type {
   EventCompareOutcome,
   ResultPageOutcome,
@@ -172,6 +173,7 @@ function okOutcome(
     origin?: "manual" | "auto_baseline";
     requestedBy?: string | null;
     compare?: EventCompareOutcome;
+    iocEnrichment?: IocEnrichment;
   } = {},
 ): ResultPageOutcome {
   return {
@@ -198,6 +200,7 @@ function okOutcome(
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
       cveRefs: [],
       cveStatus: null,
+      iocEnrichment: viewer.iocEnrichment ?? { verdict: null, evidence: [] },
       analysisText: "narrative",
       origin: viewer.origin ?? "manual",
       requestedBy:

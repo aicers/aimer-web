@@ -925,6 +925,26 @@
       "incompleteBadge": "Threat-intel coverage incomplete",
       "incompleteNote": "The known-IOC check for this story ran under incomplete Tier-1 threat-intel coverage (status: {status}). A \"no known IOC\" result here may reflect an unavailable or stale source rather than a confirmed clean miss."
     },
+    "ioc": {
+      "heading": "Threat-intel IOC evidence",
+      "citationsHeading": "Feed-source citations",
+      "hitBadge": "Known IOC detected",
+      "hitNote": "A known indicator of compromise matched this analysis against Tier-1 threat-intel feeds (coverage: {status}). See the feed-source citations below.",
+      "cleanCompleteBadge": "No known IOC",
+      "cleanCompleteNote": "Fully checked against Tier-1 threat-intel feeds — no known indicator of compromise matched.",
+      "cleanIncompleteBadge": "No known IOC (unverified)",
+      "cleanIncompleteNote": "The known-IOC check ran under incomplete coverage (status: {status}), so the absence of a match is not a confirmed clean result — a source may have been unavailable or stale.",
+      "notRunBadge": "IOC enrichment not run",
+      "notRunNote": "Threat-intel IOC enrichment has not run or could not complete for this analysis, so no known-IOC verdict is available.",
+      "classFloorSupporting": "Floor-supporting",
+      "classFloorIneligible": "Supporting (deterministic)",
+      "classPromotedSoft": "Supporting (reputation)",
+      "sourceLabel": "Source",
+      "versionLabel": "Version",
+      "feedHashLabel": "Feed hash",
+      "checkedAtLabel": "Checked",
+      "redactedIndicator": "Redacted indicator — original not available for display"
+    },
     "cve": {
       "label": "CVE references",
       "kev": "KEV",
