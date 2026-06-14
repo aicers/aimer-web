@@ -17,6 +17,7 @@ import {
   normalizeExactValues,
   parseCsvColumns,
   parseFeedContent,
+  parseFreeTextIocs,
   parseGenericList,
   parseIpBlocklist,
   parseSpamhausDrop,
@@ -24,6 +25,7 @@ import {
   parseUrlhausHosts,
   parseUrlhausPayloadsCsv,
   refangIndicator,
+  resolveRowHitType,
 } from "../feed-import";
 import type {
   CsvColumnParseConfig,
@@ -252,6 +254,43 @@ describe("parseCsvColumns (#593)", () => {
     expect(() => parseFeedContent("csv-column", "URL", "a,b\n")).toThrow(
       FeedParseError,
     );
+  });
+});
+
+describe("parseFreeTextIocs (#603)", () => {
+  it("extracts IOCs embedded in a sentence (where generic-list cannot)", () => {
+    const prose =
+      "The implant beaconed to hxxps://c2[.]evil[.]example/p from " +
+      "203[.]0[.]113[.]9 and dropped a file (md5 " +
+      "0123456789abcdef0123456789abcdef) hosted on cdn[.]evil[.]example.";
+    expect(parseFreeTextIocs(prose)).toEqual([
+      { entityType: "URL", value: "https://c2.evil.example/p" },
+      { entityType: "HASH", value: "0123456789abcdef0123456789abcdef" },
+      { entityType: "IP", value: "203.0.113.9" },
+      { entityType: "DOMAIN", value: "cdn.evil.example" },
+    ]);
+  });
+
+  it("a whole-line generic-list parser would lose those embedded IOCs", () => {
+    // The exact gap #603 closes: generic-list keeps the line verbatim, which
+    // then fails normalization (it is a sentence, not an indicator).
+    const line = "beaconed to c2.evil.example over https";
+    expect(parseGenericList(line)).toEqual([line]);
+    expect(parseFreeTextIocs(line)).toEqual([
+      { entityType: "DOMAIN", value: "c2.evil.example" },
+    ]);
+  });
+
+  it("normalizes free-text rows through parseFeedContent, stamping entity types", () => {
+    const rows = parseFeedContent(
+      "free-text",
+      "DOMAIN",
+      "see 198[.]51[.]100[.]7 and hxxp://bad[.]example/x",
+    );
+    expect(rows).toEqual([
+      { matchValue: "http://bad.example/x", entityType: "URL" },
+      { matchValue: "198.51.100.7", entityType: "IP" },
+    ]);
   });
 });
 
@@ -590,5 +629,79 @@ describe("feed hash", () => {
       },
     ]);
     expect(a).toBe(b);
+  });
+
+  // RFC 0003 F4 (#603) — per-row hit-type / classification override hashing.
+  it("leaves a row without overrides byte-identical (existing five feeds)", () => {
+    // A row carrying only the new optional fields as absent must hash exactly
+    // as a bare row — the pinned pre-#603 hashes still hold.
+    expect(computeFeedHash([{ matchValue: "x" }, { matchValue: "y" }])).toBe(
+      "9ab9de25768ac172235e119b76362ecddad33878fe9a7792cdddbe47236f9a87",
+    );
+  });
+
+  it("changes the hash when a row carries a hit-type override", () => {
+    const base = computeFeedHash([{ matchValue: "x" }]);
+    const overridden = computeFeedHash([
+      { matchValue: "x", hitType: "soft_reputation" },
+    ]);
+    expect(overridden).not.toBe(base);
+  });
+
+  it("folds the CIB guard's forced soft_reputation into the hash", () => {
+    // A deterministicAllowed:false row hashes like an explicit soft_reputation
+    // override (the guard forces that effective hit type), and differs from a
+    // default-using row — so flipping the guard re-imports, never silently
+    // skipped.
+    const guarded = computeFeedHash([
+      { matchValue: "x", deterministicAllowed: false },
+    ]);
+    const explicit = computeFeedHash([
+      { matchValue: "x", hitType: "soft_reputation" },
+    ]);
+    const base = computeFeedHash([{ matchValue: "x" }]);
+    expect(guarded).toBe(explicit);
+    expect(guarded).not.toBe(base);
+  });
+
+  it("changes the hash when a row carries a classification override", () => {
+    expect(
+      computeFeedHash([{ matchValue: "x", classification: "cib" }]),
+    ).not.toBe(computeFeedHash([{ matchValue: "x" }]));
+  });
+});
+
+describe("resolveRowHitType (#603 central CIB guard)", () => {
+  it("forces soft_reputation when deterministicAllowed is false", () => {
+    expect(
+      resolveRowHitType(
+        { matchValue: "x", deterministicAllowed: false },
+        "deterministic_ioc",
+      ),
+    ).toBe("soft_reputation");
+    // The guard overrides even an explicit per-row deterministic_ioc — it can
+    // never be circumvented by a row's own self-declaration.
+    expect(
+      resolveRowHitType(
+        {
+          matchValue: "x",
+          hitType: "deterministic_ioc",
+          deterministicAllowed: false,
+        },
+        "deterministic_ioc",
+      ),
+    ).toBe("soft_reputation");
+  });
+
+  it("uses the row override, else the snapshot default", () => {
+    expect(
+      resolveRowHitType(
+        { matchValue: "x", hitType: "soft_reputation" },
+        "deterministic_ioc",
+      ),
+    ).toBe("soft_reputation");
+    expect(resolveRowHitType({ matchValue: "x" }, "deterministic_ioc")).toBe(
+      "deterministic_ioc",
+    );
   });
 });
