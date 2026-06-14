@@ -54,11 +54,16 @@ let eventDisplayRows: Array<Record<string, unknown>> = [];
 // Rows returned for the `enrichment_redaction_map` SELECT (the `F{k}`
 // render-demap two-hop). Empty unless a test exercises fact restoration.
 let factMapRows: Array<Record<string, unknown>> = [];
-// Row returned for the canonical-version coverage join (#498):
-// `SELECT ses.coverage_status FROM story LEFT JOIN story_enrichment_state`.
-// Defaults to a `complete`-coverage row; a test sets `[]` to model a story
-// with no row, or overrides `coverage_status` to model degraded coverage.
+// Row returned for the canonical-version state join (#498/#591):
+// `SELECT s.story_version, ses.status, ses.known_ioc_hit, ses.coverage_status
+//  FROM story s LEFT JOIN story_enrichment_state ses`. Defaults to a
+// completed, clean, `complete`-coverage row; a test sets `[]` to model a
+// story with no `story` row, or overrides the columns to model a degraded /
+// failed / never-enriched canonical version.
 let coverageRows: Array<Record<string, unknown>> = [];
+// Rows returned for the `story_ioc_evidence` SELECT the IOC surface runs after
+// resolving the canonical version. Empty unless a test exercises evidence.
+let iocEvidenceRows: Array<Record<string, unknown>> = [];
 
 const authPool = {
   query: vi.fn(async (sql: string) => {
@@ -98,6 +103,9 @@ const customerPool = {
     }
     if (sql.includes("story_enrichment_state")) {
       return { rows: coverageRows };
+    }
+    if (sql.includes("FROM story_ioc_evidence")) {
+      return { rows: iocEvidenceRows };
     }
     return { rows: [] };
   }),
@@ -165,7 +173,15 @@ beforeEach(() => {
   compareResultRows = [];
   eventDisplayRows = [];
   factMapRows = [];
-  coverageRows = [{ coverage_status: "complete" }];
+  coverageRows = [
+    {
+      story_version: "v1",
+      status: "complete",
+      known_ioc_hit: false,
+      coverage_status: "complete",
+    },
+  ];
+  iocEvidenceRows = [];
   mockDecryptRedactionMap.mockReset();
   mockGetAuthCookie.mockReset().mockResolvedValue("auth-token");
   mockVerifyJwtFull
@@ -552,48 +568,88 @@ describe("loadStoryResultPage — analyst compare column (#458)", () => {
   });
 });
 
-describe("loadStoryResultPage — IOC coverage status (#498)", () => {
+function canonicalRow(
+  extras: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    story_version: "v1",
+    status: "complete",
+    known_ioc_hit: false,
+    coverage_status: "complete",
+    ...extras,
+  };
+}
+
+describe("loadStoryResultPage — IOC coverage status + verdict (#498/#591)", () => {
   it("surfaces complete coverage (fully-checked clean miss = false-complete)", async () => {
     resultRows = [resultRow({ generation: 3 })];
-    coverageRows = [{ coverage_status: "complete" }];
+    coverageRows = [canonicalRow({ coverage_status: "complete" })];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBe("complete");
+    expect(outcome.data.iocEnrichment.verdict).toEqual({
+      knownIocHit: false,
+      coverageStatus: "complete",
+    });
   });
 
   it("surfaces unknown coverage (source down/stale = false-unknown)", async () => {
     // The false-complete vs false-unknown distinction: a down/stale Tier-1
     // source lands `unknown`, distinguishable end-to-end from `complete`.
     resultRows = [resultRow({ generation: 3 })];
-    coverageRows = [{ coverage_status: "unknown" }];
+    coverageRows = [canonicalRow({ coverage_status: "unknown" })];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBe("unknown");
+    expect(outcome.data.iocEnrichment.verdict?.coverageStatus).toBe("unknown");
   });
 
   it("surfaces stale coverage", async () => {
     resultRows = [resultRow({ generation: 3 })];
-    coverageRows = [{ coverage_status: "stale" }];
+    coverageRows = [canonicalRow({ coverage_status: "stale" })];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBe("stale");
   });
 
-  it("returns null coverage when no enrichment-state row exists for the canonical version", async () => {
+  it("surfaces a known IOC hit on the verdict", async () => {
     resultRows = [resultRow({ generation: 3 })];
-    // Canonical `story` row exists but no joined enrichment state yet.
-    coverageRows = [{ coverage_status: null }];
+    coverageRows = [
+      canonicalRow({ known_ioc_hit: true, coverage_status: "complete" }),
+    ];
+    const outcome = await callLoader();
+    if (outcome.kind !== "ok") throw new Error("expected ok");
+    expect(outcome.data.iocEnrichment.verdict).toEqual({
+      knownIocHit: true,
+      coverageStatus: "complete",
+    });
+  });
+
+  it("returns a not-run verdict when no enrichment-state row exists for the canonical version", async () => {
+    resultRows = [resultRow({ generation: 3 })];
+    // Canonical `story` row exists but the LEFT JOIN found no state row.
+    coverageRows = [
+      {
+        story_version: "v1",
+        status: null,
+        known_ioc_hit: null,
+        coverage_status: null,
+      },
+    ];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBeNull();
+    expect(outcome.data.iocEnrichment.verdict).toBeNull();
   });
 
-  it("returns null coverage when the story row is absent", async () => {
+  it("returns a not-run verdict when the story row is absent", async () => {
     resultRows = [resultRow({ generation: 3 })];
     coverageRows = [];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBeNull();
+    expect(outcome.data.iocEnrichment.verdict).toBeNull();
+    expect(outcome.data.iocEnrichment.evidence).toEqual([]);
   });
 
   it("resolves the canonical (story_id, story_version) by the worker's rule", async () => {
@@ -601,7 +657,7 @@ describe("loadStoryResultPage — IOC coverage status (#498)", () => {
     // story_version DESC` — matching `story-worker.ts` loadCanonicalMembers,
     // then LEFT JOIN `story_enrichment_state` on that version.
     resultRows = [resultRow({ generation: 3 })];
-    coverageRows = [{ coverage_status: "partial" }];
+    coverageRows = [canonicalRow({ coverage_status: "partial" })];
     await callLoader();
     const coverageCall = customerPool.query.mock.calls.find((c) =>
       String(c[0]).includes("story_enrichment_state"),
@@ -614,23 +670,21 @@ describe("loadStoryResultPage — IOC coverage status (#498)", () => {
     expect(coverageCall?.[1]).toEqual([STORY_ID]);
   });
 
-  it("gates the coverage join on a completed enrichment run", async () => {
+  it("treats a failed enrichment run as not-run (no clean verdict)", async () => {
     // A hard enrichment failure persists `status = 'failed',
     // coverage_status = 'unknown'` (`enrichment-worker.ts`
     // `persistEnrichmentFailure`). That is "not checked yet", not the
-    // false-unknown (completed-but-degraded) case the banner is for, so the
-    // join is gated on `ses.status = 'complete'` and such a row must not
-    // surface as `unknown`. The DB applies the gate, so the LEFT JOIN comes
-    // back with `coverage_status = NULL` for a never-completed failed row.
+    // false-unknown (completed-but-degraded) case — so the verdict is gated
+    // on `status = 'complete'` and a failed row yields no verdict / null
+    // coverage rather than surfacing as `unknown`.
     resultRows = [resultRow({ generation: 3 })];
-    coverageRows = [{ coverage_status: null }];
+    coverageRows = [
+      canonicalRow({ status: "failed", coverage_status: "unknown" }),
+    ];
     const outcome = await callLoader();
     if (outcome.kind !== "ok") throw new Error("expected ok");
     expect(outcome.data.coverageStatus).toBeNull();
-    const coverageCall = customerPool.query.mock.calls.find((c) =>
-      String(c[0]).includes("story_enrichment_state"),
-    );
-    expect(String(coverageCall?.[0])).toContain("ses.status = 'complete'");
+    expect(outcome.data.iocEnrichment.verdict).toBeNull();
   });
 
   it("does not let coverage status alter the floored priority tier (floor unchanged)", async () => {
@@ -638,9 +692,9 @@ describe("loadStoryResultPage — IOC coverage status (#498)", () => {
     // surfaces coverage additively. Proven here: the loaded `priorityTier` is
     // exactly the stored tier regardless of coverage status.
     resultRows = [resultRow({ generation: 3, priority_tier: "MEDIUM" })];
-    coverageRows = [{ coverage_status: "complete" }];
+    coverageRows = [canonicalRow({ coverage_status: "complete" })];
     const complete = await callLoader();
-    coverageRows = [{ coverage_status: "unknown" }];
+    coverageRows = [canonicalRow({ coverage_status: "unknown" })];
     const unknown = await callLoader();
     if (complete.kind !== "ok" || unknown.kind !== "ok") {
       throw new Error("expected ok");

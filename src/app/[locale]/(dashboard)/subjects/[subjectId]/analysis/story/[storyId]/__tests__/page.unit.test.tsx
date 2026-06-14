@@ -9,9 +9,12 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import type {
   CoverageStatus,
+  IocEnrichment,
+} from "@/lib/analysis/ioc-evidence";
+import type { PriorityTier } from "@/lib/analysis/priority-tier";
+import type {
   StoryResultPageData,
   StoryResultPageOutcome,
 } from "@/lib/analysis/story-result-page-loader";
@@ -105,6 +108,7 @@ function fixture(
     isViewerAnalyst?: boolean;
     canRegenerate?: boolean;
     coverageStatus?: CoverageStatus | null;
+    iocEnrichment?: IocEnrichment;
     cveRefs?: StoryResultPageData["cveRefs"];
     cveStatus?: CoverageStatus | null;
   } = {},
@@ -125,6 +129,7 @@ function fixture(
       likelihoodScore: 0.5,
       priorityTier: tier,
       coverageStatus: viewer.coverageStatus ?? null,
+      iocEnrichment: viewer.iocEnrichment ?? { verdict: null, evidence: [] },
       severityFactors: ["broad host coverage", "elevated identity reuse"],
       likelihoodFactors: ["repeated outbound C2 beacons"],
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
@@ -297,33 +302,50 @@ describe("StoryAnalysisPage — analyst gating (#457)", () => {
   });
 });
 
-describe("StoryAnalysisPage — IOC coverage status banner (#498)", () => {
+describe("StoryAnalysisPage — IOC verdict surface (#591, #498)", () => {
   it.each<CoverageStatus>([
     "unknown",
     "stale",
     "partial",
-  ])("shows the incomplete-coverage banner for %s", async (status) => {
-    mockLoad.mockResolvedValueOnce(fixture("LOW", { coverageStatus: status }));
-    await renderPage();
-
-    const banner = screen.getByTestId("coverage-status-banner");
-    expect(banner).toBeTruthy();
-    expect(banner.getAttribute("data-coverage-status")).toBe(status);
-    expect(banner.textContent).toContain("Threat-intel coverage incomplete");
-  });
-
-  it("renders no banner for complete coverage (clean miss reads cleanly)", async () => {
+  ])("renders false-unknown (couldn't fully check) for %s", async (status) => {
     mockLoad.mockResolvedValueOnce(
-      fixture("LOW", { coverageStatus: "complete" }),
+      fixture("LOW", {
+        iocEnrichment: {
+          verdict: { knownIocHit: false, coverageStatus: status },
+          evidence: [],
+        },
+      }),
     );
     await renderPage();
-    expect(screen.queryByTestId("coverage-status-banner")).toBeNull();
+
+    const banner = screen.getByTestId("ioc-verdict");
+    expect(banner.getAttribute("data-ioc-state")).toBe("clean_incomplete");
+    expect(banner.textContent).toContain("No known IOC (unverified)");
   });
 
-  it("renders no banner when coverage is unknown-to-the-loader (null)", async () => {
-    mockLoad.mockResolvedValueOnce(fixture("LOW", { coverageStatus: null }));
+  it("renders false-complete (fully checked) for complete coverage", async () => {
+    mockLoad.mockResolvedValueOnce(
+      fixture("LOW", {
+        iocEnrichment: {
+          verdict: { knownIocHit: false, coverageStatus: "complete" },
+          evidence: [],
+        },
+      }),
+    );
     await renderPage();
-    expect(screen.queryByTestId("coverage-status-banner")).toBeNull();
+    const banner = screen.getByTestId("ioc-verdict");
+    expect(banner.getAttribute("data-ioc-state")).toBe("clean_complete");
+    expect(banner.textContent).toContain("No known IOC");
+  });
+
+  it("renders not-run (never a clean verdict) when no state row exists", async () => {
+    mockLoad.mockResolvedValueOnce(
+      fixture("LOW", { iocEnrichment: { verdict: null, evidence: [] } }),
+    );
+    await renderPage();
+    const banner = screen.getByTestId("ioc-verdict");
+    expect(banner.getAttribute("data-ioc-state")).toBe("not_run");
+    expect(banner.textContent).toContain("IOC enrichment not run");
   });
 });
 

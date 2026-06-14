@@ -64,6 +64,49 @@ renders without a tooltip — the underlying analysis row was written
 against an older MITRE bundle and the technique ID alone is shown as a
 fallback. The chip row is omitted when the LLM returned no techniques.
 
+## Threat-intel IOC evidence
+
+Above the score fields the page renders a **Threat-intel IOC evidence**
+section: a **verdict banner** plus the **feed-source citations** for any
+indicators that matched the event against the Tier-1 local
+threat-intelligence feeds. The verdict has four states:
+
+- **Known IOC detected** — a known indicator of compromise matched the
+  event; the backing feeds are listed in the citations below.
+- **No known IOC (fully checked)** — the indicators were fully checked
+  (`complete` coverage) and nothing matched. A genuine clean miss.
+- **No known IOC (unverified)** — a feed was unavailable, stale, or only
+  partially covered, so the absence of a match is not a confirmed clean
+  result.
+- **IOC enrichment not run** — no enrichment-state row exists for the
+  event, so no verdict is available. A manually-analyzed event that was
+  never auto-baselined falls here. This is **never** rendered as a clean
+  result — "not run" is visibly distinct from "fully checked, no IOC".
+
+The verdict comes from the event's enrichment-state row, which exists
+even when zero indicators matched — so a clean, fully-checked event reads
+as "fully checked" rather than as not-run.
+
+When indicators matched, each is cited with its backing feed, distinguished
+by class — **Floor-supporting** (the deterministic, license-cleared
+matches that raised the floor, shown prominently), **Supporting
+(deterministic)**, and **Supporting (reputation)** — and carries the
+**source** label, the feed **version** / **hash** snapshot, and the
+**checked** time. The indicator is shown redaction-consistently: an
+external indicator appears directly, a customer-asset indicator is
+restored only within this event's scope, and it degrades to its redaction
+token when restoration is unavailable rather than leaking a wrong value.
+
+The IOC evidence is a transparency surface only — it never changes the
+priority tier, scores, or factors.
+
+<!-- Screenshot placeholder: the event analysis page with the Threat-intel
+     IOC evidence section — the verdict banner plus a feed-source citation
+     (source label, version/hash, checked time). Requires a real-data
+     capture from a stack with a Tier-1 feed loaded and an event that
+     matched an indicator (IOC evidence originates from aice-web-next-fed
+     enrichment), per docs/AUTHORING.md. -->
+
 ## CVE references
 
 Below the MITRE chips, the page renders a row of **CVE chips** for the

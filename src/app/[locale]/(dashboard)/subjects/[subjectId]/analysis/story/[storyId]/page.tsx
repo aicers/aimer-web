@@ -10,6 +10,7 @@ import {
 } from "@/components/analysis/compare-model-selector";
 import { CveSection } from "@/components/analysis/cve-section";
 import { EventTitle } from "@/components/analysis/event-title";
+import { IocEvidenceSection } from "@/components/analysis/ioc-evidence-section";
 import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
 import { BreadcrumbLabelRegistrar } from "@/components/breadcrumb-label-store";
@@ -23,7 +24,6 @@ import { loadCitedByReports } from "@/lib/analysis/cited-by-loader";
 import { getModelCatalog } from "@/lib/analysis/model-catalog";
 import type { PriorityTier } from "@/lib/analysis/priority-tier";
 import {
-  type CoverageStatus,
   loadStoryResultPage,
   type StoryMemberEvent,
 } from "@/lib/analysis/story-result-page-loader";
@@ -306,12 +306,11 @@ export default async function StoryAnalysisPage({
         {languageNotice}
       </header>
 
-      {/* Threat-intel coverage transparency (#498): when the canonical
-          version's IOC enrichment ran under incomplete coverage
-          (`unknown`/`stale`/`partial`), a `known_ioc_hit = false` may reflect
-          an unavailable or stale Tier-1 source rather than a confirmed clean
-          miss. `complete` (and a not-yet-enriched `null`) show nothing. */}
-      <CoverageStatusNote status={data.coverageStatus} t={tA} />
+      {/* TI IOC evidence + feed-source citations (#591). Always renders the
+          verdict banner (known-IOC hit / fully-checked-clean / couldn't-check /
+          not-run — the #498 false-complete-vs-false-unknown legibility) plus
+          the supporting feed-source citations when present. */}
+      <IocEvidenceSection enrichment={data.iocEnrichment} t={tA} />
 
       {/* RFC 0005 — CVE chip row / gated no-CVE state. Renders nothing when
           the CVE path did not run (cveStatus null) or the analysis is
@@ -478,30 +477,6 @@ export default async function StoryAnalysisPage({
           />
         </section>
       ) : null}
-    </div>
-  );
-}
-
-// Renders the threat-intel coverage banner only when the canonical version's
-// IOC enrichment was incomplete (#498). `complete` is the clean-coverage case
-// and `null` means enrichment has not completed — neither needs a warning.
-function CoverageStatusNote({
-  status,
-  t,
-}: {
-  status: CoverageStatus | null;
-  t: AnalysisTranslations;
-}) {
-  if (status === null || status === "complete") return null;
-  return (
-    <div
-      role="status"
-      data-testid="coverage-status-banner"
-      data-coverage-status={status}
-      className="mb-6 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-    >
-      <span className="font-semibold">{t("coverage.incompleteBadge")}</span>{" "}
-      {t("coverage.incompleteNote", { status })}
     </div>
   );
 }

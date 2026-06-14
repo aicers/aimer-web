@@ -29,6 +29,8 @@ import { decryptRedactionMap, type RedactionMap } from "@/lib/redaction";
 import type { CveStatus } from "./cve/catalog";
 import { type CveRefView, parseCveRefs } from "./cve/view";
 import { resolveDefaultModel } from "./default-model";
+import type { IocEnrichment } from "./ioc-evidence";
+import { loadEventIocEnrichment } from "./ioc-evidence-loader";
 import { lookupTtpName } from "./mitre-ttp";
 import type { PriorityTier } from "./priority-tier";
 import { restoreRedactedTokens } from "./restore";
@@ -168,6 +170,16 @@ export interface AnalysisResultPageData {
    * no-match); `unknown`/`stale` = degraded (could-not-verify).
    */
   cveStatus: CveStatus | null;
+  /**
+   * TI IOC evidence + feed-source citation surface for this event (#591),
+   * keyed on `(source_aice_id, event_key)`. Carries the
+   * `event_enrichment_state` verdict (`known_ioc_hit` + `coverage_status`,
+   * present even with zero evidence; `verdict: null` = enrichment not run, e.g.
+   * a manual-only event never auto-baselined) AND the supporting evidence rows
+   * resolved to indicator + redaction scope + source label + provenance + class
+   * flags. Read-only consumer of the #589 tables.
+   */
+  iocEnrichment: IocEnrichment;
   /** Token-restored analysis text — safe to render as-is. */
   analysisText: string;
   /**
@@ -580,6 +592,18 @@ export async function loadAnalysisResultPage(
       priorityTier: r.priority_tier,
     }));
 
+  // TI IOC evidence + feed-source citations for this event (#591). Reuses the
+  // already-decrypted `event_redaction_map` (every `event_ioc_evidence` row for
+  // an event shares that single scope), so the indicator de-map needs no extra
+  // decrypt. A manual-only event with no `event_enrichment_state` row returns
+  // `verdict: null` (not run / unavailable), never a clean verdict.
+  const iocEnrichment = await loadEventIocEnrichment(
+    customerPool,
+    input.aiceId,
+    input.eventKey,
+    redactionMap,
+  );
+
   // Analyst-only compare column (#464): a read-only EXACT, unpinned model-only
   // lookup of the compare model at the primary's language. Gated on the analyst
   // flag so a non-analyst's crafted `?compareModel` never resolves analyst-only
@@ -625,6 +649,7 @@ export async function loadAnalysisResultPage(
       ttpTags: row.ttp_tags.map((id) => ({ id, name: lookupTtpName(id) })),
       cveRefs: parseCveRefs(row.cve_refs),
       cveStatus: row.cve_status,
+      iocEnrichment,
       analysisText: restoredText,
       origin: row.origin,
       requestedBy: row.requested_by,
