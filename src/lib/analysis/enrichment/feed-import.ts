@@ -556,6 +556,121 @@ export function parseSpamhausDropNdjson(text: string): string[] {
 }
 
 /**
+ * One MISP warninglist as published upstream at `lists/<name>/list.json`
+ * (RFC 0003 F5, #615): a `type` (matching semantics) + a `list` of entries,
+ * plus a human-readable `name`. Only the fields the parser reads are typed; the
+ * rest (`version`, `description`, `matching_attributes`) are ignored.
+ */
+interface MispWarninglist {
+  /** Human-readable list name, carried per-row into `classification`. */
+  name?: string;
+  /** Matching semantics: `string` | `substring` | `hostname` | `cidr` | `regex`. */
+  type: string;
+  /** The list entries (IP / CIDR / hostname strings). */
+  list: unknown[];
+}
+
+/**
+ * MISP warninglists negative-layer parser (RFC 0003 F5, #615). The first
+ * `polarity: "negative"` source's bespoke parser: it never emits a positive
+ * match, only suppression rows that down-weight likely false positives (public
+ * DNS resolvers, CDN/cloud ranges, bogons).
+ *
+ * `content` is a JSON ARRAY of `list.json` objects (a single-element array is
+ * the degenerate one-list case); every list is flattened into ONE row set so a
+ * multi-list payload lands in one snapshot replace (no last-file-wins clobber).
+ * Each list branches on `type`:
+ *
+ *   - `cidr` → a normalized cidr row per valid CIDR entry.
+ *   - `string` / `hostname` → an exact IP `matchValue` row per entry that
+ *     normalizes to an IP (v1 is IP-only; a non-IP entry is skipped silently).
+ *   - `substring` / `regex` / any unknown `type` → the whole list is skipped
+ *     silently (the store has no such match path) — never an error, so an
+ *     unsupported list can never break import.
+ *
+ * Every emitted row carries its source list's `name` as `classification`, so a
+ * suppression decision can name WHICH warninglist matched.
+ *
+ * Skips are for recognized-but-unsupported shapes only. MALFORMED input is a
+ * `FeedParseError`: invalid JSON, a non-array top level, a list element that is
+ * not an object or is missing a string `type` / array `list`. (Per-entry
+ * CIDR/value validity follows the existing parsers' silent-drop convention.)
+ */
+export function parseMispWarninglists(content: string): FeedSnapshotRow[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new FeedParseError("misp-warninglist: content is not valid JSON");
+  }
+  if (!Array.isArray(parsed)) {
+    throw new FeedParseError(
+      "misp-warninglist: top-level value must be a JSON array of lists",
+    );
+  }
+  const rows: FeedSnapshotRow[] = [];
+  for (const element of parsed) {
+    const list = asWarninglist(element);
+    const entries = list.list.filter(
+      (entry): entry is string => typeof entry === "string",
+    );
+    let listRows: FeedSnapshotRow[];
+    if (list.type === "cidr") {
+      listRows = normalizeCidrs(entries).rows;
+    } else if (list.type === "string" || list.type === "hostname") {
+      // v1 is IP-only: a non-IP entry fails normalization and is skipped.
+      listRows = normalizeExactValues("IP", entries).rows;
+    } else {
+      // `substring` / `regex` / unknown type → no store match path; skip the
+      // whole list silently (never an error).
+      continue;
+    }
+    // Stamp each row with its source list's `name` so the suppression surface
+    // (#591) can show which warninglist suppressed the indicator.
+    for (const row of listRows) {
+      rows.push(
+        list.name !== undefined ? { ...row, classification: list.name } : row,
+      );
+    }
+  }
+  return rows;
+}
+
+/**
+ * Narrow one decoded JSON-array element to a `MispWarninglist`, raising
+ * `FeedParseError` on a malformed element (not an object, or missing a string
+ * `type` / array `list`). Malformed structure must surface — only a
+ * recognized-but-unsupported `type` is a silent skip (handled by the caller).
+ */
+function asWarninglist(element: unknown): MispWarninglist {
+  if (
+    element === null ||
+    typeof element !== "object" ||
+    Array.isArray(element)
+  ) {
+    throw new FeedParseError(
+      "misp-warninglist: each list element must be a JSON object",
+    );
+  }
+  const obj = element as Record<string, unknown>;
+  if (typeof obj.type !== "string") {
+    throw new FeedParseError(
+      "misp-warninglist: a list element is missing a string `type`",
+    );
+  }
+  if (!Array.isArray(obj.list)) {
+    throw new FeedParseError(
+      "misp-warninglist: a list element's `list` must be an array",
+    );
+  }
+  return {
+    name: typeof obj.name === "string" ? obj.name : undefined,
+    type: obj.type,
+    list: obj.list,
+  };
+}
+
+/**
  * Minimal CSV field splitter handling double-quoted fields. `delimiter`
  * defaults to `,` (the bespoke abuse.ch parsers); `csv-column` can override it
  * for sources published with another separator.
@@ -928,6 +1043,11 @@ export function parseFeedContent(
       // grouped + normalized per type exactly like `csv-column`.
       return groupedRows(parseFreeTextIocs(content, cfg));
     }
+    case "misp-warninglist":
+      // The negative layer's bespoke JSON-array parser (RFC 0003 F5, #615):
+      // it already normalizes its own rows (cidr / exact IP) and stamps each
+      // with its source list's `name`, so `entityType` is unused (v1 is IP-only).
+      return parseMispWarninglists(content);
     default:
       throw new Error(`unknown parse kind: ${parse}`);
   }

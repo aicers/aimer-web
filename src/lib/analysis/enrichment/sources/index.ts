@@ -15,6 +15,7 @@ import "./abuse-ch-urlhaus";
 import "./abuse-ch-urlhaus-payloads";
 import "./botvrij";
 import "./infoblox";
+import "./misp-warninglists";
 import "./phishing-database";
 import "./spamhaus-drop";
 import "./spamhaus-edrop";

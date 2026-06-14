@@ -18,6 +18,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "botvrij/ip",
       "botvrij/url",
       "infoblox/threat-intelligence",
+      "misp/warninglists",
       "phishing-database/domain",
       "phishing-database/ip",
       "phishing-database/url",
@@ -159,6 +160,13 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
         entityType: "DOMAIN",
         hitType: "deterministic_ioc",
         classification: "infoblox",
+      },
+      {
+        sourcePolicyId: "misp/warninglists",
+        file: "misp-warninglists.json",
+        parse: "misp-warninglist",
+        entityType: "IP",
+        polarity: "negative",
       },
       {
         sourcePolicyId: "phishing-database/domain",

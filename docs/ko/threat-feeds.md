@@ -4,7 +4,9 @@
 사용하는 Tier-1 위협 인텔리전스 피드(abuse.ch Feodo / URLhaus, Spamhaus
 DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Database
 도메인 / URL / IP 목록)와 **Palo Alto Unit 42** 벤더 IOC 저장소를 관리할 수
-있습니다. 관리자 사이드바에서 **위협 피드**로 이동하여 엽니다.
+있습니다. 또한 **MISP warninglists** 오탐 억제 계층도 관리합니다(
+[부정 소스 (오탐 억제)](#부정-소스-오탐-억제) 참고). 관리자 사이드바에서
+**위협 피드**로 이동하여 엽니다.
 
 평면 Tier-1 피드는 게시된 단일 파일이지만, **벤더 IOC 저장소**(예: Unit 42)는
 보고서별 파일들로 구성된 전체 Git 저장소이며 하나의 단위로 가져옵니다. 벤더
@@ -51,6 +53,7 @@ DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Databa
 | Phishing.Database (`phishing-database/url`) | URL | MIT |
 | Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
 | Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (2024년 DROP에 통합) |
+| MISP warninglists (`misp/warninglists`) | IP (부정 / 억제) | CC0 (퍼블릭 도메인, 출처 표기 불필요) |
 
 **Infoblox Threat Intelligence**는 도메인 중심의 멤버십 + 분류 피드로, 하나의
 혼합 CSV 스키마(`type,indicator,classification,…`)로 게시됩니다. 지표 유형은
@@ -63,6 +66,32 @@ DROP, Botvrij.eu IP / 도메인 / URL / 해시 목록, 그리고 Phishing.Databa
 (CC-BY-4.0)"** 출처 표기를 기본으로 담고 있습니다. 이 소스는 현재 커밋된 픽스처 /
 수동 업로드로 공급되며, self-fetch 엔드포인트는 없습니다(콘텐츠가 캠페인별 다수
 파일로 흩어져 있어 안정적인 "최신" URL이 없습니다).
+
+### 부정 소스 (오탐 억제)
+
+대부분의 소스는 **부정이 아닌(positive)** 소스로, 매칭은 해당 지표가 알려진
+악성임을 뜻합니다. **부정(negative)** 소스는 그 반대입니다. 알려진 **정상** /
+잡음이 많은 인프라(퍼블릭 DNS 리졸버, CDN / 클라우드 IP 대역, 보곤)를 나열하며,
+매칭은 해당 지표가 **오탐**일 가능성이 높음을 뜻합니다.
+
+**MISP warninglists**(`misp/warninglists`, `MISP/misp-warninglists` 프로젝트,
+**CC0** 퍼블릭 도메인)가 첫 번째 부정 소스입니다. 이는 알려진 악성 피드가
+**아니며**, warninglist에 오른 지표는 알려진 IOC 히트를 만들지 않습니다. 대신 해당
+지표의 긍정 매칭이 분석 플로어와 증거 표면에 도달하기 전에 가중치를 낮춥니다.
+
+- 결정적(deterministic) 매칭은 **증거로 유지**되지만(여전히 감사 및 설명 가능)
+    더 이상 이진 알려진 IOC 플로어를 구동하지 못합니다.
+- 소프트 평판(soft-reputation) 매칭은 오탐 가능성이 높으므로 **제거**됩니다.
+- 매칭된 warninglist의 이름이 억제 증거에 기록되므로, 분석가는 *어떤*
+    warninglist(예: "List of known IPv4 public DNS resolvers")가 지표를
+    억제했는지 확인할 수 있습니다.
+
+v1은 **IP 중심** 목록만 가져옵니다 — 퍼블릭 DNS 리졸버(정확한 IP)와 CDN /
+클라우드 / 보곤 대역(CIDR)입니다. 도메인 / URL warninglist(인기 사이트 목록)는
+현재 범위 밖입니다. CC0는 출처 표기 의무가 없지만, 소스 라벨은 출처 확인을 위해
+**"MISP warninglists (CC0)"**를 기록합니다. Spamhaus EDROP과 마찬가지로 이
+소스는 현재 커밋된 픽스처 / 수동 업로드로 공급되며 self-fetch 엔드포인트가
+없습니다.
 
 ---
 

@@ -4,7 +4,10 @@ The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
 URL / hash lists, and the Phishing.Database domain / URL / IP lists) plus the
 **Palo Alto Unit 42** vendor IOC repository that observed indicators are matched
-locally against. Navigate to **Threat Feeds** in the admin sidebar to open it.
+locally against. It also manages the **MISP warninglists** false-positive
+suppression layer (see [Negative sources (false-positive
+suppression)](#negative-sources-false-positive-suppression)). Navigate to **Threat
+Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
 (such as Unit 42) is instead a whole Git repository of per-report files that is
@@ -54,6 +57,7 @@ licensing:
 | Phishing.Database (`phishing-database/url`) | URL | MIT |
 | Spamhaus DROP (`spamhaus/drop`) | IP (CIDR) | Spamhaus |
 | Spamhaus EDROP (`spamhaus/edrop`) | IP (CIDR) | Spamhaus (merged into DROP, 2024) |
+| MISP warninglists (`misp/warninglists`) | IP (negative / suppression) | CC0 (public domain, no attribution) |
 
 **Infoblox Threat Intelligence** is a domain-heavy membership + classification
 feed published as one mixed CSV schema (`type,indicator,classification,…`),
@@ -68,6 +72,33 @@ the **"Infoblox Threat Intelligence (CC-BY-4.0)"** attribution by construction.
 This source is supplied via the committed fixture / manual upload today; it has
 no self-fetch endpoint (its content is many per-campaign files with no stable
 "latest" URL).
+
+### Negative sources (false-positive suppression)
+
+Most sources are **positive** — a match means the indicator is known-bad. A
+**negative** source is the opposite: it lists known-**good** / known-noisy
+infrastructure (public DNS resolvers, CDN / cloud IP ranges, bogons), and a
+match means the indicator is a likely **false positive**.
+
+**MISP warninglists** (`misp/warninglists`, the `MISP/misp-warninglists`
+project, **CC0** public domain) is the first such source. It is **not** a
+known-bad feed: a warninglisted indicator never produces a known-IOC hit.
+Instead it down-weights that indicator's positive matches before they reach the
+analysis floor and evidence surface:
+
+- a deterministic match is **kept as evidence** (still audited and
+    explainable) but can no longer drive the binary known-IOC floor;
+- a soft-reputation match is **dropped** as a likely false positive;
+- the matched warninglist's name is recorded on the suppression evidence, so an
+    analyst can see *which* warninglist (for example "List of known IPv4 public
+    DNS resolvers") suppressed the indicator.
+
+v1 imports **IP-oriented** lists only — public DNS resolvers (exact IP) and CDN
+/ cloud / bogon ranges (CIDR). Domain / URL warninglists (top-sites lists) are
+out of scope for now. CC0 carries no attribution obligation, but the source
+label records **"MISP warninglists (CC0)"** for provenance. Like Spamhaus EDROP,
+this source is supplied via the committed fixture / manual upload today and has
+no self-fetch endpoint.
 
 ---
 
