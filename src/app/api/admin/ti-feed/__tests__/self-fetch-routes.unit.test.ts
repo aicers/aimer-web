@@ -266,11 +266,27 @@ describe("GET /api/admin/ti-feed (shared surface, self-fetch)", () => {
       nextFetchDueAt: null,
       dueNow: true,
     });
-    // A non-fetchable (merged) source is never "due now".
+    // A non-fetchable (merged) source is never "due now". EDROP carries the
+    // `merged` reason (superseded by DROP); a fixture-only source like Infoblox
+    // carries `fixture-only` so the UI badge stays accurate per source.
     const edrop = body.sources.find(
       (s: { sourcePolicyId: string }) => s.sourcePolicyId === "spamhaus/edrop",
     );
-    expect(edrop).toMatchObject({ fetchable: false, dueNow: false });
+    expect(edrop).toMatchObject({
+      fetchable: false,
+      dueNow: false,
+      unavailableReason: "merged",
+    });
+    const infoblox = body.sources.find(
+      (s: { sourcePolicyId: string }) =>
+        s.sourcePolicyId === "infoblox/threat-intelligence",
+    );
+    expect(infoblox).toMatchObject({
+      fetchable: false,
+      unavailableReason: "fixture-only",
+    });
+    // Fetchable sources carry no unavailable reason.
+    expect(feodo).toMatchObject({ unavailableReason: null });
   });
 
   it("404s in fixture mode (neither manual-upload nor self-fetch)", async () => {

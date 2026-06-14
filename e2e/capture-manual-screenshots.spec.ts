@@ -685,11 +685,26 @@ base.describe.serial("Manual screenshots", () => {
   // freshly-migrated feed DB, so every source reads "Not fetched" — that empty
   // state is the real UI an operator first sees before any Fetch Now.
 
+  // The self-fetch table sits below the Scheduled-refresh + Auth-Key panels,
+  // so every registered source after the first few lands below the 720 px
+  // fold. As the TI source registry fans out (Infoblox, …) the table grows,
+  // and a plain viewport shot would hide the newest rows — defeating the
+  // purpose of documenting them. The dashboard shell is `h-screen` with the
+  // page body in an inner `overflow-y-auto` <main>, so the document never
+  // grows past the viewport and `fullPage` alone cannot reach below-the-fold
+  // content; bump the viewport height (width stays 1280 so layout flow is
+  // unchanged) and capture `fullPage`, the same per-shot override pattern the
+  // account-preferences captures use. Assert the last source row is on-page
+  // before shooting so a too-short viewport fails loudly instead of silently
+  // clipping a new row.
+  const SELFFETCH_VIEWPORT = { width: 1280, height: 1100 };
+
   base("admin-ti-feeds-selffetch-table.png", async () => {
     base.skip(
       tiFeedMode !== "self-fetch",
       "self-fetch mode only (set TI_FEED_MODE=self-fetch)",
     );
+    await adminPage.setViewportSize(SELFFETCH_VIEWPORT);
     await adminPage.goto("/en/admin/ti-feeds");
     await settle(adminPage);
     await expect(
@@ -697,10 +712,15 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
+    await expect(
+      adminPage.getByText("infoblox/threat-intelligence"),
+    ).toBeVisible();
 
     await adminPage.screenshot({
       path: resolve(ASSETS, "admin-ti-feeds-selffetch-table.png"),
+      fullPage: true,
     });
+    await adminPage.setViewportSize(VIEWPORT);
   });
 
   base("admin-ti-feeds-selffetch-authkey-dialog.png", async () => {

@@ -64,6 +64,12 @@ export interface Tier1FeedSource {
    * self-fetched today — notably `spamhaus/edrop`, merged into DROP in 2024.
    */
   fetch?: TiSourceFetchConfig;
+  /**
+   * Why a source has no self-fetch (`fetch` absent): `"merged"` ⇒ superseded
+   * upstream (EDROP into DROP); omitted ⇒ fixture-/manual-upload-only with no
+   * aggregate endpoint (e.g. Infoblox). Drives the self-fetch table badge.
+   */
+  selfFetchUnavailable?: "merged";
 }
 
 /**
@@ -83,6 +89,7 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
+    selfFetchUnavailable: descriptor.selfFetchUnavailable,
   }));
 
 /** Look up a catalog source by `source_policy_id` (undefined if unknown). */
@@ -102,5 +109,6 @@ export function getTier1FeedSource(
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,
     fetch: descriptor.fetch,
+    selfFetchUnavailable: descriptor.selfFetchUnavailable,
   };
 }

@@ -41,6 +41,7 @@ interface SelfFetchSourceStatus {
   sourcePolicyId: string;
   label: string;
   fetchable: boolean;
+  unavailableReason: "merged" | "fixture-only" | null;
   fetchUrl: string | null;
   authKeyRequired: boolean;
   authKeyName: string | null;
@@ -621,7 +622,11 @@ function SelfFetchView() {
                   </TableCell>
                   <TableCell>
                     {!source.fetchable ? (
-                      <Badge variant="secondary">{t("merged")}</Badge>
+                      <Badge variant="secondary">
+                        {source.unavailableReason === "merged"
+                          ? t("merged")
+                          : t("fixtureOnly")}
+                      </Badge>
                     ) : !source.present ? (
                       <Badge variant="secondary">{t("notFetched")}</Badge>
                     ) : source.stale ? (

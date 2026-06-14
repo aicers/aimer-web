@@ -141,6 +141,15 @@ export interface TiSourceDescriptor {
    * self-fetched today — notably `spamhaus/edrop`, merged into DROP in 2024.
    */
   fetch?: TiSourceFetchConfig;
+  /**
+   * Why a source has no self-fetch config (`fetch` absent). Drives the
+   * self-fetch table badge so each non-fetchable source reads accurately:
+   * `"merged"` ⇒ superseded upstream (e.g. `spamhaus/edrop` folded into
+   * DROP); when omitted the source is simply fixture-/manual-upload-only with
+   * no aggregate "latest" endpoint (e.g. `infoblox/threat-intelligence`).
+   * Ignored when `fetch` is present.
+   */
+  selfFetchUnavailable?: "merged";
   /** Committed fixture filename under `../feeds/`, if this source ships one. */
   fixtureFile?: string;
 }
