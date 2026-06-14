@@ -20,6 +20,7 @@ import type {
   FeedParseConfig,
   FeedParseKind,
   FeedSource,
+  FreeTextParseConfig,
   GenericListParseConfig,
   RawFeedPayload,
 } from "./feed-source";
@@ -110,6 +111,161 @@ export function parseGenericList(
 /** Whether `line` (already trimmed) starts with any non-empty comment prefix. */
 function isCommentLine(line: string, prefixes: readonly string[]): boolean {
   return prefixes.some((p) => p.length > 0 && line.startsWith(p));
+}
+
+/**
+ * Lowercased tokens that are file extensions, not TLDs — so the domain scanner
+ * does not read `payload.exe` / `gate.php` / `analysis.md` as a DOMAIN. A bare
+ * dotted token whose last label is one of these is dropped before normalization.
+ *
+ * Deliberately excludes `com`: although `.COM` is a legacy DOS executable
+ * extension, `.com` is by far the most common real-world TLD, so dropping every
+ * `c2[.]evil[.]com`-style prose IOC to catch a rare `command.com` reference is
+ * the wrong trade — `normalizeDomain` remains the final arbiter for the rare
+ * collision.
+ */
+const FILE_EXTENSION_TOKENS: ReadonlySet<string> = new Set([
+  "exe",
+  "dll",
+  "bin",
+  "dat",
+  "sys",
+  "scr",
+  "msi",
+  "dmg",
+  "iso",
+  "img",
+  "php",
+  "html",
+  "htm",
+  "asp",
+  "aspx",
+  "jsp",
+  "cgi",
+  "js",
+  "css",
+  "json",
+  "xml",
+  "yml",
+  "yaml",
+  "md",
+  "txt",
+  "log",
+  "csv",
+  "tsv",
+  "ini",
+  "cfg",
+  "conf",
+  "toml",
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "bmp",
+  "svg",
+  "ico",
+  "webp",
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "ppt",
+  "pptx",
+  "rtf",
+  "zip",
+  "rar",
+  "gz",
+  "tar",
+  "7z",
+  "bz2",
+  "sh",
+  "bat",
+  "ps1",
+  "vbs",
+  "py",
+  "rb",
+  "pl",
+  "go",
+  "rs",
+  "c",
+  "cpp",
+  "h",
+  "sql",
+  "db",
+  "bak",
+  "tmp",
+  "lnk",
+  "jar",
+  "apk",
+  "deb",
+  "rpm",
+  "sig",
+  "yar",
+  "yara",
+  "rules",
+  "ioc",
+  "stix",
+]);
+
+/**
+ * Free-text atomic IOC scanner (#603): pull IP / DOMAIN / URL / HASH indicators
+ * embedded in PROSE (vendor-repo blog notes, READMEs), where `generic-list` —
+ * one line equals one indicator — cannot reach an IOC inside a sentence. The
+ * whole body is refanged (on by default), then scanned strongest-shape-first
+ * (URLs, then hashes, then IPv4, then domains), masking each match out so a
+ * domain inside an already-extracted URL is not double-counted. Returns
+ * `{ entityType, value }` pairs (each token self-classifies its type);
+ * normalization + de-duplication happen at import (`freeTextRows`). Tolerates a
+ * body with zero IOCs (returns `[]`) — low-yield notes are not an error.
+ */
+export function parseFreeTextIocs(
+  text: string,
+  config?: FreeTextParseConfig,
+): { entityType: EntityType; value: string }[] {
+  const refang = config?.refang ?? true;
+  let work = refang ? refangIndicator(text) : text;
+  const out: { entityType: EntityType; value: string }[] = [];
+  const seen = new Set<string>();
+  const push = (entityType: EntityType, raw: string): void => {
+    const value = raw.replace(/[.,;:!?'")\]}>]+$/, "");
+    if (value.length === 0) return;
+    const key = `${entityType}\0${value.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ entityType, value });
+  };
+
+  // 1. URLs — captured whole, then masked so their host/path is not re-scanned.
+  const urlRe = /\bhttps?:\/\/[^\s<>"'`()[\]{}]+/gi;
+  for (const m of work.matchAll(urlRe)) push("URL", m[0]);
+  work = work.replace(urlRe, " ");
+
+  // 2. Hashes — longest shape first (SHA-256, SHA-1, MD5) so a 64-hex string is
+  //    not split into shorter hex runs.
+  for (const len of [64, 40, 32]) {
+    const hashRe = new RegExp(`\\b[a-fA-F0-9]{${len}}\\b`, "g");
+    for (const m of work.matchAll(hashRe)) push("HASH", m[0]);
+    work = work.replace(hashRe, " ");
+  }
+
+  // 3. IPv4 dotted-quad.
+  const ipRe = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+  for (const m of work.matchAll(ipRe)) push("IP", m[0]);
+  work = work.replace(ipRe, " ");
+
+  // 4. Domains — a dotted token whose last label is alphabetic (2-24 chars) and
+  //    is not a file extension. Normalization (`normalizeDomain`) is the final
+  //    arbiter; this only keeps the false-positive rate sane over prose.
+  const domainRe =
+    /\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,24}\b/g;
+  for (const m of work.matchAll(domainRe)) {
+    const value = m[0];
+    const tld = value.slice(value.lastIndexOf(".") + 1).toLowerCase();
+    if (FILE_EXTENSION_TOKENS.has(tld)) continue;
+    push("DOMAIN", value);
+  }
+  return out;
 }
 
 /**
@@ -371,6 +527,60 @@ export interface FeedSnapshotRow {
    * NULL and `feed_hash` is unaffected.
    */
   context?: EnrichmentContextPayload;
+  /**
+   * Per-row hit-type override (RFC 0003 F4, #603). A vendor repo aggregates
+   * many files (with potentially different hit types) into ONE source snapshot,
+   * so hit type cannot be a single snapshot-level value. Absent ⇒ the row falls
+   * back to the snapshot-level default (`ImportFeedParams.hitType`). Folded into
+   * `feed_hash` ONLY when present, so a default-using row hashes unchanged.
+   */
+  hitType?: HitType;
+  /**
+   * Per-row classification override (RFC 0003 F4, #603). Absent ⇒ falls back to
+   * the snapshot-level default. Folded into `feed_hash` only when present.
+   */
+  classification?: string;
+  /**
+   * Central CIB guard (RFC 0003 F4, #603). When `false`, the import path forces
+   * this row to `soft_reputation` regardless of `hitType` / the snapshot default
+   * — non-malware / influence-ops content (Meta CIB) can NEVER become a
+   * deterministic / floor-eligible match. Absent ⇒ no downgrade. The forced
+   * `soft_reputation` is folded into `feed_hash` so flipping the guard re-imports.
+   */
+  deterministicAllowed?: boolean;
+}
+
+/**
+ * Resolve a row's effective hit type, applying the central CIB guard: a row
+ * flagged `deterministicAllowed: false` is forced to `soft_reputation`
+ * regardless of its own `hitType` or the snapshot default. Otherwise the row's
+ * `hitType` override wins, else the snapshot-level default. The single
+ * chokepoint both the INSERT and the feed hash resolve through, so persisted
+ * `hit_type` and `feed_hash` always agree.
+ */
+export function resolveRowHitType(
+  row: FeedSnapshotRow,
+  defaultHitType: HitType | null,
+): HitType | null {
+  if (row.deterministicAllowed === false) return "soft_reputation";
+  return row.hitType ?? defaultHitType;
+}
+
+/**
+ * The hash suffix that encodes a row's hit-type / classification override, or
+ * `undefined` when the row carries none (so it hashes byte-for-byte as before
+ * #603 — the existing five feeds keep their `feed_hash`). The CIB guard's forced
+ * `soft_reputation` counts as an override so flipping the guard moves the hash.
+ * Only the row's OWN override fields are folded (never the snapshot default), so
+ * a change to the snapshot-level default does not by itself move `feed_hash`.
+ */
+function rowOverrideHashSuffix(row: FeedSnapshotRow): string | undefined {
+  const parts: string[] = [];
+  const hit =
+    row.deterministicAllowed === false ? "soft_reputation" : row.hitType;
+  if (hit !== undefined) parts.push(`hit=${hit}`);
+  if (row.classification !== undefined) parts.push(`cls=${row.classification}`);
+  return parts.length > 0 ? parts.join("\x1f") : undefined;
 }
 
 /**
@@ -512,11 +722,7 @@ export async function importFeedSnapshot(
   params: ImportFeedParams,
 ): Promise<{ rowCount: number; feedHash: string }> {
   const feedHash = params.feedHash ?? computeFeedHash(params.rows);
-  // Negative (warninglist) rows carry NO hit_type (#599): force NULL regardless
-  // of `params.hitType` so the polarity/hit_type CHECK holds. Positive rows
-  // keep today's required hit_type.
   const polarity: SourcePolarity = params.polarity ?? "positive";
-  const hitType = polarity === "negative" ? null : (params.hitType ?? null);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -532,6 +738,16 @@ export async function importFeedSnapshot(
       // hash always agree on which context properties exist (and an
       // all-`undefined` payload stores NULL, not a non-null `{}`).
       const context = row.context ? normalizeContext(row.context) : undefined;
+      // Negative (warninglist) rows carry NO hit_type (#599): force NULL so the
+      // polarity/hit_type CHECK holds, regardless of `params.hitType`. Positive
+      // rows resolve their hit type per row through the central CIB guard
+      // (#603): a `deterministicAllowed: false` row is forced to
+      // `soft_reputation` — not trusting whatever a payload declared.
+      const hitType =
+        polarity === "negative"
+          ? null
+          : resolveRowHitType(row, params.hitType ?? null);
+      const classification = row.classification ?? params.classification;
       await client.query(
         `INSERT INTO ioc_feed_snapshot
            (source_policy_id, entity_type, match_value, cidr, hit_type,
@@ -546,7 +762,7 @@ export async function importFeedSnapshot(
           row.cidr ?? null,
           hitType,
           polarity,
-          params.classification ?? null,
+          classification ?? null,
           params.confidence ?? null,
           context ? JSON.stringify(context) : null,
           params.sourceVersion ?? null,
@@ -619,7 +835,13 @@ export function parseFeedContent(
           "csv-column parse requires a csv-column parseConfig",
         );
       }
-      return csvColumnRows(parseCsvColumns(content, config));
+      return groupedRows(parseCsvColumns(content, config));
+    }
+    case "free-text": {
+      const cfg = config?.kind === "free-text" ? config : undefined;
+      // The scanner self-classifies each token's entity type, so the rows are
+      // grouped + normalized per type exactly like `csv-column`.
+      return groupedRows(parseFreeTextIocs(content, cfg));
     }
     default:
       throw new Error(`unknown parse kind: ${parse}`);
@@ -627,14 +849,15 @@ export function parseFeedContent(
 }
 
 /**
- * Normalize `csv-column`'s per-column `{ entityType, value }` extractions into
- * snapshot rows: group by entity type, run each group through the same
- * `normalizeExactValues` the bespoke parsers use, and stamp every row with its
- * column's `entityType` (so a multi-type CSV contributes more than one entity
- * type under one source, like URLhaus' URL+DOMAIN). Per-type de-duplication is
- * inherited from `normalizeExactValues`.
+ * Normalize per-entity-type `{ entityType, value }` extractions (`csv-column`'s
+ * columns or the `free-text` scanner's tokens) into snapshot rows: group by
+ * entity type, run each group through the same `normalizeExactValues` the
+ * bespoke parsers use, and stamp every row with its `entityType` (so a
+ * multi-type source contributes more than one entity type under one source,
+ * like URLhaus' URL+DOMAIN). Per-type de-duplication is inherited from
+ * `normalizeExactValues`.
  */
-function csvColumnRows(
+function groupedRows(
   extracted: readonly { entityType: EntityType; value: string }[],
 ): FeedSnapshotRow[] {
   const byType = new Map<EntityType, string[]>();
@@ -770,6 +993,38 @@ export function isUnparseableFeedContent(
 }
 
 /**
+ * Parse + normalize one raw feed payload's content into snapshot rows WITHOUT
+ * importing (RFC 0003 F4, #603). The parse-only seam the vendor-repo batch path
+ * needs: it gathers rows across MANY files for one source, then replaces once
+ * (`importFeedSnapshot`) — so it cannot use `importRawFeedPayload` (a per-file
+ * replace would clobber all but the last file).
+ *
+ * The payload's report-level `context` is stamped onto every produced row, and
+ * a `deterministicAllowed: false` guard is stamped through to each row (the
+ * import path forces those rows to `soft_reputation` centrally). A context-less,
+ * guard-less payload (the existing five feeds) returns the parser's rows
+ * unchanged, so its `feed_hash` is byte-for-byte identical.
+ */
+export function parseRawFeedPayloadRows(
+  payload: RawFeedPayload,
+): FeedSnapshotRow[] {
+  const rows = parseFeedContent(
+    payload.parse,
+    payload.entityType,
+    payload.content,
+    payload.parseConfig,
+  );
+  const guardDowngrade = payload.deterministicAllowed === false;
+  if (!payload.context && !guardDowngrade) return rows;
+  return rows.map((row) => {
+    const stamped: FeedSnapshotRow = { ...row };
+    if (payload.context) stamped.context = payload.context;
+    if (guardDowngrade) stamped.deterministicAllowed = false;
+    return stamped;
+  });
+}
+
+/**
  * Import one raw feed payload: parse + normalize its content (per the
  * payload's `parse` kind), then replace the source's snapshot rows in
  * `ioc_feed_snapshot`. The provenance carries the freshness/version stamp.
@@ -786,12 +1041,7 @@ export async function importRawFeedPayload(
     classification: payload.classification,
     sourceVersion: payload.provenance.sourceVersion,
     sourceUpdatedAt: payload.provenance.sourceUpdatedAt,
-    rows: parseFeedContent(
-      payload.parse,
-      payload.entityType,
-      payload.content,
-      payload.parseConfig,
-    ),
+    rows: parseRawFeedPayloadRows(payload),
   });
 }
 
@@ -822,13 +1072,21 @@ export async function importFromFeedSource(
  * `JSON.stringify`, so the same context with a different key-insertion order
  * hashes identically and does not trigger a phantom re-import; a genuine
  * context change does change the hash and re-imports.
+ *
+ * A per-row `hitType` / `classification` override (RFC 0003 F4, #603) — or the
+ * CIB guard's forced `soft_reputation` — is folded after a double-NUL marker,
+ * again ONLY when the row carries one, so flipping a row's hit type re-imports
+ * (the re-import is not silently skipped). A row that falls back to the
+ * snapshot-level default folds nothing and hashes exactly as before.
  */
 export function computeFeedHash(rows: readonly FeedSnapshotRow[]): string {
   const entries = rows
     .map((r) => {
       const base = r.matchValue ?? `cidr:${r.cidr}`;
       const ctx = r.context ? normalizeContext(r.context) : undefined;
-      return ctx ? `${base}\0${canonicalizeContext(ctx)}` : base;
+      const withCtx = ctx ? `${base}\0${canonicalizeContext(ctx)}` : base;
+      const override = rowOverrideHashSuffix(r);
+      return override ? `${withCtx}\0\0${override}` : withCtx;
     })
     .sort()
     .join("\n");

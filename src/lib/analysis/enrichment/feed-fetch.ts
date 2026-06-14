@@ -35,7 +35,14 @@ import {
   type RawFeedPayload,
   resolveTiFeedMode,
   type TiFeedMode,
+  type VendorRepoConfig,
 } from "./feed-source";
+import {
+  importVendorRepo,
+  LiveVendorRepoProvider,
+  VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS,
+  type VendorRepoCollectInput,
+} from "./feed-vendor-repo";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -442,13 +449,23 @@ export async function getSelfFetchSourceStatuses(
     const stale =
       present &&
       now.getTime() - new Date(lastFetchedAt).getTime() > source.maxAge;
-    const authKeyName = source.fetch?.authKeyName ?? null;
+    // A vendor-repo source is fetchable too, but its GitHub token is OPTIONAL
+    // (keyless works, rate-limited), so it is surfaced (name + set state) yet
+    // never marked "required" the way a flat source's Auth-Key is.
+    const authKeyName =
+      source.fetch?.authKeyName ?? source.vendorRepo?.authKeyName ?? null;
+    const authKeyRequired = source.fetch?.authKeyName != null;
+    const vendorRepo = source.vendorRepo;
     return {
       sourcePolicyId: source.sourcePolicyId,
       label: source.label,
-      fetchable: source.fetch !== undefined,
-      fetchUrl: source.fetch ? source.fetch.urls.join(", ") : null,
-      authKeyRequired: authKeyName !== null,
+      fetchable: source.fetch !== undefined || vendorRepo !== undefined,
+      fetchUrl: source.fetch
+        ? source.fetch.urls.join(", ")
+        : vendorRepo
+          ? `${vendorRepo.owner}/${vendorRepo.repo}@${vendorRepo.ref}`
+          : null,
+      authKeyRequired,
       authKeyName,
       authKeySet: authKeyName !== null && secretSet.has(authKeyName),
       present,
@@ -532,9 +549,13 @@ export class SelfFetchFeedSource {
       ((keyName) => readFeedSourceAuthKey(this.feedPool, keyName));
   }
 
-  /** The catalog source ids that have a self-fetch config (excludes EDROP). */
+  /**
+   * The catalog source ids that can be self-fetched: a flat self-fetch config
+   * (`fetch`, excludes EDROP) OR a vendor-repo config (`vendorRepo`), the latter
+   * routed through the vendor-repo engine.
+   */
   static fetchableSourceIds(): string[] {
-    return TIER1_FEED_SOURCES.filter((s) => s.fetch).map(
+    return TIER1_FEED_SOURCES.filter((s) => s.fetch || s.vendorRepo).map(
       (s) => s.sourcePolicyId,
     );
   }
@@ -570,13 +591,12 @@ export class SelfFetchFeedSource {
    */
   async fetchAndImport(sourcePolicyId: string): Promise<SelfFetchOutcome> {
     const source = getTier1FeedSource(sourcePolicyId);
-    if (!source?.fetch) {
+    if (!source?.fetch && !source?.vendorRepo) {
       return {
         status: "error",
         error: `Source "${sourcePolicyId}" is not configured for self-fetch`,
       };
     }
-    const fetchConfig = source.fetch;
 
     const lockClient = await this.feedPool.connect();
     try {
@@ -589,7 +609,19 @@ export class SelfFetchFeedSource {
         return { status: "locked" };
       }
       try {
-        return await this.runFetch(sourcePolicyId, source, fetchConfig);
+        // A vendor-repo source is imported through the vendor engine (tree
+        // enumerate → allowlisted blobs → per-source batch replace), not the
+        // flat conditional-GET path. The flat path takes precedence only if a
+        // source somehow declared both.
+        if (source.fetch) {
+          return await this.runFetch(sourcePolicyId, source, source.fetch);
+        }
+        return await this.runVendorRepoFetch(
+          sourcePolicyId,
+          source,
+          // Narrowed: reached only when `vendorRepo` is set and `fetch` is not.
+          source.vendorRepo as VendorRepoConfig,
+        );
       } finally {
         await lockClient
           .query(`SELECT pg_advisory_unlock($1, $2)`, [
@@ -707,6 +739,80 @@ export class SelfFetchFeedSource {
       return { status: "imported", rowCount };
     } catch (err) {
       const message = err instanceof Error ? err.message : "self-fetch failed";
+      await recordError(this.feedPool, sourcePolicyId, nowIso, message);
+      return { status: "error", error: message };
+    }
+  }
+
+  /**
+   * Fetch + import ONE vendor-repo source through the vendor-repo engine. Same
+   * single-flight lock (held by the caller) + hard cadence floor + failure→stale
+   * recording as the flat path, but the body is a tree-enumerate → allowlisted
+   * blob fetch → per-source batch replace rather than a conditional GET:
+   *
+   *   - The optional GitHub token is resolved from the `feed_source_secret`
+   *     envelope (via the injected resolver) and passed to the live provider;
+   *     keyless still works (rate-limited). The token is never logged.
+   *   - There is no conditional GET / ETag (a repo is many blobs, not one file),
+   *     so every due fetch enumerates the tree afresh.
+   *   - Low IOC yield is tolerated (a Huntress-style rule-heavy repo may import
+   *     few or zero rows) — unlike the flat path, an empty result is NOT an
+   *     error. The engine collects all rows BEFORE the single
+   *     `importFeedSnapshot` replace, so a network failure mid-enumeration
+   *     throws before any DELETE and the good snapshot is left intact
+   *     (failure→stale).
+   */
+  private async runVendorRepoFetch(
+    sourcePolicyId: string,
+    source: NonNullable<ReturnType<typeof getTier1FeedSource>>,
+    vendorRepo: VendorRepoConfig,
+  ): Promise<SelfFetchOutcome> {
+    const now = this.now();
+    const nowIso = now.toISOString();
+
+    const cadenceFloorMs =
+      vendorRepo.cadenceFloorMs ?? VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS;
+    const state = await readFeedFetchState(this.feedPool, sourcePolicyId);
+    if (withinCadenceFloor(state, cadenceFloorMs, now)) {
+      const allowed = nextFetchAllowedAt(state, cadenceFloorMs);
+      return {
+        status: "too-soon",
+        nextAllowedAt: (allowed ?? now).toISOString(),
+      };
+    }
+
+    try {
+      const token = vendorRepo.authKeyName
+        ? await this.resolveAuthKey(vendorRepo.authKeyName)
+        : null;
+      const provider = new LiveVendorRepoProvider(vendorRepo, {
+        token,
+        transport: this.transport,
+        timeoutMs: this.timeoutMs,
+      });
+      const input: VendorRepoCollectInput = {
+        sourcePolicyId,
+        entityType: source.entityType,
+        hitType: source.hitType,
+        classification: source.classification,
+        vendorRepo,
+        sourceUpdatedAt: nowIso,
+      };
+      const { rowCount } = await importVendorRepo(
+        this.feedPool,
+        provider,
+        input,
+      );
+      await recordOk(this.feedPool, sourcePolicyId, {
+        nowIso,
+        etag: null,
+        lastModified: null,
+        rowCount,
+      });
+      return { status: "imported", rowCount };
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "vendor-repo fetch failed";
       await recordError(this.feedPool, sourcePolicyId, nowIso, message);
       return { status: "error", error: message };
     }

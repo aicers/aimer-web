@@ -1,0 +1,5 @@
+# Low-trust leaked domains (fixture) — allowlisted but deterministicAllowed: false.
+# These rows must be persisted as soft_reputation even though the source default
+# is deterministic_ioc (exercises the central CIB-style downgrade guard).
+evil[.]lowtrust[.]test
+drop[.]lowtrust[.]test
