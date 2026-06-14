@@ -13,7 +13,7 @@
 // "add a descriptor file" with no edit to any array here.
 
 import "./sources";
-import type { FeedParseKind } from "./feed-source";
+import type { FeedParseConfig, FeedParseKind } from "./feed-source";
 import {
   allTiSourceDescriptors,
   getTiSourceDescriptor,
@@ -40,6 +40,8 @@ export interface Tier1FeedSource {
   label: string;
   /** How to parse the raw feed content into indicator values. */
   parse: FeedParseKind;
+  /** Config for a parameterized parser (`generic-list` / `csv-column`, #593). */
+  parseConfig?: FeedParseConfig;
   /** Default entity type for the parsed rows. */
   entityType: EntityType;
   /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */
@@ -65,6 +67,7 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     sourcePolicyId: descriptor.sourcePolicyId,
     label: descriptor.label,
     parse: descriptor.parse,
+    parseConfig: descriptor.parseConfig,
     entityType: descriptor.entityType,
     hitType: descriptor.hitType,
     classification: descriptor.classification,
@@ -82,6 +85,7 @@ export function getTier1FeedSource(
     sourcePolicyId: descriptor.sourcePolicyId,
     label: descriptor.label,
     parse: descriptor.parse,
+    parseConfig: descriptor.parseConfig,
     entityType: descriptor.entityType,
     hitType: descriptor.hitType,
     classification: descriptor.classification,

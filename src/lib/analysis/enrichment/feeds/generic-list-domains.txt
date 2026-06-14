@@ -1,0 +1,8 @@
+# Generic plain domain list fixture (#593) — one indicator per line.
+; Mixed comment conventions (# and ;) and blank lines are stripped.
+
+bad-domain.example
+c2.evil.example
+
+; trailing comment
+phishing.evil.example

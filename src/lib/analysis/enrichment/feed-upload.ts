@@ -64,6 +64,7 @@ export function buildManualUploadPayload(args: {
   return {
     sourcePolicyId: source.sourcePolicyId,
     parse: source.parse,
+    parseConfig: source.parseConfig,
     entityType: source.entityType,
     hitType: source.hitType,
     classification: source.classification,
@@ -83,7 +84,12 @@ export function buildManualUploadPayload(args: {
  */
 export function assertParseableUpload(payload: RawFeedPayload): void {
   if (
-    isUnparseableFeedContent(payload.parse, payload.entityType, payload.content)
+    isUnparseableFeedContent(
+      payload.parse,
+      payload.entityType,
+      payload.content,
+      payload.parseConfig,
+    )
   ) {
     throw new FeedUploadError(
       "Uploaded file has no recognizable feed entries for this source",

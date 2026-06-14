@@ -85,7 +85,75 @@ export type FeedParseKind =
   // Spamhaus DROP/DROPv6 as published over HTTP today: NDJSON (one JSON
   // object per line), distinct from the legacy `<CIDR> ; <SBLref>` text
   // form (`spamhaus-drop`) the fixtures / manual uploads still use.
-  | "spamhaus-drop-ndjson";
+  | "spamhaus-drop-ndjson"
+  // Reusable, parameterized parsers (#593) configured per source via
+  // `FeedParseConfig` instead of a bespoke parser function. `generic-list`
+  // is one indicator per line; `csv-column` extracts indicator column(s)
+  // from a CSV. The cleared plain/CSV Tier-1 fan-out feeds parse by
+  // *configuring* these rather than adding a new `FeedParseKind` case.
+  | "generic-list"
+  | "csv-column";
+
+/**
+ * Config for the `generic-list` parser (#593): one indicator per line, with
+ * comment/blank stripping and optional refang. Absent ⇒ defaults (comment
+ * prefixes `#`/`;`, refang off), so `generic-list` with no config behaves like
+ * a plain one-per-line list.
+ */
+export interface GenericListParseConfig {
+  kind: "generic-list";
+  /**
+   * Refang defanged indicators before emitting: `hxxp`→`http`, `[.]`/`(.)`→`.`,
+   * `[at]`→`@`. Off by default (e.g. an IP blocklist needs no refang).
+   */
+  refang?: boolean;
+  /**
+   * Comment-line prefixes to strip. Defaults to `#` and `;` — the conventions
+   * across the Tier-1 feeds. A line starting with any of these is skipped.
+   */
+  commentPrefixes?: readonly string[];
+}
+
+/**
+ * One indicator column selected from a CSV by `csv-column` (#593). Exactly one
+ * of `name` (header name) / `index` (zero-based column index) identifies the
+ * column; `entityType` is the entity type of the values it yields.
+ */
+export interface CsvColumnSpec {
+  /** Column header name — requires the CSV to carry a header row. */
+  name?: string;
+  /** Zero-based column index — an alternative to `name`. */
+  index?: number;
+  /** Entity type for the values extracted from this column. */
+  entityType: EntityType;
+}
+
+/**
+ * Config for the `csv-column` parser (#593): pick indicator column(s) from a
+ * CSV by header name or index, with per-column `entityType`. Column extraction
+ * only — it does NOT derive one indicator from another (URLhaus' URL→host
+ * derivation stays bespoke). A configured header name that is absent, or an
+ * index out of range, is a hard parse error (never a silent 0 rows).
+ */
+export interface CsvColumnParseConfig {
+  kind: "csv-column";
+  /** Indicator column(s) to extract (at least one). */
+  columns: readonly CsvColumnSpec[];
+  /** Field delimiter (defaults to `,`). */
+  delimiter?: string;
+  /** Treat (and skip) the first non-comment line as a header row. */
+  skipHeader?: boolean;
+  /** Comment-line prefix to skip (configurable; none by default). */
+  commentPrefix?: string;
+}
+
+/**
+ * Parser configuration carried alongside a `FeedParseKind` for the
+ * parameterized parsers (#593), keyed by `kind` so a carrier threads one
+ * optional object. The bespoke string kinds (`ip-blocklist` / `urlhaus-csv` /
+ * `spamhaus-drop*`) carry no config — `parseConfig` is absent for them.
+ */
+export type FeedParseConfig = GenericListParseConfig | CsvColumnParseConfig;
 
 /**
  * Where a raw payload's bytes came from, recorded for audit / freshness.
@@ -114,6 +182,11 @@ export interface RawFeedPayload {
   sourcePolicyId: string;
   /** How to parse `content` into indicator values. */
   parse: FeedParseKind;
+  /**
+   * Config for a parameterized parser (`generic-list` / `csv-column`, #593).
+   * Absent for the bespoke string kinds, which need no config.
+   */
+  parseConfig?: FeedParseConfig;
   /** Default entity type for the parsed rows. */
   entityType: EntityType;
   /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */

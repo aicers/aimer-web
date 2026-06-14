@@ -15,7 +15,14 @@ import { createHash } from "node:crypto";
 import ipaddr from "ipaddr.js";
 import type { Pool } from "pg";
 import { canonicalizeContext, normalizeContext } from "./context-payload";
-import type { FeedParseKind, FeedSource, RawFeedPayload } from "./feed-source";
+import type {
+  CsvColumnParseConfig,
+  FeedParseConfig,
+  FeedParseKind,
+  FeedSource,
+  GenericListParseConfig,
+  RawFeedPayload,
+} from "./feed-source";
 import {
   NormalizationError,
   normalizeDomain,
@@ -35,6 +42,140 @@ function contentLines(text: string): string[] {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !line.startsWith("#"));
+}
+
+/**
+ * Default comment-line prefixes across the Tier-1 feeds: `#` (abuse.ch) and
+ * `;` (Spamhaus). Used by `generic-list` (when its config does not override
+ * them) and by the validity checks (`hasFeedDataLines`) for the bespoke kinds.
+ */
+const DEFAULT_COMMENT_PREFIXES: readonly string[] = ["#", ";"];
+
+/**
+ * A feed body the configured parser cannot parse — distinct from the lenient
+ * "silently drop an unrecognized line" path the bespoke parsers use. Raised by
+ * `csv-column` when its config references a column the content does not provide
+ * (a header name that is absent, or an index out of range): a misconfiguration
+ * or upstream format drift must surface, never collapse to a silent 0 rows.
+ * `isUnparseableFeedContent` treats it as unparseable; the import path lets it
+ * propagate so a bad fetch/upload fails rather than clearing a good snapshot.
+ */
+export class FeedParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FeedParseError";
+  }
+}
+
+/**
+ * Refang a defanged indicator so it normalizes: `hxxp`→`http` (covering
+ * `hxxps`→`https`), `[.]`/`(.)`→`.`, `[at]`→`@`. Case-insensitive on the
+ * scheme/`at` tokens. Used by `generic-list` when `refang` is enabled (feeds
+ * that publish defanged IOCs); off for plain lists (e.g. IP blocklists).
+ */
+export function refangIndicator(value: string): string {
+  return value
+    .replace(/hxxp/gi, "http")
+    .replace(/\[\.\]|\(\.\)/g, ".")
+    .replace(/\[at\]/gi, "@");
+}
+
+/**
+ * `generic-list` (#593): one indicator per line, with blank/comment stripping
+ * and optional refang. Generalizes `ip-blocklist` (express it as
+ * `generic-list` with `entityType: "IP"`, refang off). Comment prefixes and
+ * refang come from `config`; absent ⇒ defaults (`#`/`;` comments, refang off).
+ * Returns the raw indicator strings (normalization happens at import time).
+ */
+export function parseGenericList(
+  text: string,
+  config?: GenericListParseConfig,
+): string[] {
+  const prefixes = config?.commentPrefixes ?? DEFAULT_COMMENT_PREFIXES;
+  const refang = config?.refang ?? false;
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0 || isCommentLine(line, prefixes)) continue;
+    out.push(refang ? refangIndicator(line) : line);
+  }
+  return out;
+}
+
+/** Whether `line` (already trimmed) starts with any non-empty comment prefix. */
+function isCommentLine(line: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((p) => p.length > 0 && line.startsWith(p));
+}
+
+/**
+ * `csv-column` (#593): extract indicator column(s) from a CSV by header name
+ * or zero-based index, each with its own `entityType`. Honors a configurable
+ * delimiter, header-row skip, and comment-prefix skip. Returns `{ entityType,
+ * value }` pairs in row-then-column order (normalization happens at import).
+ *
+ * Validation (never a silent 0 rows): a configured header `name` that the
+ * header row lacks, or an `index` beyond the row width, raises `FeedParseError`
+ * — so a misconfiguration or upstream format drift surfaces instead of
+ * quietly clearing the source.
+ */
+export function parseCsvColumns(
+  text: string,
+  config: CsvColumnParseConfig,
+): { entityType: EntityType; value: string }[] {
+  if (config.columns.length === 0) {
+    throw new FeedParseError("csv-column: at least one column is required");
+  }
+  const delimiter = config.delimiter ?? ",";
+  const usesNames = config.columns.some((c) => c.name !== undefined);
+
+  // Keep only the non-blank, non-comment lines, in order.
+  const lines: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length === 0) continue;
+    if (config.commentPrefix && line.startsWith(config.commentPrefix)) continue;
+    lines.push(line);
+  }
+  // Genuinely empty / comment-only content legitimately clears the source.
+  if (lines.length === 0) return [];
+
+  // The first remaining line is the header iff names are used or a skip is
+  // requested; either way it is consumed (never emitted as data).
+  const hasHeader = usesNames || config.skipHeader === true;
+  const headerFields = hasHeader ? splitCsv(lines[0], delimiter) : undefined;
+  const dataStart = hasHeader ? 1 : 0;
+
+  // Resolve each column to a concrete index up front, so a missing header name
+  // / out-of-range index fails as a parse error rather than a silent skip.
+  const refWidth = (headerFields ?? splitCsv(lines[0], delimiter)).length;
+  const resolved = config.columns.map((col) => {
+    if (col.name !== undefined) {
+      const index = headerFields?.indexOf(col.name) ?? -1;
+      if (index < 0) {
+        throw new FeedParseError(`csv-column: header "${col.name}" not found`);
+      }
+      return { index, entityType: col.entityType };
+    }
+    if (col.index === undefined) {
+      throw new FeedParseError("csv-column: a column needs a name or index");
+    }
+    if (col.index < 0 || col.index >= refWidth) {
+      throw new FeedParseError(
+        `csv-column: index ${col.index} out of range (width ${refWidth})`,
+      );
+    }
+    return { index: col.index, entityType: col.entityType };
+  });
+
+  const out: { entityType: EntityType; value: string }[] = [];
+  for (let i = dataStart; i < lines.length; i += 1) {
+    const fields = splitCsv(lines[i], delimiter);
+    for (const col of resolved) {
+      const value = fields[col.index];
+      if (value) out.push({ entityType: col.entityType, value });
+    }
+  }
+  return out;
 }
 
 /**
@@ -168,8 +309,12 @@ export function parseSpamhausDropNdjson(text: string): string[] {
   return cidrs;
 }
 
-/** Minimal CSV field splitter handling double-quoted fields. */
-function splitCsv(line: string): string[] {
+/**
+ * Minimal CSV field splitter handling double-quoted fields. `delimiter`
+ * defaults to `,` (the bespoke abuse.ch parsers); `csv-column` can override it
+ * for sources published with another separator.
+ */
+function splitCsv(line: string, delimiter = ","): string[] {
   const out: string[] = [];
   let field = "";
   let inQuotes = false;
@@ -188,7 +333,7 @@ function splitCsv(line: string): string[] {
       }
     } else if (ch === '"') {
       inQuotes = true;
-    } else if (ch === ",") {
+    } else if (ch === delimiter) {
       out.push(field);
       field = "";
     } else {
@@ -413,6 +558,7 @@ export function parseFeedContent(
   parse: FeedParseKind,
   entityType: EntityType,
   content: string,
+  config?: FeedParseConfig,
 ): FeedSnapshotRow[] {
   switch (parse) {
     case "ip-blocklist":
@@ -441,23 +587,115 @@ export function parseFeedContent(
       return normalizeCidrs(parseSpamhausDrop(content)).rows;
     case "spamhaus-drop-ndjson":
       return normalizeCidrs(parseSpamhausDropNdjson(content)).rows;
+    case "generic-list": {
+      const cfg = config?.kind === "generic-list" ? config : undefined;
+      return normalizeExactValues(entityType, parseGenericList(content, cfg))
+        .rows;
+    }
+    case "csv-column": {
+      if (config?.kind !== "csv-column") {
+        throw new FeedParseError(
+          "csv-column parse requires a csv-column parseConfig",
+        );
+      }
+      return csvColumnRows(parseCsvColumns(content, config));
+    }
     default:
       throw new Error(`unknown parse kind: ${parse}`);
   }
 }
 
 /**
- * Whether `content` has at least one non-blank, non-comment data line.
- * Comment conventions across the Tier-1 parsers are `#` (abuse.ch) and `;`
- * (Spamhaus), so a leading `#`/`;` or a blank line is not a data line.
+ * Normalize `csv-column`'s per-column `{ entityType, value }` extractions into
+ * snapshot rows: group by entity type, run each group through the same
+ * `normalizeExactValues` the bespoke parsers use, and stamp every row with its
+ * column's `entityType` (so a multi-type CSV contributes more than one entity
+ * type under one source, like URLhaus' URL+DOMAIN). Per-type de-duplication is
+ * inherited from `normalizeExactValues`.
  */
-export function hasFeedDataLines(content: string): boolean {
-  return content.split(/\r?\n/).some((line) => {
-    const trimmed = line.trim();
-    return (
-      trimmed.length > 0 && !trimmed.startsWith("#") && !trimmed.startsWith(";")
-    );
-  });
+function csvColumnRows(
+  extracted: readonly { entityType: EntityType; value: string }[],
+): FeedSnapshotRow[] {
+  const byType = new Map<EntityType, string[]>();
+  const order: EntityType[] = [];
+  for (const { entityType, value } of extracted) {
+    let values = byType.get(entityType);
+    if (!values) {
+      values = [];
+      byType.set(entityType, values);
+      order.push(entityType);
+    }
+    values.push(value);
+  }
+  const rows: FeedSnapshotRow[] = [];
+  for (const entityType of order) {
+    const values = byType.get(entityType) as string[];
+    for (const row of normalizeExactValues(entityType, values).rows) {
+      rows.push({ ...row, entityType });
+    }
+  }
+  return rows;
+}
+
+/** Count the non-blank, non-comment lines in `content`. */
+function countDataLines(
+  content: string,
+  commentPrefixes: readonly string[],
+): number {
+  let count = 0;
+  for (const raw of content.split(/\r?\n/)) {
+    const trimmed = raw.trim();
+    if (trimmed.length > 0 && !isCommentLine(trimmed, commentPrefixes)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Whether `content` has at least one non-blank, non-comment data line.
+ * `commentPrefixes` defaults to `#` (abuse.ch) and `;` (Spamhaus); a caller
+ * with a configured parser (`csv-column`) passes its own prefix so the check
+ * agrees with the parser rather than hardcoding the Tier-1 conventions.
+ */
+export function hasFeedDataLines(
+  content: string,
+  commentPrefixes: readonly string[] = DEFAULT_COMMENT_PREFIXES,
+): boolean {
+  return countDataLines(content, commentPrefixes) > 0;
+}
+
+/**
+ * The comment prefixes a parser treats as non-data, driven by its config:
+ * `generic-list` uses its configured prefixes (default `#`/`;`); `csv-column`
+ * uses its single configured `commentPrefix` (none ⇒ no comment lines); the
+ * bespoke kinds keep the `#`/`;` default. So `hasFeedDataLines` agrees with the
+ * parser instead of hardcoding `#`/`;`.
+ */
+function commentPrefixesFor(
+  parse: FeedParseKind,
+  config?: FeedParseConfig,
+): readonly string[] {
+  if (parse === "generic-list" && config?.kind === "generic-list") {
+    return config.commentPrefixes ?? DEFAULT_COMMENT_PREFIXES;
+  }
+  if (parse === "csv-column" && config?.kind === "csv-column") {
+    return config.commentPrefix ? [config.commentPrefix] : [];
+  }
+  return DEFAULT_COMMENT_PREFIXES;
+}
+
+/** Whether the parser consumes the first data line as a header (`csv-column`). */
+function parserSkipsHeader(
+  parse: FeedParseKind,
+  config?: FeedParseConfig,
+): boolean {
+  return (
+    parse === "csv-column" &&
+    config?.kind === "csv-column" &&
+    (config.skipHeader === true ||
+      config.columns.some((c) => c.name !== undefined))
+  );
 }
 
 /**
@@ -465,17 +703,33 @@ export function hasFeedDataLines(content: string): boolean {
  * zero rows. The per-kind parsers are intentionally lenient and silently drop
  * anything they do not recognize, so a structurally-wrong body — an upstream
  * HTML error/block page, or a format drift returned with a 200 — parses to
- * nothing. Genuinely empty / comment-only content is NOT unparseable (it
- * legitimately clears the source). Shared by the manual-upload validation and
- * the self-fetch engine so neither replaces a good snapshot with junk.
+ * nothing. A configured parser whose config the content cannot satisfy (a
+ * `csv-column` header name absent / index out of range) raises `FeedParseError`
+ * and is likewise unparseable. Genuinely empty / comment-only content is NOT
+ * unparseable (it legitimately clears the source); for `csv-column` a
+ * header-only body counts as empty, since the header is not a data line. The
+ * comment prefix is taken from the parser's config so the data-line check
+ * agrees with the parser. Shared by the manual-upload validation and the
+ * self-fetch engine so neither replaces a good snapshot with junk.
  */
 export function isUnparseableFeedContent(
   parse: FeedParseKind,
   entityType: EntityType,
   content: string,
+  config?: FeedParseConfig,
 ): boolean {
-  const rows = parseFeedContent(parse, entityType, content);
-  return rows.length === 0 && hasFeedDataLines(content);
+  const prefixes = commentPrefixesFor(parse, config);
+  let dataCount = countDataLines(content, prefixes);
+  if (parserSkipsHeader(parse, config) && dataCount > 0) dataCount -= 1;
+  if (dataCount === 0) return false;
+  let rows: FeedSnapshotRow[];
+  try {
+    rows = parseFeedContent(parse, entityType, content, config);
+  } catch (err) {
+    if (err instanceof FeedParseError) return true;
+    throw err;
+  }
+  return rows.length === 0;
 }
 
 /**
@@ -494,7 +748,12 @@ export async function importRawFeedPayload(
     classification: payload.classification,
     sourceVersion: payload.provenance.sourceVersion,
     sourceUpdatedAt: payload.provenance.sourceUpdatedAt,
-    rows: parseFeedContent(payload.parse, payload.entityType, payload.content),
+    rows: parseFeedContent(
+      payload.parse,
+      payload.entityType,
+      payload.content,
+      payload.parseConfig,
+    ),
   });
 }
 
