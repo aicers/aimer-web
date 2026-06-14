@@ -720,6 +720,47 @@ describe("isUnparseableFeedContent", () => {
     ).toBe(true);
   });
 
+  it("treats an Infoblox body of only skipped rows as a valid empty import (#605)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      typeColumn: {
+        value: { name: "indicator" },
+        type: { name: "type" },
+        typeMap: { domain: "DOMAIN", ip: "IP", ipv4: "IP" },
+      },
+      rowFilter: {
+        column: { name: "classification" },
+        allow: ["malicious", "phishing"],
+      },
+      refang: true,
+      skipHeader: true,
+    };
+    // A header PLUS many data rows that are all intentionally skipped — every
+    // row excluded by the classification allowlist (`legitimate`/`other`) and/or
+    // an unmapped type (`email`/`telfhash`). The parser correctly yields zero
+    // rows; this is a recognized, valid body (an all-`legitimate` upstream file
+    // really exists) and must NOT be rejected as unparseable, or manual upload /
+    // a future self-fetch would wrongly drop a good source.
+    const allSkipped =
+      "type,indicator,classification,detected_date\n" +
+      "domain,a[.]example,legitimate,2025-05-20\n" +
+      "ipv4,185.222.58[.]0,other,2025-12-01\n" +
+      "email,abuse@example[.]com,malicious,2024-01-01\n" +
+      "telfhash,t1fde0f101c9395f39ecd16430b41041a5,malware,2023-07-14\n";
+    expect(
+      isUnparseableFeedContent("csv-column", "DOMAIN", allSkipped, cfg),
+    ).toBe(false);
+    // Sanity: the same parser does emit rows once a row clears both gates, so
+    // the "valid empty import" verdict is not masking a broken config.
+    const oneKept = `${allSkipped}domain,bad[.]example,malicious,2025-06-01\n`;
+    expect(isUnparseableFeedContent("csv-column", "DOMAIN", oneKept, cfg)).toBe(
+      false,
+    );
+    expect(parseCsvColumns(oneKept, cfg)).toEqual([
+      { entityType: "DOMAIN", value: "bad.example" },
+    ]);
+  });
+
   it("uses the configured comment prefix for the data-line check", () => {
     const cfg: GenericListParseConfig = {
       kind: "generic-list",

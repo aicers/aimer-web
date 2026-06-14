@@ -1039,10 +1039,14 @@ function parserSkipsHeader(
  * unparseable (it legitimately clears the source); for `csv-column` a
  * header-only body with a VALID config counts as empty too, since the header is
  * not a data line (the header subtraction is applied only after the parser has
- * accepted the config). The comment prefix is taken from the parser's config so
- * the data-line check agrees with the parser. Shared by the manual-upload
- * validation and the self-fetch engine so neither replaces a good snapshot with
- * junk.
+ * accepted the config). A `csv-column` config that does intentional per-row
+ * skips (the row-typed `typeColumn` map and/or a `rowFilter` allowlist, #605)
+ * may drop every data row yet remain a fully recognized body (e.g. an
+ * all-`legitimate` Infoblox file); once such a config is satisfied, zero rows
+ * is a legitimate clear too, not a parse error. The comment prefix is taken
+ * from the parser's config so the data-line check agrees with the parser.
+ * Shared by the manual-upload validation and the self-fetch engine so neither
+ * replaces a good snapshot with junk.
  */
 export function isUnparseableFeedContent(
   parse: FeedParseKind,
@@ -1069,10 +1073,26 @@ export function isUnparseableFeedContent(
   if (rows.length > 0) return false;
   // The parser accepted the config but produced no rows. For a header-aware
   // parser (`csv-column`) a lone header line is consumed, not data, so a
-  // header-only body is a legitimate clear; any further line that parsed to
-  // nothing is unparseable. For non-header parsers, zero rows from data lines
-  // is unparseable.
+  // header-only body is a legitimate clear.
   if (parserSkipsHeader(parse, config) && dataCount === 1) return false;
+  // A `csv-column` config that performs intentional per-row skips — the
+  // row-typed `typeColumn` map and/or a `rowFilter` allowlist (#605, Infoblox)
+  // — can legitimately drop EVERY data row and still be a fully recognized
+  // body: an all-`legitimate` upstream file, or one carrying only
+  // `email`/`telfhash`/future-type rows, parses to zero rows by design. For
+  // these the row count is NOT the schema-recognition signal — a satisfied
+  // config (header names resolved / indices in range; raised no
+  // `FeedParseError` above) is. A malformed / HTML body fails that and already
+  // returned true. So zero rows here is a legitimate clear, not a parse error.
+  if (
+    parse === "csv-column" &&
+    config?.kind === "csv-column" &&
+    (config.typeColumn !== undefined || config.rowFilter !== undefined)
+  ) {
+    return false;
+  }
+  // For non-header parsers and static per-column csv configs, zero rows from
+  // data lines is unparseable.
   return true;
 }
 
