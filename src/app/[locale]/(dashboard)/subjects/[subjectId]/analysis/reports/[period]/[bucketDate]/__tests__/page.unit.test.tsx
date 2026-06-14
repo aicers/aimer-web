@@ -160,6 +160,7 @@ function okFixture(): ReportResultPageOutcome {
       aggregateSeverityScore: 0.85,
       aggregateLikelihoodScore: 0.7,
       ttpTags: [{ id: "T1078", name: "Valid Accounts" }],
+      cveRefs: ["CVE-2024-0001", "CVE-2024-1234"],
       sections: {
         // Leaf-derived sections are arrays of citation units (#449); these
         // fixtures are uncited so the legacy text assertions still hold.
@@ -270,6 +271,10 @@ describe("report detail page", () => {
       "1 event",
     );
     expect(screen.getByTestId("ttp-tags").textContent).toContain("T1078");
+    // RFC 0005 — the period's aggregated CVEs render as chips alongside TTP.
+    const cveRow = screen.getByTestId("cve-refs").textContent ?? "";
+    expect(cveRow).toContain("CVE-2024-0001");
+    expect(cveRow).toContain("CVE-2024-1234");
     expect(screen.getByTestId("section-executive_summary").textContent).toBe(
       "A busy day.",
     );

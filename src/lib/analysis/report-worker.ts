@@ -1160,6 +1160,7 @@ async function runNativeGeneration(args: {
       aggregateSeverityScore: built.aggregateSeverityScore,
       aggregateLikelihoodScore: built.aggregateLikelihoodScore,
       aggregateTtpTags: built.aggregateTtpTags,
+      aggregateCveRefs: built.aggregateCveRefs,
       priorityTier: built.priorityTier,
       sections: parsedSections,
       eventRefs: built.eventRefs,
@@ -1538,6 +1539,7 @@ async function runTranslation(args: {
       aggregateSeverityScore: canonical.aggregateSeverityScore,
       aggregateLikelihoodScore: canonical.aggregateLikelihoodScore,
       aggregateTtpTags: canonical.aggregateTtpTags,
+      aggregateCveRefs: canonical.aggregateCveRefs,
       priorityTier: canonical.priorityTier,
       sections: parsedSections,
       eventRefs: canonical.eventRefs,
@@ -1640,6 +1642,7 @@ interface EnglishCanonical {
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   aggregateTtpTags: string[];
+  aggregateCveRefs: string[];
   priorityTier: string;
   inputHash: string;
   inputWatermark: Date | null;
@@ -1663,6 +1666,7 @@ async function loadEnglishCanonical(
     aggregate_severity_score: number;
     aggregate_likelihood_score: number;
     aggregate_ttp_tags: string[] | null;
+    aggregate_cve_refs: string[] | null;
     priority_tier: string;
     input_hash: string;
     input_watermark: Date | null;
@@ -1673,7 +1677,7 @@ async function loadEnglishCanonical(
             input_exemplar_refs, input_analyzed_event_aggregates,
             model_name, model, model_actual_version, prompt_version,
             aggregate_severity_score, aggregate_likelihood_score,
-            aggregate_ttp_tags, priority_tier,
+            aggregate_ttp_tags, aggregate_cve_refs, priority_tier,
             input_hash, input_watermark, redaction_policy_version
        FROM periodic_report_result
       WHERE subject_id = $1 AND period = $2
@@ -1711,6 +1715,9 @@ async function loadEnglishCanonical(
     aggregateLikelihoodScore: r.aggregate_likelihood_score,
     aggregateTtpTags: Array.isArray(r.aggregate_ttp_tags)
       ? r.aggregate_ttp_tags
+      : [],
+    aggregateCveRefs: Array.isArray(r.aggregate_cve_refs)
+      ? r.aggregate_cve_refs
       : [],
     priorityTier: r.priority_tier,
     inputHash: r.input_hash,
@@ -1809,6 +1816,7 @@ interface ResultRowValues {
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   aggregateTtpTags: string[];
+  aggregateCveRefs: string[];
   priorityTier: string;
   sections: ReportSectionsJson;
   eventRefs: EventRef[];
@@ -1842,7 +1850,8 @@ async function writeResultRow(
           aggregate_ttp_tags, priority_tier, sections_jsonb,
           input_event_refs, input_story_refs, input_hash, input_watermark,
           redaction_policy_version, requested_by,
-          input_exemplar_refs, input_analyzed_event_aggregates)
+          input_exemplar_refs, input_analyzed_event_aggregates,
+          aggregate_cve_refs)
        VALUES ($1, $2, $3::date, $4, $5, $6,
                $7, $8,
                $9, $10, $11,
@@ -1850,7 +1859,8 @@ async function writeResultRow(
                $14::jsonb, $15, $16::jsonb,
                $17::jsonb, $18::jsonb, $19, $20,
                $21, $22::uuid,
-               $23::jsonb, $24::jsonb)`,
+               $23::jsonb, $24::jsonb,
+               $25::jsonb)`,
       [
         job.subject_id,
         job.period,
@@ -1880,6 +1890,7 @@ async function writeResultRow(
         values.analyzedEventAggregates === null
           ? null
           : JSON.stringify(values.analyzedEventAggregates),
+        JSON.stringify(values.aggregateCveRefs),
       ],
     );
     await client.query(

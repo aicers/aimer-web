@@ -262,6 +262,11 @@ input EventAnalysisInput {
 	Leaf MITRE ATT&CK technique IDs preserved verbatim.
 	"""
 	ttpTags: [String!]!
+	"""
+	Leaf canonical CVE identifiers preserved verbatim (the `ttpTags`
+	analogue). Defaulted so pre-population clients stay non-breaking.
+	"""
+	cveRefs: [String!]! = []
 }
 
 type GenerateResponse {
@@ -601,7 +606,8 @@ Typed input bundle for `generatePeriodicSecurityReport`.
 All fields are pre-redacted and forwarded to the LLM verbatim. The
 `aggregate_ttp_tags` field is computed by aimer-web at write time from
 leaf rows and is the deduplicated sorted union of every `ttp_tags`
-across the bundle.
+across the bundle; `aggregate_cve_refs` is the same computation over
+the leaf `cve_refs`.
 """
 input PeriodicReportInputs {
 	"""
@@ -621,6 +627,13 @@ input PeriodicReportInputs {
 	aimer-web at write time; aimer forwards it verbatim.
 	"""
 	aggregateTtpTags: [String!]!
+	"""
+	Deduplicated sorted union of leaf `cve_refs` across the bundle (the
+	`aggregateTtpTags` analogue). Computed by aimer-web at write time;
+	aimer forwards it verbatim. Defaulted so pre-population clients stay
+	non-breaking.
+	"""
+	aggregateCveRefs: [String!]! = []
 	"""
 	Aggregates over the auto-analyzed baseline-event remainder, feeding the
 	long-tail narrative. Optional/nullable so existing aimer-web clients
@@ -790,6 +803,11 @@ input StoryAnalysisInput {
 	Leaf MITRE ATT&CK technique IDs preserved verbatim.
 	"""
 	ttpTags: [String!]!
+	"""
+	Leaf canonical CVE identifiers preserved verbatim (the `ttpTags`
+	analogue). Defaulted so pre-population clients stay non-breaking.
+	"""
+	cveRefs: [String!]! = []
 }
 
 """
