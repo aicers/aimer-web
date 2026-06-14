@@ -17,7 +17,11 @@
 //      where `matchSatisfiesFloor` (the v1 per-event floor === the story
 //      floor; RFC 0003 consumer ④), monotonic — an unavailable source never
 //      flips a hit to false,
-//   5. persists one `event_ioc_evidence` row per floor-supporting match,
+//   5. persists `event_ioc_evidence` rows — one per floor-supporting match,
+//      plus surfaced non-floor matches as evidence-only rows (#589
+//      amendment): floor-ineligible `deterministic_ioc` always, and
+//      `soft_reputation` only when it passes the meaningfulness gate
+//      (`surfacesSoftMatch`). Non-floor rows never drive the verdict,
 //   6. writes the per-event `event_enrichment_state` completion marker with
 //      `coverage_status` (never a silent `false`), written even on zero
 //      matches so `false-complete` is distinguishable from `false-unknown`.

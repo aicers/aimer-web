@@ -13,7 +13,11 @@
 //      IPs already forced ineligible),
 //   4. UPDATEs `story.known_ioc_hit` for the canonical version (monotonic —
 //      an unavailable source never flips a hit to false),
-//   5. persists one evidence record per floor-supporting match,
+//   5. persists evidence records — one per floor-supporting match, plus
+//      surfaced non-floor matches as evidence-only rows (#589 amendment):
+//      floor-ineligible `deterministic_ioc` always, and `soft_reputation`
+//      only when it passes the meaningfulness gate (`surfacesSoftMatch`).
+//      Non-floor rows never drive `known_ioc_hit` and never change coverage,
 //   6. writes the per-story `story_enrichment_state` completion marker with
 //      `coverage_status` (never a silent `false` — stale/unavailable feeds
 //      yield `unknown`/`stale`), written even on zero matches so
