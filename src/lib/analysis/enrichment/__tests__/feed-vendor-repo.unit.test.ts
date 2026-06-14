@@ -16,11 +16,14 @@ import type { VendorRepoConfig } from "../feed-source";
 import {
   collectVendorRepoRows,
   deriveVendorContext,
+  extractReadmeContext,
   FixtureVendorRepoProvider,
   LiveVendorRepoProvider,
   matchVendorFileRule,
   type VendorRepoCollectInput,
   VendorRepoFetchError,
+  type VendorRepoProvider,
+  type VendorRepoTreeEntry,
 } from "../feed-vendor-repo";
 
 const FIXTURE_ROOT = join(
@@ -359,5 +362,172 @@ describe("LiveVendorRepoProvider (request shape, mocked transport)", () => {
     await expect(
       provider.readBlob("reports/turla/snake/iocs.csv"),
     ).rejects.toThrowError(VendorRepoFetchError);
+  });
+});
+
+/** In-memory provider over a `path → content` map (offline, no fixtures). */
+class MemoryVendorRepoProvider implements VendorRepoProvider {
+  readonly mode = "fixture" as const;
+  readonly readPaths: string[] = [];
+  constructor(private readonly files: Record<string, string>) {}
+  async listTree(): Promise<VendorRepoTreeEntry[]> {
+    return Object.keys(this.files).map((path) => ({ path, type: "blob" }));
+  }
+  async readBlob(path: string): Promise<string> {
+    this.readPaths.push(path);
+    return this.files[path] ?? "";
+  }
+}
+
+describe("extractReadmeContext (README content)", () => {
+  it("captures fields via first-group / named-group patterns, trimming", () => {
+    const readme =
+      "# Operation Snake\nActor: Turla Group  \nFamily: Snake\n" +
+      "Report: https://vendor.test/blog/snake\n";
+    expect(
+      extractReadmeContext(readme, {
+        pathPattern: "README\\.md$",
+        actorPattern: "^Actor:\\s*(.+)$",
+        malwareFamilyPattern: "^Family:\\s*(?<value>.+)$",
+        reportUrlPattern: "https?://\\S+",
+      }),
+    ).toEqual({
+      actor: "Turla Group",
+      malwareFamily: "Snake",
+      reportUrl: "https://vendor.test/blog/snake",
+    });
+  });
+
+  it("returns undefined when nothing is captured", () => {
+    expect(
+      extractReadmeContext("nothing here", {
+        pathPattern: "README\\.md$",
+        actorPattern: "^Actor:\\s*(.+)$",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("collectVendorRepoRows — README-derived folder context", () => {
+  const config: VendorRepoConfig = {
+    owner: "vendor",
+    repo: "ioc-reports",
+    ref: "main",
+    files: [
+      {
+        label: "ioc-list",
+        pathPattern: "reports/[^/]+/indicators\\.txt$",
+        parse: "generic-list",
+        parseConfig: { kind: "generic-list", refang: true },
+        entityType: "DOMAIN",
+      },
+    ],
+    // No path-derived family/reportUrl; both come from the README content.
+    contextPattern: "^reports/(?<campaign>[^/]+)/",
+    readmeContext: {
+      pathPattern: "reports/[^/]+/README\\.md$",
+      actorPattern: "^Actor:\\s*(.+)$",
+      malwareFamilyPattern: "^Family:\\s*(.+)$",
+      reportUrlPattern: "https?://\\S+",
+    },
+    context: { actor: "fallback-actor" },
+  };
+  const input: VendorRepoCollectInput = {
+    sourcePolicyId: "vendor/ioc-reports",
+    entityType: "DOMAIN",
+    hitType: "deterministic_ioc",
+    vendorRepo: config,
+  };
+
+  it("threads README actor/family/reportUrl onto a sibling file's rows", async () => {
+    const provider = new MemoryVendorRepoProvider({
+      "reports/snake/README.md":
+        "Actor: Turla Group\nFamily: Snake\nhttps://vendor.test/blog/snake\n",
+      "reports/snake/indicators.txt": "evil[.]turla[.]test\n",
+    });
+    const { rows } = await collectVendorRepoRows(provider, input);
+    const row = rows.find((r) => r.matchValue === "evil.turla.test");
+    expect(row?.context).toEqual({
+      // README actor overrides the static fallback; campaign comes from the
+      // path; family + reportUrl come only from the README.
+      actor: "Turla Group",
+      campaign: "snake",
+      malwareFamily: "Snake",
+      reportUrl: "https://vendor.test/blog/snake",
+    });
+  });
+});
+
+describe("collectVendorRepoRows — cross-file dedup", () => {
+  const baseFiles = [
+    {
+      label: "csv",
+      pathPattern: "a\\.csv$",
+      parse: "csv-column" as const,
+      parseConfig: {
+        kind: "csv-column" as const,
+        columns: [{ name: "domain", entityType: "DOMAIN" as const }],
+      },
+      entityType: "DOMAIN" as const,
+    },
+    {
+      label: "list",
+      pathPattern: "b\\.txt$",
+      parse: "generic-list" as const,
+      parseConfig: { kind: "generic-list" as const },
+      entityType: "DOMAIN" as const,
+    },
+  ];
+
+  it("collapses a byte-identical IOC repeated across two files", async () => {
+    const config: VendorRepoConfig = {
+      owner: "v",
+      repo: "r",
+      ref: "main",
+      files: baseFiles,
+      // Single static context so both files' rows carry the SAME context.
+      context: { actor: "shared" },
+    };
+    const provider = new MemoryVendorRepoProvider({
+      "a.csv": "domain\ndup.test\n",
+      "b.txt": "dup.test\n",
+    });
+    const { rows } = await collectVendorRepoRows(provider, {
+      sourcePolicyId: "v/r",
+      entityType: "DOMAIN",
+      hitType: "deterministic_ioc",
+      vendorRepo: config,
+    });
+    expect(rows.filter((r) => r.matchValue === "dup.test")).toHaveLength(1);
+  });
+
+  it("keeps the same IOC when it carries DIFFERENT report context", async () => {
+    const config: VendorRepoConfig = {
+      owner: "v",
+      repo: "r",
+      ref: "main",
+      files: [
+        { ...baseFiles[0], pathPattern: "campA/a\\.csv$" },
+        { ...baseFiles[1], pathPattern: "campB/b\\.txt$" },
+      ],
+      // Path-derived campaign differs per folder, so the same IOC's context
+      // differs and both rows must survive (the C1 narrative value).
+      contextPattern: "^(?<campaign>[^/]+)/",
+    };
+    const provider = new MemoryVendorRepoProvider({
+      "campA/a.csv": "domain\nshared.test\n",
+      "campB/b.txt": "shared.test\n",
+    });
+    const { rows } = await collectVendorRepoRows(provider, {
+      sourcePolicyId: "v/r",
+      entityType: "DOMAIN",
+      hitType: "deterministic_ioc",
+      vendorRepo: config,
+    });
+    const shared = rows.filter((r) => r.matchValue === "shared.test");
+    expect(shared).toHaveLength(2);
+    expect(new Set(shared.map((r) => r.context?.campaign))).toEqual(
+      new Set(["campA", "campB"]),
+    );
   });
 });

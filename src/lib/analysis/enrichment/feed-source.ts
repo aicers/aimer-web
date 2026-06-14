@@ -290,6 +290,37 @@ export interface VendorRepoFileRule {
 }
 
 /**
+ * Per-folder context extracted from a README / markdown file's CONTENT (RFC 0003
+ * F4, #603). The path-only `contextPattern` cannot reach an actor / campaign /
+ * family / report link that lives only in a per-report README (a named
+ * PRODAFT-style input), so the engine optionally reads the matching README
+ * blobs and applies these CONTENT regexes. A README's captures apply to every
+ * IOC file under the README's folder (the most specific enclosing README wins),
+ * filling fields the file's own path captures do not already provide.
+ */
+export interface VendorRepoReadmeContextRule {
+  /**
+   * RegExp source matched against the repo-relative (POSIX) path to select the
+   * README / context files to read (e.g. `README\\.md$`). These blobs are
+   * fetched for CONTEXT only — they do not themselves yield IOC rows unless a
+   * separate `files` rule also matches them.
+   */
+  pathPattern: string;
+  /**
+   * RegExp source run against the README content to capture the `actor`. The
+   * first capture group (or a named `value` group) is the value; absent ⇒ the
+   * field is not derived from the README.
+   */
+  actorPattern?: string;
+  /** RegExp source capturing the `campaign` from the README content. */
+  campaignPattern?: string;
+  /** RegExp source capturing the `malwareFamily` from the README content. */
+  malwareFamilyPattern?: string;
+  /** RegExp source capturing the `reportUrl` from the README content. */
+  reportUrlPattern?: string;
+}
+
+/**
  * Vendor IOC repository extraction config (RFC 0003 F4, #603) carried on a
  * `TiSourceDescriptor`. A vendor repo is a Git tree of per-report folders with
  * heterogeneous formats (not a single flat file), so the importer enumerates
@@ -335,6 +366,22 @@ export interface VendorRepoConfig {
     campaign?: string;
     malwareFamily?: string;
   };
+  /**
+   * Optional per-folder context extraction from README / markdown CONTENT. When
+   * set, the engine first reads the matching README blobs and derives
+   * folder-scoped context, merged BETWEEN the static `context` defaults and the
+   * path-derived `contextPattern` captures (path captures win, README fills
+   * gaps the path does not cover). Absent ⇒ context comes from path + statics
+   * only.
+   */
+  readmeContext?: VendorRepoReadmeContextRule;
+  /**
+   * Hard cadence floor (ms) for the operator / scheduler self-fetch of this
+   * repo: nothing fetches it more often than this, guarding the optional GitHub
+   * token's 5000 req/hr (and the keyless 60 req/hr) budget across a daily
+   * refresh. Absent ⇒ `VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS`.
+   */
+  cadenceFloorMs?: number;
   /**
    * `feed_source_secret.key_name` of the OPTIONAL GitHub token that lifts the
    * unauthenticated 60 req/hr ceiling to 5000/hr. Keyless still works

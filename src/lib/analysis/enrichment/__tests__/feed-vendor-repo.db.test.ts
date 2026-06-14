@@ -24,12 +24,16 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
+import { getTier1FeedSource } from "../feed-catalog";
+import type { FetchResponseLike, FetchTransport } from "../feed-fetch";
+import { readFeedFetchState, SelfFetchFeedSource } from "../feed-fetch";
 import type { VendorRepoConfig } from "../feed-source";
 import {
   FixtureVendorRepoProvider,
   importVendorRepo,
   type VendorRepoCollectInput,
 } from "../feed-vendor-repo";
+import { registerTiSource, unregisterTiSource } from "../sources/registry";
 
 const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
 const FEED_LOCK_ID = 6031;
@@ -192,6 +196,132 @@ describe.skipIf(!hasPostgres)("vendor-repo importer (DB)", () => {
       malwareFamily: "Snake",
       reportUrl: "https://vendor.test/reports/turla/snake",
     });
+  });
+
+  it("routes a vendorRepo descriptor through fetchAndImport (production path)", async () => {
+    // A self-registered vendorRepo descriptor must be fetchable + imported by
+    // the operator/scheduler self-fetch engine — not only by the test-only
+    // importVendorRepo call. Drives the engine with a mocked GitHub transport
+    // (no network) and an injected token resolver.
+    const sourcePolicyId = "vendor/routed-test";
+    const vendorRepo: VendorRepoConfig = {
+      owner: "vendor",
+      repo: "routed",
+      ref: "main",
+      authKeyName: "vendor-routed-token",
+      files: [
+        {
+          label: "iocs-csv",
+          pathPattern: "reports/[^/]+/iocs\\.csv$",
+          parse: "csv-column",
+          parseConfig: {
+            kind: "csv-column",
+            columns: [{ name: "url", entityType: "URL" }],
+          },
+          entityType: "URL",
+        },
+      ],
+      contextPattern: "^reports/(?<campaign>[^/]+)/",
+    };
+    registerTiSource({
+      sourcePolicyId,
+      label: "Routed Vendor Repo",
+      entityTypes: ["URL"],
+      deterministicCoverage: true,
+      maxAge: 2 * 24 * 60 * 60 * 1000,
+      floorEligible: false,
+      parse: "generic-list",
+      entityType: "URL",
+      hitType: "deterministic_ioc",
+      vendorRepo,
+    });
+
+    try {
+      // The catalog carries the vendorRepo config through to the engine seam
+      // (the live registry lookup `fetchAndImport` uses; the frozen
+      // `TIER1_FEED_SOURCES` const that `fetchableSourceIds` reads is built once
+      // at load, before any test registration, so it is checked in the unit
+      // suite's catalog test, not here).
+      expect(getTier1FeedSource(sourcePolicyId)?.vendorRepo).toBeDefined();
+
+      const calls: { url: string; headers: Record<string, string> }[] = [];
+      const treeBody = JSON.stringify({
+        tree: [
+          {
+            path: "reports/snake/iocs.csv",
+            type: "blob",
+            sha: "sha-csv",
+          },
+          { path: "reports/snake/sample.exe", type: "blob", sha: "sha-exe" },
+        ],
+      });
+      const blobBody = JSON.stringify({
+        encoding: "base64",
+        content: Buffer.from("url\nhttps://c2.routed.test/x").toString(
+          "base64",
+        ),
+      });
+      const transport: FetchTransport = async (url, init) => {
+        calls.push({ url, headers: init.headers });
+        const resp = (status: number, body: string): FetchResponseLike => ({
+          status,
+          ok: status >= 200 && status < 300,
+          headers: { get: () => null },
+          text: async () => body,
+        });
+        if (url.includes("/git/trees/")) return resp(200, treeBody);
+        if (url.includes("/git/blobs/sha-csv")) return resp(200, blobBody);
+        throw new Error(`unexpected url ${url}`);
+      };
+
+      const engine = new SelfFetchFeedSource({
+        feedPool,
+        transport,
+        resolveAuthKey: async (keyName) =>
+          keyName === "vendor-routed-token" ? "GH-SECRET" : null,
+        now: () => new Date("2026-06-14T12:00:00.000Z"),
+      });
+      const outcome = await engine.fetchAndImport(sourcePolicyId);
+      expect(outcome).toEqual({ status: "imported", rowCount: 1 });
+
+      // The row landed in the snapshot, context-stamped.
+      const { rows } = await feedPool.query<{
+        match_value: string;
+        hit_type: string;
+        context: unknown;
+      }>(
+        `SELECT match_value, hit_type, context FROM ioc_feed_snapshot
+           WHERE source_policy_id = $1`,
+        [sourcePolicyId],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].match_value).toBe("https://c2.routed.test/x");
+      expect(rows[0].hit_type).toBe("deterministic_ioc");
+      expect(rows[0].context).toEqual({ campaign: "snake" });
+
+      // feed_fetch_state was recorded ok (so freshness/presence is tracked).
+      const state = await readFeedFetchState(feedPool, sourcePolicyId);
+      expect(state?.lastStatus).toBe("ok");
+      expect(state?.lastRowCount).toBe(1);
+
+      // The optional token reached every request; the binary sha and any
+      // archive path were never fetched.
+      for (const call of calls) {
+        expect(call.headers.Authorization).toBe("Bearer GH-SECRET");
+      }
+      const urls = calls.map((c) => c.url);
+      expect(urls.some((u) => u.includes("sha-exe"))).toBe(false);
+      expect(
+        urls.some(
+          (u) =>
+            u.includes("/tarball") ||
+            u.includes("/zipball") ||
+            u.includes("/archive"),
+        ),
+      ).toBe(false);
+    } finally {
+      unregisterTiSource(sourcePolicyId);
+    }
   });
 
   it("re-import replaces in place (single per-source snapshot, idempotent)", async () => {

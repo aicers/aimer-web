@@ -30,6 +30,7 @@ import "server-only";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { Pool } from "pg";
+import { canonicalizeContext, normalizeContext } from "./context-payload";
 import {
   type FetchResponseLike,
   type FetchTransport,
@@ -39,14 +40,24 @@ import {
   type FeedSnapshotRow,
   importFeedSnapshot,
   parseRawFeedPayloadRows,
+  resolveRowHitType,
 } from "./feed-import";
 import type {
   RawFeedPayload,
   TiFeedMode,
   VendorRepoConfig,
   VendorRepoFileRule,
+  VendorRepoReadmeContextRule,
 } from "./feed-source";
-import type { EnrichmentContextPayload } from "./types";
+import type { EnrichmentContextPayload, HitType } from "./types";
+
+/**
+ * Default hard cadence floor (ms) for a vendor-repo self-fetch when its config
+ * does not override `cadenceFloorMs`: one hour. Vendor repos refresh roughly
+ * daily, so an hour floor leaves ample headroom under the GitHub token budget
+ * while still letting an operator "Fetch Now" pull a same-day update.
+ */
+export const VENDOR_REPO_DEFAULT_CADENCE_FLOOR_MS = 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Tree provider seam (live GitHub API / committed fixture tree)
@@ -104,21 +115,33 @@ function substituteTemplate(
 /**
  * Derive the report-level context (`actor` / `campaign` / `malwareFamily` /
  * `reportUrl`) for a file from its path, per the repo's `contextPattern` named
- * captures, `reportUrlTemplate`, and static `context` defaults. Path-derived
- * captures win over the static defaults. Returns `undefined` when no usable
- * context survives (so a context-less file leaves the row's `context` absent).
+ * captures, `reportUrlTemplate`, and static `context` defaults. An optional
+ * `readmeContext` (the folder-scoped context extracted from a per-report
+ * README's CONTENT, see `extractReadmeContext`) is merged BETWEEN the static
+ * defaults and the path captures, so precedence is path captures > README >
+ * static. Returns `undefined` when no usable context survives (so a context-less
+ * file leaves the row's `context` absent).
  */
 export function deriveVendorContext(
   path: string,
   config: VendorRepoConfig,
+  readmeContext?: EnrichmentContextPayload,
 ): EnrichmentContextPayload | undefined {
   const context: EnrichmentContextPayload = {};
+  // 1. Static defaults (weakest).
   if (config.context?.actor) context.actor = config.context.actor;
   if (config.context?.campaign) context.campaign = config.context.campaign;
   if (config.context?.malwareFamily) {
     context.malwareFamily = config.context.malwareFamily;
   }
+  // 2. README content (overrides statics, filled below by path captures).
+  if (readmeContext?.actor) context.actor = readmeContext.actor;
+  if (readmeContext?.campaign) context.campaign = readmeContext.campaign;
+  if (readmeContext?.malwareFamily) {
+    context.malwareFamily = readmeContext.malwareFamily;
+  }
 
+  // 3. Path captures (strongest — most specific to this file's location).
   const captures: Record<string, string> = {};
   if (config.contextPattern) {
     const groups = new RegExp(config.contextPattern).exec(path)?.groups;
@@ -133,6 +156,8 @@ export function deriveVendorContext(
     }
   }
 
+  // `reportUrl`: a configured path template wins; otherwise fall back to a URL
+  // captured from the README content.
   if (config.reportUrlTemplate) {
     context.reportUrl = substituteTemplate(config.reportUrlTemplate, {
       ...captures,
@@ -141,9 +166,67 @@ export function deriveVendorContext(
       repo: config.repo,
       ref: config.ref,
     });
+  } else if (readmeContext?.reportUrl) {
+    context.reportUrl = readmeContext.reportUrl;
   }
 
   return Object.keys(context).length > 0 ? context : undefined;
+}
+
+/**
+ * Extract folder-level context from a README / markdown file's CONTENT per the
+ * repo's `readmeContext` rule. Each field's pattern is run against the whole
+ * body; the first capture group (or a named `value` group) is the value, else
+ * the whole match. Returns `undefined` when nothing is captured (so a README
+ * with no recognizable context contributes nothing).
+ */
+export function extractReadmeContext(
+  content: string,
+  rule: VendorRepoReadmeContextRule,
+): EnrichmentContextPayload | undefined {
+  const capture = (pattern: string | undefined): string | undefined => {
+    if (!pattern) return undefined;
+    const match = new RegExp(pattern, "m").exec(content);
+    if (!match) return undefined;
+    const value = match.groups?.value ?? match[1] ?? match[0];
+    const trimmed = value?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : undefined;
+  };
+  const context: EnrichmentContextPayload = {};
+  const actor = capture(rule.actorPattern);
+  if (actor) context.actor = actor;
+  const campaign = capture(rule.campaignPattern);
+  if (campaign) context.campaign = campaign;
+  const malwareFamily = capture(rule.malwareFamilyPattern);
+  if (malwareFamily) context.malwareFamily = malwareFamily;
+  const reportUrl = capture(rule.reportUrlPattern);
+  if (reportUrl) context.reportUrl = reportUrl;
+  return Object.keys(context).length > 0 ? context : undefined;
+}
+
+/** The POSIX parent directory of a repo-relative path (`""` at the root). */
+function parentDir(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx < 0 ? "" : path.slice(0, idx);
+}
+
+/**
+ * The README context that applies to `path`: the most specific enclosing folder
+ * with a README context (walk from the file's own directory up to the root).
+ * `undefined` when no enclosing folder carries one.
+ */
+function readmeContextForPath(
+  path: string,
+  readmeByDir: Map<string, EnrichmentContextPayload>,
+): EnrichmentContextPayload | undefined {
+  if (readmeByDir.size === 0) return undefined;
+  let dir = parentDir(path);
+  while (true) {
+    const ctx = readmeByDir.get(dir);
+    if (ctx) return ctx;
+    if (dir === "") return undefined;
+    dir = parentDir(dir);
+  }
 }
 
 /** Human-readable origin pointer for a vendor-repo file (audit). */
@@ -197,6 +280,34 @@ export async function collectVendorRepoRows(
   const fetched: string[] = [];
   const skipped: string[] = [];
 
+  // Memoize blob reads so a file that is both a README (context) and an
+  // allowlisted IOC file is fetched at most once.
+  const readCache = new Map<string, Promise<string>>();
+  const readBlob = (path: string): Promise<string> => {
+    let pending = readCache.get(path);
+    if (!pending) {
+      pending = provider.readBlob(path);
+      readCache.set(path, pending);
+    }
+    return pending;
+  };
+
+  // First pass — read the README / context files (CONTENT, not path) and key
+  // the derived context by the README's folder, so an IOC file inherits the
+  // context of its most specific enclosing README. Only runs when a
+  // `readmeContext` rule is configured (the existing repos derive context from
+  // the path alone and skip this entirely).
+  const readmeByDir = new Map<string, EnrichmentContextPayload>();
+  if (config.readmeContext) {
+    const readmeRe = new RegExp(config.readmeContext.pathPattern);
+    for (const entry of entries) {
+      if (entry.type !== "blob" || !readmeRe.test(entry.path)) continue;
+      const content = await readBlob(entry.path);
+      const ctx = extractReadmeContext(content, config.readmeContext);
+      if (ctx) readmeByDir.set(parentDir(entry.path), ctx);
+    }
+  }
+
   for (const entry of entries) {
     if (entry.type !== "blob") continue;
     const rule = matchVendorFileRule(entry.path, config);
@@ -205,7 +316,7 @@ export async function collectVendorRepoRows(
       continue;
     }
 
-    const content = await provider.readBlob(entry.path);
+    const content = await readBlob(entry.path);
     fetched.push(entry.path);
 
     const deterministicAllowed =
@@ -217,7 +328,11 @@ export async function collectVendorRepoRows(
       entityType: rule.entityType,
       hitType: rule.hitType ?? input.hitType,
       classification: rule.classification ?? input.classification,
-      context: deriveVendorContext(entry.path, config),
+      context: deriveVendorContext(
+        entry.path,
+        config,
+        readmeContextForPath(entry.path, readmeByDir),
+      ),
       deterministicAllowed,
       content,
       provenance: {
@@ -254,7 +369,40 @@ export async function collectVendorRepoRows(
     rows.push(...fileRows);
   }
 
-  return { rows, fetched, skipped };
+  return { rows: dedupeVendorRows(rows, input), fetched, skipped };
+}
+
+/**
+ * Collapse rows that are duplicates across files of the SAME source. The
+ * snapshot table has no uniqueness constraint, so the same normalized IOC
+ * appearing in (say) a CSV and a prose note would otherwise insert twice and
+ * surface as duplicate matches/facts for one indicator. The identity key is the
+ * FULL effective row — value/cidr + entity type + the guard-resolved hit type +
+ * classification + canonical context — so a genuinely distinct row is kept: the
+ * same IOC reported under two different campaigns (different `context`) survives
+ * as two rows (that is the C1 narrative value), while a byte-identical repeat is
+ * dropped. First occurrence wins (stable order).
+ */
+function dedupeVendorRows(
+  rows: readonly FeedSnapshotRow[],
+  input: VendorRepoCollectInput,
+): FeedSnapshotRow[] {
+  const defaultHitType: HitType | null = input.hitType ?? null;
+  const seen = new Set<string>();
+  const out: FeedSnapshotRow[] = [];
+  for (const row of rows) {
+    const entityType = row.entityType ?? input.entityType;
+    const base = row.matchValue ?? `cidr:${row.cidr ?? ""}`;
+    const hit = resolveRowHitType(row, defaultHitType) ?? "";
+    const cls = row.classification ?? input.classification ?? "";
+    const normalized = row.context ? normalizeContext(row.context) : undefined;
+    const ctx = normalized ? canonicalizeContext(normalized) : "";
+    const key = [entityType, base, hit, cls, ctx].join("\x1f");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
