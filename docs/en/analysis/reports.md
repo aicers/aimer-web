@@ -430,6 +430,22 @@ and is instructed to reference techniques by ID in the narrative, but
 the stored union is computed deterministically from the individual
 analyses — the LLM cannot add or drop a technique from the column.
 
+## CVE references
+
+Beside the technique chips, the page renders the report's
+`aggregate_cve_refs` — the deduplicated, sorted union of every included
+analysis's CVE references. Each chip shows a canonical CVE identifier
+(e.g. `CVE-2024-12345`). Exactly like the technique column, the union is
+computed deterministically at write time from the individual story and
+event analyses, so the LLM cannot add or drop a CVE from the column; the
+period-level surface only rolls up what the leaf analyses already
+established. A period whose analyses cited no CVEs shows no chips. The
+enriched per-CVE detail (CVSS, KEV, EPSS, and validating sources) lives
+on the individual story and event analysis pages, not on this rolled-up
+period view.
+
+![Placeholder for the aggregated-CVE chip row on the periodic report detail page, pending a real-data recapture — the row only renders when leaf analyses carry CVE references, which depend on the CVE source catalog (#601) and the enrichment gate, neither of which the fixture pipeline can reproduce](../../assets/report-aggregate-cve.en.png)
+
 ## Report sections
 
 The body renders the five narrative sections the LLM returns as Markdown —

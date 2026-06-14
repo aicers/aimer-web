@@ -46,6 +46,7 @@ import {
   type CategoryCount,
   computeBaselineDrift,
 } from "./baseline-drift";
+import { parseCveRefs } from "./cve/view";
 import { type ModelPair, resolveDefaultModel } from "./default-model";
 import { getModelCatalog } from "./model-catalog";
 import {
@@ -216,6 +217,8 @@ export interface PeriodicReportBuildResult {
   tokenRefs: ReportTokenRef[];
   inputHash: string;
   aggregateTtpTags: string[];
+  /** Dedup'd sorted union of leaf CVE refs (the `aggregateTtpTags` analogue). */
+  aggregateCveRefs: string[];
   aggregateSeverityScore: number;
   aggregateLikelihoodScore: number;
   priorityTier: PriorityTier;
@@ -248,6 +251,9 @@ interface StoryLeafRow {
   likelihood_score: number;
   priority_tier: PriorityTier;
   ttp_tags: string[];
+  /** RFC 0005 — stored enriched CVE records; the `cveRefs` input is their
+   *  `cve` ids (the `ttp_tags` analogue). Parsed via `leafCveRefs`. */
+  cve_refs: unknown;
   severity_factors: string[];
   likelihood_factors: string[];
   analysis_text: string;
@@ -291,6 +297,8 @@ interface EventLeafRow {
   likelihood_score: number;
   priority_tier: PriorityTier;
   ttp_tags: string[];
+  /** RFC 0005 — stored enriched CVE records; see `StoryLeafRow.cve_refs`. */
+  cve_refs: unknown;
   severity_factors: string[];
   likelihood_factors: string[];
   analysis_text: string;
@@ -494,7 +502,7 @@ async function selectTopStories(
               r.generation, r.model_name, r.model,
               r.severity_score, r.likelihood_score,
               r.priority_tier,
-              r.ttp_tags, r.severity_factors, r.likelihood_factors,
+              r.ttp_tags, r.cve_refs, r.severity_factors, r.likelihood_factors,
               r.analysis_text, r.redaction_policy_version,
               cs.source_aice_id,
               cs.time_window_start, cs.time_window_end
@@ -512,7 +520,7 @@ async function selectTopStories(
             rk.generation, rk.model_name, rk.model,
             rk.severity_score, rk.likelihood_score,
             rk.priority_tier,
-            rk.ttp_tags, rk.severity_factors, rk.likelihood_factors,
+            rk.ttp_tags, rk.cve_refs, rk.severity_factors, rk.likelihood_factors,
             rk.analysis_text, rk.redaction_policy_version,
             rk.source_aice_id,
             rk.time_window_start, rk.time_window_end
@@ -601,7 +609,7 @@ const EVENT_RANKED_CTE = `WITH latest_baseline AS (
               e.generation, e.model_name, e.model,
               e.severity_score, e.likelihood_score,
               e.priority_tier,
-              e.ttp_tags, e.severity_factors, e.likelihood_factors,
+              e.ttp_tags, e.cve_refs, e.severity_factors, e.likelihood_factors,
               e.analysis_text, e.redaction_policy_version,
               lb.event_time
          FROM event_analysis_result e
@@ -627,7 +635,7 @@ const RANKED_LEAF_COLUMNS = `rk.aice_id,
             rk.generation, rk.model_name, rk.model,
             rk.severity_score, rk.likelihood_score,
             rk.priority_tier,
-            rk.ttp_tags, rk.severity_factors, rk.likelihood_factors,
+            rk.ttp_tags, rk.cve_refs, rk.severity_factors, rk.likelihood_factors,
             rk.analysis_text, rk.redaction_policy_version,
             rk.event_time`;
 
@@ -1138,6 +1146,18 @@ function resolveRedactionPolicy(versions: string[]): RedactionPolicyResult {
 
 function dedupeSorted(values: ReadonlyArray<string>): string[] {
   return Array.from(new Set(values)).sort();
+}
+
+/**
+ * Extract a leaf's canonical CVE identifiers from its stored `cve_refs`
+ * JSONB (the `ttp_tags` analogue, RFC 0005). Unlike `ttp_tags` — already a
+ * bare ID array — `cve_refs` stores enriched `CveRecord` objects, so the
+ * propagated `cveRefs` input is the records' `cve` ids, parsed defensively
+ * through the same `parseCveRefs` the render path uses (legacy / corrupt
+ * rows are dropped). Leaf order is preserved; the aggregate dedup/sorts.
+ */
+function leafCveRefs(raw: unknown): string[] {
+  return parseCveRefs(raw).map((r) => r.cve);
 }
 
 /**
@@ -1798,6 +1818,15 @@ async function assembleReportInput(
     ...events.flatMap((e) => e.ttp_tags),
   ]);
 
+  // CVE refs mirror the TTP-tag facet (RFC 0005): a coverage/narrative
+  // signal, not a calibrated score, so `aggregate_cve_refs` stays on the
+  // FULL selected set. The leaf `cve_refs` are enriched records, so the
+  // dedup/sort is over their canonical `cve` ids.
+  const aggregateCveRefs = dedupeSorted([
+    ...stories.flatMap((s) => leafCveRefs(s.cve_refs)),
+    ...events.flatMap((e) => leafCveRefs(e.cve_refs)),
+  ]);
+
   const leafTiers: PriorityTier[] = [
     ...reportModelStories.map((s) => s.priority_tier),
     ...reportModelEvents.map((e) => e.priority_tier),
@@ -1838,6 +1867,7 @@ async function assembleReportInput(
     severityFactors: rewrittenStoryFactors[i].severityFactors,
     likelihoodFactors: rewrittenStoryFactors[i].likelihoodFactors,
     ttpTags: s.ttp_tags,
+    cveRefs: leafCveRefs(s.cve_refs),
   }));
   const eventAnalyses: EventAnalysisInput[] = events.map((e, i) => ({
     // `eventRef` is opaque/reference-only on aimer's side, but it must still
@@ -1858,6 +1888,7 @@ async function assembleReportInput(
     severityFactors: rewrittenEventFactors[i].severityFactors,
     likelihoodFactors: rewrittenEventFactors[i].likelihoodFactors,
     ttpTags: e.ttp_tags,
+    cveRefs: leafCveRefs(e.cve_refs),
   }));
 
   const aimerInputs: PeriodicReportInputs = {
@@ -1880,6 +1911,7 @@ async function assembleReportInput(
       topSensors: sensors,
     },
     aggregateTtpTags,
+    aggregateCveRefs,
     // Long-tail analyzed-event aggregates (#495). OMITTED (left undefined)
     // when the universe is empty so `computeInputHash` stays byte-identical
     // to pre-change and empty-universe reports are not marked dirty —
@@ -1951,6 +1983,7 @@ async function assembleReportInput(
     tokenRefs: refs,
     inputHash,
     aggregateTtpTags,
+    aggregateCveRefs,
     aggregateSeverityScore,
     aggregateLikelihoodScore,
     priorityTier,
@@ -2138,7 +2171,7 @@ async function fetchStoryLeavesByRefs(
             r.generation, r.model_name, r.model,
             r.severity_score, r.likelihood_score,
             r.priority_tier,
-            r.ttp_tags, r.severity_factors, r.likelihood_factors,
+            r.ttp_tags, r.cve_refs, r.severity_factors, r.likelihood_factors,
             r.analysis_text, r.redaction_policy_version,
             cs.source_aice_id,
             cs.time_window_start, cs.time_window_end
@@ -2191,7 +2224,7 @@ async function fetchEventLeavesByRefs(
             e.generation, e.model_name, e.model,
             e.severity_score, e.likelihood_score,
             e.priority_tier,
-            e.ttp_tags, e.severity_factors, e.likelihood_factors,
+            e.ttp_tags, e.cve_refs, e.severity_factors, e.likelihood_factors,
             e.analysis_text, e.redaction_policy_version,
             lb.event_time
        FROM event_analysis_result e

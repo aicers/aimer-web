@@ -396,6 +396,7 @@ CREATE TABLE periodic_report_result (
     aggregate_severity_score    DOUBLE PRECISION NOT NULL,
     aggregate_likelihood_score  DOUBLE PRECISION NOT NULL,
     aggregate_ttp_tags          JSONB            NOT NULL DEFAULT '[]',
+    aggregate_cve_refs          JSONB            NOT NULL DEFAULT '[]',   -- RFC 0005 — dedup'd sorted union of leaf cve_refs across the bundle (the aggregate_ttp_tags analogue)
     priority_tier               TEXT             NOT NULL
         CHECK (priority_tier IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
     sections_jsonb              JSONB            NOT NULL,
