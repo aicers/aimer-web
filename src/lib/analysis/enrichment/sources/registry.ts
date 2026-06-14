@@ -19,7 +19,7 @@
 // CVE-context sources (RFC 0005) register against #590's `CveCatalog`, NOT this
 // registry.
 
-import type { FeedParseKind } from "../feed-source";
+import type { FeedParseConfig, FeedParseKind } from "../feed-source";
 import type { EntityType, HitType } from "../types";
 
 /**
@@ -62,6 +62,12 @@ export interface TiSourceFetchConfig {
    */
   parse: FeedParseKind;
   /**
+   * Config for a parameterized self-fetch parser (`generic-list` /
+   * `csv-column`, #593). May differ from the fixture/upload `parseConfig` the
+   * same way `parse` may. Absent for the bespoke string kinds.
+   */
+  parseConfig?: FeedParseConfig;
+  /**
    * `feed_source_secret.key_name` of the Auth-Key this source needs, if any
    * (URLhaus). Sources without an Auth-Key (Feodo, Spamhaus) omit it.
    */
@@ -90,6 +96,12 @@ export interface TiSourceDescriptor {
   // --- catalog / parse fields (derive `TIER1_FEED_SOURCES`) ---
   /** How to parse the raw fixture/upload feed content into indicator values. */
   parse: FeedParseKind;
+  /**
+   * Config for a parameterized parser (`generic-list` / `csv-column`, #593).
+   * A fan-out plain/CSV source selects a generic `parse` kind + this config
+   * instead of adding a bespoke parser. Absent for the bespoke string kinds.
+   */
+  parseConfig?: FeedParseConfig;
   /**
    * Default entity type for the parsed rows. A source whose parser emits more
    * than one entity type (URLhaus → URL + DOMAIN) sets the per-row override in

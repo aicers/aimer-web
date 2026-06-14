@@ -23,6 +23,7 @@ import { join } from "node:path";
 import type { Pool } from "pg";
 import { importFromFeedSource } from "./feed-import";
 import {
+  type FeedParseConfig,
   type FeedParseKind,
   type FeedSource,
   type RawFeedPayload,
@@ -46,6 +47,7 @@ interface FixtureFeedSpec {
   sourcePolicyId: string;
   file: string;
   parse: FeedParseKind;
+  parseConfig?: FeedParseConfig;
   entityType: EntityType;
   hitType: HitType;
   classification?: string;
@@ -66,6 +68,7 @@ export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] =
       sourcePolicyId: descriptor.sourcePolicyId,
       file: descriptor.fixtureFile as string,
       parse: descriptor.parse,
+      parseConfig: descriptor.parseConfig,
       entityType: descriptor.entityType,
       hitType: descriptor.hitType,
       classification: descriptor.classification,
@@ -97,6 +100,7 @@ export class FixtureFeedSource implements FeedSource {
       return {
         sourcePolicyId: spec.sourcePolicyId,
         parse: spec.parse,
+        parseConfig: spec.parseConfig,
         entityType: spec.entityType,
         hitType: spec.hitType,
         classification: spec.classification,

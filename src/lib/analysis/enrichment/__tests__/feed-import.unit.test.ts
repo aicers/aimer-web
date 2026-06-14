@@ -2,22 +2,44 @@
 // DB). The DB import path (`importFeedSnapshot`) is covered by the worker
 // db tests.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
 import {
   computeFeedHash,
+  FeedParseError,
   hasFeedDataLines,
   isUnparseableFeedContent,
   normalizeCidrs,
   normalizeExactValues,
+  parseCsvColumns,
+  parseFeedContent,
+  parseGenericList,
   parseIpBlocklist,
   parseSpamhausDrop,
   parseUrlhausCsv,
   parseUrlhausHosts,
   parseUrlhausPayloadsCsv,
+  refangIndicator,
 } from "../feed-import";
+import type {
+  CsvColumnParseConfig,
+  GenericListParseConfig,
+} from "../feed-source";
+
+const FEEDS_DIR = join(
+  process.cwd(),
+  "src",
+  "lib",
+  "analysis",
+  "enrichment",
+  "feeds",
+);
+const fixture = (name: string): string =>
+  readFileSync(join(FEEDS_DIR, name), "utf8");
 
 describe("feed parsers", () => {
   it("parses a Feodo-style IP blocklist, skipping comments", () => {
@@ -69,6 +91,225 @@ describe("feed parsers", () => {
     expect(parseSpamhausDrop(text)).toEqual([
       "192.0.2.0/24",
       "198.51.100.0/24",
+    ]);
+  });
+});
+
+describe("refangIndicator", () => {
+  it("refangs scheme, dots, and at", () => {
+    expect(refangIndicator("hxxp://malware[.]example/a[.]exe")).toBe(
+      "http://malware.example/a.exe",
+    );
+    expect(refangIndicator("hxxps://c2(.)evil(.)example")).toBe(
+      "https://c2.evil.example",
+    );
+    expect(refangIndicator("admin[at]evil[.]example")).toBe(
+      "admin@evil.example",
+    );
+  });
+
+  it("leaves an already-fanged indicator unchanged", () => {
+    expect(refangIndicator("http://malware.example/a.exe")).toBe(
+      "http://malware.example/a.exe",
+    );
+  });
+});
+
+describe("parseGenericList (#593)", () => {
+  it("parses a plain list, stripping #/; comments and blanks", () => {
+    expect(parseGenericList(fixture("generic-list-domains.txt"))).toEqual([
+      "bad-domain.example",
+      "c2.evil.example",
+      "phishing.evil.example",
+    ]);
+  });
+
+  it("leaves defanged indicators alone when refang is off", () => {
+    const cfg: GenericListParseConfig = { kind: "generic-list", refang: false };
+    expect(parseGenericList("hxxp://evil[.]example/x", cfg)).toEqual([
+      "hxxp://evil[.]example/x",
+    ]);
+  });
+
+  it("refangs each line when refang is on", () => {
+    const cfg: GenericListParseConfig = { kind: "generic-list", refang: true };
+    expect(parseGenericList(fixture("generic-list-defanged.txt"), cfg)).toEqual(
+      [
+        "http://malware.example/a.exe",
+        "https://c2.evil.example/gate.php",
+        "admin@evil.example",
+      ],
+    );
+  });
+
+  it("honors a custom comment-prefix set", () => {
+    const cfg: GenericListParseConfig = {
+      kind: "generic-list",
+      commentPrefixes: ["//"],
+    };
+    // `;` is no longer a comment here, so its line is kept as data.
+    expect(parseGenericList("// note\n; kept\na.example", cfg)).toEqual([
+      "; kept",
+      "a.example",
+    ]);
+  });
+
+  it("expresses ip-blocklist as generic-list with entityType IP (parity)", () => {
+    const text = "# header\n203.0.113.10\n\n198.51.100.50\n# trailing";
+    expect(
+      parseFeedContent("generic-list", "IP", text, { kind: "generic-list" }),
+    ).toEqual(parseFeedContent("ip-blocklist", "IP", text));
+  });
+});
+
+describe("parseCsvColumns (#593)", () => {
+  it("selects a column by header name and skips the header", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "url", entityType: "URL" }],
+      skipHeader: true,
+      commentPrefix: "#",
+    };
+    expect(parseCsvColumns(fixture("csv-column-sample.csv"), cfg)).toEqual([
+      { entityType: "URL", value: "http://malware.example/a.exe" },
+      { entityType: "URL", value: "https://c2.evil.example/gate.php" },
+      { entityType: "URL", value: "http://phishing.evil.example/login" },
+    ]);
+  });
+
+  it("selects a column by zero-based index", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 0, entityType: "IP" }],
+    };
+    // No header skip: every non-comment line is data.
+    expect(parseCsvColumns("1.2.3.4,foo\n5.6.7.8,bar", cfg)).toEqual([
+      { entityType: "IP", value: "1.2.3.4" },
+      { entityType: "IP", value: "5.6.7.8" },
+    ]);
+  });
+
+  it("extracts multiple columns with per-column entity types", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [
+        { name: "url", entityType: "URL" },
+        { name: "host", entityType: "DOMAIN" },
+      ],
+      commentPrefix: "#",
+    };
+    expect(parseCsvColumns(fixture("csv-column-sample.csv"), cfg)).toEqual([
+      { entityType: "URL", value: "http://malware.example/a.exe" },
+      { entityType: "DOMAIN", value: "malware.example" },
+      { entityType: "URL", value: "https://c2.evil.example/gate.php" },
+      { entityType: "DOMAIN", value: "c2.evil.example" },
+      { entityType: "URL", value: "http://phishing.evil.example/login" },
+      { entityType: "DOMAIN", value: "phishing.evil.example" },
+    ]);
+  });
+
+  it("honors a custom delimiter and quoted fields", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 1, entityType: "DOMAIN" }],
+      delimiter: ";",
+    };
+    expect(parseCsvColumns('a;"quoted.example";c', cfg)).toEqual([
+      { entityType: "DOMAIN", value: "quoted.example" },
+    ]);
+  });
+
+  it("treats empty / comment-only content as a clear (no rows, no error)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "url", entityType: "URL" }],
+      commentPrefix: "#",
+    };
+    expect(parseCsvColumns("", cfg)).toEqual([]);
+    expect(parseCsvColumns("# only a comment\n", cfg)).toEqual([]);
+  });
+
+  it("throws on a missing header name (never a silent 0 rows)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "nope", entityType: "URL" }],
+      commentPrefix: "#",
+    };
+    expect(() =>
+      parseCsvColumns(fixture("csv-column-sample.csv"), cfg),
+    ).toThrow(FeedParseError);
+  });
+
+  it("throws on an out-of-range index", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 9, entityType: "IP" }],
+    };
+    expect(() => parseCsvColumns("1.2.3.4,foo", cfg)).toThrow(FeedParseError);
+  });
+
+  it("throws via parseFeedContent when csv-column config is missing", () => {
+    expect(() => parseFeedContent("csv-column", "URL", "a,b\n")).toThrow(
+      FeedParseError,
+    );
+  });
+});
+
+describe("parseFeedContent generic kinds → normalized rows", () => {
+  it("normalizes generic-list DOMAIN rows", () => {
+    expect(
+      parseFeedContent(
+        "generic-list",
+        "DOMAIN",
+        fixture("generic-list-domains.txt"),
+      ),
+    ).toEqual([
+      { matchValue: "bad-domain.example" },
+      { matchValue: "c2.evil.example" },
+      { matchValue: "phishing.evil.example" },
+    ]);
+  });
+
+  it("threads refang config through dispatch into normalized rows", () => {
+    const rows = parseFeedContent(
+      "generic-list",
+      "URL",
+      fixture("generic-list-defanged.txt"),
+      { kind: "generic-list", refang: true },
+    );
+    // Refang is applied before normalization, so the defanged fixture yields
+    // canonical URLs (and the `admin@evil.example` line, not a URL, is dropped
+    // by URL normalization).
+    expect(rows).toEqual([
+      { matchValue: "http://malware.example/a.exe" },
+      { matchValue: "https://c2.evil.example/gate.php" },
+    ]);
+  });
+
+  it("normalizes csv-column rows and stamps each row's entity type", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [
+        { name: "url", entityType: "URL" },
+        { name: "host", entityType: "DOMAIN" },
+      ],
+      commentPrefix: "#",
+    };
+    const rows = parseFeedContent(
+      "csv-column",
+      "URL",
+      fixture("csv-column-sample.csv"),
+      cfg,
+    );
+    // Grouped by entity type (URL rows then DOMAIN rows), each row carrying
+    // its column's entityType so a multi-type CSV lands under one source.
+    expect(rows).toEqual([
+      { matchValue: "http://malware.example/a.exe", entityType: "URL" },
+      { matchValue: "https://c2.evil.example/gate.php", entityType: "URL" },
+      { matchValue: "http://phishing.evil.example/login", entityType: "URL" },
+      { matchValue: "malware.example", entityType: "DOMAIN" },
+      { matchValue: "c2.evil.example", entityType: "DOMAIN" },
+      { matchValue: "phishing.evil.example", entityType: "DOMAIN" },
     ]);
   });
 });
@@ -130,6 +371,12 @@ describe("hasFeedDataLines", () => {
   it("is true when there is a non-comment data line", () => {
     expect(hasFeedDataLines("# header\n45.66.230.5\n")).toBe(true);
   });
+
+  it("consumes a configured comment prefix set", () => {
+    // `//` is the only comment prefix here, so `;` and `#` lines are data.
+    expect(hasFeedDataLines("// c\n; x", ["//"])).toBe(true);
+    expect(hasFeedDataLines("// c\n// d", ["//"])).toBe(false);
+  });
 });
 
 describe("isUnparseableFeedContent", () => {
@@ -148,6 +395,93 @@ describe("isUnparseableFeedContent", () => {
   it("does not flag content that parses to at least one row", () => {
     expect(
       isUnparseableFeedContent("ip-blocklist", "IP", "# h\n45.66.230.5\n"),
+    ).toBe(false);
+  });
+
+  it("flags csv-column with a missing header name (parse error → unparseable)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "nope", entityType: "URL" }],
+      commentPrefix: "#",
+    };
+    expect(
+      isUnparseableFeedContent(
+        "csv-column",
+        "URL",
+        fixture("csv-column-sample.csv"),
+        cfg,
+      ),
+    ).toBe(true);
+  });
+
+  it("flags csv-column with an out-of-range index", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 9, entityType: "IP" }],
+    };
+    expect(
+      isUnparseableFeedContent("csv-column", "IP", "1.2.3.4,foo\n", cfg),
+    ).toBe(true);
+  });
+
+  it("does not flag a header-only csv-column body (legitimately empty)", () => {
+    const cfg: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "url", entityType: "URL" }],
+      skipHeader: true,
+      commentPrefix: "#",
+    };
+    // Header row present, no data rows: the header is not a data line, so the
+    // source is legitimately cleared rather than flagged unparseable.
+    expect(
+      isUnparseableFeedContent("csv-column", "URL", "# c\nid,url,host\n", cfg),
+    ).toBe(false);
+  });
+
+  it("flags a header-only csv-column body whose config is invalid", () => {
+    // Only one non-comment line (the header), but the configured header name is
+    // absent: the parser must still be invoked so this surfaces as a parse
+    // error / unparseable rather than a silent clear (the header subtraction
+    // must not short-circuit config validation).
+    const missingName: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "missing", entityType: "URL" }],
+      commentPrefix: "#",
+    };
+    expect(
+      isUnparseableFeedContent(
+        "csv-column",
+        "URL",
+        "# c\nid,url,host\n",
+        missingName,
+      ),
+    ).toBe(true);
+    // Same shape with an out-of-range index under skipHeader: the lone header
+    // line cannot satisfy index 5, so it is unparseable, not a clear.
+    const badIndex: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 5, entityType: "URL" }],
+      skipHeader: true,
+    };
+    expect(
+      isUnparseableFeedContent("csv-column", "URL", "id,url,host\n", badIndex),
+    ).toBe(true);
+  });
+
+  it("uses the configured comment prefix for the data-line check", () => {
+    const cfg: GenericListParseConfig = {
+      kind: "generic-list",
+      commentPrefixes: ["//"],
+    };
+    // Under this config `#` is NOT a comment, so `# x` is a data line the
+    // generic-list parser keeps but DOMAIN normalization drops → unparseable.
+    // (A hardcoded `#` comment check would have wrongly called it empty.)
+    expect(
+      isUnparseableFeedContent("generic-list", "DOMAIN", "# x\n", cfg),
+    ).toBe(true);
+    // A genuine `//`-only body stays a legitimate clear.
+    expect(
+      isUnparseableFeedContent("generic-list", "DOMAIN", "// only\n", cfg),
     ).toBe(false);
   });
 });
