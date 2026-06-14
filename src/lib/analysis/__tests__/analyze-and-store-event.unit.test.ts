@@ -18,6 +18,18 @@ vi.mock("@/lib/graphql/client", () => ({
   graphqlRequest: (...args: unknown[]) => mockGraphqlRequest(...args),
 }));
 
+// Spy on the default CVE supply resolver so a test can assert the run's real
+// scope (customer id from auditBase, plus any explicit group scope) is threaded
+// into the F2 source selection. The feature is off by default, so returning
+// the gated-off state keeps the rest of the flow unchanged.
+const cveSupplyMock = vi.hoisted(() => ({
+  defaultCveSupply: vi.fn(() => ({ enabled: false }) as const),
+}));
+vi.mock("../cve/supply", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, defaultCveSupply: cveSupplyMock.defaultCveSupply };
+});
+
 import {
   type AnalyzeAndStoreEventParams,
   analyzeAndStoreEventResult,
@@ -109,6 +121,27 @@ describe("analyzeAndStoreEventResult", () => {
       name: "openai",
       model: "gpt-4o",
       lang: "ENGLISH",
+    });
+  });
+
+  it("threads the run's real customer id into the F2 source-selection scope", async () => {
+    // The reviewer flagged that production callers never passed a scope, so
+    // F2 selection saw `undefined` even though the customer id is known. The
+    // helper now derives it from auditBase.customerId.
+    await analyzeAndStoreEventResult(baseParams());
+    expect(cveSupplyMock.defaultCveSupply).toHaveBeenCalledWith({
+      customerId: "c1",
+    });
+  });
+
+  it("merges an explicit cveScope (group id) over the derived customer scope", async () => {
+    await analyzeAndStoreEventResult({
+      ...baseParams(),
+      cveScope: { groupId: "grp-1" },
+    });
+    expect(cveSupplyMock.defaultCveSupply).toHaveBeenCalledWith({
+      customerId: "c1",
+      groupId: "grp-1",
     });
   });
 

@@ -13,6 +13,7 @@ import { getCustomerByExternalKey } from "@/lib/auth/customers";
 import { getAuthPool, withTransaction } from "@/lib/db/client";
 import { getCustomerRuntimePool } from "@/lib/db/customer-runtime-pool";
 import { AnalyzeEventDocument } from "@/lib/graphql/__generated__/analyze-event";
+import { AnalyzeEventWithCveDocument } from "@/lib/graphql/__generated__/analyze-event-with-cve";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { subjectPages } from "@/lib/navigation/routes";
 import {
@@ -25,6 +26,14 @@ import {
   writeMap,
 } from "@/lib/redaction";
 import type { AnalyzeErrorCode } from "./analyze-types";
+import {
+  buildEventSupplyEntries,
+  type CveScope,
+  type CveSupply,
+  defaultCveSupply,
+  resolveCveWrite,
+} from "./cve/supply";
+import type { DroppedCveRef } from "./cve/validate";
 import { parseEventTime } from "./event-time";
 import {
   type FactorAxis,
@@ -476,6 +485,40 @@ function emitTtpDropAuditRows(args: {
   }
 }
 
+function emitCveDropAuditRows(args: {
+  auditBase: AuditEmissionBase;
+  eventKey: string;
+  dropped: readonly DroppedCveRef[];
+}): void {
+  const { auditBase, eventKey, dropped } = args;
+  if (dropped.length === 0) return;
+  const targetId = `${auditBase.aiceId}/${eventKey}`;
+  const targetFields = {
+    customer_id: auditBase.customerId,
+    aice_id: auditBase.aiceId,
+    event_key: eventKey,
+    story_id: null,
+  } as const;
+  // RFC 0005 — one audit row per drop reason. The reason distinguishes a
+  // hallucinated ref (`not_in_catalog`) from one that could not be
+  // confirmed because a catalog was unavailable/stale (`could_not_consult`)
+  // — opposite meanings for the CVE coverage status — and from one whose
+  // only backing source is intentionally F2-disabled (`source_disabled`).
+  const byReason = groupBy(dropped, (d) => d.reason);
+  for (const [reason, items] of byReason) {
+    void auditLog({
+      ...auditBase,
+      action: "ai_analysis.cve_ref_dropped",
+      targetId,
+      details: {
+        ...targetFields,
+        dropped_ids: items.map((d) => d.id),
+        reason,
+      },
+    });
+  }
+}
+
 function computeAnalysisPolicyVersion(
   ranges: import("@/lib/redaction").RangeSet,
   ownedDomains: import("@/lib/redaction").OwnedDomainSet,
@@ -591,6 +634,25 @@ export interface AnalyzeAndStoreEventParams {
    * change).
    */
   preStoreCheck?: (client: PoolClient) => Promise<string | null>;
+  /**
+   * RFC 0005 — resolved CVE supply (catalog + enablement). Defaults to
+   * {@link defaultCveSupply} (reads the feature flag + vendored catalog).
+   * When disabled (the default until #498 is deployed everywhere AND a
+   * real catalog is supplied), the pre-#498-safe `AnalyzeEvent` operation
+   * is used, no `cveLandscape` argument is sent, and `cve_refs`/`cve_status`
+   * are written `[]`/NULL. Injected by tests to exercise the CVE path.
+   */
+  cveSupply?: CveSupply;
+  /**
+   * Per-customer/group scope for the F2 source-selection seam. When omitted,
+   * the customer id is taken from {@link auditBase}.customerId (always the
+   * run's real customer), so production callers scope selection without
+   * threading it explicitly; an explicit value (e.g. carrying a group id)
+   * overrides/augments that default.
+   */
+  cveScope?: CveScope;
+  /** Validation instant for CVE freshness (defaults to now); test seam. */
+  cveCheckedAt?: string;
 }
 
 export type AnalyzeAndStoreEventResult =
@@ -616,12 +678,30 @@ export async function analyzeAndStoreEventResult(
   params: AnalyzeAndStoreEventParams,
 ): Promise<AnalyzeAndStoreEventResult> {
   const { auditBase } = params;
+  // RFC 0005 — resolve the CVE supply once. When disabled, the
+  // pre-#498-safe operation is used and no landscape is sent. The F2
+  // source-selection scope defaults to the run's real customer id (from
+  // auditBase, always present) so every production caller scopes selection
+  // for both validation and priming without threading it explicitly; an
+  // explicit params.cveScope (e.g. carrying a group id) overrides/augments it.
+  const cveScope: CveScope = {
+    customerId: auditBase.customerId,
+    ...params.cveScope,
+  };
+  const cveSupply = params.cveSupply ?? defaultCveSupply(cveScope);
+  // Threads a thrown priming landscape (see `buildEventSupplyEntries`) into
+  // the post-analysis `resolveCveWrite`, so a zero-CVE result from a run
+  // whose configured priming degraded is recorded as unverified (`unknown`),
+  // never a confident no-CVE (`complete`). Stays false on the gated-off path.
+  let cvePrimingDegraded = false;
   let aimerResponse: {
     severityScore: number;
     likelihoodScore: number;
     severityFactors: string[];
     likelihoodFactors: string[];
     ttpTags: string[];
+    /** Present only when the CVE operation variant was used. */
+    cveRefs?: string[];
     analysis: string;
     promptVersion: string;
     modelActualVersion: string;
@@ -640,18 +720,45 @@ export async function analyzeAndStoreEventResult(
     // `lang: Language` — nullable on the SDL side. When the caller omits
     // `lang` we omit the variable entirely so aimer applies its server
     // default; the stored cache row uses {@link langForStorage}.
-    const result = await graphqlRequest(
-      AnalyzeEventDocument,
-      {
-        event: JSON.stringify(params.redactedEvent),
-        eventTime: params.eventTimeForAimer,
-        name: params.modelName,
-        model: params.model,
-        ...(params.lang !== undefined ? { lang: params.lang } : {}),
-      },
-      { accountId: params.accountId, aiceId: params.aiceId },
-    );
-    aimerResponse = result.analyzeEvent;
+    if (cveSupply.enabled) {
+      // CVE path (gated on #498 deployment): select the cost-managed
+      // KEV-only event landscape slice and send it via the shipped
+      // `cveLandscape` arg; select `cveRefs`. Both are absent on the
+      // pre-#498 schema, so this variant is only ever used when the
+      // backend is known to include #498.
+      const eventSupply = await buildEventSupplyEntries(
+        cveSupply,
+        params.cveCheckedAt ?? new Date().toISOString(),
+      );
+      const cveLandscape = eventSupply.entries;
+      cvePrimingDegraded = eventSupply.primingDegraded;
+      const result = await graphqlRequest(
+        AnalyzeEventWithCveDocument,
+        {
+          event: JSON.stringify(params.redactedEvent),
+          eventTime: params.eventTimeForAimer,
+          name: params.modelName,
+          model: params.model,
+          cveLandscape,
+          ...(params.lang !== undefined ? { lang: params.lang } : {}),
+        },
+        { accountId: params.accountId, aiceId: params.aiceId },
+      );
+      aimerResponse = result.analyzeEvent;
+    } else {
+      const result = await graphqlRequest(
+        AnalyzeEventDocument,
+        {
+          event: JSON.stringify(params.redactedEvent),
+          eventTime: params.eventTimeForAimer,
+          name: params.modelName,
+          model: params.model,
+          ...(params.lang !== undefined ? { lang: params.lang } : {}),
+        },
+        { accountId: params.accountId, aiceId: params.aiceId },
+      );
+      aimerResponse = result.analyzeEvent;
+    }
   } catch (err) {
     const code = mapAimerError(err);
     void auditLog({
@@ -731,6 +838,23 @@ export async function analyzeAndStoreEventResult(
     auditBase,
     eventKey: params.eventKey,
     dropped: ttpResult.dropped,
+  });
+
+  // RFC 0005 — validate + enrich the LLM's `cveRefs` against the catalog,
+  // compute the CVE coverage status, and audit-log dropped refs. Event
+  // PROMOTES the LLM's `cve_numbers` (now the top-level `cveRefs`) into the
+  // uniform contract. When the CVE path is gated off, this writes the
+  // inactive state (`[]` / NULL).
+  const cveWrite = await resolveCveWrite(
+    cveSupply,
+    aimerResponse.cveRefs ?? [],
+    params.cveCheckedAt ?? new Date().toISOString(),
+    cvePrimingDegraded,
+  );
+  emitCveDropAuditRows({
+    auditBase,
+    eventKey: params.eventKey,
+    dropped: cveWrite.dropped,
   });
 
   let nextGeneration: number;
@@ -860,7 +984,7 @@ export async function analyzeAndStoreEventResult(
             priority_tier,
             analysis_text, event_time, kind,
             redaction_policy_version, requested_by,
-            origin)
+            origin, cve_refs, cve_status)
          VALUES ($1, $2::numeric, $3, $4, $5,
                  $6, $7, $8,
                  $9, $10,
@@ -868,7 +992,7 @@ export async function analyzeAndStoreEventResult(
                  $14,
                  $15, $16::timestamptz, $17,
                  $18, $19::uuid,
-                 $20)`,
+                 $20, $21::jsonb, $22)`,
         [
           params.aiceId,
           params.eventKey,
@@ -890,6 +1014,8 @@ export async function analyzeAndStoreEventResult(
           params.redactionPolicyVersion,
           params.requestedBy,
           params.origin,
+          cveWrite.cveRefsJson,
+          cveWrite.cveStatus,
         ],
       );
       await writeClient.query("COMMIT");

@@ -827,7 +827,8 @@
       "securityReports": "Security Reports",
       "tryAgain": "Try again",
       "nextPage": "Next page",
-      "ttpTags": "MITRE ATT&CK techniques"
+      "ttpTags": "MITRE ATT&CK techniques",
+      "cveRefs": "CVE references"
     },
     "fields": {
       "priorityTier": "Priority tier",
@@ -923,6 +924,15 @@
     "coverage": {
       "incompleteBadge": "Threat-intel coverage incomplete",
       "incompleteNote": "The known-IOC check for this story ran under incomplete Tier-1 threat-intel coverage (status: {status}). A \"no known IOC\" result here may reflect an unavailable or stale source rather than a confirmed clean miss."
+    },
+    "cve": {
+      "label": "CVE references",
+      "kev": "KEV",
+      "sourcesLabel": "Validated by",
+      "noveltyBadge": "No known CVE association",
+      "noveltyNote": "No known CVE matched this analysis. Because the detection is anomaly/novelty-based, this may indicate a novel, variant, or zero-day threat with no published CVE — treat it with heightened caution rather than as benign.",
+      "couldNotVerifyBadge": "CVE enrichment unavailable",
+      "couldNotVerifyNote": "The CVE check could not be completed (status: {status}) because a catalog was unavailable or stale. Absence of a CVE here is unverified — it is not a confirmed \"no known CVE\" result."
     },
     "eventAnalysis": {
       "title": "AI Analysis",

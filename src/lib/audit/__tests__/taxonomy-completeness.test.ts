@@ -135,6 +135,7 @@ const PRODUCED: Record<string, string> = {
     "src/lib/analysis/translate-event-analysis.ts",
   "ai_analysis.hallucination_detected": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.ttp_tag_dropped": "src/lib/analysis/run-analyze-flow.ts",
+  "ai_analysis.cve_ref_dropped": "src/lib/analysis/run-analyze-flow.ts",
   "ai_analysis.factor_dropped": "src/lib/analysis/run-analyze-flow.ts",
   // AI analysis bridge (POST /api/analysis/analyze-bridge + /continue)
   "ai_analysis.bridge_initiated":

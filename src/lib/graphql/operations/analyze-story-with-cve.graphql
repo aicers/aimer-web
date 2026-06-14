@@ -1,0 +1,31 @@
+mutation AnalyzeStoryWithCve(
+  $customerId: ID!
+  $storyId: ID!
+  $members: [StoryMemberInput!]!
+  $storyMetadata: StoryMetadataInput!
+  $enrichmentFacts: [EnrichmentFactInput!]!
+  $name: String!
+  $model: String!
+  $lang: Language
+) {
+  analyzeStory(
+    customerId: $customerId
+    storyId: $storyId
+    members: $members
+    storyMetadata: $storyMetadata
+    enrichmentFacts: $enrichmentFacts
+    name: $name
+    model: $model
+    lang: $lang
+  ) {
+    severityScore
+    likelihoodScore
+    severityFactors
+    likelihoodFactors
+    ttpTags
+    cveRefs
+    analysis
+    promptVersion
+    modelActualVersion
+  }
+}

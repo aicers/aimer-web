@@ -1,0 +1,27 @@
+mutation AnalyzeEventWithCve(
+  $event: String!
+  $eventTime: DateTime!
+  $name: String!
+  $model: String!
+  $lang: Language
+  $cveLandscape: [CveLandscapeEntryInput!]!
+) {
+  analyzeEvent(
+    event: $event
+    eventTime: $eventTime
+    name: $name
+    model: $model
+    lang: $lang
+    cveLandscape: $cveLandscape
+  ) {
+    severityScore
+    likelihoodScore
+    severityFactors
+    likelihoodFactors
+    ttpTags
+    cveRefs
+    analysis
+    promptVersion
+    modelActualVersion
+  }
+}

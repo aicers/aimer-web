@@ -45,6 +45,8 @@ describe("StoryCompareView", () => {
         severityFactors: ["compare sev factor"],
         likelihoodFactors: ["compare lik factor"],
         ttpTags: [],
+        cveRefs: [],
+        cveStatus: null,
         analysisText: "Compared narrative.",
       },
     };

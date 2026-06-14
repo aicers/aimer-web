@@ -8,6 +8,7 @@ import {
   COMPARE_MODEL_PARAM,
   CompareModelSelector,
 } from "@/components/analysis/compare-model-selector";
+import { CveSection } from "@/components/analysis/cve-section";
 import { EventTitle } from "@/components/analysis/event-title";
 import { StoryCompareView } from "@/components/analysis/story-compare-view";
 import { AnalysisBody } from "@/components/analysis-body";
@@ -311,6 +312,18 @@ export default async function StoryAnalysisPage({
           an unavailable or stale Tier-1 source rather than a confirmed clean
           miss. `complete` (and a not-yet-enriched `null`) show nothing. */}
       <CoverageStatusNote status={data.coverageStatus} t={tA} />
+
+      {/* RFC 0005 — CVE chip row / gated no-CVE state. Renders nothing when
+          the CVE path did not run (cveStatus null) or the analysis is
+          CVE-irrelevant. */}
+      <div className="mb-6">
+        <CveSection
+          cveRefs={data.cveRefs}
+          cveStatus={data.cveStatus}
+          priorityTier={data.priorityTier}
+          t={tA}
+        />
+      </div>
 
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label={tA("fields.priorityTier")}>

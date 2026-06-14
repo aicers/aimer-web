@@ -24,6 +24,18 @@ vi.mock("@/lib/graphql/client", () => ({
   graphqlRequest: vi.fn(),
 }));
 
+// Spy on the default CVE supply resolver so a test can assert the story
+// worker honors `opts.cveScope` (merged over the job's real customer id)
+// rather than discarding it. The feature is off by default, so returning the
+// gated-off state keeps the rest of the worker unchanged.
+const cveSupplyMock = vi.hoisted(() => ({
+  defaultCveSupply: vi.fn(() => ({ enabled: false }) as const),
+}));
+vi.mock("../cve/supply", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return { ...actual, defaultCveSupply: cveSupplyMock.defaultCveSupply };
+});
+
 import { processStoryJob } from "../story-worker";
 
 interface QueryCall {
@@ -292,6 +304,46 @@ describe("processStoryJob — happy path", () => {
     expect(stateUpdate?.params?.[2]).toBe("MEDIUM");
     expect(stateUpdate?.params?.[3]).toBe(0.7);
     expect(stateUpdate?.params?.[4]).toBe(0.5);
+  });
+
+  it("honors opts.cveScope, merged over the job's real customer id (F2 selection)", async () => {
+    // The reviewer flagged that the worker ignored `opts.cveScope` and always
+    // scoped F2 selection to the job's customer id alone. A supplied group
+    // scope must now flow through (merged on top of the customer scope) so a
+    // scoped source selection affects both validation and landscape priming.
+    const authPool = makePool({
+      queryPlan: [
+        { rows: [], rowCount: 1 }, // UPDATE → processing
+        { rows: [], rowCount: 1 }, // UPDATE → done (finalize)
+      ],
+    });
+    const customerPool = makePool({
+      queryPlan: [
+        { rows: [] }, // probe — no existing result row
+        ...goodMembersQuery(),
+      ],
+      clientQueryPlan: [
+        { rows: [] }, // BEGIN
+        { rows: [] }, // INSERT result
+        { rows: [] }, // UPDATE supersede
+        { rows: [] }, // COMMIT
+      ],
+    });
+
+    await processStoryJob(baseJob(), {
+      authPool: authPool as never,
+      checkEnrichmentReady: async () => ({ ready: true, knownIocHit: false }),
+      callAnalyzeStory: (async () => goodAimerResponse()) as never,
+      resolveCustomerPool: () => customerPool as never,
+      loadRanges: emptyRangesLoader as never,
+      loadOwnedDomains: emptyDomainsLoader as never,
+      cveScope: { groupId: "grp-1" },
+    });
+
+    expect(cveSupplyMock.defaultCveSupply).toHaveBeenCalledWith({
+      customerId: "c0000000-0000-0000-0000-000000000001",
+      groupId: "grp-1",
+    });
   });
 
   it("translates a user-language (KOREAN) variant from the English canonical without mirroring (WS3 #392 / #580)", async () => {

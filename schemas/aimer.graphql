@@ -61,6 +61,11 @@ type AnalysisResult {
 	"""
 	ttpTags: [String!]!
 	"""
+	Canonical CVE identifiers (e.g., `CVE-2024-12345`), promoted from the
+	validated `threat_classification.cve_numbers` LLM signal. May be empty.
+	"""
+	cveRefs: [String!]!
+	"""
 	Markdown-formatted analysis
 	"""
 	analysis: String!
@@ -195,6 +200,27 @@ input EnrichmentFactInput {
 	May contain `<<REDACTED_TYPE_F{k}_NNN>>` tokens, forwarded verbatim.
 	"""
 	text: String!
+}
+
+"""
+One entry of the caller-supplied recent-CVE landscape passed to
+`analyzeEvent`.
+
+aimer-web owns sourcing, slicing (e.g. KEV-only vs. high-EPSS), and
+per-customer/group gating; aimer only injects whatever entries the caller
+passes into `ANALYSIS_PROMPT` as candidate context to be verified — it does
+not validate, gate, or cap the landscape.
+"""
+input CveLandscapeEntryInput {
+	"""
+	Canonical CVE identifier (e.g., `CVE-2024-12345`). Forwarded into the
+	prompt verbatim as candidate context; not validated by aimer.
+	"""
+	cve: String!
+	"""
+	One-line description giving the model context for this CVE.
+	"""
+	description: String!
 }
 
 """
@@ -342,15 +368,22 @@ type Mutation {
 	redaction map used to restore tokens in the UI; see
 	aicers/aimer-web#247. Events arrive already in their final redacted
 	form and are forwarded to the LLM unchanged.
-	
+
+	The optional `cveLandscape` argument carries a caller-supplied list of
+	recently published CVEs (each `{ cve, description }`) injected into the
+	prompt as candidate context to be verified against the evidence — never
+	treated as ground truth. It defaults to empty, so existing clients are
+	unaffected. aimer-web owns sourcing, slicing, and per-customer/group
+	gating; aimer does not validate, gate, or cap the landscape.
+
 	# Errors
-	
+
 	Returns an error if:
 	- Input validation fails (empty `event` or `model`)
 	- The requested LLM server `name` is not registered
 	- LLM analysis fails
 	"""
-	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language): AnalysisResult!
+	analyzeEvent(event: String!, eventTime: DateTime!, name: String!, model: String!, lang: Language, cveLandscape: [CveLandscapeEntryInput!]! = []): AnalysisResult!
 	"""
 	Generates a periodic (LIVE / DAILY / WEEKLY / MONTHLY) security report
 	by synthesizing
@@ -791,6 +824,11 @@ type StoryAnalysisResult {
 	MITRE ATT&CK technique IDs (e.g., `T1078`, `T1110.001`). May be empty.
 	"""
 	ttpTags: [String!]!
+	"""
+	Canonical CVE identifiers (e.g., `CVE-2024-12345`) supported by the
+	story evidence. May be empty.
+	"""
+	cveRefs: [String!]!
 	"""
 	Markdown narrative reconstructing the attacker hypothesis across the
 	story. May contain redaction tokens preserved verbatim from the input,

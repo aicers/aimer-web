@@ -8,6 +8,7 @@ import {
   COMPARE_MODEL_PARAM,
   CompareModelSelector,
 } from "@/components/analysis/compare-model-selector";
+import { CveSection } from "@/components/analysis/cve-section";
 import { EventCompareView } from "@/components/analysis/event-compare-view";
 import { EventTitle } from "@/components/analysis/event-title";
 import { AnalysisBody } from "@/components/analysis-body";
@@ -243,6 +244,18 @@ export default async function AnalysisResultPage({
         t={tA}
       />
 
+      {/* RFC 0005 — CVE chip row / gated no-CVE state. Renders nothing when
+          the CVE path did not run (cveStatus null) or the analysis is
+          CVE-irrelevant. */}
+      <div className="mb-6">
+        <CveSection
+          cveRefs={data.cveRefs}
+          cveStatus={data.cveStatus}
+          priorityTier={data.priorityTier}
+          t={tA}
+        />
+      </div>
+
       <section className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label={tA("fields.priorityTier")}>
           <div className="flex flex-wrap items-center gap-2">
@@ -336,6 +349,8 @@ export default async function AnalysisResultPage({
             severityFactors: data.severityFactors,
             likelihoodFactors: data.likelihoodFactors,
             ttpTags: data.ttpTags,
+            cveRefs: data.cveRefs,
+            cveStatus: data.cveStatus,
             analysisText: data.analysisText,
           }}
           compare={data.compare}

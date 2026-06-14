@@ -38,11 +38,20 @@ import {
   type StoryMemberInput,
   type StoryMetadataInput,
 } from "@/lib/graphql/__generated__/analyze-story";
+import { AnalyzeStoryWithCveDocument } from "@/lib/graphql/__generated__/analyze-story-with-cve";
 import { TranslateAnalysisNarrativeDocument } from "@/lib/graphql/__generated__/translate-analysis-narrative";
 import { graphqlRequest } from "@/lib/graphql/client";
 import { getCurrentTimestamp } from "@/lib/instrumentation/time";
 import { loadCustomerOwnedDomains } from "@/lib/redaction/load-domains";
 import { loadCustomerRanges } from "@/lib/redaction/load-ranges";
+import {
+  buildStorySupplyFacts,
+  type CveScope,
+  type CveSupply,
+  defaultCveSupply,
+  resolveCveWrite,
+} from "./cve/supply";
+import type { DroppedCveRef } from "./cve/validate";
 import { resolveDefaultModel } from "./default-model";
 import { buildFactTokenMap, type FactInput, type FactRef } from "./fact-token";
 import {
@@ -310,6 +319,23 @@ interface ProcessOptions {
     storyId: string,
     storyVersion: string,
   ) => Promise<FactInput[]>;
+  /**
+   * RFC 0005 — resolved CVE supply (catalog + enablement). Defaults to
+   * {@link defaultCveSupply}. When disabled (the default until #498 is
+   * deployed everywhere AND a real catalog is supplied), the pre-#498-safe
+   * `AnalyzeStory` operation is used, no landscape rides `enrichmentFacts`,
+   * and `cve_refs`/`cve_status` are written `[]`/NULL. Injected by tests.
+   */
+  cveSupply?: CveSupply;
+  /**
+   * Per-customer/group scope for the F2 source-selection seam. The story
+   * job's `customer_id` is always merged in as the customer scope; an
+   * explicit value (e.g. carrying a group id) augments/overrides it. Honored
+   * for both CVE validation and landscape priming via {@link defaultCveSupply}.
+   */
+  cveScope?: CveScope;
+  /** Validation instant for CVE freshness (defaults to now); test seam. */
+  cveCheckedAt?: string;
 }
 
 /**
@@ -635,6 +661,27 @@ export async function processStoryJob(
   } = buildFactTokenMap(factRows);
   for (const t of factTokens) allowedTokens.add(t);
 
+  // RFC 0005 priming — resolve the CVE supply and append the recent-CVE
+  // landscape to the story's `enrichmentFacts` channel as verify-me
+  // one-liners (candidate, possibly-inapplicable context; never force a
+  // match). Empty when the CVE path is gated off. The landscape rides the
+  // call but is NOT folded into `input_hash`: it is ambient priming
+  // context (which recency-shifts over time), not story-specific input, so
+  // including it would churn the drift hash for every story daily.
+  // F2 source-selection scope: the job's real customer id is always the
+  // customer scope; an injected `opts.cveScope` (e.g. carrying a group id)
+  // augments/overrides it rather than being discarded, so a scoped selection
+  // affects both validation and landscape priming through the default path.
+  const cveScope: CveScope = {
+    customerId: job.customer_id,
+    ...opts.cveScope,
+  };
+  const cveSupply = opts.cveSupply ?? defaultCveSupply(cveScope);
+  const cveCheckedAt = opts.cveCheckedAt ?? getCurrentTimestamp().toISOString();
+  const { facts: landscapeFacts, primingDegraded: cvePrimingDegraded } =
+    await buildStorySupplyFacts(cveSupply, cveCheckedAt);
+  const enrichmentFactsForCall = [...enrichmentFacts, ...landscapeFacts];
+
   const force = job.force_requested_at !== null;
 
   // Build the structured aimer payload. `rewrittenMembers` preserves the
@@ -717,7 +764,8 @@ export async function processStoryJob(
       storyId: job.story_id,
       members: storyMembers,
       storyMetadata,
-      enrichmentFacts,
+      enrichmentFacts: enrichmentFactsForCall,
+      cveEnabled: cveSupply.enabled,
       modelName: job.model_name,
       model: job.model,
       lang: job.lang,
@@ -841,6 +889,23 @@ export async function processStoryJob(
     });
   }
 
+  // RFC 0005 — validate + enrich the story's `cveRefs` against the catalog,
+  // compute the CVE coverage status, and audit-log dropped refs. Story ADDS
+  // the field. When the CVE path is gated off, this writes `[]` / NULL.
+  const cveWrite = await resolveCveWrite(
+    cveSupply,
+    aimerResponse.cveRefs ?? [],
+    cveCheckedAt,
+    cvePrimingDegraded,
+  );
+  if (cveWrite.dropped.length > 0) {
+    emitCveDropAuditRows({
+      auditBase,
+      storyId: job.story_id,
+      dropped: cveWrite.dropped,
+    });
+  }
+
   // Apply likelihood floors at the matrix-lookup site (NOT on disk).
   const flooredLikelihood = applyLikelihoodFloors(
     aimerResponse.likelihoodScore,
@@ -862,6 +927,8 @@ export async function processStoryJob(
       severityFilter,
       likelihoodFilter,
       ttpValid: ttpResult.valid,
+      cveRefsJson: cveWrite.cveRefsJson,
+      cveStatus: cveWrite.cveStatus,
       priorityTier,
       inputEventRefs: refs,
       inputFactRefs,
@@ -1070,6 +1137,8 @@ export interface AnalyzeStoryAimerResponse {
   severityFactors: string[];
   likelihoodFactors: string[];
   ttpTags: string[];
+  /** RFC 0005 — present only when the CVE operation variant was used. */
+  cveRefs?: string[];
   analysis: string;
   promptVersion: string;
   modelActualVersion: string;
@@ -1090,8 +1159,19 @@ async function callAnalyzeStory(args: {
   storyId: string;
   members: StoryMemberInput[];
   storyMetadata: StoryMetadataInput;
-  /** RFC 0003 C1 (#440) — redacted, F-scoped enrichment fact texts. */
+  /**
+   * RFC 0003 C1 (#440) — redacted, F-scoped enrichment fact texts, with
+   * the RFC 0005 recent-CVE landscape (verify-me one-liners) appended when
+   * the CVE path is enabled.
+   */
   enrichmentFacts: string[];
+  /**
+   * RFC 0005 — when true, use the `AnalyzeStoryWithCve` operation variant
+   * (selects `cveRefs`). Gated on #498 deployment: the pre-#498 schema has
+   * no `cveRefs` field, so the variant is only used when the backend is
+   * known to include #498.
+   */
+  cveEnabled: boolean;
   modelName: string;
   model: string;
   lang: string;
@@ -1100,23 +1180,31 @@ async function callAnalyzeStory(args: {
   // Lang sent to aimer must be one of the SDL enum values. The job
   // row's `lang` column is already constrained at the regenerate-API /
   // worker-default boundary, so a raw `${args.lang}` cast is safe.
-  const result = await graphqlRequest(
-    AnalyzeStoryDocument,
-    {
-      customerId: args.customerId,
-      storyId: args.storyId,
-      members: args.members,
-      storyMetadata: args.storyMetadata,
-      // aimer#480 wraps each fact text in `EnrichmentFactInput { text }`.
-      // We keep the internal `enrichmentFacts: string[]` shape and wrap
-      // only at the GraphQL boundary.
-      enrichmentFacts: args.enrichmentFacts.map((text) => ({ text })),
-      name: args.modelName,
-      model: args.model,
-      lang: args.lang as "KOREAN" | "ENGLISH",
-    },
-    { accountId: WORKER_ACCOUNT_ID, aiceId: args.aiceId },
-  );
+  //
+  // aimer#480 wraps each fact text in `EnrichmentFactInput { text }`. We
+  // keep the internal `enrichmentFacts: string[]` shape and wrap only at
+  // the GraphQL boundary. Both operations share the identical request
+  // shape and `analyzeStory` selection except for the `cveRefs` field.
+  const variables = {
+    customerId: args.customerId,
+    storyId: args.storyId,
+    members: args.members,
+    storyMetadata: args.storyMetadata,
+    enrichmentFacts: args.enrichmentFacts.map((text) => ({ text })),
+    name: args.modelName,
+    model: args.model,
+    lang: args.lang as "KOREAN" | "ENGLISH",
+  };
+  const context = { accountId: WORKER_ACCOUNT_ID, aiceId: args.aiceId };
+  if (args.cveEnabled) {
+    const result = await graphqlRequest(
+      AnalyzeStoryWithCveDocument,
+      variables,
+      context,
+    );
+    return result.analyzeStory;
+  }
+  const result = await graphqlRequest(AnalyzeStoryDocument, variables, context);
   return result.analyzeStory;
 }
 
@@ -1151,6 +1239,10 @@ async function writeResultRow(
     severityFilter: FilterFactorsResult;
     likelihoodFilter: FilterFactorsResult;
     ttpValid: string[];
+    /** RFC 0005 — JSON of the enriched, validated `CveRecord[]` (or `[]`). */
+    cveRefsJson: string;
+    /** RFC 0005 — the `cve_status` enum, or null when the path did not run. */
+    cveStatus: string | null;
     priorityTier: PriorityTier;
     inputEventRefs: ReadonlyArray<{
       index: number;
@@ -1174,14 +1266,16 @@ async function writeResultRow(
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier, analysis_text,
           input_event_refs, input_fact_refs, input_hash,
-          redaction_policy_version, requested_by)
+          redaction_policy_version, requested_by,
+          cve_refs, cve_status)
        VALUES ($1, $2::bigint, $3, $4, $5,
                $6, $7, $8,
                $9, $10,
                $11::jsonb, $12::jsonb, $13::jsonb,
                $14, $15,
                $16::jsonb, $17::jsonb, $18,
-               $19, $20::uuid)`,
+               $19, $20::uuid,
+               $21::jsonb, $22)`,
       [
         args.job.customer_id,
         args.job.story_id,
@@ -1203,6 +1297,8 @@ async function writeResultRow(
         args.inputHash,
         args.redactionPolicyVersion,
         args.requestedBy,
+        args.cveRefsJson,
+        args.cveStatus,
       ],
     );
     // Mark prior generations (if any) superseded. This is the NATIVE English
@@ -1551,6 +1647,13 @@ interface StoryEnglishCanonical {
   severityScore: number;
   likelihoodScore: number;
   ttpTags: string[];
+  /**
+   * RFC 0005 — the canonical's enriched CVE refs + status, language-
+   * invariant and copied verbatim onto the translated row (like the
+   * scores / tier / TTP codes). Stored as the raw JSONB value / enum.
+   */
+  cveRefs: unknown;
+  cveStatus: string | null;
   priorityTier: PriorityTier;
   inputEventRefs: unknown;
   inputFactRefs: unknown;
@@ -1571,6 +1674,8 @@ async function loadStoryEnglishCanonical(
     severity_score: number;
     likelihood_score: number;
     ttp_tags: string[] | null;
+    cve_refs: unknown;
+    cve_status: string | null;
     priority_tier: string;
     input_event_refs: unknown;
     input_fact_refs: unknown;
@@ -1582,7 +1687,7 @@ async function loadStoryEnglishCanonical(
     `SELECT analysis_text,
             severity_factors, likelihood_factors,
             severity_score, likelihood_score,
-            ttp_tags, priority_tier,
+            ttp_tags, cve_refs, cve_status, priority_tier,
             input_event_refs, input_fact_refs,
             model_actual_version, prompt_version,
             input_hash, redaction_policy_version
@@ -1613,6 +1718,8 @@ async function loadStoryEnglishCanonical(
     severityScore: r.severity_score,
     likelihoodScore: r.likelihood_score,
     ttpTags: Array.isArray(r.ttp_tags) ? r.ttp_tags : [],
+    cveRefs: Array.isArray(r.cve_refs) ? r.cve_refs : [],
+    cveStatus: r.cve_status,
     priorityTier: r.priority_tier as PriorityTier,
     inputEventRefs: r.input_event_refs,
     inputFactRefs: r.input_fact_refs,
@@ -1823,14 +1930,16 @@ async function writeTranslatedResultRow(
           severity_factors, likelihood_factors, ttp_tags,
           priority_tier, analysis_text,
           input_event_refs, input_fact_refs, input_hash,
-          redaction_policy_version, requested_by)
+          redaction_policy_version, requested_by,
+          cve_refs, cve_status)
        VALUES ($1, $2::bigint, $3, $4, $5, $6,
                $7, $8, $9,
                $10, $11,
                $12::jsonb, $13::jsonb, $14::jsonb,
                $15, $16,
                $17::jsonb, $18::jsonb, $19,
-               $20, $21::uuid)`,
+               $20, $21::uuid,
+               $22::jsonb, $23)`,
       [
         job.customer_id,
         job.story_id,
@@ -1853,6 +1962,10 @@ async function writeTranslatedResultRow(
         canonical.inputHash,
         canonical.redactionPolicyVersion,
         values.requestedBy,
+        // RFC 0005 — CVE refs/status are language-invariant; copy verbatim
+        // from the English canonical (like the scores / tier / TTP codes).
+        JSON.stringify(canonical.cveRefs ?? []),
+        canonical.cveStatus,
       ],
     );
     await client.query(
@@ -2252,6 +2365,38 @@ function emitTtpDropAuditRows(args: {
         dropped_ids: items.map((d) => d.id),
         reason,
         mitre_vendor_version: MITRE_VENDOR_VERSION,
+      },
+    });
+  }
+}
+
+function emitCveDropAuditRows(args: {
+  auditBase: AuditEmissionBase;
+  storyId: string;
+  dropped: ReadonlyArray<DroppedCveRef>;
+}): void {
+  const targetId = `${args.auditBase.customerId}/${args.storyId}`;
+  const targetFields = {
+    customer_id: args.auditBase.customerId,
+    aice_id: null,
+    event_key: null,
+    story_id: args.storyId,
+  } as const;
+  // RFC 0005 — one audit row per drop reason; the reason distinguishes a
+  // hallucinated ref (`not_in_catalog`) from one that could not be
+  // confirmed because a catalog was unavailable/stale (`could_not_consult`),
+  // and from one whose only backing source is F2-disabled
+  // (`source_disabled`).
+  const byReason = groupBy(args.dropped, (d) => d.reason);
+  for (const [reason, items] of byReason) {
+    void auditLog({
+      ...args.auditBase,
+      action: "ai_analysis.cve_ref_dropped",
+      targetId,
+      details: {
+        ...targetFields,
+        dropped_ids: items.map((d) => d.id),
+        reason,
       },
     });
   }

@@ -96,6 +96,7 @@ describe("aimer GraphQL contract", () => {
     const fields = result.getFields();
     expect(Object.keys(fields).sort()).toEqual([
       "analysis",
+      "cveRefs",
       "likelihoodFactors",
       "likelihoodScore",
       "modelActualVersion",
@@ -121,6 +122,8 @@ describe("aimer GraphQL contract", () => {
     expect(String(fields.severityFactors.type)).toBe("[String!]!");
     expect(String(fields.likelihoodFactors.type)).toBe("[String!]!");
     expect(String(fields.ttpTags.type)).toBe("[String!]!");
+    // RFC 0005 — promoted CVE refs: non-null list of non-null strings.
+    expect(String(fields.cveRefs.type)).toBe("[String!]!");
 
     // aimer#480 provenance fields: non-null strings, mirroring
     // StoryAnalysisResult.
@@ -170,6 +173,8 @@ describe("aimer GraphQL contract", () => {
       name: "String!",
       model: "String!",
       lang: "Language",
+      // RFC 0005 — the recent-CVE priming landscape (defaulted to `[]`).
+      cveLandscape: "[CveLandscapeEntryInput!]!",
     });
   });
 
