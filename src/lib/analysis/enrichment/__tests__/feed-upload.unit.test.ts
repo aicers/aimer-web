@@ -81,6 +81,20 @@ describe("buildManualUploadPayload", () => {
       }),
     ).toThrow(FeedUploadError);
   });
+
+  it("rejects a vendor-repo source (self-fetch only, no single-file upload)", () => {
+    // A vendor-repo source (unit42/threat-intel) is a whole-repo tree, not a
+    // single uploadable file — a one-file upload would write a partial,
+    // context-stripped snapshot, so manual upload is rejected outright.
+    expect(() =>
+      buildManualUploadPayload({
+        sourcePolicyId: "unit42/threat-intel",
+        filename: "iocs.txt",
+        content: "1.2.3.4\n",
+        uploadedAt: "2026-06-12T00:00:00.000Z",
+      }),
+    ).toThrow(/vendor repository and cannot be manually uploaded/);
+  });
 });
 
 describe("assertParseableUpload", () => {

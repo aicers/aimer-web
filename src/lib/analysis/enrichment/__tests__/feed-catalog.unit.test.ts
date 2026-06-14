@@ -23,6 +23,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "phishing-database/url",
       "spamhaus/drop",
       "spamhaus/edrop",
+      "unit42/threat-intel",
     ]);
   });
 
@@ -204,7 +205,10 @@ describe("FIXTURE_FEEDS derived from the catalog", () => {
 
   it("re-attaches each catalog source's parse fields onto its fixture spec", async () => {
     const { FIXTURE_FEEDS } = await import("../fixture-feeds");
-    for (const source of TIER1_FEED_SOURCES) {
+    // A vendor-repo source (unit42/threat-intel) declares a `fixtureDir`, not a
+    // flat `fixtureFile`, so it is intentionally absent from FIXTURE_FEEDS — its
+    // tree is seeded by the vendor-repo engine, not the flat fixture path.
+    for (const source of TIER1_FEED_SOURCES.filter((s) => !s.vendorRepo)) {
       const spec = FIXTURE_FEEDS.find(
         (f) => f.sourcePolicyId === source.sourcePolicyId,
       );

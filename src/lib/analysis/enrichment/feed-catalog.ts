@@ -105,6 +105,18 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     vendorRepo: descriptor.vendorRepo,
   }));
 
+/**
+ * The `source_policy_id`s of every vendor-repo source (RFC 0003 F4, #603) — a
+ * source carrying a `vendorRepo` config. Derived from the registry so a new
+ * vendor-repo source joins the set with no edit here. Used to exclude
+ * vendor-repo sources from manual-upload-only surfaces (the upload catalog and,
+ * in manual-upload mode, the active coverage policy set): a vendor repo is a
+ * whole-tree self-fetch source that a single-file upload cannot fill.
+ */
+export const VENDOR_REPO_SOURCE_IDS: ReadonlySet<string> = new Set(
+  TIER1_FEED_SOURCES.filter((s) => s.vendorRepo).map((s) => s.sourcePolicyId),
+);
+
 /** Look up a catalog source by `source_policy_id` (undefined if unknown). */
 export function getTier1FeedSource(
   sourcePolicyId: string,

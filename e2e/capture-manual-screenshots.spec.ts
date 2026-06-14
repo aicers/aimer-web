@@ -722,9 +722,11 @@ base.describe.serial("Manual screenshots", () => {
     ).toBeVisible();
 
     await adminPage.waitForSelector("table tbody tr");
-    // Guard the framing: the last stable-by-id row must be on-page before capture.
+    // Guard the framing: the last fan-out row must be on-page before capture.
+    // `unit42/threat-intel` sorts last (after `spamhaus/edrop`), so asserting it
+    // is visible proves the taller viewport + fullPage reached the table bottom.
     await expect(
-      adminPage.getByText("spamhaus/edrop", { exact: true }),
+      adminPage.getByText("unit42/threat-intel", { exact: true }),
     ).toBeVisible();
 
     await adminPage.screenshot({
