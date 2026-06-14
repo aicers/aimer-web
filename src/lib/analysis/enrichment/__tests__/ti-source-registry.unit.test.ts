@@ -225,9 +225,11 @@ describe("a registered source is discoverable through every derived accessor", (
   });
 });
 
-describe("derived SourcePolicy[] regression for the existing five sources", () => {
+describe("derived SourcePolicy[] regression for the registered sources", () => {
   it("matches the previous inline LOCAL_FEED_POLICIES exactly", async () => {
-    // Fresh module graph: only the five real source files register.
+    // Fresh module graph: only the real source files register. Ordering follows
+    // the registry's stable-by-id sort, so the four Botvrij policies fall
+    // between the abuse.ch and Spamhaus groups.
     const { LOCAL_FEED_POLICIES } = await import("../local-feed-enricher");
     const FEED_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
     expect(LOCAL_FEED_POLICIES).toEqual([
@@ -251,6 +253,38 @@ describe("derived SourcePolicy[] regression for the existing five sources", () =
         sourcePolicyId: "abuse.ch/urlhaus-payloads",
         label: "abuse.ch URLhaus (payloads)",
         entityTypes: ["HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
+        sourcePolicyId: "botvrij/domain",
+        label: "Botvrij.eu (domain)",
+        entityTypes: ["DOMAIN"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
+        sourcePolicyId: "botvrij/hash",
+        label: "Botvrij.eu (hash)",
+        entityTypes: ["HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
+        sourcePolicyId: "botvrij/ip",
+        label: "Botvrij.eu (IP)",
+        entityTypes: ["IP"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
+        sourcePolicyId: "botvrij/url",
+        label: "Botvrij.eu (URL)",
+        entityTypes: ["URL"],
         deterministicCoverage: true,
         maxAge: FEED_MAX_AGE_MS,
         floorEligible: false,

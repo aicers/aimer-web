@@ -1,0 +1,4 @@
+malware.example
+c2.evil.example
+bad-host.example
+phishing.evil.example
