@@ -3,16 +3,16 @@
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
 URL / hash lists, the Phishing.Database domain / URL / IP lists, and the CERT
-Polska Warning List) plus the **Palo Alto Unit 42** and **ESET** vendor IOC
-repositories that observed indicators are matched locally against. It also
-manages the **MISP warninglists** false-positive suppression layer (see [Negative
-sources (false-positive suppression)](#negative-sources-false-positive-suppression)).
+Polska Warning List) plus the **Palo Alto Unit 42**, **ESET**, and **Volexity**
+vendor IOC repositories that observed indicators are matched locally against. It
+also manages the **MISP warninglists** false-positive suppression layer (see
+[Negative sources (false-positive suppression)](#negative-sources-false-positive-suppression)).
 Navigate to **Threat Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
-(such as Unit 42 or ESET) is instead a whole Git repository of per-report files
-that is imported as one unit. Vendor repositories are **self-fetch only** — see
-[Vendor IOC repositories](#vendor-ioc-repositories).
+(such as Unit 42, ESET, or Volexity) is instead a whole Git repository of
+per-report files that is imported as one unit. Vendor repositories are
+**self-fetch only** — see [Vendor IOC repositories](#vendor-ioc-repositories).
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
 or fetch); the `ti-feed:read` permission is required to view the status table.
@@ -139,7 +139,7 @@ This is also how a source that was cleared by an empty upload appears: status
 is derived purely from the imported rows, so a cleared source looks identical
 to one that was never uploaded.
 
-Vendor IOC repositories (Unit 42) are **not** listed here. A repository is a
+Vendor IOC repositories (Unit 42, Volexity) are **not** listed here. A repository is a
 whole tree of files imported as one unit, so a single uploaded file could only
 ever write a partial, context-stripped snapshot — manual upload of a vendor
 repository is therefore rejected, and the source is hidden from this table.
@@ -237,6 +237,7 @@ source's snapshot with every file's rows in one transaction.
 | --- | --- | --- | --- | --- |
 | `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain) | none (keyless) | 1 h |
 | `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | none (keyless) | 1 h |
+| `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | none (keyless) | 1 h |
 
 Notes specific to vendor repositories:
 
@@ -254,12 +255,22 @@ Notes specific to vendor repositories:
     Its AsciiDoc narrative (`.adoc`, including each folder's `README.adoc`), YARA
     rules (`.yar`), MISP exports (`.json`), Sigma rules (`.yml`), and other files
     are deliberately **not** fetched or parsed — the network IOCs in the prose
-    are a deferred follow-up.
+    are a deferred follow-up. For Volexity, only the per-report IOC CSV
+    (`iocs.csv` or `indicators/indicators.csv`, at any depth under the year/post
+    folders) is parsed; its `attachments/` (which can carry live web-shell
+    source), `scripts/` tooling, and `.yar` rule files are deliberately **not**
+    fetched.
+- **Value-column parsing (Volexity).** Volexity's CSV is read by **column only**:
+    aimer-web extracts the first column (`value`) and classifies each cell by its
+    shape — DOMAIN / IP / URL / HASH — refanging `hxxp://` rows and splitting a
+    `file` cell that packs several hashes into one row per hash. The remaining
+    columns (`description` / `notes`) are never scanned, so a benign domain or URL
+    mentioned in a description is **not** ingested as an indicator.
 - **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
-    accepted for Unit 42 or ESET — and relies on GitHub's unauthenticated rate
-    limit, which is ample for the 1 h cadence floor. An operator GitHub token to
-    lift that rate limit is **not** wired up in this release; token support is
-    deferred to a follow-up.
+    accepted for Unit 42, ESET, or Volexity — and relies on GitHub's
+    unauthenticated rate limit, which is ample for the 1 h cadence floor. An
+    operator GitHub token to lift that rate limit is **not** wired up in this
+    release; token support is deferred to a follow-up.
 - **Report context.** Each imported indicator carries the per-file GitHub blob
     URL and the report context the repository encodes: for Unit 42 the campaign
     id where the filename carries one (for example `CL-STA-0910`), and for ESET

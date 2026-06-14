@@ -175,6 +175,28 @@ export interface CsvTypeColumnSpec {
 }
 
 /**
+ * Shape-classified value-column extraction (RFC 0003 F4, #625): one value
+ * column whose every cell is classified into an `EntityType` by its VALUE SHAPE
+ * (URL / HASH / IP / DOMAIN) via the free-text scanner, rather than a static
+ * per-column type (`columns`) or a per-row type column (`typeColumn`). The
+ * Volexity vendor CSV carries its IOC in a stable column 0 (`value`) whose
+ * sibling `entity_type` column uses a non-standard, drifting vocab
+ * (`hostname` / `ipaddress` / `file`) that a `typeMap` cannot track reliably,
+ * and whose `file` cells pack 2-3 hashes in one quoted cell. Isolating the
+ * value column (so the whole-line `free-text` scanner's interior-comma URL bug
+ * and its description-column false positives can NEVER fire) and shape-
+ * classifying just that cell handles both: a `file` cell's packed hashes split
+ * into per-hash rows, and a benign URL/domain in a sibling column is never seen.
+ * A cell that classifies to no recognized shape yields no row (a silent per-row
+ * skip, like an unmapped `typeColumn` type). Mutually exclusive with `columns`
+ * and `typeColumn`.
+ */
+export interface CsvShapeColumnSpec {
+  /** The value column whose every cell is shape-classified. */
+  value: CsvColumnRef;
+}
+
+/**
  * Row-level allowlist filter (#605): keep only rows whose `column` value is in
  * `allow`. The Infoblox `classification` column mixes threat labels
  * (`malicious`, `phishing`, …) with non-threat / status labels (`legitimate`,
@@ -190,37 +212,49 @@ export interface CsvRowFilterSpec {
 }
 
 /**
- * Config for the `csv-column` parser (#593, generalized #605): pick indicator
- * column(s) from a CSV. Two extraction modes, mutually exclusive:
+ * Config for the `csv-column` parser (#593, generalized #605, #625): pick
+ * indicator column(s) from a CSV. Three extraction modes, mutually exclusive:
  *
  * - **static per-column** (`columns`) — each column carries a fixed
  *   `entityType` (Spamhaus / the sample fixtures). The default; unchanged.
  * - **row-typed** (`typeColumn`) — one value column whose entity type is read
  *   from a per-row `type` column (Infoblox).
+ * - **shape-classified** (`shapeColumn`, #625) — one value column whose entity
+ *   type is derived per cell from the VALUE SHAPE via the free-text scanner
+ *   (Volexity's drifting `entity_type` vocab + packed-hash cells).
  *
  * Optional `rowFilter` (allowlist on another column), `refang` (refang
  * extracted values before normalization), a configurable `delimiter`,
- * header-row skip, and comment-prefix skip apply to either mode. A leading
+ * header-row skip, and comment-prefix skip apply to every mode. A leading
  * UTF-8 BOM on the first line is stripped. Column extraction only — it does
  * NOT derive one indicator from another (URLhaus' URL→host stays bespoke). A
  * configured header name that is absent, or an index out of range, is a hard
- * parse error (never a silent 0 rows); an unmapped row `type` or a row the
- * `rowFilter` drops is a silent per-row skip (expected, not an error).
+ * parse error (never a silent 0 rows); an unmapped row `type`, a value cell
+ * that classifies to no shape, or a row the `rowFilter` drops is a silent
+ * per-row skip (expected, not an error).
  */
 export interface CsvColumnParseConfig {
   kind: "csv-column";
   /**
    * Static per-column indicator extraction (at least one column). Mutually
-   * exclusive with `typeColumn`; exactly one of the two must be present.
+   * exclusive with `typeColumn` / `shapeColumn`; exactly one mode is present.
    */
   columns?: readonly CsvColumnSpec[];
-  /** Row-typed extraction (#605). Mutually exclusive with `columns`. */
+  /** Row-typed extraction (#605). Mutually exclusive with `columns`/`shapeColumn`. */
   typeColumn?: CsvTypeColumnSpec;
+  /**
+   * Shape-classified value-column extraction (#625). Mutually exclusive with
+   * `columns`/`typeColumn`.
+   */
+  shapeColumn?: CsvShapeColumnSpec;
   /** Optional row allowlist filter on another column (#605). */
   rowFilter?: CsvRowFilterSpec;
   /**
    * Refang defanged indicators before emitting (`hxxp`→`http`, `[.]`→`.`,
-   * `[at]`→`@`). Off by default. Applied to extracted values in both modes.
+   * `[at]`→`@`). Off by default for `columns`/`typeColumn`; defaults ON for
+   * `shapeColumn` (its value cells are vendor prose, defanged by convention,
+   * and `hxxp://` must refang before the URL shape can classify). Applied to
+   * extracted values in every mode.
    */
   refang?: boolean;
   /** Field delimiter (defaults to `,`). */

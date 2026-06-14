@@ -129,6 +129,10 @@ function csvConfigUsesNames(config: CsvColumnParseConfig): boolean {
     if (value.name !== undefined || type.name !== undefined) return true;
     return config.rowFilter?.column.name !== undefined;
   }
+  if (config.shapeColumn) {
+    if (config.shapeColumn.value.name !== undefined) return true;
+    return config.rowFilter?.column.name !== undefined;
+  }
   return (config.columns ?? []).some((c) => c.name !== undefined);
 }
 
@@ -317,11 +321,14 @@ export function parseFreeTextIocs(
 }
 
 /**
- * `csv-column` (#593, generalized #605): extract indicator column(s) from a
- * CSV. Two modes (mutually exclusive, see `CsvColumnParseConfig`): static
- * per-column (`columns`, each with its own `entityType`) and row-typed
+ * `csv-column` (#593, generalized #605, #625): extract indicator column(s)
+ * from a CSV. Three modes (mutually exclusive, see `CsvColumnParseConfig`):
+ * static per-column (`columns`, each with its own `entityType`), row-typed
  * (`typeColumn`, one value column whose entity type comes from a per-row
- * `type` column via `typeMap`). Honors a configurable delimiter, header-row
+ * `type` column via `typeMap`), and shape-classified (`shapeColumn`, one value
+ * column whose entity type is derived per cell from the value shape via the
+ * free-text scanner — packed-hash cells split per hash). Honors a configurable
+ * delimiter, header-row
  * skip, comment-prefix skip, an optional `rowFilter` allowlist on another
  * column, and `refang` of extracted values. A leading UTF-8 BOM on the first
  * line is stripped (some Infoblox files are BOM-prefixed). Returns
@@ -339,13 +346,20 @@ export function parseCsvColumns(
   config: CsvColumnParseConfig,
 ): { entityType: EntityType; value: string }[] {
   const rowTyped = isRowTypedCsv(config);
-  if (rowTyped && config.columns && config.columns.length > 0) {
+  const shaped = config.shapeColumn !== undefined;
+  const staticCols = (config.columns ?? []).length > 0;
+  const modeCount =
+    (staticCols ? 1 : 0) + (rowTyped ? 1 : 0) + (shaped ? 1 : 0);
+  if (modeCount > 1) {
     throw new FeedParseError(
-      "csv-column: `columns` and `typeColumn` are mutually exclusive",
+      "csv-column: `columns`, `typeColumn`, and `shapeColumn` are " +
+        "mutually exclusive",
     );
   }
-  if (!rowTyped && (config.columns ?? []).length === 0) {
-    throw new FeedParseError("csv-column: at least one column is required");
+  if (modeCount === 0) {
+    throw new FeedParseError(
+      "csv-column: one of `columns` / `typeColumn` / `shapeColumn` is required",
+    );
   }
   const delimiter = config.delimiter ?? ",";
   const refang = config.refang ?? false;
@@ -404,6 +418,33 @@ export function parseCsvColumns(
       if (!entityType) continue;
       const value = fields[valueIndex];
       if (value) out.push({ entityType, value: emit(value) });
+    }
+    return out;
+  }
+
+  if (shaped) {
+    const sc = config.shapeColumn as NonNullable<
+      CsvColumnParseConfig["shapeColumn"]
+    >;
+    const valueIndex = resolveCsvRef(sc.value, headerFields, refWidth);
+    // Vendor value cells are defanged prose by convention, so refang defaults
+    // ON here (unlike the `columns` / `typeColumn` modes) — `hxxp://` must
+    // refang before the URL shape can classify.
+    const cellConfig: FreeTextParseConfig = {
+      kind: "free-text",
+      refang: config.refang ?? true,
+    };
+    for (let i = dataStart; i < lines.length; i += 1) {
+      const fields = splitCsv(lines[i], delimiter);
+      if (!passesFilter(fields)) continue;
+      const cell = fields[valueIndex];
+      if (!cell) continue;
+      // Scan ONLY the isolated value cell — never the whole line — so the
+      // free-text scanner's interior-comma URL bug and its sibling-column
+      // (description/notes) false positives can NEVER fire. A `file` cell
+      // packing 2-3 hashes splits into per-hash rows; a cell of no recognized
+      // shape yields nothing (a silent per-row skip).
+      out.push(...parseFreeTextIocs(cell, cellConfig));
     }
     return out;
   }
@@ -1207,7 +1248,9 @@ export function isUnparseableFeedContent(
   if (
     parse === "csv-column" &&
     config?.kind === "csv-column" &&
-    (config.typeColumn !== undefined || config.rowFilter !== undefined)
+    (config.typeColumn !== undefined ||
+      config.shapeColumn !== undefined ||
+      config.rowFilter !== undefined)
   ) {
     return false;
   }

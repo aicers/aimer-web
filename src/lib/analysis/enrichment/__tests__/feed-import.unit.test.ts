@@ -368,6 +368,58 @@ describe("parseCsvColumns static mode refang (#605)", () => {
   });
 });
 
+describe("parseCsvColumns shape-classified mode (#625, Volexity)", () => {
+  const shapeConfig: CsvColumnParseConfig = {
+    kind: "csv-column",
+    shapeColumn: { value: { index: 0 } },
+    skipHeader: true,
+    refang: true,
+  };
+
+  it("reads ONLY the value column, shape-classifying each cell", () => {
+    const text =
+      "value,entity_type,description\n" +
+      "bad.example,hostname,seen with benign-decoy.example.com\n" +
+      "185.220.101.50,ipaddress,beacon\n" +
+      "hxxp://malware.example/p,url,links hxxps://decoy.example.org/x\n";
+    expect(parseCsvColumns(text, shapeConfig)).toEqual([
+      { entityType: "DOMAIN", value: "bad.example" },
+      { entityType: "IP", value: "185.220.101.50" },
+      // `hxxp://` refanged; the trailing `,url,...` CSV fields and the benign
+      // description-column domains are NEVER scanned (value column isolated).
+      { entityType: "URL", value: "http://malware.example/p" },
+    ]);
+  });
+
+  it("splits a quoted `file` cell packing multiple hashes into per-hash rows", () => {
+    const sha256 =
+      "1111111111111111111111111111111111111111111111111111111111111111";
+    const md5 = "22222222222222222222222222222222";
+    const sha1 = "3333333333333333333333333333333333333333";
+    const text = `value,entity_type\n"${sha256},${md5},${sha1}",file\n`;
+    expect(parseCsvColumns(text, shapeConfig)).toEqual([
+      { entityType: "HASH", value: sha256 },
+      { entityType: "HASH", value: sha1 },
+      { entityType: "HASH", value: md5 },
+    ]);
+  });
+
+  it("yields nothing for a value cell of no recognized shape (silent skip)", () => {
+    const text = "value,entity_type\nnot-an-ioc,file\n";
+    expect(parseCsvColumns(text, shapeConfig)).toEqual([]);
+  });
+
+  it("rejects a config that sets both shapeColumn and columns", () => {
+    const bad: CsvColumnParseConfig = {
+      ...shapeConfig,
+      columns: [{ index: 0, entityType: "DOMAIN" }],
+    };
+    expect(() => parseCsvColumns("value\nbad.example\n", bad)).toThrow(
+      FeedParseError,
+    );
+  });
+});
+
 describe("parseFreeTextIocs (#603)", () => {
   it("extracts IOCs embedded in a sentence (where generic-list cannot)", () => {
     const prose =

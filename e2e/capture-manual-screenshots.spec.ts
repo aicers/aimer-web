@@ -704,10 +704,10 @@ base.describe.serial("Manual screenshots", () => {
   // `overflow-y-auto` <main>, so `fullPage` alone cannot reach below-the-fold
   // content — bump the viewport height first (same pattern as the preferences
   // captures), then `fullPage` so every registered source row (Botvrij,
-  // Infoblox, the three `phishing-database/*` rows, …) is visible. Assert the
-  // last stable-by-id row is on-page before shooting so a too-short viewport
-  // fails loudly instead of silently clipping a new row.
-  const TI_FEEDS_VIEWPORT = { width: 1280, height: 1500 };
+  // Infoblox, the three `phishing-database/*` rows, the two vendor repos, …) is
+  // visible. The height grows with the source list — each new fan-out source
+  // adds a row, so bump it whenever a `registerTiSource` lands below the fold.
+  const TI_FEEDS_VIEWPORT = { width: 1280, height: 1600 };
 
   base("admin-ti-feeds-selffetch-table.png", async () => {
     base.skip(
@@ -723,10 +723,11 @@ base.describe.serial("Manual screenshots", () => {
 
     await adminPage.waitForSelector("table tbody tr");
     // Guard the framing: the last fan-out row must be on-page before capture.
-    // `unit42/threat-intel` sorts last (after `spamhaus/edrop`), so asserting it
-    // is visible proves the taller viewport + fullPage reached the table bottom.
+    // `volexity/threat-intel` sorts last (after `unit42/threat-intel`), so
+    // asserting it is visible proves the taller viewport + fullPage reached the
+    // table bottom.
     await expect(
-      adminPage.getByText("unit42/threat-intel", { exact: true }),
+      adminPage.getByText("volexity/threat-intel", { exact: true }),
     ).toBeVisible();
 
     await adminPage.screenshot({
