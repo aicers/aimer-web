@@ -705,12 +705,16 @@ function parserSkipsHeader(
  * HTML error/block page, or a format drift returned with a 200 — parses to
  * nothing. A configured parser whose config the content cannot satisfy (a
  * `csv-column` header name absent / index out of range) raises `FeedParseError`
- * and is likewise unparseable. Genuinely empty / comment-only content is NOT
+ * and is likewise unparseable — that check runs even for a header-only body, so
+ * a misconfigured source cannot pass validation here only to throw later in
+ * `importRawFeedPayload()`. Genuinely empty / comment-only content is NOT
  * unparseable (it legitimately clears the source); for `csv-column` a
- * header-only body counts as empty, since the header is not a data line. The
- * comment prefix is taken from the parser's config so the data-line check
- * agrees with the parser. Shared by the manual-upload validation and the
- * self-fetch engine so neither replaces a good snapshot with junk.
+ * header-only body with a VALID config counts as empty too, since the header is
+ * not a data line (the header subtraction is applied only after the parser has
+ * accepted the config). The comment prefix is taken from the parser's config so
+ * the data-line check agrees with the parser. Shared by the manual-upload
+ * validation and the self-fetch engine so neither replaces a good snapshot with
+ * junk.
  */
 export function isUnparseableFeedContent(
   parse: FeedParseKind,
@@ -719,9 +723,14 @@ export function isUnparseableFeedContent(
   config?: FeedParseConfig,
 ): boolean {
   const prefixes = commentPrefixesFor(parse, config);
-  let dataCount = countDataLines(content, prefixes);
-  if (parserSkipsHeader(parse, config) && dataCount > 0) dataCount -= 1;
+  const dataCount = countDataLines(content, prefixes);
+  // Genuinely empty / comment-only content legitimately clears the source —
+  // no need to parse.
   if (dataCount === 0) return false;
+  // Otherwise always invoke the parser so a config the content cannot satisfy
+  // (a `csv-column` header name absent / index out of range) surfaces as a
+  // parse error here rather than slipping through as a silent clear. Header
+  // subtraction happens AFTER the config is validated, below.
   let rows: FeedSnapshotRow[];
   try {
     rows = parseFeedContent(parse, entityType, content, config);
@@ -729,7 +738,14 @@ export function isUnparseableFeedContent(
     if (err instanceof FeedParseError) return true;
     throw err;
   }
-  return rows.length === 0;
+  if (rows.length > 0) return false;
+  // The parser accepted the config but produced no rows. For a header-aware
+  // parser (`csv-column`) a lone header line is consumed, not data, so a
+  // header-only body is a legitimate clear; any further line that parsed to
+  // nothing is unparseable. For non-header parsers, zero rows from data lines
+  // is unparseable.
+  if (parserSkipsHeader(parse, config) && dataCount === 1) return false;
+  return true;
 }
 
 /**

@@ -438,6 +438,36 @@ describe("isUnparseableFeedContent", () => {
     ).toBe(false);
   });
 
+  it("flags a header-only csv-column body whose config is invalid", () => {
+    // Only one non-comment line (the header), but the configured header name is
+    // absent: the parser must still be invoked so this surfaces as a parse
+    // error / unparseable rather than a silent clear (the header subtraction
+    // must not short-circuit config validation).
+    const missingName: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ name: "missing", entityType: "URL" }],
+      commentPrefix: "#",
+    };
+    expect(
+      isUnparseableFeedContent(
+        "csv-column",
+        "URL",
+        "# c\nid,url,host\n",
+        missingName,
+      ),
+    ).toBe(true);
+    // Same shape with an out-of-range index under skipHeader: the lone header
+    // line cannot satisfy index 5, so it is unparseable, not a clear.
+    const badIndex: CsvColumnParseConfig = {
+      kind: "csv-column",
+      columns: [{ index: 5, entityType: "URL" }],
+      skipHeader: true,
+    };
+    expect(
+      isUnparseableFeedContent("csv-column", "URL", "id,url,host\n", badIndex),
+    ).toBe(true);
+  });
+
   it("uses the configured comment prefix for the data-line check", () => {
     const cfg: GenericListParseConfig = {
       kind: "generic-list",
