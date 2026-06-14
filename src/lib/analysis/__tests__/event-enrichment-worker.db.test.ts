@@ -194,6 +194,34 @@ async function importSoft(
   });
 }
 
+// A negative (warninglist) IP source (#599): polarity negative, no coverage/floor.
+const NEGATIVE: SourcePolicy = {
+  sourcePolicyId: "misp/warninglists",
+  label: "MISP warninglists",
+  polarity: "negative",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+
+/** Import a negative (warninglist) row for `matchValue` (hit_type NULL). */
+async function importWarninglist(
+  feedPool: Pool,
+  matchValue = "45.66.230.5",
+  sourceUpdatedAt = FRESH,
+) {
+  await importFeedSnapshot(feedPool, {
+    sourcePolicyId: NEGATIVE.sourcePolicyId,
+    entityType: "IP",
+    polarity: "negative",
+    classification: "public-dns",
+    sourceVersion: "2026-06-04",
+    sourceUpdatedAt,
+    rows: [{ matchValue }],
+  });
+}
+
 function optsWithPolicies(
   authPool: Pool,
   feedPool: Pool,
@@ -1020,5 +1048,105 @@ describe.skipIf(!hasPostgres)("per-event IOC enrichment (cross-DB)", () => {
       "25",
     );
     expect(verdict?.knownIocHit).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // #599 — negative layer (warninglist) suppression (event path)
+  // -------------------------------------------------------------------------
+
+  it("warninglisted deterministic hit: verdict false, evidence floor-ineligible", async () => {
+    // A floor-eligible deterministic hit on a warninglisted indicator: the
+    // verdict stays false and the hit is retained as floor-ineligible evidence.
+    await importFeodo(feedPool, FRESH);
+    await importWarninglist(feedPool);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "30",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "30",
+      optsWithPolicies(authPool, feedPool, customerPool, [
+        ...FLOORING,
+        NEGATIVE,
+      ]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM event_ioc_evidence
+        WHERE source_aice_id = $1 AND event_key = 30`,
+      [AICE_ID],
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(false);
+
+    const verdict = await loadEventEnrichmentVerdict(
+      customerPool,
+      AICE_ID,
+      "30",
+    );
+    expect(verdict?.knownIocHit).toBe(false);
+  });
+
+  it("warninglisted soft hit: dropped from evidence, drop logged (no raw indicator)", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+      await importWarninglist(feedPool);
+      await seedBaselineEvent(customerPool, {
+        eventKey: "31",
+        rawEvent: { resp_addr: "45.66.230.5" },
+      });
+
+      const result = await runEventEnrichment(
+        CUSTOMER_ID,
+        AICE_ID,
+        "31",
+        optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A, NEGATIVE]),
+      );
+      expect(result.knownIocHit).toBe(false);
+      expect(result.evidenceCount).toBe(0);
+
+      const { rows: ev } = await customerPool.query(
+        `SELECT 1 FROM event_ioc_evidence
+          WHERE source_aice_id = $1 AND event_key = 31`,
+        [AICE_ID],
+      );
+      expect(ev).toHaveLength(0);
+
+      const logged = infoSpy.mock.calls.find((c) =>
+        String(c[0]).includes("suppressed by negative layer"),
+      );
+      expect(logged).toBeTruthy();
+      expect(JSON.stringify(logged)).not.toContain("45.66.230.5");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("monotonic-floor safety: a negative source alone never creates a verdict", async () => {
+    await importWarninglist(feedPool);
+    await seedBaselineEvent(customerPool, {
+      eventKey: "32",
+      rawEvent: { resp_addr: "45.66.230.5" },
+    });
+
+    const result = await runEventEnrichment(
+      CUSTOMER_ID,
+      AICE_ID,
+      "32",
+      optsWithPolicies(authPool, feedPool, customerPool, [NEGATIVE]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(0);
+    expect(result.coverageStatus).toBe("complete");
   });
 });

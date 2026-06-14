@@ -16,7 +16,7 @@
 // is reserved for parts 3-4 (`self-fetch` / `managed`), which add their
 // implementations without re-plumbing the downstream.
 
-import type { EntityType, HitType } from "./types";
+import type { EntityType, HitType, SourcePolarity } from "./types";
 
 /**
  * Deployment-level TI feed supply mode (`TI_FEED_MODE`). The value space is
@@ -189,8 +189,18 @@ export interface RawFeedPayload {
   parseConfig?: FeedParseConfig;
   /** Default entity type for the parsed rows. */
   entityType: EntityType;
-  /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */
-  hitType: HitType;
+  /**
+   * Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive`. A `negative`
+   * payload imports its rows as negative (with `hit_type` NULL); the descriptor
+   * `polarity` reaches the rows through this field across every supply mode.
+   */
+  polarity?: SourcePolarity;
+  /**
+   * Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. Present
+   * for a positive payload; OMITTED for a `negative` payload (its rows carry
+   * no `hit_type`).
+   */
+  hitType?: HitType;
   /** Optional classification tag for the rows. */
   classification?: string;
   /** Raw feed content as published by the origin — NOT parsed. */

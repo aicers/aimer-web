@@ -117,7 +117,7 @@ export class PgFeedStore implements FeedStore {
     // entity_type) lets a URL indicator also hit a feed's host/domain
     // entry via its derived candidates.
     const exact = await this.pool.query<{
-      hit_type: HitType;
+      hit_type: HitType | null;
       classification: string | null;
       confidence: number | null;
       context: unknown;
@@ -157,7 +157,9 @@ export class PgFeedStore implements FeedStore {
     }
 
     return rows.map((row) => ({
-      hitType: row.hit_type,
+      // NULL for a negative (warninglist) row (#599); the negative enricher
+      // branch ignores it and the positive branch requires it.
+      hitType: row.hit_type ?? undefined,
       classification: row.classification ?? undefined,
       confidence: row.confidence ?? undefined,
       // The `context` JSONB is `unknown` at runtime — narrow it through the

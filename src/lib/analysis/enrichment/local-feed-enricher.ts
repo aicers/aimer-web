@@ -34,6 +34,7 @@ import type {
   EnrichmentResult,
   EntityType,
   HitType,
+  NegativeMatch,
   NormalizedIndicator,
   SourceOutcome,
 } from "./types";
@@ -119,7 +120,12 @@ export interface FeedSnapshotMeta {
 
 /** One matching row from a feed snapshot. */
 export interface FeedMatchRow {
-  hitType: HitType;
+  /**
+   * Intrinsic match type — present for a positive-source row, ABSENT for a
+   * negative (warninglist) row (its `hit_type` is NULL; #599). The negative
+   * enricher branch ignores it; the positive branch requires it.
+   */
+  hitType?: HitType;
   classification?: string;
   confidence?: number;
   /**
@@ -218,18 +224,6 @@ export class LocalFeedEnricher implements Enricher {
     }
 
     const rows = await this.store.match(sourcePolicyId, indicator);
-    const matches: EnrichmentMatch[] = rows.map((row) => ({
-      source: this.source,
-      sourcePolicyId,
-      hitType: row.hitType,
-      floorEligible: this.policy.floorEligible,
-      classification: row.classification,
-      confidence: row.confidence,
-      contextPayload: row.contextPayload,
-      sourceVersion: row.sourceVersion ?? probe.sourceVersion,
-      feedHash: row.feedHash ?? probe.feedHash,
-      sourceUpdatedAt: row.sourceUpdatedAt ?? probe.sourceUpdatedAt,
-    }));
 
     const outcome: SourceOutcome = {
       sourcePolicyId,
@@ -237,12 +231,62 @@ export class LocalFeedEnricher implements Enricher {
       sourceUpdatedAt: probe.sourceUpdatedAt,
     };
 
+    // RFC 0003 F5 negative layer (#599): a negative (warninglist) source emits
+    // ONLY a suppression signal — its rows land on `negativeMatches`, NEVER on
+    // `matches[]`, and it produces no facts. This is the structural guarantee
+    // that a negative source can never leak in as a positive match or drive
+    // `known_ioc_hit`; the suppression pass downstream reads `negativeMatches`.
+    // (A negative row carries no `hit_type`, so the row's `hitType` is ignored
+    // here.)
+    if (this.policy.polarity === "negative") {
+      const negativeMatches: NegativeMatch[] = rows.map((row) => ({
+        source: this.source,
+        sourcePolicyId,
+        classification: row.classification,
+        confidence: row.confidence,
+        sourceVersion: row.sourceVersion ?? probe.sourceVersion,
+        feedHash: row.feedHash ?? probe.feedHash,
+        sourceUpdatedAt: row.sourceUpdatedAt ?? probe.sourceUpdatedAt,
+      }));
+      return {
+        indicator,
+        matches: [],
+        negativeMatches,
+        facts: [],
+        errors: [],
+        outcomes: [outcome],
+        checkedAt: "",
+      };
+    }
+
+    // A positive-source row always carries a `hit_type` (DB CHECK), so the
+    // filter never drops a row in practice; it only narrows `hitType` from
+    // `HitType | undefined` to `HitType` type-safely.
+    const matches: EnrichmentMatch[] = rows
+      .filter(
+        (row): row is FeedMatchRow & { hitType: HitType } =>
+          row.hitType !== undefined,
+      )
+      .map((row) => ({
+        source: this.source,
+        sourcePolicyId,
+        hitType: row.hitType,
+        floorEligible: this.policy.floorEligible,
+        classification: row.classification,
+        confidence: row.confidence,
+        contextPayload: row.contextPayload,
+        sourceVersion: row.sourceVersion ?? probe.sourceVersion,
+        feedHash: row.feedHash ?? probe.feedHash,
+        sourceUpdatedAt: row.sourceUpdatedAt ?? probe.sourceUpdatedAt,
+      }));
+
     // RFC 0003 C1 (#440) — one narrative fact per match (incl.
     // `soft_reputation` / floor-ineligible). Raw indicator at
     // generation; the worker redacts at write.
     return {
       indicator,
       matches,
+      negativeMatches: [],
       facts: buildFactsFromMatches(indicator, matches),
       errors: [],
       outcomes: [outcome],
@@ -267,6 +311,7 @@ export const LOCAL_FEED_POLICIES: readonly SourcePolicy[] =
   allTiSourceDescriptors().map((descriptor) => ({
     sourcePolicyId: descriptor.sourcePolicyId,
     label: descriptor.label,
+    polarity: descriptor.polarity,
     entityTypes: descriptor.entityTypes,
     deterministicCoverage: descriptor.deterministicCoverage,
     maxAge: descriptor.maxAge,

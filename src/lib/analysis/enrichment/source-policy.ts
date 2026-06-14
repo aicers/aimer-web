@@ -6,7 +6,12 @@
 // axes (RFC §"Source taxonomy") — this registry governs floor eligibility and
 // coverage only; egress/opt-in is a later phase.
 
-import type { EnrichmentMatch, EntityType, NormalizedIndicator } from "./types";
+import type {
+  EnrichmentMatch,
+  EntityType,
+  NormalizedIndicator,
+  SourcePolarity,
+} from "./types";
 
 /**
  * One source-policy entry. Carries enough to govern both the floor and
@@ -18,6 +23,14 @@ export interface SourcePolicy {
   sourcePolicyId: string;
   /** Human-readable source identity / label. */
   label: string;
+  /**
+   * Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive`. A `negative`
+   * source's enricher emits only a suppression signal
+   * (`EnrichmentResult.negativeMatches`), never a positive match, and its
+   * `deterministicCoverage` / `floorEligible` are both false so it touches
+   * neither coverage nor the floor.
+   */
+  polarity?: SourcePolarity;
   /** Which entity types this source covers. */
   entityTypes: EntityType[];
   /**

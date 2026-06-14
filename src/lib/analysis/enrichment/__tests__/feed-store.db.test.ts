@@ -19,7 +19,7 @@ import {
   hasPostgres,
 } from "@/lib/db/__tests__/db-test-helpers";
 import { runMigrations } from "@/lib/db/migrate";
-import { importFeedSnapshot } from "../feed-import";
+import { importFeedSnapshot, importRawFeedPayload } from "../feed-import";
 import { PgFeedStore } from "../feed-store";
 import { normalizeIp } from "../normalization";
 
@@ -97,6 +97,107 @@ describe.skipIf(!hasPostgres)("PgFeedStore context round-trip (DB)", () => {
     );
     expect(matches).toHaveLength(1);
     expect(matches[0].contextPayload).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // RFC 0003 F5 (#599) — polarity column + hit_type CHECK + round-trip
+  // -------------------------------------------------------------------------
+
+  it("defaults polarity to 'positive' for an existing-style import", async () => {
+    await importFeedSnapshot(feedPool, {
+      sourcePolicyId: "abuse.ch/feodo",
+      entityType: "IP",
+      hitType: "deterministic_ioc",
+      rows: [{ matchValue: "45.66.230.5" }],
+    });
+    const { rows } = await feedPool.query<{
+      polarity: string;
+      hit_type: string;
+    }>(
+      `SELECT polarity, hit_type FROM ioc_feed_snapshot
+        WHERE source_policy_id = 'abuse.ch/feodo'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].polarity).toBe("positive");
+    expect(rows[0].hit_type).toBe("deterministic_ioc");
+  });
+
+  it("round-trips a negative import: polarity='negative', hit_type NULL, no match", async () => {
+    // A negative (warninglist) import stamps every row negative with NULL
+    // hit_type, regardless of any hitType passed.
+    await importFeedSnapshot(feedPool, {
+      sourcePolicyId: "misp/warninglists",
+      entityType: "IP",
+      polarity: "negative",
+      classification: "public-dns",
+      rows: [{ matchValue: "8.8.8.8" }],
+    });
+    const { rows } = await feedPool.query<{
+      polarity: string;
+      hit_type: string | null;
+    }>(
+      `SELECT polarity, hit_type FROM ioc_feed_snapshot
+        WHERE source_policy_id = 'misp/warninglists'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].polarity).toBe("negative");
+    expect(rows[0].hit_type).toBeNull();
+
+    // `match` returns the row with hitType undefined (negative rows carry none).
+    const store = new PgFeedStore(feedPool);
+    const matches = await store.match(
+      "misp/warninglists",
+      normalizeIp("8.8.8.8"),
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0].hitType).toBeUndefined();
+    expect(matches[0].classification).toBe("public-dns");
+  });
+
+  it("round-trips polarity through the shared RawFeedPayload import path", async () => {
+    // The descriptor → catalog → RawFeedPayload → importRawFeedPayload path
+    // that fixture / upload / self-fetch all converge on must mark rows
+    // negative with NULL hit_type.
+    await importRawFeedPayload(feedPool, {
+      sourcePolicyId: "misp/warninglists",
+      parse: "ip-blocklist",
+      entityType: "IP",
+      polarity: "negative",
+      content: "8.8.4.4\n",
+      provenance: { mode: "manual-upload", origin: "test" },
+    });
+    const { rows } = await feedPool.query<{
+      polarity: string;
+      hit_type: string | null;
+      match_value: string;
+    }>(
+      `SELECT polarity, hit_type, match_value FROM ioc_feed_snapshot
+        WHERE source_policy_id = 'misp/warninglists'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].polarity).toBe("negative");
+    expect(rows[0].hit_type).toBeNull();
+    expect(rows[0].match_value).toBe("8.8.4.4");
+  });
+
+  it("CHECK rejects a positive row with NULL hit_type", async () => {
+    await expect(
+      feedPool.query(
+        `INSERT INTO ioc_feed_snapshot
+           (source_policy_id, entity_type, match_value, hit_type, polarity)
+         VALUES ('bad/pos', 'IP', '1.1.1.1', NULL, 'positive')`,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("CHECK rejects a negative row that carries a hit_type", async () => {
+    await expect(
+      feedPool.query(
+        `INSERT INTO ioc_feed_snapshot
+           (source_policy_id, entity_type, match_value, hit_type, polarity)
+         VALUES ('bad/neg', 'IP', '1.1.1.1', 'deterministic_ioc', 'negative')`,
+      ),
+    ).rejects.toThrow();
   });
 
   it("drops a malformed stored context (validator, not trusted as-is)", async () => {

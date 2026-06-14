@@ -66,6 +66,7 @@ export function buildManualUploadPayload(args: {
     parse: source.parse,
     parseConfig: source.parseConfig,
     entityType: source.entityType,
+    polarity: source.polarity,
     hitType: source.hitType,
     classification: source.classification,
     content: args.content,
