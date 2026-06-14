@@ -17,6 +17,7 @@ import "server-only";
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getFeedPool } from "@/lib/db/client";
 import {
   ALL_CVE_SOURCES,
   type CveCatalog,
@@ -29,6 +30,7 @@ import {
   FixtureCveCatalog,
   type FixtureCveData,
 } from "./fixture-catalog";
+import { PgCveCatalog } from "./pg-catalog";
 
 function envFlag(raw: string | undefined): boolean {
   if (!raw) return false;
@@ -64,7 +66,7 @@ export function selectEnabledCveSources(_scope?: {
   return new Set<CveSourceId>(ALL_CVE_SOURCES);
 }
 
-// --- Vendored fixture catalog (default placeholder until the fan-out) -----
+// --- DB-backed catalog + the retained vendored fixture (for tests) --------
 
 const FIXTURE_PATH = join(process.cwd(), "schemas/cve-fixture.json");
 const VERSION_PATH = join(process.cwd(), "schemas/cve-fixture.version");
@@ -80,18 +82,13 @@ interface VendoredFixture {
   landscape: CveLandscapeRecord[];
 }
 
-let cachedCatalog: CveCatalog | null = null;
-
 /**
- * The default CVE catalog. Until the source fan-out ships a DB-backed
- * catalog, this is the vendored fixture treated as a live snapshot: all
- * core sources available, freshness stamped at load (the file is the
- * snapshot, so its currency is the load instant). The fan-out replaces
- * this resolver with the real NVD/KEV/EPSS-backed catalog against the
- * same `CveCatalog` interface.
+ * Load the vendored fixture catalog (the pinned `schemas/cve-fixture.json`),
+ * treated as a live snapshot: all core sources available, freshness stamped
+ * at load. Retained for tests / offline use after the DB-backed catalog
+ * became the production default — NOT wired into `getCveCatalog`.
  */
-export function getCveCatalog(): CveCatalog {
-  if (cachedCatalog !== null) return cachedCatalog;
+export function getFixtureCveCatalog(): CveCatalog {
   const raw = readFileSync(FIXTURE_PATH, "utf-8");
   const parsed = JSON.parse(raw) as VendoredFixture;
   const config: FixtureCatalogConfig = {
@@ -99,6 +96,20 @@ export function getCveCatalog(): CveCatalog {
     records: parsed.records ?? {},
     landscape: parsed.landscape ?? [],
   };
-  cachedCatalog = new FixtureCveCatalog(config);
+  return new FixtureCveCatalog(config);
+}
+
+let cachedCatalog: CveCatalog | null = null;
+
+/**
+ * The default CVE catalog: the DB-backed `PgCveCatalog` over the feed DB's
+ * CVE snapshot (#601). Until ingestion (#611) warms the snapshot it is empty,
+ * but with `CVE_ENRICHMENT_ENABLED` off (the default) the whole CVE path is
+ * inert — wiring this here does not enable the feature. The fixture catalog
+ * (`getFixtureCveCatalog`) is retained for tests.
+ */
+export function getCveCatalog(): CveCatalog {
+  if (cachedCatalog !== null) return cachedCatalog;
+  cachedCatalog = new PgCveCatalog(getFeedPool());
   return cachedCatalog;
 }
