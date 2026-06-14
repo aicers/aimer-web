@@ -143,6 +143,106 @@ CREATE TABLE feed_source_secret (
     updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- ---------------------------------------------------------------
+-- cve_snapshot (RFC 0005 CVE catalog foundation, #601)
+-- ---------------------------------------------------------------
+-- Locally-imported CVE enrichment snapshots from the core CVE sources
+-- (NVD CVSS+CWE, CISA KEV known-exploited, FIRST EPSS). This is the
+-- CVE analogue of `ioc_feed_snapshot`, but CVE never flows through the
+-- IOC indicator/dispatch/floor pipeline — it is its own catalog
+-- (`PgCveCatalog` over this table), keyed for an efficient `lookup(cve)`.
+--
+-- Keyed at `(source_id, cve)` granularity — ONE row per source per CVE —
+-- so each source is independently replaceable via a per-source
+-- `DELETE WHERE source_id = … ` + `INSERT` in one transaction, exactly the
+-- replace-only model `ioc_feed_snapshot` uses (no UPDATE grant). NVD / KEV /
+-- EPSS refresh independently (#611), so one source's refresh must not clobber
+-- another's facts; a wide one-row-per-`cve` table could not be replaced per
+-- source under the replace-only grant. `lookup(cve)` merges the per-source
+-- rows into one `CveRecord`.
+--
+-- Each row carries only the columns its own source populates (the others
+-- stay NULL): NVD rows carry `cvss_score` / `cwe` / `cvss_vector` and the
+-- CVSS `description`; KEV rows carry `kev_known_exploited` / `kev_date_added`
+-- / `in_the_wild` and the CISA `shortDescription`; EPSS rows carry
+-- `epss_score` / `epss_percentile`. `description` is source-local (a KEV-only
+-- CVE still has CISA's description for the landscape, even with no NVD row).
+--
+-- `published_at` is the upstream CVE publication date. It drives the
+-- recent-CVE LANDSCAPE recency window ONLY — never coverage staleness.
+-- Coverage freshness for `CveSourceOutcome.sourceUpdatedAt` comes from the
+-- per-source fetch clock in `cve_fetch_state.last_fetched_at`, NOT from this
+-- per-CVE publish date (a daily-revalidated unchanged source must read fresh).
+CREATE TABLE cve_snapshot (
+    source_id            TEXT         NOT NULL
+        CHECK (source_id IN ('nvd', 'kev', 'epss')),
+    -- Canonical CVE id (`CVE-YYYY-N{4,}`).
+    cve                  TEXT         NOT NULL,
+    -- NVD: CVSS base score + CWE list. `cvss_vector` is audit-only — the
+    -- raw CVSS vector is NOT part of `CvssFact` and is never surfaced in
+    -- `CveRecord`; it is stored here so the complete source column set lives
+    -- in this file (#611 only writes rows, it adds no columns).
+    cvss_score           DOUBLE PRECISION,
+    cwe                  TEXT[],
+    cvss_vector          TEXT,
+    -- CISA KEV: known-exploited flag, date added to the catalog (upstream
+    -- ISO date, stored verbatim), and the in-the-wild signal.
+    kev_known_exploited  BOOLEAN,
+    kev_date_added       TEXT,
+    in_the_wild          BOOLEAN,
+    -- FIRST EPSS: exploit-prediction score + percentile.
+    epss_score           DOUBLE PRECISION,
+    epss_percentile      DOUBLE PRECISION,
+    -- Source-local one-line description (NVD CVSS summary / CISA
+    -- shortDescription). Lives on the source's own row so a KEV-only CVE
+    -- still carries a description for the landscape.
+    description          TEXT,
+    -- Upstream CVE publication date (landscape recency ONLY — see header).
+    published_at         TIMESTAMPTZ,
+    imported_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_id, cve)
+);
+
+-- `lookup(cve)` / `landscape()` fan a CVE across its per-source rows; the
+-- composite PK leads with `source_id`, so a dedicated `cve` index serves the
+-- value-keyed merge. CVE snapshots are modest, so no further indexing.
+CREATE INDEX cve_snapshot_cve_idx ON cve_snapshot (cve);
+
+-- ---------------------------------------------------------------
+-- cve_fetch_state (RFC 0005 CVE catalog foundation, #601)
+-- ---------------------------------------------------------------
+-- Per-source fetch/availability/freshness bookkeeping for the CVE sources —
+-- the CVE-namespaced analogue of `feed_fetch_state`, but keyed on the CVE
+-- `source_id` ('nvd' | 'kev' | 'epss'), NOT the IOC `source_policy_id`
+-- namespace, so the two never collide. Mirrors `feed_fetch_state`'s columns
+-- but is a distinct table (#611 populates it on fetch).
+--
+-- `last_fetched_at` is the last-successful-fetch/validation clock, bumped on
+-- every successful 200/304 (like `feed_fetch_state.last_fetched_at`). It is
+-- the authority for `CveSourceOutcome.sourceUpdatedAt`: a source that
+-- revalidates daily and finds nothing changed (304) must read FRESH, not
+-- stale, so freshness derives from this clock and NOT from the per-CVE
+-- upstream `cve_snapshot.published_at`. A source that has never successfully
+-- fetched (`last_fetched_at` NULL) is reported `answered: false`. A failure
+-- leaves `last_fetched_at` untouched so freshness decays naturally.
+CREATE TABLE cve_fetch_state (
+    source_id        TEXT         PRIMARY KEY
+        CHECK (source_id IN ('nvd', 'kev', 'epss')),
+    -- Last successful fetch (200 or 304); the freshness clock.
+    last_fetched_at  TIMESTAMPTZ,
+    -- Last fetch attempt, success or failure (status/error display).
+    last_attempt_at  TIMESTAMPTZ,
+    -- Conditional-GET validators from the last 200 response.
+    etag             TEXT,
+    last_modified    TEXT,
+    -- 'ok' | 'not-modified' | 'error' (last attempt's outcome).
+    last_status      TEXT,
+    last_error       TEXT,
+    -- Rows imported by the last successful 200 (may be 0).
+    last_row_count   INTEGER,
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 -- ===================================================================
 -- Grants
 -- ===================================================================
@@ -166,3 +266,11 @@ GRANT SELECT, INSERT, DELETE ON ioc_feed_snapshot TO aimer_feed;
 -- (ON CONFLICT DO UPDATE) in addition to SELECT/INSERT.
 GRANT SELECT, INSERT, UPDATE ON feed_fetch_state TO aimer_feed;
 GRANT SELECT, INSERT, UPDATE ON feed_source_secret TO aimer_feed;
+
+-- CVE catalog (#601): `cve_snapshot` is replace-only — the per-source CVE
+-- refresh (#611) replaces a source's rows (DELETE + INSERT) within one
+-- transaction, exactly like `ioc_feed_snapshot`, so NO UPDATE grant. The
+-- per-source `cve_fetch_state` is upserted (ON CONFLICT DO UPDATE) on each
+-- fetch, so it needs UPDATE like `feed_fetch_state`.
+GRANT SELECT, INSERT, DELETE ON cve_snapshot TO aimer_feed;
+GRANT SELECT, INSERT, UPDATE ON cve_fetch_state TO aimer_feed;
