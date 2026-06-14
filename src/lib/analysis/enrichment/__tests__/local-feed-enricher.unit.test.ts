@@ -119,6 +119,45 @@ describe("local-feed enricher — source match per entity type", () => {
     expect(miss.coverage.status).toBe("complete");
   });
 
+  it("a negative source emits only a suppression signal, never a positive match", async () => {
+    // RFC 0003 F5 (#599): a negative (warninglist) source's hits land on
+    // `negativeMatches`, NEVER on `matches[]`, so it can never drive the floor.
+    const negativePolicy: SourcePolicy[] = [
+      {
+        sourcePolicyId: "misp/warninglists",
+        label: "MISP warninglists",
+        polarity: "negative",
+        entityTypes: ["IP"],
+        deterministicCoverage: false,
+        maxAge: 2 * 24 * 60 * 60 * 1000,
+        floorEligible: false,
+      },
+    ];
+    const store = new FakeFeedStore({
+      exact: { "misp/warninglists": ["45.66.230.5"] },
+    });
+    const dispatcher = buildLocalFeedDispatcher(store, {
+      now: fresh,
+      policies: negativePolicy,
+    });
+
+    const hit = await dispatcher.dispatch(normalizeIp("45.66.230.5"));
+    // No positive match, no floor, no fact.
+    expect(hit.matches).toHaveLength(0);
+    expect(hit.matches.some(matchSatisfiesFloor)).toBe(false);
+    expect(hit.facts).toHaveLength(0);
+    // The suppression signal lands on its own channel.
+    expect(hit.negativeMatches).toHaveLength(1);
+    expect(hit.negativeMatches?.[0]).toMatchObject({
+      source: "misp/warninglists",
+      sourcePolicyId: "misp/warninglists",
+    });
+    // A negative source is not a relevant deterministic source: coverage is
+    // unaffected (no IP deterministic source registered → partial, not unknown).
+    expect(hit.coverage.expectedCount).toBe(0);
+    expect(hit.coverage.status).toBe("complete");
+  });
+
   it("matches an IP inside a CIDR range entry", async () => {
     const store = new FakeFeedStore({
       cidrs: { "abuse.ch/feodo": ["45.66.230.0/24"] },

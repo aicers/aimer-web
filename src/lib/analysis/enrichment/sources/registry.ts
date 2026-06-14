@@ -20,7 +20,7 @@
 // registry.
 
 import type { FeedParseKind } from "../feed-source";
-import type { EntityType, HitType } from "../types";
+import type { EntityType, HitType, SourcePolarity } from "../types";
 
 /**
  * Placeholder token in a self-fetch URL that the fetch engine replaces with
@@ -78,6 +78,15 @@ export interface TiSourceDescriptor {
   sourcePolicyId: string;
   /** Human-readable source identity / label. */
   label: string;
+  /**
+   * Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive` (every existing
+   * source). A `negative` source's imported rows are marked negative (and
+   * carry NO `hit_type`); it never emits a positive `EnrichmentMatch`, only a
+   * suppression signal. A negative source MUST also set
+   * `deterministicCoverage: false` and `floorEligible: false` so it can affect
+   * neither coverage nor the floor — enforced at registration.
+   */
+  polarity?: SourcePolarity;
   // --- source-policy fields (derive `LOCAL_FEED_POLICIES`) ---
   /** Which entity types this source covers (policy `supports()`). */
   entityTypes: EntityType[];
@@ -96,8 +105,12 @@ export interface TiSourceDescriptor {
    * `parseFeedContent`; this is the import-time default for the rest.
    */
   entityType: EntityType;
-  /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */
-  hitType: HitType;
+  /**
+   * Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. REQUIRED
+   * for a positive source; OMITTED for a `negative` source (its rows carry no
+   * `hit_type`). Enforced at registration.
+   */
+  hitType?: HitType;
   /** Optional classification tag for the rows. */
   classification?: string;
   // --- optional supply-mode config ---
@@ -149,6 +162,30 @@ function deepEqual(a: unknown, b: unknown): boolean {
  * as idempotent, so a module re-evaluated by the test runner does not throw.
  */
 export function registerTiSource(descriptor: TiSourceDescriptor): void {
+  // Polarity invariants (#599). A negative (warninglist) source contributes
+  // only a suppression signal: it can affect neither coverage nor the floor,
+  // and its rows carry no `hit_type`. A positive source must declare a
+  // `hitType`. Fail fast so a misconfigured source is caught at load.
+  const polarity = descriptor.polarity ?? "positive";
+  if (polarity === "negative") {
+    if (descriptor.hitType !== undefined) {
+      throw new Error(
+        `Negative TI source "${descriptor.sourcePolicyId}" must not declare a ` +
+          "hitType (negative rows carry no hit_type)",
+      );
+    }
+    if (descriptor.deterministicCoverage || descriptor.floorEligible) {
+      throw new Error(
+        `Negative TI source "${descriptor.sourcePolicyId}" must set ` +
+          "deterministicCoverage:false and floorEligible:false",
+      );
+    }
+  } else if (descriptor.hitType === undefined) {
+    throw new Error(
+      `Positive TI source "${descriptor.sourcePolicyId}" must declare a hitType`,
+    );
+  }
+
   const existing = REGISTRY.get(descriptor.sourcePolicyId);
   if (existing) {
     if (deepEqual(existing, descriptor)) return;

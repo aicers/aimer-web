@@ -681,6 +681,7 @@ export class SelfFetchFeedSource {
         sourcePolicyId,
         parse: fetchConfig.parse,
         entityType: source.entityType,
+        polarity: source.polarity,
         hitType: source.hitType,
         classification: source.classification,
         content,

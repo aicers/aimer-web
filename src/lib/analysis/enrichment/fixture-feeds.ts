@@ -31,7 +31,7 @@ import {
 } from "./feed-source";
 import "./sources";
 import { allTiSourceDescriptors } from "./sources/registry";
-import type { EntityType, HitType } from "./types";
+import type { EntityType, HitType, SourcePolarity } from "./types";
 
 const FEEDS_DIR = join(
   process.cwd(),
@@ -47,7 +47,10 @@ interface FixtureFeedSpec {
   file: string;
   parse: FeedParseKind;
   entityType: EntityType;
-  hitType: HitType;
+  /** Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive`. */
+  polarity?: SourcePolarity;
+  /** Absent for a `negative` fixture source (rows carry no `hit_type`). */
+  hitType?: HitType;
   classification?: string;
 }
 
@@ -67,6 +70,7 @@ export const FIXTURE_FEEDS: readonly FixtureFeedSpec[] =
       file: descriptor.fixtureFile as string,
       parse: descriptor.parse,
       entityType: descriptor.entityType,
+      polarity: descriptor.polarity,
       hitType: descriptor.hitType,
       classification: descriptor.classification,
     }));
@@ -98,6 +102,7 @@ export class FixtureFeedSource implements FeedSource {
         sourcePolicyId: spec.sourcePolicyId,
         parse: spec.parse,
         entityType: spec.entityType,
+        polarity: spec.polarity,
         hitType: spec.hitType,
         classification: spec.classification,
         content: readFileSync(path, "utf8"),

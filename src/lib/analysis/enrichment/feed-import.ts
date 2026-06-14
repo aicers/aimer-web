@@ -23,7 +23,12 @@ import {
   normalizeIp,
   normalizeUrl,
 } from "./normalization";
-import type { EnrichmentContextPayload, EntityType, HitType } from "./types";
+import type {
+  EnrichmentContextPayload,
+  EntityType,
+  HitType,
+  SourcePolarity,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Parsers (pure)
@@ -312,8 +317,18 @@ export function normalizeCidrs(values: readonly string[]): {
 export interface ImportFeedParams {
   sourcePolicyId: string;
   entityType: EntityType;
-  /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */
-  hitType: HitType;
+  /**
+   * Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive`. A `negative`
+   * import stamps every row `polarity = 'negative'` and forces `hit_type` NULL
+   * (a warninglist row carries no hit type — the DB CHECK enforces it).
+   */
+  polarity?: SourcePolarity;
+  /**
+   * Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. Required
+   * for a positive import; ignored for a `negative` import (rows get NULL
+   * `hit_type`).
+   */
+  hitType?: HitType;
   classification?: string;
   confidence?: number;
   sourceVersion?: string;
@@ -352,6 +367,11 @@ export async function importFeedSnapshot(
   params: ImportFeedParams,
 ): Promise<{ rowCount: number; feedHash: string }> {
   const feedHash = params.feedHash ?? computeFeedHash(params.rows);
+  // Negative (warninglist) rows carry NO hit_type (#599): force NULL regardless
+  // of `params.hitType` so the polarity/hit_type CHECK holds. Positive rows
+  // keep today's required hit_type.
+  const polarity: SourcePolarity = params.polarity ?? "positive";
+  const hitType = polarity === "negative" ? null : (params.hitType ?? null);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -370,16 +390,17 @@ export async function importFeedSnapshot(
       await client.query(
         `INSERT INTO ioc_feed_snapshot
            (source_policy_id, entity_type, match_value, cidr, hit_type,
-            classification, confidence, context, source_version, feed_hash,
-            source_updated_at)
-         VALUES ($1, $2, $3, $4::cidr, $5, $6, $7, $8::jsonb, $9, $10,
-                 $11::timestamptz)`,
+            polarity, classification, confidence, context, source_version,
+            feed_hash, source_updated_at)
+         VALUES ($1, $2, $3, $4::cidr, $5, $6, $7, $8, $9::jsonb, $10, $11,
+                 $12::timestamptz)`,
         [
           params.sourcePolicyId,
           row.entityType ?? params.entityType,
           row.matchValue ?? null,
           row.cidr ?? null,
-          params.hitType,
+          hitType,
+          polarity,
           params.classification ?? null,
           params.confidence ?? null,
           context ? JSON.stringify(context) : null,
@@ -490,6 +511,7 @@ export async function importRawFeedPayload(
   return importFeedSnapshot(pool, {
     sourcePolicyId: payload.sourcePolicyId,
     entityType: payload.entityType,
+    polarity: payload.polarity,
     hitType: payload.hitType,
     classification: payload.classification,
     sourceVersion: payload.provenance.sourceVersion,

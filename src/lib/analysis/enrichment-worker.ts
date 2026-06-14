@@ -7,7 +7,12 @@
 //      `uri`) for the same event_key, which are redacted independently at
 //      ingest but share the same event_redaction_map row — recovering
 //      tokenized customer-asset IPs via that map,
-//   2. dispatches each through the Tier-1 local-feed dispatcher (#427),
+//   2. dispatches each through the Tier-1 local-feed dispatcher (#427), then
+//      applies the negative-layer suppression pass (#599) over the merged
+//      result BEFORE floor / evidence / facts: a warninglisted indicator has
+//      its soft matches dropped, its deterministic matches forced
+//      floor-ineligible, and its facts regenerated (empty); the drop is logged,
+//      scoped to the member event, with no raw indicator,
 //   3. derives `known_ioc_hit` = OR over members of any match where
 //      `matchSatisfiesFloor` (deterministic_ioc && floorEligible; non-public
 //      IPs already forced ineligible),
@@ -56,6 +61,7 @@ import {
 } from "./enrichment/indicator-extraction";
 import { buildLocalFeedDispatcher } from "./enrichment/local-feed-enricher";
 import { matchSatisfiesFloor } from "./enrichment/source-policy";
+import { applyNegativeSuppression } from "./enrichment/suppression";
 import type { CoverageStatus, EnrichmentFact } from "./enrichment/types";
 
 /**
@@ -422,7 +428,29 @@ async function enrichCanonicalVersion(
       sources,
       recover,
     )) {
-      const merged = await dispatcher.dispatch(indicator);
+      const dispatched = await dispatcher.dispatch(indicator);
+      // RFC 0003 F5 (#599) — negative-layer suppression over the merged result,
+      // BEFORE floor / evidence / fact collection. With no negative hit this is
+      // a no-op (`merged === dispatched`) so positive-only behavior is
+      // unchanged. When the indicator is warninglisted, soft matches are
+      // dropped, deterministic matches are forced floor-ineligible, and facts
+      // are regenerated (empty). The decisions carry no raw indicator; the
+      // worker attaches the event scope and logs the drop for observability.
+      const { result: merged, decisions } =
+        applyNegativeSuppression(dispatched);
+      for (const decision of decisions) {
+        console.info(
+          "[enrichment-worker] match suppressed by negative layer " +
+            "(warninglisted indicator)",
+          {
+            sourcePolicyId: decision.sourcePolicyId,
+            hitType: decision.hitType,
+            confidence: decision.confidence,
+            action: decision.action,
+            memberEventKey: member.member_event_key,
+          },
+        );
+      }
       coverage = worseCoverage(coverage, merged.coverage.status);
       // Collect every fact the dispatch produced (narrative for all
       // matches, not just the floor-supporting ones below), skipping

@@ -244,6 +244,34 @@ async function importSoft(
   });
 }
 
+// A negative (warninglist) IP source: polarity negative, no coverage / floor.
+const NEGATIVE: SourcePolicy = {
+  sourcePolicyId: "misp/warninglists",
+  label: "MISP warninglists",
+  polarity: "negative",
+  entityTypes: ["IP"],
+  deterministicCoverage: false,
+  maxAge: 2 * 24 * 60 * 60 * 1000,
+  floorEligible: false,
+};
+
+/** Import a negative (warninglist) row for `matchValue` (hit_type NULL). */
+async function importWarninglist(
+  feedPool: Pool,
+  matchValue = "45.66.230.5",
+  sourceUpdatedAt = FRESH,
+) {
+  await importFeedSnapshot(feedPool, {
+    sourcePolicyId: NEGATIVE.sourcePolicyId,
+    entityType: "IP",
+    polarity: "negative",
+    classification: "public-dns",
+    sourceVersion: "2026-06-04",
+    sourceUpdatedAt,
+    rows: [{ matchValue }],
+  });
+}
+
 function optsWithPolicies(
   authPool: Pool,
   feedPool: Pool,
@@ -1054,6 +1082,152 @@ describe.skipIf(!hasPostgres)("IOC enrichment worker (cross-DB)", () => {
       hit_type: "soft_reputation",
       floor_eligible: false,
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // #599 — negative layer (warninglist) suppression
+  // -------------------------------------------------------------------------
+
+  it("warninglisted deterministic hit: floor NOT set, evidence floor-ineligible, fact dropped", async () => {
+    // A floor-ELIGIBLE deterministic feed hit (would normally flip the floor)
+    // on an indicator that ALSO hits a warninglist. Suppression forces the
+    // match floor-ineligible: known_ioc_hit stays false, the deterministic hit
+    // is retained as floor-ineligible evidence (explainable/audited), and its
+    // narrative fact is removed (fact set ⊆ evidence set).
+    await importFeodo(feedPool, FRESH);
+    await importWarninglist(feedPool);
+    await seedStory(customerPool, "1201", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1201",
+      optsWithPolicies(authPool, feedPool, customerPool, [
+        ...FLOORING,
+        NEGATIVE,
+      ]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(1);
+    expect(result.factCount).toBe(0);
+
+    const { rows: story } = await customerPool.query<{
+      known_ioc_hit: boolean;
+    }>(
+      `SELECT known_ioc_hit FROM story
+        WHERE story_id = 1201 AND story_version = 'v1'`,
+    );
+    expect(story[0].known_ioc_hit).toBe(false);
+
+    // Evidence retained but floor-ineligible.
+    const { rows: ev } = await customerPool.query<{
+      hit_type: string;
+      floor_eligible: boolean;
+    }>(
+      `SELECT hit_type, floor_eligible FROM story_ioc_evidence
+        WHERE story_id = 1201 AND story_version = 'v1'`,
+    );
+    expect(ev).toHaveLength(1);
+    expect(ev[0].hit_type).toBe("deterministic_ioc");
+    expect(ev[0].floor_eligible).toBe(false);
+
+    // No narrative fact survives.
+    const { rows: facts } = await customerPool.query(
+      `SELECT 1 FROM story_enrichment_fact
+        WHERE story_id = 1201 AND story_version = 'v1'`,
+    );
+    expect(facts).toHaveLength(0);
+  });
+
+  it("warninglisted soft hit: dropped from both evidence and facts, drop logged", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      // An above-gate soft match (normally promoted to evidence + kept as a
+      // fact) on a warninglisted indicator: dropped from BOTH surfaces.
+      await importSoft(feedPool, SOFT_A.sourcePolicyId, 0.9);
+      await importWarninglist(feedPool);
+      await seedStory(customerPool, "1202", { resp_addr: "45.66.230.5" });
+
+      const result = await runStoryEnrichment(
+        CUSTOMER_ID,
+        "1202",
+        optsWithPolicies(authPool, feedPool, customerPool, [SOFT_A, NEGATIVE]),
+      );
+      expect(result.knownIocHit).toBe(false);
+      expect(result.evidenceCount).toBe(0);
+      expect(result.factCount).toBe(0);
+
+      const { rows: ev } = await customerPool.query(
+        `SELECT 1 FROM story_ioc_evidence
+          WHERE story_id = 1202 AND story_version = 'v1'`,
+      );
+      expect(ev).toHaveLength(0);
+      const { rows: facts } = await customerPool.query(
+        `SELECT 1 FROM story_enrichment_fact
+          WHERE story_id = 1202 AND story_version = 'v1'`,
+      );
+      expect(facts).toHaveLength(0);
+
+      // The drop is observable, with no raw indicator leaked.
+      const logged = infoSpy.mock.calls.find((c) =>
+        String(c[0]).includes("suppressed by negative layer"),
+      );
+      expect(logged).toBeTruthy();
+      expect(JSON.stringify(logged)).not.toContain("45.66.230.5");
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("monotonic-floor safety: a negative source alone never creates a hit", async () => {
+    // Only a warninglist hits the indicator (no positive feed at all). It must
+    // never synthesize a positive match or flip the floor.
+    await importWarninglist(feedPool);
+    await seedStory(customerPool, "1203", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1203",
+      optsWithPolicies(authPool, feedPool, customerPool, [NEGATIVE]),
+    );
+    expect(result.knownIocHit).toBe(false);
+    expect(result.evidenceCount).toBe(0);
+  });
+
+  it("a registered negative source that does not hit leaves the floor unchanged", async () => {
+    // The negative source is registered but the indicator is NOT warninglisted,
+    // so suppression is a no-op: the floor fires exactly as without it.
+    await importFeodo(feedPool, FRESH);
+    await importWarninglist(feedPool, "203.0.113.200"); // a DIFFERENT IP
+    await seedStory(customerPool, "1204", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1204",
+      optsWithPolicies(authPool, feedPool, customerPool, [
+        ...FLOORING,
+        NEGATIVE,
+      ]),
+    );
+    expect(result.knownIocHit).toBe(true);
+    expect(result.coverageStatus).toBe("complete");
+    expect(result.evidenceCount).toBe(1);
+    expect(result.factCount).toBe(1);
+  });
+
+  it("coverage is unaffected by a registered negative source", async () => {
+    // With only the negative source registered (deterministicCoverage:false),
+    // there are zero relevant deterministic IP sources, so an indicator that
+    // hits the warninglist still reports complete coverage — the negative
+    // source does not count toward (or against) coverage.
+    await importWarninglist(feedPool);
+    await seedStory(customerPool, "1205", { resp_addr: "45.66.230.5" });
+
+    const result = await runStoryEnrichment(
+      CUSTOMER_ID,
+      "1205",
+      optsWithPolicies(authPool, feedPool, customerPool, [NEGATIVE]),
+    );
+    expect(result.coverageStatus).toBe("complete");
   });
 
   it("clears stale non-floor rows on a successful zero-evidence rerun, keeps floor", async () => {

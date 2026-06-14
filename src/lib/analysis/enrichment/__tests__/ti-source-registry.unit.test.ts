@@ -84,6 +84,81 @@ describe("registerTiSource", () => {
   });
 });
 
+describe("registerTiSource polarity invariants (#599)", () => {
+  /** A valid negative (warninglist) descriptor: no hitType, no coverage/floor. */
+  const NEGATIVE_DESCRIPTOR: TiSourceDescriptor = {
+    sourcePolicyId: "zzz-test/warninglist",
+    label: "Test Warninglist",
+    polarity: "negative",
+    entityTypes: ["IP"],
+    deterministicCoverage: false,
+    maxAge: 1234,
+    floorEligible: false,
+    parse: "ip-blocklist",
+    entityType: "IP",
+  };
+
+  it("accepts a valid negative source (no hitType, no coverage/floor)", async () => {
+    const { registerTiSource, getTiSourceDescriptor } = await import(
+      "../sources/registry"
+    );
+    expect(() => registerTiSource({ ...NEGATIVE_DESCRIPTOR })).not.toThrow();
+    expect(getTiSourceDescriptor("zzz-test/warninglist")?.polarity).toBe(
+      "negative",
+    );
+  });
+
+  it("rejects a negative source that declares a hitType", async () => {
+    const { registerTiSource } = await import("../sources/registry");
+    expect(() =>
+      registerTiSource({
+        ...NEGATIVE_DESCRIPTOR,
+        hitType: "deterministic_ioc",
+      }),
+    ).toThrow(/must not declare a hitType/);
+  });
+
+  it("rejects a negative source with deterministicCoverage or floorEligible", async () => {
+    const { registerTiSource } = await import("../sources/registry");
+    expect(() =>
+      registerTiSource({ ...NEGATIVE_DESCRIPTOR, deterministicCoverage: true }),
+    ).toThrow(/deterministicCoverage:false and floorEligible:false/);
+    expect(() =>
+      registerTiSource({
+        ...NEGATIVE_DESCRIPTOR,
+        sourcePolicyId: "zzz-test/warninglist-2",
+        floorEligible: true,
+      }),
+    ).toThrow(/deterministicCoverage:false and floorEligible:false/);
+  });
+
+  it("rejects a positive source that omits a hitType", async () => {
+    const { registerTiSource } = await import("../sources/registry");
+    expect(() =>
+      registerTiSource({
+        sourcePolicyId: "zzz-test/no-hittype",
+        label: "Missing hitType",
+        entityTypes: ["IP"],
+        deterministicCoverage: true,
+        maxAge: 1234,
+        floorEligible: false,
+        parse: "ip-blocklist",
+        entityType: "IP",
+      }),
+    ).toThrow(/must declare a hitType/);
+  });
+
+  it("propagates negative polarity to the derived SourcePolicy", async () => {
+    const { registerTiSource } = await import("../sources/registry");
+    registerTiSource({ ...NEGATIVE_DESCRIPTOR });
+    const { LOCAL_FEED_POLICIES } = await import("../local-feed-enricher");
+    const policy = LOCAL_FEED_POLICIES.find(
+      (p) => p.sourcePolicyId === "zzz-test/warninglist",
+    );
+    expect(policy?.polarity).toBe("negative");
+  });
+});
+
 describe("a registered source is discoverable through every derived accessor", () => {
   it("appears in the policy list, catalog, fixture map, and parse dispatch", async () => {
     // Register the fixture BEFORE the deriving modules evaluate, so their

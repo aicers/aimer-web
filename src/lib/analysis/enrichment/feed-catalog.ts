@@ -19,7 +19,7 @@ import {
   getTiSourceDescriptor,
   type TiSourceFetchConfig,
 } from "./sources/registry";
-import type { EntityType, HitType } from "./types";
+import type { EntityType, HitType, SourcePolarity } from "./types";
 
 // Re-exported from the registry, which now owns these (the catalog is a derived
 // view). Kept exported here so `feed-fetch` / `feed-upload` importers are
@@ -42,8 +42,17 @@ export interface Tier1FeedSource {
   parse: FeedParseKind;
   /** Default entity type for the parsed rows. */
   entityType: EntityType;
-  /** Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. */
-  hitType: HitType;
+  /**
+   * Source polarity (RFC 0003 F5, #599). Omitted ⇒ `positive`. Propagated to
+   * the upload / self-fetch `RawFeedPayload` so a negative source imports
+   * negative rows in those supply modes too.
+   */
+  polarity?: SourcePolarity;
+  /**
+   * Intrinsic match type — Tier-1 IOC feeds are `deterministic_ioc`. Absent for
+   * a `negative` source (its rows carry no `hit_type`).
+   */
+  hitType?: HitType;
   /** Optional classification tag for the rows. */
   classification?: string;
   /** Staleness bound (ms) — a snapshot older than this is `stale`. */
@@ -66,6 +75,7 @@ export const TIER1_FEED_SOURCES: readonly Tier1FeedSource[] =
     label: descriptor.label,
     parse: descriptor.parse,
     entityType: descriptor.entityType,
+    polarity: descriptor.polarity,
     hitType: descriptor.hitType,
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,
@@ -83,6 +93,7 @@ export function getTier1FeedSource(
     label: descriptor.label,
     parse: descriptor.parse,
     entityType: descriptor.entityType,
+    polarity: descriptor.polarity,
     hitType: descriptor.hitType,
     classification: descriptor.classification,
     maxAge: descriptor.maxAge,

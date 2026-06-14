@@ -36,11 +36,22 @@ CREATE TABLE ioc_feed_snapshot (
     match_value       TEXT,
     -- CIDR network for range matching (NULL for exact entries).
     cidr              CIDR,
-    -- Intrinsic to the match: a curated known-bad listing is
+    -- Intrinsic to a POSITIVE match: a curated known-bad listing is
     -- `deterministic_ioc`; a noisy/score feed would be `soft_reputation`
-    -- and can never drive the floor.
-    hit_type          TEXT         NOT NULL
-        CHECK (hit_type IN ('deterministic_ioc', 'soft_reputation')),
+    -- and can never drive the floor. NULL for NEGATIVE rows (see `polarity`
+    -- and the cross-column CHECK below): a warninglist entry is neither
+    -- `deterministic_ioc` nor `soft_reputation`, so it carries no hit_type.
+    hit_type          TEXT,
+    -- RFC 0003 F5 negative layer (#599): a source's rows are either a
+    -- positive known-bad/known-noisy signal (`positive`, the default — every
+    -- existing source) or a negative known-good/known-noisy signal
+    -- (`negative`, MISP-warninglist style) that suppresses / down-weights an
+    -- indicator's positive matches. A negative row MUST NEVER feed
+    -- `known_ioc_hit`: it contributes only a suppression signal, never a
+    -- positive match. Defaulting to `positive` keeps every existing row /
+    -- source unchanged.
+    polarity          TEXT         NOT NULL DEFAULT 'positive'
+        CHECK (polarity IN ('positive', 'negative')),
     classification    TEXT,
     confidence        DOUBLE PRECISION,
     -- Optional per-row report-level context (RFC 0003 F6, #594): vendor IOC
@@ -53,7 +64,22 @@ CREATE TABLE ioc_feed_snapshot (
     feed_hash         TEXT,
     source_updated_at TIMESTAMPTZ,
     imported_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    CHECK ((match_value IS NULL) <> (cidr IS NULL))
+    CHECK ((match_value IS NULL) <> (cidr IS NULL)),
+    -- Tie `hit_type` to `polarity` (#599): `hit_type` is meaningful only for a
+    -- positive match, so a positive row carries one of the enum values
+    -- (NOT NULL) and a negative row carries none (NULL). This keeps positive
+    -- rows under exactly today's `hit_type NOT NULL` enum while relaxing the
+    -- column to allow the negative case.
+    -- The explicit `hit_type IS NOT NULL` is load-bearing: a bare
+    -- `hit_type IN (...)` against a NULL yields UNKNOWN, and a CHECK admits
+    -- UNKNOWN, so a positive row with NULL hit_type would slip through without
+    -- it.
+    CHECK (
+        (polarity = 'positive'
+            AND hit_type IS NOT NULL
+            AND hit_type IN ('deterministic_ioc', 'soft_reputation'))
+        OR (polarity = 'negative' AND hit_type IS NULL)
+    )
 );
 
 -- Exact-match lookups: scoped by source + entity type, then by value.

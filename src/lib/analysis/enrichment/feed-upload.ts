@@ -65,6 +65,7 @@ export function buildManualUploadPayload(args: {
     sourcePolicyId: source.sourcePolicyId,
     parse: source.parse,
     entityType: source.entityType,
+    polarity: source.polarity,
     hitType: source.hitType,
     classification: source.classification,
     content: args.content,

@@ -28,6 +28,17 @@ export type HitType = "deterministic_ioc" | "soft_reputation";
 export type HashType = "MD5" | "SHA1" | "SHA256";
 
 /**
+ * Source polarity (RFC 0003 F5 negative layer, #599). A `positive` source's
+ * entries are known-bad/known-noisy signals that may become positive matches
+ * (the default — every existing source). A `negative` source's entries are
+ * known-good/known-noisy signals (MISP warninglists: public DNS resolvers,
+ * CDNs, bogons, top-sites) that SUPPRESS / down-weight an indicator's positive
+ * matches. A negative entry must never become a positive `EnrichmentMatch` and
+ * must never feed `known_ioc_hit` — it contributes only a suppression signal.
+ */
+export type SourcePolarity = "positive" | "negative";
+
+/**
  * Per-source failure (RFC interface `EnricherError`). `kind` enumerates the
  * failure classes a source can report; `sourcePolicyId` ties it back to the
  * governing policy.
@@ -143,6 +154,32 @@ export interface EnrichmentMatch {
 }
 
 /**
+ * A negative-layer (warninglist) hit for one indicator from one negative
+ * source (RFC 0003 F5, #599). This is a SUPPRESSION SIGNAL, not a positive
+ * match: it carries no `hitType` (a warninglist entry is neither
+ * `deterministic_ioc` nor `soft_reputation`) and no `floorEligible` (a
+ * negative source can never drive the floor). It lands on
+ * `EnrichmentResult.negativeMatches`, never on `matches[]`, so a negative
+ * source cannot leak in as a positive match. Its presence for an indicator is
+ * what triggers the suppression pass over that indicator's positive matches.
+ */
+export interface NegativeMatch {
+  /** Provenance / citation, e.g. "misp/warninglists". */
+  source: string;
+  /** Which source-policy entry governs this negative source. */
+  sourcePolicyId: string;
+  /** Source-native label, e.g. "public-dns", "cdn", "tlds". */
+  classification?: string;
+  confidence?: number;
+  /** Feed version / list id. */
+  sourceVersion?: string;
+  /** Content hash of the matched feed snapshot (audit). */
+  feedHash?: string;
+  /** When the matched feed snapshot was last refreshed (freshness/stale). */
+  sourceUpdatedAt?: string;
+}
+
+/**
  * Per-source coverage signal, reported for EVERY source the enricher is
  * responsible for — INCLUDING a clean no-hit (`matches: []`, no error). This
  * is the authoritative input to `coverageStatus`: without it a no-hit
@@ -204,6 +241,15 @@ export interface EnrichmentResult {
   indicator: NormalizedIndicator;
   /** `[]` when no source hit. */
   matches: EnrichmentMatch[];
+  /**
+   * Negative-layer (warninglist) hits for this indicator (RFC 0003 F5, #599).
+   * Optional — a positive source omits it (≡ `[]`); only a `negative` source
+   * populates it. A negative hit lands HERE, never on `matches[]`, so a
+   * negative source can never leak in as a positive match. Carried through the
+   * dispatch merge to `MergedEnrichmentResult`, where the suppression pass
+   * reads it to suppress / down-weight this indicator's positive matches.
+   */
+  negativeMatches?: NegativeMatch[];
   /** Narrative facts for C1. */
   facts: EnrichmentFact[];
   /** Per-source failures. */

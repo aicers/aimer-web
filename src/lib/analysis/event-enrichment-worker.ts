@@ -12,7 +12,11 @@
 //   2. extracts + normalizes indicators from that payload (recovering
 //      tokenized customer-asset IPs via the event redaction map), reusing
 //      `extractIndicators`,
-//   3. dispatches each through the Tier-1 dispatcher (#427),
+//   3. dispatches each through the Tier-1 dispatcher (#427), then applies the
+//      negative-layer suppression pass (#599) over the merged result BEFORE the
+//      floor / evidence loop: a warninglisted indicator has its soft matches
+//      dropped and its deterministic matches forced floor-ineligible (the event
+//      path has no fact channel), the drop logged scoped to the event,
 //   4. derives the per-event verdict `known_ioc_hit` = OR over any match
 //      where `matchSatisfiesFloor` (the v1 per-event floor === the story
 //      floor; RFC 0003 consumer ④), monotonic — an unavailable source never
@@ -50,6 +54,7 @@ import { PgFeedStore } from "./enrichment/feed-store";
 import { extractIndicators } from "./enrichment/indicator-extraction";
 import { buildLocalFeedDispatcher } from "./enrichment/local-feed-enricher";
 import { matchSatisfiesFloor } from "./enrichment/source-policy";
+import { applyNegativeSuppression } from "./enrichment/suppression";
 import type { CoverageStatus } from "./enrichment/types";
 import {
   buildRecover,
@@ -261,7 +266,27 @@ async function enrichLooseEvent(
     rawEvent,
     recover,
   )) {
-    const merged = await dispatcher.dispatch(indicator);
+    const dispatched = await dispatcher.dispatch(indicator);
+    // RFC 0003 F5 (#599) — negative-layer suppression over the merged result,
+    // BEFORE the floor / evidence loop. No-op without a negative hit (so the
+    // positive-only event path is unchanged); when warninglisted, soft matches
+    // are dropped and deterministic matches forced floor-ineligible. The event
+    // path has no fact channel (#489), so the suppression's fact effect is
+    // moot here; the decisions are scoped + logged for observability.
+    const { result: merged, decisions } = applyNegativeSuppression(dispatched);
+    for (const decision of decisions) {
+      console.info(
+        "[event-enrichment-worker] match suppressed by negative layer " +
+          "(warninglisted indicator)",
+        {
+          sourcePolicyId: decision.sourcePolicyId,
+          hitType: decision.hitType,
+          confidence: decision.confidence,
+          action: decision.action,
+          eventKey,
+        },
+      );
+    }
     coverage = worseCoverage(coverage, merged.coverage.status);
     for (const match of merged.matches) {
       // The v1 per-event floor mirrors the story floor exactly: a match

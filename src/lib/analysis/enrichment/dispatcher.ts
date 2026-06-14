@@ -18,6 +18,7 @@ import type {
   EnrichmentFact,
   EnrichmentMatch,
   MergedEnrichmentResult,
+  NegativeMatch,
   NormalizedIndicator,
   SourceOutcome,
 } from "./types";
@@ -87,6 +88,10 @@ export class EnrichmentDispatcher {
     );
 
     let matches: EnrichmentMatch[] = [];
+    // RFC 0003 F5 (#599): negative-layer (warninglist) hits, merged on their
+    // own channel — NEVER concatenated into `matches`, so a negative source
+    // can never leak in as a positive match. The suppression pass reads these.
+    const negativeMatches: NegativeMatch[] = [];
     const facts: EnrichmentFact[] = [];
     const errors: EnricherError[] = [];
     const outcomes: SourceOutcome[] = [];
@@ -101,6 +106,9 @@ export class EnrichmentDispatcher {
       if (settled.status === "fulfilled") {
         const result = settled.value;
         matches.push(...result.matches);
+        if (result.negativeMatches) {
+          negativeMatches.push(...result.negativeMatches);
+        }
         facts.push(...result.facts);
         errors.push(...result.errors);
         outcomes.push(...result.outcomes);
@@ -180,6 +188,7 @@ export class EnrichmentDispatcher {
     return {
       indicator,
       matches,
+      negativeMatches,
       facts,
       errors,
       outcomes,
