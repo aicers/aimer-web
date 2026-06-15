@@ -31,9 +31,10 @@
 // `attachments/` (live web-shell source), `scripts/` tooling, and `*.yar` rule
 // files match NO `files` rule — they are never fetched (the enforce-by-default
 // binary / rule-file skip). The repo is pinned at a commit `ref` so the fixture
-// tree is reproducible; a keyless GitHub fetch (60 req/hr) covers the 1 h
-// cadence floor, with an optional operator token a separate concern.
-// `floorEligible: false` pending RFC 0003 OQ9.
+// tree is reproducible. Keyless fetch still works but is rate-limited (the
+// GitHub REST budget is 60 req/hr shared per source IP across all seven vendor
+// repos); the optional shared GitHub token (`authKeyName`, #650) lifts that to
+// 5,000 req/hr. `floorEligible: false` pending RFC 0003 OQ9.
 
 import {
   FEED_MAX_AGE_MS,

@@ -25,10 +25,11 @@
 // newlines — deferred), and the `.md` appendices (their "indicators" are host
 // artifacts — file paths / registry keys / DLL names — not network IOCs).
 //
-// The repo is pinned at a commit `ref` so the fixture tree is reproducible. A
-// keyless fetch (60 req/hr) is ample for the 1 h cadence floor; an operator
-// GitHub token (`authKeyName`) is a separate concern. `floorEligible: false`
-// pending RFC 0003 OQ9.
+// The repo is pinned at a commit `ref` so the fixture tree is reproducible.
+// Keyless fetch still works but is rate-limited (the GitHub REST budget is
+// 60 req/hr shared per source IP across all seven vendor repos); the optional
+// shared GitHub token (`authKeyName`, #650) lifts that to 5,000 req/hr.
+// `floorEligible: false` pending RFC 0003 OQ9.
 
 import {
   FEED_MAX_AGE_MS,
