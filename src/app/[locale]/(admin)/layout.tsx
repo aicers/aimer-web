@@ -9,6 +9,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  ShieldQuestion,
   UserSearch,
   Users,
 } from "lucide-react";
@@ -68,6 +69,15 @@ function useAdminNavItems(tiFeedsActive: boolean): NavItem[] {
       href: `/${locale}/admin/suspicious-activity`,
       label: t("suspiciousActivity"),
       icon: ShieldAlert,
+    },
+    // The CVE refresh surface is independent of `TI_FEED_MODE` and of
+    // `CVE_ENRICHMENT_ENABLED`; its GET never 404s, so — unlike Threat Feeds —
+    // it is rendered UNCONDITIONALLY and relies on route/page permission
+    // enforcement, consistent with the rest of the nav.
+    {
+      href: `/${locale}/admin/cve-feeds`,
+      label: t("cveFeeds"),
+      icon: ShieldQuestion,
     },
     {
       href: `/${locale}/admin`,
