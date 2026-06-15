@@ -1,0 +1,6 @@
+= Gamaredon (fixture)
+
+This AsciiDoc narrative is the dominant ESET format, but the allowlist EXCLUDES
+`.adoc` from parsing in v1 (network IOCs in the prose are a deferred follow-up).
+The engine must NEVER fetch this blob. It deliberately carries a sentinel token
+that must not reach the snapshot: c2.should-never-be-fetched.test

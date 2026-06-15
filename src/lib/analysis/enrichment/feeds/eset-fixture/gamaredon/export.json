@@ -1,0 +1,4 @@
+{
+  "_comment": "MISP export (fixture sentinel) — a .json file the allowlist must NEVER fetch. MISP-format parsing is deferred. Sentinel token that must not reach the snapshot:",
+  "sentinel": "misp.should-never-be-fetched.test"
+}
