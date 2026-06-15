@@ -1,0 +1,2 @@
+Sentinel stand-in for a JPEG asset under images/. Excluded by the allowlist
+(no image rule); never fetched. Marker: banner-image.never.test

@@ -1,0 +1,2 @@
+Sentinel stand-in for a PDF report. Excluded by the allowlist (no .pdf rule);
+never fetched. Marker: report-pdf.never.test

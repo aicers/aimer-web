@@ -349,6 +349,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         floorEligible: false,
       },
       {
+        sourcePolicyId: "prodaft/malware-ioc",
+        label: "PRODAFT (MIT)",
+        entityTypes: ["IP", "DOMAIN", "URL", "HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
         sourcePolicyId: "spamhaus/drop",
         label: "Spamhaus DROP",
         entityTypes: ["IP"],

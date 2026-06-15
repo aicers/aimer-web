@@ -27,8 +27,9 @@ const ONE_HOUR = 60 * 60 * 1000;
 
 // Catalog fetchable sources: feodo/urlhaus/urlhaus-payloads (5 min floor),
 // spamhaus/drop, the four botvrij/* lists, the three phishing-database/* lists,
-// and the unit42/threat-intel + eset/malware-ioc + volexity/threat-intel
-// vendor repos (1 h floor). spamhaus/edrop is NOT fetchable.
+// and the unit42/threat-intel + eset/malware-ioc + volexity/threat-intel +
+// prodaft/malware-ioc vendor repos (1 h floor). spamhaus/edrop is NOT
+// fetchable.
 const FEODO = "abuse.ch/feodo";
 const URLHAUS = "abuse.ch/urlhaus";
 const URLHAUS_PAYLOADS = "abuse.ch/urlhaus-payloads";
@@ -44,6 +45,7 @@ const PHISHING_URL = "phishing-database/url";
 const UNIT42 = "unit42/threat-intel";
 const ESET = "eset/malware-ioc";
 const VOLEXITY = "volexity/threat-intel";
+const PRODAFT = "prodaft/malware-ioc";
 
 const FETCHABLE = [
   FEODO,
@@ -60,6 +62,7 @@ const FETCHABLE = [
   UNIT42,
   ESET,
   VOLEXITY,
+  PRODAFT,
 ];
 
 const NOW = new Date("2026-06-13T12:00:00.000Z");

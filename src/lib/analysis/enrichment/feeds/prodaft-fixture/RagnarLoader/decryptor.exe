@@ -1,0 +1,6 @@
+This sentinel stands in for a LIVE PRODAFT decryptor .exe in the upstream repo.
+It is plain text on purpose: the engine's binary guard keys on the file PATH
+(no `.exe` allowlist rule), not on magic bytes, so no MZ header is needed to
+prove the blob is never fetched. If this file were ever read, the marker token
+should-never-be-fetched and the fake indicators 203.0.113.66 and
+evil-decryptor.never.test would leak into the imported rows.
