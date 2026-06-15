@@ -207,7 +207,7 @@ it is a 1 h courtesy floor:
 | Source | Endpoint (variant) | Auth-Key | Cadence floor |
 | --- | --- | --- | --- |
 | `abuse.ch/feodo` | Feodo recommended plain-text IP blocklist | — | 5 min |
-| `abuse.ch/urlhaus` | URLhaus URL CSV export | required | 5 min |
+| `abuse.ch/urlhaus` | URLhaus recent-URLs CSV export (`files/exports/…/recent.csv`) | required | 5 min |
 | `abuse.ch/urlhaus-payloads` | URLhaus payloads CSV export | required | 5 min |
 | `botvrij/ip` | Botvrij `ioclist.ip-dst.raw` + `ioclist.ip-src.raw` | — | 1 h |
 | `botvrij/domain` | Botvrij `ioclist.domain.raw` + `ioclist.hostname.raw` | — | 1 h |

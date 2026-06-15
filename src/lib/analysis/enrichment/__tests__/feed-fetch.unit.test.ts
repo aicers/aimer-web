@@ -114,7 +114,7 @@ describe("cadence floor", () => {
 describe("resolveFetchUrls (URLhaus Auth-Key path substitution)", () => {
   const config = {
     urls: [
-      "https://urlhaus-api.abuse.ch/v2/urls/exports/{AUTH_KEY}/recent.csv",
+      "https://urlhaus-api.abuse.ch/v2/files/exports/{AUTH_KEY}/recent.csv",
     ],
     cadenceFloorMs: FIVE_MIN,
     parse: "urlhaus-csv" as const,
@@ -123,13 +123,13 @@ describe("resolveFetchUrls (URLhaus Auth-Key path substitution)", () => {
 
   it("substitutes the Auth-Key into the URL path", () => {
     expect(resolveFetchUrls(config, "secret-key")).toEqual([
-      "https://urlhaus-api.abuse.ch/v2/urls/exports/secret-key/recent.csv",
+      "https://urlhaus-api.abuse.ch/v2/files/exports/secret-key/recent.csv",
     ]);
   });
 
   it("url-encodes the Auth-Key", () => {
     expect(resolveFetchUrls(config, "a/b c")).toEqual([
-      "https://urlhaus-api.abuse.ch/v2/urls/exports/a%2Fb%20c/recent.csv",
+      "https://urlhaus-api.abuse.ch/v2/files/exports/a%2Fb%20c/recent.csv",
     ]);
   });
 
