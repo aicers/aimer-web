@@ -3,6 +3,7 @@
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AuthKeyEntries } from "@/components/admin/auth-key-entries";
 import { Timestamp } from "@/components/timestamp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -317,16 +318,6 @@ function SelfFetchView() {
   const [error, setError] = useState<string | null>(null);
   const [fetching, setFetching] = useState<string | null>(null);
 
-  // The write-only secret entries shown above the table. `activeAuthKeyName`
-  // is the entry whose set/replace dialog is open (null = closed), mirroring
-  // `uploadTarget`; each entry is driven by the generic `authKeyName`/
-  // `authKeySet` status mechanism rather than a per-source hardcode.
-  const [activeAuthKeyName, setActiveAuthKeyName] = useState<string | null>(
-    null,
-  );
-  const [authKeyValue, setAuthKeyValue] = useState("");
-  const [authKeySaving, setAuthKeySaving] = useState(false);
-
   // Schedule form state. `scheduleEnabled` / `intervalMinutes` are the edited
   // (draft) values; `fetchStatus` seeds them from the stored schedule on each
   // load. `savedScheduleEnabled` mirrors the PERSISTED `enabled` flag and only
@@ -410,8 +401,6 @@ function SelfFetchView() {
       errorMessage: t("githubTokenError"),
     },
   ];
-  const activeEntry =
-    authKeyEntries.find((e) => e.keyName === activeAuthKeyName) ?? null;
 
   const handleFetch = async (source: SelfFetchSourceStatus) => {
     setFetching(source.sourcePolicyId);
@@ -449,35 +438,6 @@ function SelfFetchView() {
       );
     } finally {
       setFetching(null);
-    }
-  };
-
-  const handleSaveAuthKey = async () => {
-    if (!activeEntry || authKeyValue.length === 0) return;
-    setAuthKeySaving(true);
-    try {
-      await adminFetch("/api/admin/ti-feed/auth-key", {
-        method: "PUT",
-        body: JSON.stringify({
-          keyName: activeEntry.keyName,
-          authKey: authKeyValue,
-        }),
-      });
-      setActiveAuthKeyName(null);
-      setAuthKeyValue("");
-      showToast(activeEntry.savedMessage, "success");
-      await fetchStatus();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        window.location.href = "/api/admin-auth/sign-in";
-        return;
-      }
-      showToast(
-        err instanceof ApiError ? err.message : activeEntry.errorMessage,
-        "error",
-      );
-    } finally {
-      setAuthKeySaving(false);
     }
   };
 
@@ -576,34 +536,14 @@ function SelfFetchView() {
       )}
 
       {!loading && !error && (
-        <div className="space-y-3">
-          {authKeyEntries.map((entry) => {
-            const keySet = isAuthKeySet(entry.keyName);
-            return (
-              <div
-                key={entry.keyName}
-                className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3"
-              >
-                <div>
-                  <p className="text-sm font-medium text-foreground">
-                    {entry.title}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {keySet ? entry.setMessage : entry.unsetMessage}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setActiveAuthKeyName(entry.keyName)}
-                >
-                  {keySet ? entry.replaceButton : entry.setButton}
-                </Button>
-              </div>
-            );
-          })}
-        </div>
+        <AuthKeyEntries
+          entries={authKeyEntries}
+          isAuthKeySet={isAuthKeySet}
+          endpoint="/api/admin/ti-feed/auth-key"
+          valueField="authKey"
+          onSaved={fetchStatus}
+          showToast={showToast}
+        />
       )}
 
       {loading && (
@@ -708,47 +648,6 @@ function SelfFetchView() {
           </Table>
         </div>
       )}
-
-      <Dialog
-        open={activeEntry !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setActiveAuthKeyName(null);
-            setAuthKeyValue("");
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{activeEntry?.title}</DialogTitle>
-            <DialogDescription>{activeEntry?.description}</DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            <input
-              type="password"
-              aria-label={activeEntry?.title}
-              value={authKeyValue}
-              onChange={(e) => setAuthKeyValue(e.target.value)}
-              placeholder={activeEntry?.placeholder}
-              className="block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
-            />
-          </div>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline" disabled={authKeySaving}>
-                {tCommon("cancel")}
-              </Button>
-            </DialogClose>
-            <Button
-              type="button"
-              disabled={authKeySaving || authKeyValue.length === 0}
-              onClick={handleSaveAuthKey}
-            >
-              {authKeySaving ? tCommon("loading") : tCommon("save")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
