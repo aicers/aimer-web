@@ -102,7 +102,16 @@ export type FeedParseKind =
   // indicators embedded inside prose (vendor-repo blog notes, READMEs), where
   // `generic-list` (one-line-equals-one-indicator) cannot reach them. Configured
   // via `FreeTextParseConfig` (refang on by default for defanged prose).
-  | "free-text";
+  | "free-text"
+  // MISP warninglists negative layer (RFC 0003 F5, #615) — the first
+  // `polarity: "negative"` source's bespoke parser. Its `content` is a JSON
+  // ARRAY of `list.json` objects (`[{ type, list }, …]`), not a line- or
+  // text-oriented body, so none of the kinds above can express it. The parser
+  // flattens every list into one row set, branching per list on `type`
+  // (`cidr` → cidr rows; `string`/`hostname` → exact IP rows;
+  // `substring`/`regex`/unknown → whole-list skip), and stamps each row's
+  // `classification` with its source list's `name`.
+  | "misp-warninglist";
 
 /**
  * Config for the `generic-list` parser (#593): one indicator per line, with

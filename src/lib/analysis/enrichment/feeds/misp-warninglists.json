@@ -1,0 +1,34 @@
+[
+  {
+    "name": "List of known IPv4 public DNS resolvers",
+    "version": 20260101,
+    "description": "Known public DNS resolver IPs (exact string match). A non-IP entry is present to exercise the v1 IP-only per-entry skip.",
+    "type": "string",
+    "matching_attributes": ["ip-src", "ip-dst"],
+    "list": ["1.1.1.1", "8.8.8.8", "9.9.9.9", "resolver.example.test"]
+  },
+  {
+    "name": "List of known Cloudflare IP ranges",
+    "version": 20260101,
+    "description": "CDN / cloud IP ranges plus a bogon (CIDR match).",
+    "type": "cidr",
+    "matching_attributes": ["ip-src", "ip-dst"],
+    "list": ["103.21.244.0/22", "192.0.2.0/24"]
+  },
+  {
+    "name": "Top 1000 websites from Cisco Umbrella",
+    "version": 20260101,
+    "description": "Substring hostname list — the store has no substring match path, so the whole list is skipped silently.",
+    "type": "substring",
+    "matching_attributes": ["domain", "hostname"],
+    "list": ["example.com", "example.net"]
+  },
+  {
+    "name": "Specific expression to ignore",
+    "version": 20260101,
+    "description": "Regex list — the store has no regex match path, so the whole list is skipped silently.",
+    "type": "regex",
+    "matching_attributes": ["ip-src", "ip-dst"],
+    "list": ["^192\\.0\\.2\\.[0-9]+$"]
+  }
+]
