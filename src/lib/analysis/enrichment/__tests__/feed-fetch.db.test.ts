@@ -13,6 +13,8 @@
 //   - `probe()` semantics for self-fetch (fetch-state is the authority).
 
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import { deflateRawSync } from "node:zlib";
 import type { Pool } from "pg";
 import {
   afterAll,
@@ -41,6 +43,7 @@ import {
   readFeedFetchState,
   SelfFetchFeedSource,
 } from "../feed-fetch";
+import { computeFeedHash, importFeedSnapshotStreaming } from "../feed-import";
 import { PgFeedStore } from "../feed-store";
 
 const FEED_MIGRATIONS_DIR = join(process.cwd(), "migrations", "feed");
@@ -62,6 +65,74 @@ function resp(
     ok: status >= 200 && status < 300,
     headers: { get: (n) => lower[n.toLowerCase()] ?? null },
     text: async () => body,
+    // The buffered `text()` path ignores `body`; the streaming tests below
+    // build their own response with a real `body` stream.
+    body: null,
+  };
+}
+
+/**
+ * Build a single-entry ZIP archive (local file header + DEFLATE data + central
+ * directory + EOCD) so the streaming reader's "ignore trailing bytes after the
+ * sole entry" path is exercised. `flags` lets a test set the encrypted bit.
+ */
+function makeZip(name: string, content: string, flags = 0): Buffer {
+  const body = Buffer.from(content, "utf8");
+  const data = deflateRawSync(body);
+  const nameBuf = Buffer.from(name, "utf8");
+
+  const lfh = Buffer.alloc(30);
+  lfh.writeUInt32LE(0x04034b50, 0);
+  lfh.writeUInt16LE(20, 4);
+  lfh.writeUInt16LE(flags, 6);
+  lfh.writeUInt16LE(8, 8); // method = DEFLATE
+  lfh.writeUInt32LE(0, 14); // crc (inflateRaw does not validate it)
+  lfh.writeUInt32LE(data.length, 18);
+  lfh.writeUInt32LE(body.length, 22);
+  lfh.writeUInt16LE(nameBuf.length, 26);
+  const localPart = Buffer.concat([lfh, nameBuf, data]);
+
+  const cdh = Buffer.alloc(46);
+  cdh.writeUInt32LE(0x02014b50, 0);
+  cdh.writeUInt16LE(20, 4);
+  cdh.writeUInt16LE(20, 6);
+  cdh.writeUInt16LE(flags, 8);
+  cdh.writeUInt16LE(8, 10);
+  cdh.writeUInt32LE(data.length, 20);
+  cdh.writeUInt32LE(body.length, 24);
+  cdh.writeUInt16LE(nameBuf.length, 28);
+  const central = Buffer.concat([cdh, nameBuf]);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(localPart.length, 16);
+
+  return Buffer.concat([localPart, central, eocd]);
+}
+
+/**
+ * A 200 response whose body is a streamed buffer (a ZIP archive). `text()`
+ * throws so a test fails loudly if the streaming path ever buffers the body.
+ */
+function streamResp(
+  buf: Buffer,
+  headers: Record<string, string> = {},
+): FetchResponseLike {
+  const lower: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
+  return {
+    status: 200,
+    ok: true,
+    headers: { get: (n) => lower[n.toLowerCase()] ?? null },
+    text: async () => {
+      throw new Error("streaming path must not buffer the body via text()");
+    },
+    body: Readable.toWeb(
+      Readable.from([buf]),
+    ) as unknown as ReadableStream<Uint8Array>,
   };
 }
 
@@ -309,6 +380,191 @@ describe.skipIf(!hasPostgres)("self-fetch engine (DB)", () => {
     const { source } = engine([], T0);
     const outcome = await source.fetchAndImport("spamhaus/edrop");
     expect(outcome.status).toBe("error");
+  });
+
+  // --- streaming-decompress path (URLhaus payloads ZIP, #657) ---------------
+
+  const T_PAST_6H = new Date("2026-06-12T07:00:00.000Z"); // > 6 h floor
+  const PAYLOADS = "abuse.ch/urlhaus-payloads";
+  const PAYLOAD_CSV =
+    "# firstseen,urlhaus_link,filetype,md5_hash,sha256_hash,signature\n" +
+    '"2026-05-01 00:00:00","https://urlhaus.abuse.ch/url/1/","exe",' +
+    '"0123456789abcdef0123456789abcdef",' +
+    '"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",' +
+    '"Emotet"\n' +
+    '"2026-05-01 00:00:00","https://urlhaus.abuse.ch/url/2/","dll",' +
+    '"fedcba9876543210fedcba9876543210",' +
+    '"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",' +
+    '"Qakbot"\n';
+
+  it("streams a ZIP body, imports HASH rows without buffering it", async () => {
+    const { source, urls } = engine(
+      [streamResp(makeZip("payload.txt", PAYLOAD_CSV), { etag: '"z1"' })],
+      T0,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    // 2 data rows × (md5 + sha256) = 4 distinct hashes.
+    expect(outcome).toEqual({ status: "imported", rowCount: 4 });
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+    // The Auth-Key reaches the new payloads ZIP endpoint.
+    expect(urls[0]).toContain("/exports/TEST-KEY/payload.csv.zip");
+
+    const state = await readFeedFetchState(feedPool, PAYLOADS);
+    expect(state).toMatchObject({
+      lastStatus: "ok",
+      etag: '"z1"',
+      lastRowCount: 4,
+      lastFetchedAt: T0.toISOString(),
+    });
+  });
+
+  it("computes feed_hash DB-side matching computeFeedHash (no in-JS sort)", async () => {
+    const { source } = engine([streamResp(makeZip("p.txt", PAYLOAD_CSV))], T0);
+    await source.fetchAndImport(PAYLOADS);
+
+    const { rows } = await feedPool.query<{
+      match_value: string;
+      feed_hash: string;
+    }>(
+      `SELECT match_value, feed_hash FROM ioc_feed_snapshot
+         WHERE source_policy_id = $1`,
+      [PAYLOADS],
+    );
+    const expected = computeFeedHash(
+      rows.map((r) => ({ matchValue: r.match_value })),
+    );
+    expect(new Set(rows.map((r) => r.feed_hash))).toEqual(new Set([expected]));
+  });
+
+  it("a ZIP with data but zero parseable rows is failure→stale", async () => {
+    // Seed a good snapshot first.
+    const seeded = engine([streamResp(makeZip("p.txt", PAYLOAD_CSV))], T0);
+    await seeded.source.fetchAndImport(PAYLOADS);
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+
+    // A junk inner body (data lines, no recognizable hash rows) with a 200.
+    const { source } = engine(
+      [streamResp(makeZip("p.txt", "<html>503 error</html>\nnope\n"))],
+      T_PAST_6H,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome.status).toBe("error");
+
+    // Good snapshot + freshness preserved (decays to stale, not fresh+empty).
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+    const state = await readFeedFetchState(feedPool, PAYLOADS);
+    expect(state).toMatchObject({
+      lastStatus: "error",
+      lastFetchedAt: T0.toISOString(),
+    });
+  });
+
+  it("a 304 on the payloads ZIP leaves the snapshot untouched", async () => {
+    const seeded = engine(
+      [streamResp(makeZip("p.txt", PAYLOAD_CSV), { etag: '"z1"' })],
+      T0,
+    );
+    await seeded.source.fetchAndImport(PAYLOADS);
+
+    const { source } = engine([resp(304, "")], T_PAST_6H);
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome).toEqual({ status: "not-modified" });
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+    const state = await readFeedFetchState(feedPool, PAYLOADS);
+    expect(state).toMatchObject({
+      lastStatus: "not-modified",
+      etag: '"z1"',
+      lastFetchedAt: T_PAST_6H.toISOString(),
+    });
+  });
+
+  it("a comment-only ZIP legitimately imports 0 rows", async () => {
+    const { source } = engine(
+      [streamResp(makeZip("p.txt", "# no payloads today\n"))],
+      T0,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome).toEqual({ status: "imported", rowCount: 0 });
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(0);
+  });
+
+  it("an encrypted ZIP entry is rejected (failure→stale)", async () => {
+    const seeded = engine([streamResp(makeZip("p.txt", PAYLOAD_CSV))], T0);
+    await seeded.source.fetchAndImport(PAYLOADS);
+
+    const { source } = engine(
+      [streamResp(makeZip("p.txt", PAYLOAD_CSV, 0x1))],
+      T_PAST_6H,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome.status).toBe("error");
+    if (outcome.status === "error") {
+      expect(outcome.error).toContain("encrypted");
+    }
+    // Good snapshot preserved.
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+  });
+
+  it("a non-ZIP 200 body is rejected (not a ZIP archive)", async () => {
+    const { source } = engine(
+      [streamResp(Buffer.from("definitely not a zip archive body"))],
+      T0,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome.status).toBe("error");
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(0);
+  });
+
+  it("enforces the raised (6 h) cadence floor for payloads", async () => {
+    const seeded = engine([streamResp(makeZip("p.txt", PAYLOAD_CSV))], T0);
+    await seeded.source.fetchAndImport(PAYLOADS);
+
+    // +6 min is within the 6 h floor — must skip without fetching.
+    const { source, urls } = engine(
+      [streamResp(makeZip("p.txt", PAYLOAD_CSV))],
+      T_PAST_FLOOR,
+    );
+    const outcome = await source.fetchAndImport(PAYLOADS);
+    expect(outcome.status).toBe("too-soon");
+    expect(urls).toHaveLength(0);
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(4);
+  });
+
+  it("dedups DB-side and batches across many rows (small batchSize)", async () => {
+    // Six DISTINCT sha256-shaped hashes, each yielded TWICE and interleaved
+    // with a comment + blank line. With batchSize=2 the staging load flushes
+    // repeatedly and the hash cursor pages more than once, so the multi-batch
+    // flush loop, the DB-side `SELECT DISTINCT` dedup, and the multi-page hash
+    // cursor are all exercised (the engine fixtures fit in a single batch).
+    const distinct = Array.from({ length: 6 }, (_, i) =>
+      i.toString(16).padStart(64, "0"),
+    );
+    async function* lines(): AsyncGenerator<string> {
+      yield "# header comment";
+      for (const h of distinct) {
+        yield h;
+        yield ""; // blank line — skipped by the data-line filter
+        yield h.toUpperCase(); // duplicate after HASH normalization (lowercased)
+      }
+    }
+    const { rowCount, feedHash } = await importFeedSnapshotStreaming(feedPool, {
+      sourcePolicyId: PAYLOADS,
+      entityType: "HASH",
+      hitType: "deterministic_ioc",
+      classification: "malware_payload",
+      sourceUpdatedAt: T0.toISOString(),
+      lines: lines(),
+      extractValues: (line) => [line],
+      batchSize: 2,
+    });
+
+    expect(rowCount).toBe(6);
+    expect(await snapshotCount(feedPool, PAYLOADS)).toBe(6);
+    // DB-ordered hash matches the in-memory computeFeedHash over the same
+    // distinct (lowercased) values — no in-JS sort, COLLATE "C" byte order.
+    expect(feedHash).toBe(
+      computeFeedHash(distinct.map((matchValue) => ({ matchValue }))),
+    );
   });
 });
 

@@ -196,21 +196,25 @@ on a **background schedule** that is **disabled by default** (see
      token entry that #650 added to the secret panel beside the URLhaus Auth-Key;
      refreshing the self-fetch status table to include PRODAFT is tracked in #646,
      the Zscaler ThreatLabz row in #647, and the Meta row in #649 (foldable into
-     one recapture, which must also show the GitHub token entry). -->
+     one recapture, which must also show the GitHub token entry). The same
+     recapture must also show the abuse.ch/urlhaus-payloads row's new endpoint
+     (`files/exports/…/payload.csv.zip`), which #657 changed from the URL feed's
+     `recent.csv` export. -->
 
 ### Per-source fetch configuration
 
 Each source has a built-in fetch URL and a **hard cadence floor** — the minimum
 time between fetches, which nothing overrides. The floor avoids over-fetching
-each upstream provider: for the abuse.ch / Spamhaus exports it guards against an
-IP ban (5 min), and for the Botvrij.eu and GitHub-hosted Phishing.Database lists
-it is a 1 h courtesy floor:
+each upstream provider: for the abuse.ch / Spamhaus "recent" exports it guards
+against an IP ban (5 min), for the URLhaus payloads full dump it is a 6 h floor
+(the export is a large complete archive, not a delta), and for the Botvrij.eu
+and GitHub-hosted Phishing.Database lists it is a 1 h courtesy floor:
 
 | Source | Endpoint (variant) | Auth-Key | Cadence floor |
 | --- | --- | --- | --- |
 | `abuse.ch/feodo` | Feodo recommended plain-text IP blocklist | — | 5 min |
 | `abuse.ch/urlhaus` | URLhaus recent-URLs CSV export (`files/exports/…/recent.csv`) | required | 5 min |
-| `abuse.ch/urlhaus-payloads` | URLhaus payloads CSV export | required | 5 min |
+| `abuse.ch/urlhaus-payloads` | URLhaus payloads CSV export, streamed (`files/exports/…/payload.csv.zip`) | required | 6 h |
 | `botvrij/ip` | Botvrij `ioclist.ip-dst.raw` + `ioclist.ip-src.raw` | — | 1 h |
 | `botvrij/domain` | Botvrij `ioclist.domain.raw` + `ioclist.hostname.raw` | — | 1 h |
 | `botvrij/url` | Botvrij `ioclist.url.raw` | — | 1 h |
@@ -224,6 +228,17 @@ Spamhaus **EDROP was merged into DROP** (2024), so `spamhaus/edrop` is no
 longer fetched independently — it shows as **Merged into DROP** with no Fetch
 Now button. DROP is fetched as NDJSON (one JSON object per line) over the
 `drop_v4.json` + `drop_v6.json` endpoints.
+
+The URLhaus **payloads** export is a different shape from the other sources: it
+is a **ZIP archive** (`payload.csv.zip`) whose single inner CSV decompresses to
+several gigabytes — far past what can be held in memory. aimer-web therefore
+**streams** it end to end (inflate the ZIP entry, parse line by line, load a
+staging table, then replace the snapshot in one transaction) rather than
+buffering it. The Auth-Key stays embedded in the URL path. Because it is a large
+full dump, its cadence floor is **6 h** (not the URL feed's 5 min), a long
+per-source fetch timeout covers the multi-hundred-megabyte download, and an
+unchanged dump is skipped via the conditional `If-None-Match` / `If-Modified-Since`
+revalidation (a `304` leaves the snapshot untouched).
 
 Botvrij.eu publishes general IOC coverage (IP / domain / URL / hash) as plain
 per-type lists. aimer-web fetches the bare **`.raw`** variant of each list (one
