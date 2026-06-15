@@ -27,6 +27,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "spamhaus/drop",
       "spamhaus/edrop",
       "unit42/threat-intel",
+      "volexity/threat-intel",
     ]);
   });
 

@@ -1,0 +1,5 @@
+value,entity_type,description
+bad.volexity.test,hostname,Primary C2 domain referenced alongside benign-decoy.example.com
+185.220.101.50,ipaddress,Beacon source observed in the campaign
+hxxp://malware.volexity.test/payload,url,Stage-1 payload URL (report also links hxxps://decoy.example.org/post)
+"1111111111111111111111111111111111111111111111111111111111111111,22222222222222222222222222222222,3333333333333333333333333333333333333333",file,Dropper sample (sha256/md5/sha1 packed in one cell)

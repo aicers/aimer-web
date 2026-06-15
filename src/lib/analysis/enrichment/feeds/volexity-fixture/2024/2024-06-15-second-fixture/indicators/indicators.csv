@@ -1,0 +1,3 @@
+value,type,notes
+phish.volexity.test,hostname,Credential phishing host (2018-style header drift)
+hxxp://c2.volexity.test/gate,url,Second-stage C2 endpoint

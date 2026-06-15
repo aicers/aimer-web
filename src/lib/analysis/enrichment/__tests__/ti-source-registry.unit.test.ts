@@ -372,6 +372,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         maxAge: FEED_MAX_AGE_MS,
         floorEligible: false,
       },
+      {
+        sourcePolicyId: "volexity/threat-intel",
+        label: "Volexity (BSD-2-Clause)",
+        entityTypes: ["DOMAIN", "IP", "HASH", "URL"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
     ]);
   });
 });
