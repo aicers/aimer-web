@@ -3,17 +3,18 @@
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
 URL / hash lists, the Phishing.Database domain / URL / IP lists, and the CERT
-Polska Warning List) plus the **Palo Alto Unit 42**, **ESET**, **Volexity**, and
-**PRODAFT** vendor IOC repositories that observed indicators are matched locally
-against. It also manages the **MISP warninglists** false-positive suppression
-layer (see
+Polska Warning List) plus the **Palo Alto Unit 42**, **ESET**, **Volexity**,
+**PRODAFT**, and **Zscaler ThreatLabz** vendor IOC repositories that observed
+indicators are matched locally against. It also manages the **MISP warninglists**
+false-positive suppression layer (see
 [Negative sources (false-positive suppression)](#negative-sources-false-positive-suppression)).
 Navigate to **Threat Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
-(such as Unit 42, ESET, Volexity, or PRODAFT) is instead a whole Git repository
-of per-report files that is imported as one unit. Vendor repositories are
-**self-fetch only** — see [Vendor IOC repositories](#vendor-ioc-repositories).
+(such as Unit 42, ESET, Volexity, PRODAFT, or Zscaler ThreatLabz) is instead a
+whole Git repository of per-report files that is imported as one unit. Vendor
+repositories are **self-fetch only** — see
+[Vendor IOC repositories](#vendor-ioc-repositories).
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
 or fetch); the `ti-feed:read` permission is required to view the status table.
@@ -140,7 +141,8 @@ This is also how a source that was cleared by an empty upload appears: status
 is derived purely from the imported rows, so a cleared source looks identical
 to one that was never uploaded.
 
-Vendor IOC repositories (Unit 42, Volexity, PRODAFT) are **not** listed here. A repository is a
+Vendor IOC repositories (Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz)
+are **not** listed here. A repository is a
 whole tree of files imported as one unit, so a single uploaded file could only
 ever write a partial, context-stripped snapshot — manual upload of a vendor
 repository is therefore rejected, and the source is hidden from this table.
@@ -190,8 +192,9 @@ on a **background schedule** that is **disabled by default** (see
 ![Threat Feeds page in self-fetch mode](../assets/admin-ti-feeds-selffetch-table.png)
 
 <!-- Screenshot placeholder: the capture above predates the prodaft/malware-ioc
-     row; refreshing the self-fetch status table to include PRODAFT is tracked in
-     #646. -->
+     and zscaler/threatlabz rows; refreshing the self-fetch status table to
+     include PRODAFT is tracked in #646 and the Zscaler ThreatLabz row in #647
+     (foldable into one recapture). -->
 
 ### Per-source fetch configuration
 
@@ -244,6 +247,7 @@ source's snapshot with every file's rows in one transaction.
 | `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | none (keyless) | 1 h |
 | `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | none (keyless) | 1 h |
 | `prodaft/malware-ioc` | `prodaft/malware-ioc` | MIT — **retain the PRODAFT copyright notice** | none (keyless) | 1 h |
+| `zscaler/threatlabz` | `threatlabz/iocs` | MIT — **attribution to Zscaler ThreatLabz** | none (keyless) | 1 h |
 
 Notes specific to vendor repositories:
 
@@ -269,7 +273,14 @@ Notes specific to vendor repositories:
     parsed — indicators are pulled from their Markdown tables (file hashes) and
     fenced code blocks (IPs / domains / URLs); its PDF reports, scripts,
     multi-megabyte CSVs, images, and other Markdown appendices are deliberately
-    **not** fetched or parsed.
+    **not** fetched or parsed. For Zscaler ThreatLabz, only the per-campaign
+    `.txt` lists are parsed (refanged the same way). Its Cobalt Strike `.json`
+    configs, source templates (`.php`/`.hta`), and YARA rules (`.yara`/`.yar`)
+    are **not** fetched, and — critically — neither is the victim check-in
+    **`.csv` telemetry** (`Username,Location,Timestamp,IP address,Email`), which
+    is PII, not indicators. One known-bad `.txt` (`qakbot/payload_urls.txt`, a
+    concatenated-domain data defect) is also excluded so its run-together domain
+    is never imported.
 - **Live malware is never fetched.** The allowlist enforces this by file path,
     not by inspecting bytes: any blob whose path matches no rule is never
     downloaded. This matters most for PRODAFT, whose repository ships LIVE
@@ -282,23 +293,24 @@ Notes specific to vendor repositories:
     columns (`description` / `notes`) are never scanned, so a benign domain or URL
     mentioned in a description is **not** ingested as an indicator.
 - **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
-    accepted for Unit 42, ESET, Volexity, or PRODAFT — and relies on GitHub's
-    unauthenticated rate limit, which is ample for the 1 h cadence floor. An
-    operator GitHub token to lift that rate limit is **not** wired up in this
-    release; token support is deferred to a follow-up.
+    accepted for Unit 42, ESET, Volexity, PRODAFT, or Zscaler ThreatLabz — and
+    relies on GitHub's unauthenticated rate limit, which is ample for the 1 h
+    cadence floor. An operator GitHub token to lift that rate limit is **not**
+    wired up in this release; token support is deferred to a follow-up.
 - **Report context.** Each imported indicator carries the per-file GitHub blob
     URL and the report context the repository encodes: for Unit 42 the campaign
     id where the filename carries one (for example `CL-STA-0910`); for ESET the
     malware family from the enclosing folder name (for example `gamaredon`, or
-    the mixed-case `GhostRedirector`); and for PRODAFT the investigation folder
+    the mixed-case `GhostRedirector`); for PRODAFT the investigation folder
     codename (for example `RagnarLoader`) stored verbatim as the actor — the
-    codenames do not map to public actor names. This is surfaced as the
-    indicator's provenance.
-- **Attribution.** ESET is published under **BSD-2-Clause** and PRODAFT under
-    **MIT**, both of which require the copyright notice to be retained, so their
-    source labels carry the **"ESET (BSD-2-Clause)"** and **"PRODAFT (MIT)"**
-    attributions by construction (surfaced wherever a matched indicator cites the
-    source).
+    codenames do not map to public actor names; and for Zscaler ThreatLabz the
+    per-campaign folder name (for example `qakbot`) as the campaign id. This is
+    surfaced as the indicator's provenance.
+- **Attribution.** ESET is published under **BSD-2-Clause** and PRODAFT and
+    Zscaler ThreatLabz under **MIT**, both of which require the copyright notice
+    to be retained, so their source labels carry the **"ESET (BSD-2-Clause)"**,
+    **"PRODAFT (MIT)"**, and **"Zscaler ThreatLabz (MIT)"** attributions by
+    construction (surfaced wherever a matched indicator cites the source).
 
 ### URLhaus Auth-Key
 
