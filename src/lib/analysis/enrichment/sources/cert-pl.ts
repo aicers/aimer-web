@@ -21,11 +21,13 @@
 // question does not bite. `selfFetchUnavailable` is omitted (not `"merged"`), so
 // the admin self-fetch table renders the correct "Fixture only" badge.
 //
-// fetch: pending OQ9 grant re-confirm — add once re-confirmed:
+// fetch: pending OQ9 grant re-confirm — add once re-confirmed. The
+// `cadenceFloorMs` is deliberately NOT chosen here; pick it in the live-fetch
+// follow-up (the CERT page recommends a 5-min refresh, while a 1-h courtesy
+// floor — `ONE_HOUR_MS`, imported there — is also acceptable):
 //   fetch: {
 //     urls: ["https://hole.cert.pl/domains/v2/domains.txt"],
-//     cadenceFloorMs: ONE_HOUR_MS, // GitHub-style courtesy floor (the CERT page
-//                                  // recommends 5 min; either is acceptable)
+//     cadenceFloorMs: /* choose at follow-up */,
 //     parse: "generic-list",
 //     parseConfig: { kind: "generic-list" },
 //   }
