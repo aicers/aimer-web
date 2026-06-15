@@ -1,0 +1,2 @@
+Tactic	Technique	Procedure	Indicator	Notes
+Drive To Site	Spoof A Domain	Hosted a lookalike news site	tsv-mirror.should-never-be-fetched.test	A .tsv mirror of the CSV — excluded by the allowlist, never fetched

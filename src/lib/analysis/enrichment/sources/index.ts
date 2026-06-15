@@ -18,6 +18,7 @@ import "./cert-pl";
 import "./eset";
 import "./huntress";
 import "./infoblox";
+import "./meta";
 import "./misp-warninglists";
 import "./phishing-database";
 import "./prodaft";
