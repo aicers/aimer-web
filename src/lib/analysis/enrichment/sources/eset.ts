@@ -36,13 +36,16 @@
 // only.
 //
 // The repo is pinned at a commit `ref` so the fixture tree is reproducible
-// (default branch is `master`, NOT `main`). A keyless fetch (60 req/hr) is ample
-// for the 1 h cadence floor; an operator GitHub token (`authKeyName`) is a
-// separate concern. BSD-2-Clause requires attribution — the `label` carries it
-// (#591 citation surface). `floorEligible: false` pending RFC 0003 OQ9.
+// (default branch is `master`, NOT `main`). Keyless fetch still works but is
+// rate-limited (the GitHub REST budget is 60 req/hr shared per source IP across
+// all seven vendor repos); the optional shared GitHub token (`authKeyName`,
+// #650) lifts that to 5,000 req/hr. BSD-2-Clause requires attribution — the
+// `label` carries it (#591 citation surface). `floorEligible: false` pending
+// RFC 0003 OQ9.
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -89,6 +92,9 @@ const ESET: TiSourceDescriptor = {
     // Per-row provenance: the per-file GitHub blob URL (#591 citation surface),
     // independent of which context groups matched.
     reportUrlTemplate: "https://github.com/{owner}/{repo}/blob/{ref}/{path}",
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "eset-fixture",
   },
 };

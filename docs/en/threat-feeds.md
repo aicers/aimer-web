@@ -192,9 +192,11 @@ on a **background schedule** that is **disabled by default** (see
 ![Threat Feeds page in self-fetch mode](../assets/admin-ti-feeds-selffetch-table.png)
 
 <!-- Screenshot placeholder: the capture above predates the prodaft/malware-ioc,
-     zscaler/threatlabz, and meta/threat-research rows; refreshing the self-fetch
-     status table to include PRODAFT is tracked in #646, the Zscaler ThreatLabz
-     row in #647, and the Meta row in #649 (foldable into one recapture). -->
+     zscaler/threatlabz, and meta/threat-research rows, and the optional GitHub
+     token entry that #650 added to the secret panel beside the URLhaus Auth-Key;
+     refreshing the self-fetch status table to include PRODAFT is tracked in #646,
+     the Zscaler ThreatLabz row in #647, and the Meta row in #649 (foldable into
+     one recapture, which must also show the GitHub token entry). -->
 
 ### Per-source fetch configuration
 
@@ -243,12 +245,13 @@ source's snapshot with every file's rows in one transaction.
 
 | Source | Repository | License | Auth-Key | Cadence floor |
 | --- | --- | --- | --- | --- |
-| `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | none (keyless) | 1 h |
-| `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | none (keyless) | 1 h |
-| `prodaft/malware-ioc` | `prodaft/malware-ioc` | MIT — **retain the PRODAFT copyright notice** | none (keyless) | 1 h |
-| `zscaler/threatlabz` | `threatlabz/iocs` | MIT — **attribution to Zscaler ThreatLabz** | none (keyless) | 1 h |
-| `huntress/threat-intel` | `huntresslabs/threat-intel` | MIT — **retain Huntress attribution** | none (keyless) | 1 h |
-| `meta/threat-research` | `facebook/threat-research` | MIT (Meta Platforms, Inc.) | none (keyless) | 1 h |
+| `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain — no attribution required) | optional (shared GitHub token) | 1 h |
+| `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | optional (shared GitHub token) | 1 h |
+| `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | optional (shared GitHub token) | 1 h |
+| `prodaft/malware-ioc` | `prodaft/malware-ioc` | MIT — **retain the PRODAFT copyright notice** | optional (shared GitHub token) | 1 h |
+| `zscaler/threatlabz` | `threatlabz/iocs` | MIT — **attribution to Zscaler ThreatLabz** | optional (shared GitHub token) | 1 h |
+| `huntress/threat-intel` | `huntresslabs/threat-intel` | MIT — **retain Huntress attribution** | optional (shared GitHub token) | 1 h |
+| `meta/threat-research` | `facebook/threat-research` | MIT (Meta Platforms, Inc.) | optional (shared GitHub token) | 1 h |
 
 Notes specific to vendor repositories:
 
@@ -316,12 +319,16 @@ Notes specific to vendor repositories:
     is suggestive context, not a confirmed indicator hit. The `.tsv` mirror, the
     legacy `.json` / STIX exports, Markdown notes, and `signatures/yara/` rule
     files are excluded and never fetched.
-- **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
-    accepted for Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz,
-    Huntress, or Meta — and relies on GitHub's unauthenticated rate limit, which
-    is ample for the 1 h cadence floor. An operator GitHub token to lift that
-    rate limit is **not** wired up in this release; token support is deferred to
-    a follow-up.
+- **Optional GitHub token.** Fetching works **keyless** — without a token, all
+    vendor repositories use GitHub's unauthenticated REST rate limit of **60
+    requests/hour, shared across the source IP** (so refreshing several vendors
+    in one window can exhaust it). Configuring a single, optional, shared GitHub
+    token lifts that limit to **5,000 requests/hour**. One token is sufficient
+    for all seven vendors — every repository is public, so a **no-scope
+    (public-read) Personal Access Token** suffices, and the 5,000/hour budget is
+    per-account and far above the daily cadence. The token is **never required**;
+    a vendor source's freshness is independent of whether it is set. See
+    [GitHub token](#github-token) below.
 - **Report context.** Each imported indicator carries the per-file GitHub blob
     URL and the report context the repository encodes: for Unit 42 the campaign
     id where the filename carries one (for example `CL-STA-0910`); for ESET the
@@ -358,6 +365,27 @@ of the download URL path per the current URLhaus export API.
     reports an error).
 
 ![Set URLhaus Auth-Key dialog](../assets/admin-ti-feeds-selffetch-authkey-dialog.png)
+
+### GitHub token
+
+The vendor IOC repositories are fetched from GitHub's REST API, which rate-limits
+unauthenticated requests to **60 per hour, shared across the source IP**. Because
+all seven vendor sources share that single budget, refreshing more than one
+vendor in the same hour can exhaust it (subsequent fetches return `HTTP 403`).
+
+Configuring an **optional, shared GitHub token** lifts the limit to **5,000
+requests per hour** — far more than the daily cadence needs.
+
+- The token is **optional**. Without it the vendor sources still fetch, just
+    under the lower keyless limit; whether a token is set never changes a vendor
+    source's freshness or coverage.
+- **One token covers all seven vendors.** Every repository is public, so a
+    **no-scope (public-read) Personal Access Token** is sufficient — no
+    `repo` or other scope is needed. Do not create a token per vendor.
+- Use the **Set token** / **Replace token** control at the top of the page to
+    submit it. The token is **encrypted at rest** (OpenBao Transit envelope
+    encryption) and is **write-only**: it is never displayed again and is never
+    logged. The panel only shows whether a token is currently configured.
 
 ### Fetching a feed
 

@@ -31,12 +31,15 @@
 // Codenames do not map to public actor names, so the folder codename is stored
 // verbatim as `actor` context via `contextPattern`. The repo is pinned at a
 // `master` SHA (the default branch is `master`, NOT `main` — `main` 422-fails
-// on the GitHub API) so the fixture tree is reproducible. A keyless fetch is
-// ample for the 1 h cadence floor; an operator GitHub token (`authKeyName`) is
-// a separate concern. `floorEligible: false` pending RFC 0003 OQ9.
+// on the GitHub API) so the fixture tree is reproducible. Keyless fetch still
+// works but is rate-limited (the GitHub REST budget is 60 req/hr shared per
+// source IP across all seven vendor repos); the optional shared GitHub token
+// (`authKeyName`, #650) lifts that to 5,000 req/hr. `floorEligible: false`
+// pending RFC 0003 OQ9.
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -80,6 +83,9 @@ const PRODAFT: TiSourceDescriptor = {
     contextPattern: "^(?<actor>[^/]+)/",
     // Per-row provenance: the per-file GitHub blob URL (#591 citation surface).
     reportUrlTemplate: "https://github.com/{owner}/{repo}/blob/{ref}/{path}",
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "prodaft-fixture",
   },
 };

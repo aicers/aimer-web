@@ -41,6 +41,7 @@
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -102,6 +103,9 @@ const HUNTRESS: TiSourceDescriptor = {
     // `20260611_kali365-IoCs.csv`, so a lowercase-only class would silently fail
     // to match and drop the incident context for that (high-yield) CSV.
     contextPattern: "_(?<campaign>[A-Za-z0-9-]+)\\.csv$",
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "huntress-fixture",
   },
 };
