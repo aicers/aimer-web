@@ -1,0 +1,15 @@
+title: Suspicious Loader Execution
+id: 00000000-0000-0000-0000-000000000000
+status: experimental
+description: Detection rule only — NOT an atomic IOC source. Sentinel below must
+  never reach the snapshot (this file matches no allowlist rule, so it is never
+  fetched).
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: '\loader.exe'
+    CommandLine|contains: 'should-never-be-fetched.example'
+  condition: selection
+level: high

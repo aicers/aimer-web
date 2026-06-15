@@ -1,0 +1,4 @@
+# Track the `.DS_Store` sentinel: the vendor-repo allowlist test asserts this
+# macOS junk file matches no rule and is skipped (never fetched), so the fixture
+# tree must actually contain it — override the repo-wide `.DS_Store` ignore here.
+!.DS_Store

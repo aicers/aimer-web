@@ -1,0 +1,5 @@
+type,data,info
+description,https://www.huntress.com/blog/kali365,Kali365 intrusion writeup
+sha256,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,kali365 loader
+domain,kali365-panel.example,operator panel
+ip,185.234.72[.]19,c2 host

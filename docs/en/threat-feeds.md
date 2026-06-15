@@ -4,16 +4,16 @@ The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
 URL / hash lists, the Phishing.Database domain / URL / IP lists, and the CERT
 Polska Warning List) plus the **Palo Alto Unit 42**, **ESET**, **Volexity**,
-**PRODAFT**, and **Zscaler ThreatLabz** vendor IOC repositories that observed
-indicators are matched locally against. It also manages the **MISP warninglists**
-false-positive suppression layer (see
+**PRODAFT**, **Zscaler ThreatLabz**, and **Huntress** vendor IOC repositories
+that observed indicators are matched locally against. It also manages the
+**MISP warninglists** false-positive suppression layer (see
 [Negative sources (false-positive suppression)](#negative-sources-false-positive-suppression)).
 Navigate to **Threat Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
-(such as Unit 42, ESET, Volexity, PRODAFT, or Zscaler ThreatLabz) is instead a
-whole Git repository of per-report files that is imported as one unit. Vendor
-repositories are **self-fetch only** — see
+(such as Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz, or Huntress) is
+instead a whole Git repository of per-report files that is imported as one unit.
+Vendor repositories are **self-fetch only** — see
 [Vendor IOC repositories](#vendor-ioc-repositories).
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
@@ -141,11 +141,11 @@ This is also how a source that was cleared by an empty upload appears: status
 is derived purely from the imported rows, so a cleared source looks identical
 to one that was never uploaded.
 
-Vendor IOC repositories (Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz)
-are **not** listed here. A repository is a
-whole tree of files imported as one unit, so a single uploaded file could only
-ever write a partial, context-stripped snapshot — manual upload of a vendor
-repository is therefore rejected, and the source is hidden from this table.
+Vendor IOC repositories (Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz,
+Huntress) are **not** listed here. A repository is a whole tree of files
+imported as one unit, so a single uploaded file could only ever write a partial,
+context-stripped snapshot — manual upload of a vendor repository is therefore
+rejected, and the source is hidden from this table.
 Vendor repositories are refreshed in `self-fetch` mode only (see
 [Vendor IOC repositories](#vendor-ioc-repositories)).
 
@@ -243,11 +243,11 @@ source's snapshot with every file's rows in one transaction.
 
 | Source | Repository | License | Auth-Key | Cadence floor |
 | --- | --- | --- | --- | --- |
-| `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain) | none (keyless) | 1 h |
 | `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | none (keyless) | 1 h |
 | `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | none (keyless) | 1 h |
 | `prodaft/malware-ioc` | `prodaft/malware-ioc` | MIT — **retain the PRODAFT copyright notice** | none (keyless) | 1 h |
 | `zscaler/threatlabz` | `threatlabz/iocs` | MIT — **attribution to Zscaler ThreatLabz** | none (keyless) | 1 h |
+| `huntress/threat-intel` | `huntresslabs/threat-intel` | MIT — **retain Huntress attribution** | none (keyless) | 1 h |
 
 Notes specific to vendor repositories:
 
@@ -292,25 +292,39 @@ Notes specific to vendor repositories:
     `file` cell that packs several hashes into one row per hash. The remaining
     columns (`description` / `notes`) are never scanned, so a benign domain or URL
     mentioned in a description is **not** ingested as an indicator.
+- **Huntress is a deliberately low-yield source.** About 90% of the Huntress
+    repository is Sigma / YARA detection rules (`.yml` / `.yar` / `.yara`) —
+    detection logic, not atomic indicators — so only its per-incident
+    `type,data,info` CSVs are parsed. Within a CSV, only rows whose `type`
+    column is an atomic-IOC type (`sha256` / `sha1` / `md5` / `ip` / `ip:port` /
+    `domain` / `url`) are kept; the metadata, signature-name, certificate-serial,
+    and host-artifact rows are skipped so their IOC-shaped cell values are not
+    mistaken for indicators. CIDR-shaped `ip` rows (e.g. `43.173.64.0/18`) are
+    also dropped: this source records only atomic host indicators, so a network
+    range is not imported as if it were the single host at its base address.
+    Indicator volume is expected to grow as Huntress adds CSVs.
 - **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
-    accepted for Unit 42, ESET, Volexity, PRODAFT, or Zscaler ThreatLabz — and
-    relies on GitHub's unauthenticated rate limit, which is ample for the 1 h
-    cadence floor. An operator GitHub token to lift that rate limit is **not**
-    wired up in this release; token support is deferred to a follow-up.
+    accepted for Unit 42, ESET, Volexity, PRODAFT, Zscaler ThreatLabz, or
+    Huntress — and relies on GitHub's unauthenticated rate limit, which is ample
+    for the 1 h cadence floor. An operator GitHub token to lift that rate limit
+    is **not** wired up in this release; token support is deferred to a
+    follow-up.
 - **Report context.** Each imported indicator carries the per-file GitHub blob
     URL and the report context the repository encodes: for Unit 42 the campaign
     id where the filename carries one (for example `CL-STA-0910`); for ESET the
     malware family from the enclosing folder name (for example `gamaredon`, or
     the mixed-case `GhostRedirector`); for PRODAFT the investigation folder
     codename (for example `RagnarLoader`) stored verbatim as the actor — the
-    codenames do not map to public actor names; and for Zscaler ThreatLabz the
-    per-campaign folder name (for example `qakbot`) as the campaign id. This is
-    surfaced as the indicator's provenance.
-- **Attribution.** ESET is published under **BSD-2-Clause** and PRODAFT and
-    Zscaler ThreatLabz under **MIT**, both of which require the copyright notice
-    to be retained, so their source labels carry the **"ESET (BSD-2-Clause)"**,
-    **"PRODAFT (MIT)"**, and **"Zscaler ThreatLabz (MIT)"** attributions by
-    construction (surfaced wherever a matched indicator cites the source).
+    codenames do not map to public actor names; for Zscaler ThreatLabz the
+    per-campaign folder name (for example `qakbot`) as the campaign id; and for
+    Huntress the incident name from the CSV filename. This is surfaced as the
+    indicator's provenance.
+- **Attribution.** ESET is published under **BSD-2-Clause** and PRODAFT,
+    Zscaler ThreatLabz, and Huntress under **MIT**, both of which require the
+    copyright notice to be retained, so their source labels carry the
+    **"ESET (BSD-2-Clause)"**, **"PRODAFT (MIT)"**, **"Zscaler ThreatLabz
+    (MIT)"**, and **"Huntress (MIT)"** attributions by construction (surfaced
+    wherever a matched indicator cites the source).
 
 ### URLhaus Auth-Key
 

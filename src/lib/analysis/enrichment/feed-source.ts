@@ -280,6 +280,16 @@ export interface FreeTextParseConfig {
    * `[at]`→`@`). Defaults to ON — vendor-repo prose is defanged by convention.
    */
   refang?: boolean;
+  /**
+   * Optional positive line-allowlist (#628): a regex string; only input lines
+   * matching it are scanned, the rest are dropped before tokenization. Absent ⇒
+   * scan every line (no behavior change for existing callers). Use it for a
+   * type-tagged CSV/list whose first column declares the row's kind — e.g.
+   * Huntress's `type,data,info` rows — to keep only atomic-IOC-type rows and
+   * thereby exclude `description`/`sig:…`/`ssl_certificate_serial`/`url_path`
+   * rows the value-shape scanner would otherwise emit as false positives.
+   */
+  keepLinePattern?: string;
 }
 
 /**

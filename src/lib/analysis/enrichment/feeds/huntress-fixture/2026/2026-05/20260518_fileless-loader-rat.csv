@@ -1,0 +1,4 @@
+type,data,info
+description,https://www.huntress.com/blog/fileless-loader-rat,Fileless loader RAT writeup
+sha256,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,rat dropper
+domain,rat-c2.example,command and control

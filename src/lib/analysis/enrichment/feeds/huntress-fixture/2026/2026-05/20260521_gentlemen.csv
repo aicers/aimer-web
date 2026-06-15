@@ -1,0 +1,15 @@
+type,data,info
+description,https://www.huntress.com/blog/gentlemen-ransomware,Gentlemen ransomware campaign analysis
+sha256,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,loader payload
+sha256,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,second stage
+ip,45.137.21[.]8,c2 host
+ip,43.173.64.0/18,scanning source network
+ip:port,193.233.202.17:44729,c2 panel
+domain,gentlemen-leak.example,leak site
+url,https://gentlemen-leak.example/login,
+sig:Defender,Ransom:Win32/BlackByte,BlackByte.SZ
+ssl_certificate_serial,00f2a1b3c4d5e6f7a8b9c0d1e2f3a4b5,tls cert serial
+url_path,/?cb=window.open,observed url path
+workstation,DESKTOP-AB12CD,compromised host
+filename,svchost32.exe,dropped binary
+password,Sup3rSecret!,recovered credential
