@@ -245,6 +245,7 @@ source's snapshot with every file's rows in one transaction.
 
 | Source | Repository | License | Auth-Key | Cadence floor |
 | --- | --- | --- | --- | --- |
+| `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain — no attribution required) | optional (shared GitHub token) | 1 h |
 | `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | optional (shared GitHub token) | 1 h |
 | `volexity/threat-intel` | `volexity/threat-intel` | BSD-2-Clause (attribution retained) | optional (shared GitHub token) | 1 h |
 | `prodaft/malware-ioc` | `prodaft/malware-ioc` | MIT — **retain the PRODAFT copyright notice** | optional (shared GitHub token) | 1 h |
