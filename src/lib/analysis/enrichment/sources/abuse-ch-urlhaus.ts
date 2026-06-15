@@ -3,9 +3,10 @@
 // Emits both URL rows and the DOMAIN host of each URL under the one
 // `abuse.ch/urlhaus` source (its policy declares `["URL", "DOMAIN"]`), so a
 // bare `host`/`dns_query` member matches the same infrastructure. The dual-row
-// emission lives in `parseFeedContent`'s `urlhaus-csv` case. Self-fetch uses
-// the URL export CSV with the Auth-Key embedded in the URL path, regenerated
-// every 5 min — floor 5 min.
+// emission lives in `parseFeedContent`'s `urlhaus-csv` case. Self-fetch pulls
+// the recent-URLs CSV from the `files/exports` family with the Auth-Key
+// embedded in the URL path (the official abuse.ch export endpoint; the older
+// `urls/exports` path 404s), regenerated every 5 min — floor 5 min.
 
 import {
   FEED_MAX_AGE_MS,
@@ -27,7 +28,7 @@ registerTiSource({
   classification: "malware_url",
   fetch: {
     urls: [
-      `https://urlhaus-api.abuse.ch/v2/urls/exports/${FETCH_AUTH_KEY_PLACEHOLDER}/recent.csv`,
+      `https://urlhaus-api.abuse.ch/v2/files/exports/${FETCH_AUTH_KEY_PLACEHOLDER}/recent.csv`,
     ],
     cadenceFloorMs: FIVE_MINUTES_MS,
     parse: "urlhaus-csv",

@@ -196,7 +196,7 @@ Phishing.Database 목록은 1시간 예의 하한입니다.
 | 소스 | 엔드포인트(변형) | Auth-Key | 케이던스 하한 |
 | --- | --- | --- | --- |
 | `abuse.ch/feodo` | Feodo 권장 일반 텍스트 IP 차단 목록 | — | 5분 |
-| `abuse.ch/urlhaus` | URLhaus URL CSV 내보내기 | 필요 | 5분 |
+| `abuse.ch/urlhaus` | URLhaus 최근 URL CSV 내보내기(`files/exports/…/recent.csv`) | 필요 | 5분 |
 | `abuse.ch/urlhaus-payloads` | URLhaus 페이로드 CSV 내보내기 | 필요 | 5분 |
 | `botvrij/ip` | Botvrij `ioclist.ip-dst.raw` + `ioclist.ip-src.raw` | — | 1시간 |
 | `botvrij/domain` | Botvrij `ioclist.domain.raw` + `ioclist.hostname.raw` | — | 1시간 |
