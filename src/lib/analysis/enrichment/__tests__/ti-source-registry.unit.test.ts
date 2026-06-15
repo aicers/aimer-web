@@ -308,6 +308,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         floorEligible: false,
       },
       {
+        sourcePolicyId: "huntress/threat-intel",
+        label: "Huntress (MIT)",
+        entityTypes: ["IP", "DOMAIN", "URL", "HASH"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
         sourcePolicyId: "infoblox/threat-intelligence",
         label: "Infoblox Threat Intelligence (CC-BY-4.0)",
         entityTypes: ["DOMAIN", "IP", "URL", "HASH"],

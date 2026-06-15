@@ -472,6 +472,62 @@ describe("parseFreeTextIocs (#603)", () => {
   });
 });
 
+describe("parseFreeTextIocs keepLinePattern allowlist (#628)", () => {
+  // A type-tagged CSV (`type,data,info`) where only atomic-IOC-type rows are
+  // wanted; the value-shape scanner alone would emit a false positive from each
+  // junk row, so the positive line-allowlist on the `type` column is what makes
+  // the result clean.
+  const CSV =
+    "description,https://blog.example/post,Some report summary\n" +
+    "sig:Defender,Trojan:Win32/Foo,BlackByte.SZ\n" +
+    "ssl_certificate_serial,00aabbccddeeff001122334455667788,cert\n" +
+    "url_path,/x?cb=window.open,observed\n" +
+    "sha256,1111111111111111111111111111111111111111111111111111111111111111,hash\n" +
+    "ip ,203.0.113.9,c2\n" +
+    "domain,evil.example,c2\n";
+  const KEEP = "^\\s*(sha256|sha1|md5|ip|ip:port|domain|url)\\s*,";
+
+  it("keeps only allowlisted-type rows, dropping the junk-type false positives", () => {
+    const rows = parseFreeTextIocs(CSV, {
+      kind: "free-text",
+      refang: true,
+      keepLinePattern: KEEP,
+    });
+    const values = rows.map((r) => r.value);
+    // The three real atomic rows survive (trailing space on the `ip ` key
+    // tolerated by the `\\s*` in the pattern).
+    expect(values).toContain(
+      "1111111111111111111111111111111111111111111111111111111111111111",
+    );
+    expect(values).toContain("203.0.113.9");
+    expect(values).toContain("evil.example");
+    // None of the four junk rows leak an indicator (the value-shape scanner
+    // glues the trailing CSV cell onto a URL, so match on substring).
+    expect(values.some((v) => v.includes("blog.example"))).toBe(false);
+    expect(values).not.toContain("BlackByte.SZ");
+    expect(values).not.toContain("00aabbccddeeff001122334455667788");
+    expect(values.some((v) => v.includes("window.open"))).toBe(false);
+    expect(rows).toHaveLength(3);
+  });
+
+  it("absent ⇒ scans every line (no behavior change for existing callers)", () => {
+    const all = parseFreeTextIocs(CSV, { kind: "free-text", refang: true });
+    // Without the allowlist the junk rows DO leak (the regression the
+    // allowlist exists to prevent): the blog URL row's value-shape token.
+    const values = all.map((r) => r.value);
+    expect(values.some((v) => v.includes("blog.example"))).toBe(true);
+    expect(values.length).toBeGreaterThan(3);
+  });
+
+  it("keep-none ⇒ no rows", () => {
+    const none = parseFreeTextIocs(CSV, {
+      kind: "free-text",
+      keepLinePattern: "^nomatch,",
+    });
+    expect(none).toEqual([]);
+  });
+});
+
 describe("parseFeedContent generic kinds → normalized rows", () => {
   it("normalizes generic-list DOMAIN rows", () => {
     expect(

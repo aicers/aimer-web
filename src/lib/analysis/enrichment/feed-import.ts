@@ -276,7 +276,20 @@ export function parseFreeTextIocs(
   config?: FreeTextParseConfig,
 ): { entityType: EntityType; value: string }[] {
   const refang = config?.refang ?? true;
-  let work = refang ? refangIndicator(text) : text;
+  // Optional positive line-allowlist (#628): keep only lines whose raw text
+  // matches `keepLinePattern`, then scan those. Applied BEFORE refang so the
+  // pattern matches the original type-column tag. Absent ⇒ keep every line.
+  const kept =
+    config?.keepLinePattern === undefined
+      ? text
+      : ((): string => {
+          const keepRe = new RegExp(config.keepLinePattern);
+          return text
+            .split(/\r?\n/)
+            .filter((line) => keepRe.test(line))
+            .join("\n");
+        })();
+  let work = refang ? refangIndicator(kept) : kept;
   const out: { entityType: EntityType; value: string }[] = [];
   const seen = new Set<string>();
   const push = (entityType: EntityType, raw: string): void => {

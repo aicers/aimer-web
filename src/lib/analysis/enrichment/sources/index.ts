@@ -16,6 +16,7 @@ import "./abuse-ch-urlhaus-payloads";
 import "./botvrij";
 import "./cert-pl";
 import "./eset";
+import "./huntress";
 import "./infoblox";
 import "./misp-warninglists";
 import "./phishing-database";
