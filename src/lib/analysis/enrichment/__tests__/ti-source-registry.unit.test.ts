@@ -228,10 +228,10 @@ describe("a registered source is discoverable through every derived accessor", (
 describe("derived SourcePolicy[] regression for the registered sources", () => {
   it("matches the previous inline LOCAL_FEED_POLICIES exactly", async () => {
     // Fresh module graph: only the real source files register. Ordering follows
-    // the registry's stable-by-id sort, so the four Botvrij policies, the ESET
-    // vendor-repo policy, the Infoblox policy, the MISP warninglists negative
-    // source, and the three Phishing.Database policies fall between the
-    // abuse.ch and Spamhaus groups.
+    // the registry's stable-by-id sort, so the four Botvrij policies, the CERT
+    // Polska policy, the ESET vendor-repo policy, the Infoblox policy, the MISP
+    // warninglists negative source, and the three Phishing.Database policies
+    // fall between the abuse.ch and Spamhaus groups.
     const { LOCAL_FEED_POLICIES } = await import("../local-feed-enricher");
     const FEED_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
     expect(LOCAL_FEED_POLICIES).toEqual([
@@ -287,6 +287,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         sourcePolicyId: "botvrij/url",
         label: "Botvrij.eu (URL)",
         entityTypes: ["URL"],
+        deterministicCoverage: true,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
+        sourcePolicyId: "cert-pl/warninglist",
+        label: "CERT Polska Warning List",
+        entityTypes: ["DOMAIN"],
         deterministicCoverage: true,
         maxAge: FEED_MAX_AGE_MS,
         floorEligible: false,
