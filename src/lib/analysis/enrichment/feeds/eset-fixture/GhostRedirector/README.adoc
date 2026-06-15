@@ -1,0 +1,7 @@
+= GhostRedirector (fixture)
+
+A mixed-case folder name (`GhostRedirector/`) proving the `contextPattern`
+folder capture is NOT case-sensitive. The per-folder `README.adoc` is excluded
+just like any other `.adoc` in v1 (no `readmeContext`), so the engine must NEVER
+fetch it. Sentinel token that must not reach the snapshot:
+readme.should-never-be-fetched.test

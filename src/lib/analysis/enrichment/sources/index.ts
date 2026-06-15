@@ -14,6 +14,7 @@ import "./abuse-ch-feodo";
 import "./abuse-ch-urlhaus";
 import "./abuse-ch-urlhaus-payloads";
 import "./botvrij";
+import "./eset";
 import "./infoblox";
 import "./misp-warninglists";
 import "./phishing-database";

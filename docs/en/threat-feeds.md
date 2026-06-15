@@ -3,15 +3,15 @@
 The Threat Feeds page lets a System Admin manage the Tier-1 threat-intelligence
 feeds (abuse.ch Feodo / URLhaus, Spamhaus DROP, the Botvrij.eu IP / domain /
 URL / hash lists, and the Phishing.Database domain / URL / IP lists) plus the
-**Palo Alto Unit 42** vendor IOC repository that observed indicators are matched
-locally against. It also manages the **MISP warninglists** false-positive
-suppression layer (see [Negative sources (false-positive
+**Palo Alto Unit 42** and **ESET** vendor IOC repositories that observed
+indicators are matched locally against. It also manages the **MISP warninglists**
+false-positive suppression layer (see [Negative sources (false-positive
 suppression)](#negative-sources-false-positive-suppression)). Navigate to **Threat
 Feeds** in the admin sidebar to open it.
 
 The flat Tier-1 feeds are single published files; a **vendor IOC repository**
-(such as Unit 42) is instead a whole Git repository of per-report files that is
-imported as one unit. Vendor repositories are **self-fetch only** — see
+(such as Unit 42 or ESET) is instead a whole Git repository of per-report files
+that is imported as one unit. Vendor repositories are **self-fetch only** — see
 [Vendor IOC repositories](#vendor-ioc-repositories).
 
 Only System Admins with the `ti-feed:write` permission can change feeds (upload
@@ -226,6 +226,7 @@ source's snapshot with every file's rows in one transaction.
 | Source | Repository | License | Auth-Key | Cadence floor |
 | --- | --- | --- | --- | --- |
 | `unit42/threat-intel` | `PaloAltoNetworks/Unit42-Threat-Intelligence-Article-Information` | The Unlicense (public domain) | none (keyless) | 1 h |
+| `eset/malware-ioc` | `eset/malware-ioc` | BSD-2-Clause — **retain ESET attribution** | none (keyless) | 1 h |
 
 Notes specific to vendor repositories:
 
@@ -238,15 +239,27 @@ Notes specific to vendor repositories:
     The repository's PDF report, Python scripts, multi-megabyte CSVs, and
     Markdown appendices are deliberately **not** fetched or parsed — their
     "indicators" are host artifacts (file paths, registry keys, DLL names), not
-    network IOCs.
+    network IOCs. For ESET, only the clean per-family `samples.sha256` hash lists
+    are parsed (one SHA256 per line, no refang — the hashes are not defanged).
+    Its AsciiDoc narrative (`.adoc`, including each folder's `README.adoc`), YARA
+    rules (`.yar`), MISP exports (`.json`), Sigma rules (`.yml`), and other files
+    are deliberately **not** fetched or parsed — the network IOCs in the prose
+    are a deferred follow-up.
 - **Keyless fetch (v1).** Fetching is keyless — no Auth-Key is configured or
-    accepted for Unit 42 — and relies on GitHub's unauthenticated rate limit,
-    which is ample for the 1 h cadence floor. An operator GitHub token to lift
-    that rate limit is **not** wired up in this release; token support is
+    accepted for Unit 42 or ESET — and relies on GitHub's unauthenticated rate
+    limit, which is ample for the 1 h cadence floor. An operator GitHub token to
+    lift that rate limit is **not** wired up in this release; token support is
     deferred to a follow-up.
 - **Report context.** Each imported indicator carries the per-file GitHub blob
-    URL and, where the filename encodes a cluster id (for example
-    `CL-STA-0910`), the campaign id — surfaced as the indicator's provenance.
+    URL and the report context the repository encodes: for Unit 42 the campaign
+    id where the filename carries one (for example `CL-STA-0910`), and for ESET
+    the malware family from the enclosing folder name (for example `gamaredon`,
+    or the mixed-case `GhostRedirector`) — surfaced as the indicator's
+    provenance.
+- **Attribution.** ESET is published under **BSD-2-Clause**, which requires the
+    copyright notice to be retained, so its source label carries the
+    **"ESET (BSD-2-Clause)"** attribution by construction (surfaced wherever a
+    matched indicator cites the source).
 
 ### URLhaus Auth-Key
 

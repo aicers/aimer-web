@@ -17,6 +17,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "botvrij/hash",
       "botvrij/ip",
       "botvrij/url",
+      "eset/malware-ioc",
       "infoblox/threat-intelligence",
       "misp/warninglists",
       "phishing-database/domain",
