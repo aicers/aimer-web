@@ -324,6 +324,94 @@ describe.skipIf(!hasPostgres)("vendor-repo importer (DB)", () => {
     }
   });
 
+  it("omits Authorization through the routed path when the token resolves to null (#650)", async () => {
+    // Complementary to the routed-token case above: with the optional GitHub
+    // token unset, the resolver returns null and NO Authorization header is
+    // attached — keyless fetch still imports (rate-limited), so freshness is
+    // independent of whether a token is stored.
+    const sourcePolicyId = "vendor/routed-keyless";
+    const vendorRepo: VendorRepoConfig = {
+      owner: "vendor",
+      repo: "keyless",
+      ref: "main",
+      authKeyName: "vendor-keyless-token",
+      files: [
+        {
+          label: "iocs-csv",
+          pathPattern: "reports/[^/]+/iocs\\.csv$",
+          parse: "csv-column",
+          parseConfig: {
+            kind: "csv-column",
+            columns: [{ name: "url", entityType: "URL" }],
+          },
+          entityType: "URL",
+        },
+      ],
+    };
+    registerTiSource({
+      sourcePolicyId,
+      label: "Routed Keyless Vendor Repo",
+      entityTypes: ["URL"],
+      deterministicCoverage: true,
+      maxAge: 2 * 24 * 60 * 60 * 1000,
+      floorEligible: false,
+      parse: "generic-list",
+      entityType: "URL",
+      hitType: "deterministic_ioc",
+      vendorRepo,
+    });
+
+    try {
+      const calls: { url: string; headers: Record<string, string> }[] = [];
+      const treeBody = JSON.stringify({
+        tree: [
+          { path: "reports/snake/iocs.csv", type: "blob", sha: "sha-csv" },
+        ],
+      });
+      const blobBody = JSON.stringify({
+        encoding: "base64",
+        content: Buffer.from("url\nhttps://c2.keyless.test/x").toString(
+          "base64",
+        ),
+      });
+      const transport: FetchTransport = async (url, init) => {
+        calls.push({ url, headers: init.headers });
+        const resp = (status: number, body: string): FetchResponseLike => ({
+          status,
+          ok: status >= 200 && status < 300,
+          headers: { get: () => null },
+          text: async () => body,
+        });
+        if (url.includes("/git/trees/")) return resp(200, treeBody);
+        if (url.includes("/git/blobs/sha-csv")) return resp(200, blobBody);
+        throw new Error(`unexpected url ${url}`);
+      };
+
+      const engine = new SelfFetchFeedSource({
+        feedPool,
+        transport,
+        // No token stored for this key name.
+        resolveAuthKey: async () => null,
+        now: () => new Date("2026-06-14T12:00:00.000Z"),
+      });
+      const outcome = await engine.fetchAndImport(sourcePolicyId);
+      expect(outcome).toEqual({ status: "imported", rowCount: 1 });
+
+      // Keyless: every request went out without an Authorization header.
+      expect(calls.length).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.headers.Authorization).toBeUndefined();
+      }
+
+      // Import still landed and freshness was recorded.
+      const state = await readFeedFetchState(feedPool, sourcePolicyId);
+      expect(state?.lastStatus).toBe("ok");
+      expect(state?.lastRowCount).toBe(1);
+    } finally {
+      unregisterTiSource(sourcePolicyId);
+    }
+  });
+
   it("re-import replaces in place (single per-source snapshot, idempotent)", async () => {
     const provider1 = new FixtureVendorRepoProvider(FIXTURE_ROOT);
     const first = await importVendorRepo(feedPool, provider1, COLLECT_INPUT);

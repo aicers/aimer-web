@@ -33,6 +33,7 @@
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -74,6 +75,9 @@ const ZSCALER: TiSourceDescriptor = {
     // Depth-1 folder name → `campaign` context key. The repo carries no report
     // link / manifest, so there is no `reportUrlTemplate`.
     contextPattern: "^(?<campaign>[^/]+)/",
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "zscaler-fixture",
   },
 };

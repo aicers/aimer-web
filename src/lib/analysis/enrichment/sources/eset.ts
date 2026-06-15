@@ -43,6 +43,7 @@
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -89,6 +90,9 @@ const ESET: TiSourceDescriptor = {
     // Per-row provenance: the per-file GitHub blob URL (#591 citation surface),
     // independent of which context groups matched.
     reportUrlTemplate: "https://github.com/{owner}/{repo}/blob/{ref}/{path}",
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "eset-fixture",
   },
 };

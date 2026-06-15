@@ -24,6 +24,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { GITHUB_VENDOR_AUTH_KEY_NAME } from "@/lib/analysis/enrichment/sources/registry";
 import { adminFetch } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/client";
 
@@ -316,7 +317,13 @@ function SelfFetchView() {
   const [error, setError] = useState<string | null>(null);
   const [fetching, setFetching] = useState<string | null>(null);
 
-  const [authKeyOpen, setAuthKeyOpen] = useState(false);
+  // The write-only secret entries shown above the table. `activeAuthKeyName`
+  // is the entry whose set/replace dialog is open (null = closed), mirroring
+  // `uploadTarget`; each entry is driven by the generic `authKeyName`/
+  // `authKeySet` status mechanism rather than a per-source hardcode.
+  const [activeAuthKeyName, setActiveAuthKeyName] = useState<string | null>(
+    null,
+  );
   const [authKeyValue, setAuthKeyValue] = useState("");
   const [authKeySaving, setAuthKeySaving] = useState(false);
 
@@ -369,9 +376,42 @@ function SelfFetchView() {
     };
   }, [fetchStatus]);
 
-  const urlhausKeySet = sources.some(
-    (s) => s.authKeyName === "urlhaus" && s.authKeySet,
-  );
+  // Whether a given secret is currently stored, derived from the generic
+  // per-source `authKeyName`/`authKeySet` status (no `urlhaus` hardcode).
+  const isAuthKeySet = (keyName: string) =>
+    sources.some((s) => s.authKeyName === keyName && s.authKeySet);
+
+  // The secret entries rendered above the table. URLhaus is required for its
+  // feeds; the GitHub token is OPTIONAL and shared by every vendor-repo source
+  // (lifts GitHub's REST rate limit 60 → 5,000/hour).
+  const authKeyEntries = [
+    {
+      keyName: "urlhaus",
+      title: t("authKeyTitle"),
+      description: t("authKeyDescription"),
+      placeholder: t("authKeyPlaceholder"),
+      setMessage: t("authKeySet"),
+      unsetMessage: t("authKeyUnset"),
+      setButton: t("authKeySetButton"),
+      replaceButton: t("authKeyReplace"),
+      savedMessage: t("authKeySaved"),
+      errorMessage: t("authKeyError"),
+    },
+    {
+      keyName: GITHUB_VENDOR_AUTH_KEY_NAME,
+      title: t("githubTokenTitle"),
+      description: t("githubTokenDescription"),
+      placeholder: t("githubTokenPlaceholder"),
+      setMessage: t("githubTokenSet"),
+      unsetMessage: t("githubTokenUnset"),
+      setButton: t("githubTokenSetButton"),
+      replaceButton: t("githubTokenReplace"),
+      savedMessage: t("githubTokenSaved"),
+      errorMessage: t("githubTokenError"),
+    },
+  ];
+  const activeEntry =
+    authKeyEntries.find((e) => e.keyName === activeAuthKeyName) ?? null;
 
   const handleFetch = async (source: SelfFetchSourceStatus) => {
     setFetching(source.sourcePolicyId);
@@ -413,16 +453,19 @@ function SelfFetchView() {
   };
 
   const handleSaveAuthKey = async () => {
-    if (authKeyValue.length === 0) return;
+    if (!activeEntry || authKeyValue.length === 0) return;
     setAuthKeySaving(true);
     try {
       await adminFetch("/api/admin/ti-feed/auth-key", {
         method: "PUT",
-        body: JSON.stringify({ keyName: "urlhaus", authKey: authKeyValue }),
+        body: JSON.stringify({
+          keyName: activeEntry.keyName,
+          authKey: authKeyValue,
+        }),
       });
-      setAuthKeyOpen(false);
+      setActiveAuthKeyName(null);
       setAuthKeyValue("");
-      showToast(t("authKeySaved"), "success");
+      showToast(activeEntry.savedMessage, "success");
       await fetchStatus();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -430,7 +473,7 @@ function SelfFetchView() {
         return;
       }
       showToast(
-        err instanceof ApiError ? err.message : t("authKeyError"),
+        err instanceof ApiError ? err.message : activeEntry.errorMessage,
         "error",
       );
     } finally {
@@ -533,23 +576,33 @@ function SelfFetchView() {
       )}
 
       {!loading && !error && (
-        <div className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3">
-          <div>
-            <p className="text-sm font-medium text-foreground">
-              {t("authKeyTitle")}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {urlhausKeySet ? t("authKeySet") : t("authKeyUnset")}
-            </p>
-          </div>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => setAuthKeyOpen(true)}
-          >
-            {urlhausKeySet ? t("authKeyReplace") : t("authKeySetButton")}
-          </Button>
+        <div className="space-y-3">
+          {authKeyEntries.map((entry) => {
+            const keySet = isAuthKeySet(entry.keyName);
+            return (
+              <div
+                key={entry.keyName}
+                className="flex items-center justify-between rounded-md border border-border bg-card px-4 py-3"
+              >
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    {entry.title}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {keySet ? entry.setMessage : entry.unsetMessage}
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setActiveAuthKeyName(entry.keyName)}
+                >
+                  {keySet ? entry.replaceButton : entry.setButton}
+                </Button>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -657,26 +710,26 @@ function SelfFetchView() {
       )}
 
       <Dialog
-        open={authKeyOpen}
+        open={activeEntry !== null}
         onOpenChange={(open) => {
           if (!open) {
-            setAuthKeyOpen(false);
+            setActiveAuthKeyName(null);
             setAuthKeyValue("");
           }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t("authKeyTitle")}</DialogTitle>
-            <DialogDescription>{t("authKeyDescription")}</DialogDescription>
+            <DialogTitle>{activeEntry?.title}</DialogTitle>
+            <DialogDescription>{activeEntry?.description}</DialogDescription>
           </DialogHeader>
           <div className="py-4">
             <input
               type="password"
-              aria-label={t("authKeyTitle")}
+              aria-label={activeEntry?.title}
               value={authKeyValue}
               onChange={(e) => setAuthKeyValue(e.target.value)}
-              placeholder={t("authKeyPlaceholder")}
+              placeholder={activeEntry?.placeholder}
               className="block w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
             />
           </div>

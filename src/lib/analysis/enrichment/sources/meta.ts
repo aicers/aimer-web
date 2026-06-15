@@ -38,6 +38,7 @@
 
 import {
   FEED_MAX_AGE_MS,
+  GITHUB_VENDOR_AUTH_KEY_NAME,
   registerTiSource,
   type TiSourceDescriptor,
 } from "./registry";
@@ -87,6 +88,9 @@ const META: TiSourceDescriptor = {
     // deterministic / floor-eligible hit.
     deterministicAllowed: false,
     // No `reportUrlTemplate` / `contextPattern` — see the module header.
+    // Optional shared GitHub token (#650): keyless still works (60 req/hr);
+    // a token lifts the shared REST limit to 5,000 req/hr.
+    authKeyName: GITHUB_VENDOR_AUTH_KEY_NAME,
     fixtureDir: "meta-fixture",
   },
 };

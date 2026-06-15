@@ -3,6 +3,7 @@ import {
   selfFetchModeActive,
   setFeedSourceSecret,
 } from "@/lib/analysis/enrichment/feed-fetch";
+import { GITHUB_VENDOR_AUTH_KEY_NAME } from "@/lib/analysis/enrichment/sources/registry";
 import { assertAuthorized } from "@/lib/auth/authorization";
 import { HttpError } from "@/lib/auth/errors";
 import { verifyCsrf, verifyOrigin, withAuth } from "@/lib/auth/guards";
@@ -12,13 +13,19 @@ import { getAuthPool, getFeedPool } from "@/lib/db/client";
 // PUT /api/admin/ti-feed/auth-key — set the URLhaus Auth-Key (self-fetch mode)
 // ---------------------------------------------------------------------------
 //
-// Operator submits the URLhaus Auth-Key; it is Transit-envelope encrypted and
-// stored in `feed_source_secret`. WRITE-ONLY — the key is never returned (the
-// status GET only reports set/unset). Active only in `self-fetch` mode (404
-// otherwise). admin-gated: origin + CSRF + `ti-feed:write`.
+// Operator submits the URLhaus Auth-Key or the optional shared GitHub token; it
+// is Transit-envelope encrypted and stored in `feed_source_secret`. WRITE-ONLY
+// — the key is never returned (the status GET only reports set/unset). Active
+// only in `self-fetch` mode (404 otherwise). admin-gated: origin + CSRF +
+// `ti-feed:write`.
 
-/** Allowed secret key names (the catalog's only Auth-Key today is URLhaus). */
-const ALLOWED_KEY_NAMES = new Set(["urlhaus"]);
+/**
+ * Allowed secret key names: the URLhaus Auth-Key (required for the URLhaus
+ * feeds) and the optional shared GitHub token that lifts the vendor-repo REST
+ * rate limit (#650). `setFeedSourceSecret` accepts arbitrary key names — this
+ * allowlist is the only gate.
+ */
+const ALLOWED_KEY_NAMES = new Set(["urlhaus", GITHUB_VENDOR_AUTH_KEY_NAME]);
 
 /** Defensive upper bound — abuse.ch Auth-Keys are short hex/base tokens. */
 const MAX_AUTH_KEY_LENGTH = 1024;

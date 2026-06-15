@@ -35,6 +35,19 @@ import type { EntityType, HitType, SourcePolarity } from "../types";
 export const FETCH_AUTH_KEY_PLACEHOLDER = "{AUTH_KEY}";
 
 /**
+ * `feed_source_secret.key_name` of the single, optional, shared GitHub token
+ * that every vendor-repo source uses (RFC 0003 F4, #650). All seven vendor
+ * repositories are public, so a no-scope (public-read) Personal Access Token
+ * suffices; supplying one lifts GitHub's REST rate limit from 60 to 5,000
+ * requests/hour, shared across all vendor fetches. Keyless fetch still works.
+ *
+ * Defined here — the light type-only module every descriptor already imports —
+ * rather than in the `server-only` `feed-vendor-repo.ts`, so the descriptor
+ * registration path does not drag the fetch engine into descriptor evaluation.
+ */
+export const GITHUB_VENDOR_AUTH_KEY_NAME = "github";
+
+/**
  * Feed staleness bound: the Tier-1 feeds refresh roughly daily, so a snapshot
  * older than two days is treated as stale (drives `stale` coverage). Shared by
  * every source descriptor's `maxAge` unless a source overrides it.

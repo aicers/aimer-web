@@ -214,6 +214,22 @@ describe("PUT /api/admin/ti-feed/auth-key", () => {
     );
   });
 
+  it("accepts the github vendor key name (#650)", async () => {
+    const { GITHUB_VENDOR_AUTH_KEY_NAME } = await import(
+      "@/lib/analysis/enrichment/sources/registry"
+    );
+    const { PUT } = await import("../auth-key/route");
+    const res = await PUT(
+      makeAuthKey({ keyName: GITHUB_VENDOR_AUTH_KEY_NAME, authKey: "ghp_x" }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockSetFeedSourceSecret).toHaveBeenCalledWith(
+      expect.anything(),
+      GITHUB_VENDOR_AUTH_KEY_NAME,
+      "ghp_x",
+    );
+  });
+
   it("400s for a missing authKey", async () => {
     const { PUT } = await import("../auth-key/route");
     const res = await PUT(makeAuthKey({ keyName: "urlhaus" }));
