@@ -13,7 +13,7 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import ipaddr from "ipaddr.js";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { canonicalizeContext, normalizeContext } from "./context-payload";
 import type {
   CsvColumnParseConfig,
@@ -515,14 +515,26 @@ export function parseUrlhausCsv(text: string): string[] {
 export function parseUrlhausPayloadsCsv(text: string): string[] {
   const hashes: string[] = [];
   for (const line of contentLines(text)) {
-    const fields = splitCsv(line);
-    if (fields.length < 5) continue;
-    const md5 = fields[3];
-    const sha256 = fields[4];
-    if (md5) hashes.push(md5);
-    if (sha256) hashes.push(sha256);
+    hashes.push(...parseUrlhausPayloadsCsvLine(line));
   }
   return hashes;
+}
+
+/**
+ * One data row of the URLhaus Collected Payloads CSV → its non-empty MD5
+ * (index 3) and SHA-256 (index 4) hash columns. The single-line analogue of
+ * `parseUrlhausPayloadsCsv`, for the streaming self-fetch path that line-parses
+ * the decompressed CSV instead of buffering the whole ~2.6 GB body. A
+ * blank/comment/short row yields `[]`; the caller skips blank/comment lines
+ * before calling this.
+ */
+export function parseUrlhausPayloadsCsvLine(line: string): string[] {
+  const fields = splitCsv(line);
+  if (fields.length < 5) return [];
+  const out: string[] = [];
+  if (fields[3]) out.push(fields[3]);
+  if (fields[4]) out.push(fields[4]);
+  return out;
 }
 
 /**
@@ -1033,6 +1045,203 @@ export async function importFeedSnapshot(
     client.release();
   }
   return { rowCount: params.rows.length, feedHash };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming replace-only import (large full-dump sources, #657)
+// ---------------------------------------------------------------------------
+
+/** Default staging-load / cursor-fetch batch size for the streaming importer. */
+const STREAMING_BATCH_SIZE = 1000;
+
+/**
+ * A streamed replace-only import. Mirrors {@link importFeedSnapshot}'s
+ * replace-only semantics for a source whose body is too large to buffer (the
+ * abuse.ch URLhaus payloads ZIP decompresses to ~2.6 GB — past Node's max
+ * string), so neither the content, the full row array, nor a full dedup `Set`
+ * may be held in memory. Positive single-entity-type sources only (HASH today);
+ * no per-row context / hit-type / classification overrides.
+ */
+export interface StreamingImportParams {
+  sourcePolicyId: string;
+  entityType: EntityType;
+  /** Omitted ⇒ `positive`. A `negative` import forces `hit_type` NULL. */
+  polarity?: SourcePolarity;
+  hitType?: HitType;
+  classification?: string;
+  confidence?: number;
+  sourceVersion?: string;
+  sourceUpdatedAt?: string;
+  /** The decompressed feed lines (one per line, no trailing newline). */
+  lines: AsyncIterable<string>;
+  /** Extract raw indicator value(s) from one DATA line (pre-normalization). */
+  extractValues: (line: string) => string[];
+  /** Comment prefixes for the data-line / zero-row guard. Defaults `#`/`;`. */
+  commentPrefixes?: readonly string[];
+  /** Staging-load / cursor-fetch batch size (tests override). */
+  batchSize?: number;
+}
+
+/**
+ * Stream a source's feed lines into `ioc_feed_snapshot` with replace-only
+ * semantics, holding the whole import in ONE transaction so a failure mid-stream
+ * rolls back and leaves the prior snapshot intact (failure→stale).
+ *
+ * The pipeline keeps memory bounded at every step:
+ *   1. advisory lock (same per-source serialization as `importFeedSnapshot`);
+ *   2. stream the lines, normalize each extracted value, and batch-load the
+ *      normalized values into a TEMP staging table (at most `batchSize` rows in
+ *      memory at a time);
+ *   3. unparseable guard — data lines arrived but normalized to zero rows →
+ *      reject BEFORE any DELETE so a junk/HTML dump can never wipe a good
+ *      snapshot (a genuinely empty / comment-only body legitimately clears it);
+ *   4. `feed_hash` from a DB-ordered cursor over the DISTINCT staged values fed
+ *      into an incremental Node hash — matching `computeFeedHash` (sorted match
+ *      values joined by "\n") with no in-JS sort or full-row array;
+ *   5. `DELETE` the source's rows, then `INSERT … SELECT DISTINCT … FROM` the
+ *      staging table (dedup is DB-side — no in-memory `Set` of all values);
+ *   6. `COMMIT`.
+ */
+export async function importFeedSnapshotStreaming(
+  pool: Pool,
+  params: StreamingImportParams,
+): Promise<{ rowCount: number; feedHash: string }> {
+  const polarity: SourcePolarity = params.polarity ?? "positive";
+  const prefixes = params.commentPrefixes ?? DEFAULT_COMMENT_PREFIXES;
+  const batchSize = params.batchSize ?? STREAMING_BATCH_SIZE;
+  // Negative (warninglist) rows carry NO hit_type (mirrors `importFeedSnapshot`).
+  const hitType = polarity === "negative" ? null : (params.hitType ?? null);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [
+      feedSourceLockKey(params.sourcePolicyId),
+    ]);
+    // `COLLATE "C"` (byte order) so the DB-ordered `feed_hash` cursor agrees
+    // with `computeFeedHash`'s JS string sort over the ASCII match values, and
+    // DISTINCT/ORDER BY need no per-query collation override.
+    await client.query(
+      `CREATE TEMP TABLE _feed_stage
+         (match_value text COLLATE "C" NOT NULL) ON COMMIT DROP`,
+    );
+
+    let dataLineCount = 0;
+    let batch: string[] = [];
+    const flush = async (): Promise<void> => {
+      if (batch.length === 0) return;
+      const placeholders = batch.map((_, i) => `($${i + 1})`).join(",");
+      await client.query(
+        `INSERT INTO _feed_stage (match_value) VALUES ${placeholders}`,
+        batch,
+      );
+      batch = [];
+    };
+
+    for await (const raw of params.lines) {
+      const line = raw.trim();
+      if (line.length === 0 || isCommentLine(line, prefixes)) continue;
+      dataLineCount += 1;
+      for (const value of params.extractValues(line)) {
+        let normalized: string;
+        try {
+          normalized = normalizeForEntity(params.entityType, value);
+        } catch (err) {
+          if (err instanceof NormalizationError) continue;
+          throw err;
+        }
+        batch.push(normalized);
+        if (batch.length >= batchSize) await flush();
+      }
+    }
+    await flush();
+
+    const { rows: countRows } = await client.query<{ cnt: string }>(
+      `SELECT COUNT(DISTINCT match_value)::text AS cnt FROM _feed_stage`,
+    );
+    const distinctCount = Number(countRows[0].cnt);
+
+    // Unparseable guard (streamed): data lines arrived but parsed to zero rows
+    // → fail (failure→stale) instead of clearing the snapshot. A body with no
+    // data lines (header/comment only) legitimately clears the source.
+    if (dataLineCount > 0 && distinctCount === 0) {
+      throw new FeedParseError(
+        "Fetched response has data but no recognizable feed entries " +
+          "(possible upstream error/block page or format drift)",
+      );
+    }
+
+    const feedHash = await computeStreamedFeedHash(client, batchSize);
+
+    await client.query(
+      `DELETE FROM ioc_feed_snapshot WHERE source_policy_id = $1`,
+      [params.sourcePolicyId],
+    );
+    await client.query(
+      `INSERT INTO ioc_feed_snapshot
+         (source_policy_id, entity_type, match_value, cidr, hit_type,
+          polarity, classification, confidence, context, source_version,
+          feed_hash, source_updated_at)
+       SELECT $1, $2, s.match_value, NULL, $3, $4, $5, $6, NULL, $7, $8,
+              $9::timestamptz
+         FROM (SELECT DISTINCT match_value FROM _feed_stage) AS s`,
+      [
+        params.sourcePolicyId,
+        params.entityType,
+        hitType,
+        polarity,
+        params.classification ?? null,
+        params.confidence ?? null,
+        params.sourceVersion ?? null,
+        feedHash,
+        params.sourceUpdatedAt ?? null,
+      ],
+    );
+    await client.query("COMMIT");
+    return { rowCount: distinctCount, feedHash };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Stable `feed_hash` over the DISTINCT staged values without an in-memory sort:
+ * let Postgres order the values (byte order via `COLLATE "C"`, so it agrees with
+ * `computeFeedHash`'s JS string sort over the ASCII match values), fetch them in
+ * batches through a cursor, and feed each into an incremental sha256 with the
+ * same "\n" separator `computeFeedHash` uses. An empty staging table hashes the
+ * empty string — identical to `computeFeedHash([])`.
+ */
+async function computeStreamedFeedHash(
+  client: PoolClient,
+  fetchSize: number,
+): Promise<string> {
+  await client.query(
+    `DECLARE feed_hash_cur NO SCROLL CURSOR FOR
+       SELECT DISTINCT match_value FROM _feed_stage
+       ORDER BY match_value`,
+  );
+  const hash = createHash("sha256");
+  let first = true;
+  try {
+    for (;;) {
+      const { rows } = await client.query<{ match_value: string }>(
+        `FETCH ${fetchSize} FROM feed_hash_cur`,
+      );
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        if (!first) hash.update("\n");
+        hash.update(row.match_value);
+        first = false;
+      }
+    }
+  } finally {
+    await client.query("CLOSE feed_hash_cur").catch(() => {});
+  }
+  return hash.digest("hex");
 }
 
 // ---------------------------------------------------------------------------

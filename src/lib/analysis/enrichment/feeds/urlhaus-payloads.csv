@@ -2,8 +2,13 @@
 #
 # Committed test fixture, NOT a live feed download. Hashes are synthetic
 # (clearly-patterned hex) so the fixture references no real malware sample.
-# Format mirrors the published CSV:
+# Format mirrors the published payloads CSV (md5 at column 4, sha256 at
+# column 5; extra trailing columns are ignored):
 # firstseen,urlhaus_link,filetype,md5_hash,sha256_hash,signature
+#
+# The LIVE self-fetch export is a ZIP archive (payload.csv.zip) whose single
+# inner CSV decompresses to ~2.6 GB, so the engine streams + inflates it (see
+# `decompress: "zip"`); this plain-CSV fixture is for the parser/import tests.
 #
 "2026-05-01 00:00:00","https://urlhaus.abuse.ch/url/1001/","exe","0123456789abcdef0123456789abcdef","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","Emotet"
 "2026-05-01 00:00:00","https://urlhaus.abuse.ch/url/1002/","dll","fedcba9876543210fedcba9876543210","fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210","Qakbot"

@@ -56,7 +56,9 @@ export const FEED_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 
 /** Common cadence-floor magnitudes used by source self-fetch configs. */
 export const FIVE_MINUTES_MS = 5 * 60 * 1000;
+export const THIRTY_MINUTES_MS = 30 * 60 * 1000;
 export const ONE_HOUR_MS = 60 * 60 * 1000;
+export const SIX_HOURS_MS = 6 * ONE_HOUR_MS;
 
 /** Self-fetch (#568) HTTP fetch config for a TI source. */
 export interface TiSourceFetchConfig {
@@ -89,6 +91,23 @@ export interface TiSourceFetchConfig {
    * (URLhaus). Sources without an Auth-Key (Feodo, Spamhaus) omit it.
    */
   authKeyName?: string;
+  /**
+   * Streaming decompression for the fetched body. `"zip"` ⇒ the response is a
+   * ZIP archive whose single DEFLATE entry is inflated and parsed line-by-line
+   * as a stream (the abuse.ch URLhaus payloads dump is a ~219 MB ZIP whose
+   * inner CSV decompresses to ~2.6 GB — past Node's max string, so it can never
+   * be buffered via `res.text()`). Absent ⇒ the body is read as text and parsed
+   * in memory (every other source). See the streaming path in `feed-fetch.ts`.
+   */
+  decompress?: "zip";
+  /**
+   * Per-source outbound fetch timeout (ms), overriding the engine default
+   * (`DEFAULT_FETCH_TIMEOUT_MS`). A large full-dump source (the payloads ZIP)
+   * needs a long timeout that covers the whole streamed body download — the
+   * streaming path scopes its timeout over stream consumption, not just the
+   * header handshake. Absent ⇒ the engine default.
+   */
+  timeoutMs?: number;
 }
 
 /**

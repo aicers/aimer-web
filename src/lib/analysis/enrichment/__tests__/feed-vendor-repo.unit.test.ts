@@ -93,6 +93,7 @@ function resp(status: number, body: string): FetchResponseLike {
     ok: status >= 200 && status < 300,
     headers: { get: () => null },
     text: async () => body,
+    body: null,
   };
 }
 

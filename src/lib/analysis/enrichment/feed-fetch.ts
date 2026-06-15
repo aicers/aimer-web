@@ -22,6 +22,11 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { Readable } from "node:stream";
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
+import { StringDecoder } from "node:string_decoder";
+import { createInflateRaw } from "node:zlib";
 import type { Pool } from "pg";
 import { decryptPayload, encryptPayload } from "@/lib/crypto/envelope";
 import {
@@ -30,8 +35,14 @@ import {
   TIER1_FEED_SOURCES,
   type Tier1FetchConfig,
 } from "./feed-catalog";
-import { importRawFeedPayload, isUnparseableFeedContent } from "./feed-import";
 import {
+  importFeedSnapshotStreaming,
+  importRawFeedPayload,
+  isUnparseableFeedContent,
+  parseUrlhausPayloadsCsvLine,
+} from "./feed-import";
+import {
+  type FeedParseKind,
   type RawFeedPayload,
   resolveTiFeedMode,
   type TiFeedMode,
@@ -70,6 +81,13 @@ export interface FetchResponseLike {
   ok: boolean;
   headers: { get(name: string): string | null };
   text(): Promise<string>;
+  /**
+   * The response body as a byte stream, for the streaming-decompress path
+   * (`decompress: "zip"`) — consumed instead of `text()` so a multi-hundred-MB
+   * archive is never buffered. `null` when the body is absent/already consumed;
+   * the buffered `text()` path ignores it.
+   */
+  body: NodeWebReadableStream<Uint8Array> | ReadableStream<Uint8Array> | null;
 }
 
 /** An injectable outbound-HTTP transport. Defaults to global `fetch`. */
@@ -80,6 +98,158 @@ export type FetchTransport = (
 
 const defaultTransport: FetchTransport = (url, init) =>
   fetch(url, { method: "GET", headers: init.headers, signal: init.signal });
+
+// ---------------------------------------------------------------------------
+// Streaming decompression (ZIP single-entry) + line reader — unit-tested (#657)
+// ---------------------------------------------------------------------------
+
+const ZIP_LOCAL_FILE_HEADER_SIG = 0x04034b50;
+const ZIP_LOCAL_FILE_HEADER_LEN = 30;
+const ZIP_GP_FLAG_ENCRYPTED = 0x1;
+const ZIP_METHOD_DEFLATE = 8;
+
+/**
+ * Inflate the SINGLE entry of a ZIP archive as a stream, returning a `Readable`
+ * of the decompressed bytes. Node's `zlib` has no streaming ZIP-container reader
+ * (gzip/deflate/brotli only), so the ZIP local-file header is parsed by hand and
+ * the lone DEFLATE entry is piped through `createInflateRaw()`; the inflate ends
+ * at the DEFLATE stream's end, so any trailing bytes (data descriptor, central
+ * directory) after the sole entry are ignored — no member name is hardcoded and
+ * the entry's declared compressed size is not needed.
+ *
+ * It is a ZIP archive, NOT gzip — `gunzip`/`createGunzip` would not parse it.
+ * An encrypted entry, a non-DEFLATE method, a bad signature, or a truncated
+ * header surface as a `SelfFetchError` rather than a silent zero-row import.
+ */
+export function openSingleZipEntry(input: Readable): Readable {
+  // `Readable.from` is lazy: the generator (and therefore the header parse)
+  // only advances when the result is consumed, so a header-parse error surfaces
+  // to the reader's iteration rather than as an unhandled `error` event fired
+  // before any consumer has attached.
+  return Readable.from(inflateSingleEntry(input));
+}
+
+/**
+ * Parse the ZIP local-file header off the front of `input`, then inflate the
+ * lone DEFLATE entry, yielding the decompressed bytes. The entry's compressed
+ * bytes are fed into `createInflateRaw()` in the background (honoring
+ * backpressure) while this generator yields the inflate output; the inflate
+ * ends at the DEFLATE stream's end, so trailing bytes after the sole entry are
+ * ignored. A truncation / unsupported-encoding / source error propagates out of
+ * the generator (and so to the consumer's read).
+ */
+async function* inflateSingleEntry(input: Readable): AsyncGenerator<Buffer> {
+  const reader = input[Symbol.asyncIterator]();
+  let head = Buffer.alloc(0);
+  const pull = async (): Promise<boolean> => {
+    const next = await reader.next();
+    if (next.done) return false;
+    head = Buffer.concat([head, Buffer.from(next.value)]);
+    return true;
+  };
+
+  while (head.length < ZIP_LOCAL_FILE_HEADER_LEN) {
+    if (!(await pull())) {
+      throw new SelfFetchError(
+        "ZIP archive is truncated (no local file header)",
+      );
+    }
+  }
+  if (head.readUInt32LE(0) !== ZIP_LOCAL_FILE_HEADER_SIG) {
+    throw new SelfFetchError("Fetched body is not a ZIP archive");
+  }
+  if ((head.readUInt16LE(6) & ZIP_GP_FLAG_ENCRYPTED) !== 0) {
+    throw new SelfFetchError("ZIP archive entry is encrypted (unsupported)");
+  }
+  const method = head.readUInt16LE(8);
+  if (method !== ZIP_METHOD_DEFLATE) {
+    throw new SelfFetchError(
+      `Unsupported ZIP compression method ${method} (expected DEFLATE)`,
+    );
+  }
+  const nameLen = head.readUInt16LE(26);
+  const extraLen = head.readUInt16LE(28);
+  const headerLen = ZIP_LOCAL_FILE_HEADER_LEN + nameLen + extraLen;
+  while (head.length < headerLen) {
+    if (!(await pull())) {
+      throw new SelfFetchError(
+        "ZIP archive is truncated (incomplete local file header)",
+      );
+    }
+  }
+
+  const inflate = createInflateRaw();
+  const feeding = (async (): Promise<void> => {
+    const write = async (chunk: Buffer): Promise<void> => {
+      if (!inflate.write(chunk)) await once(inflate, "drain");
+    };
+    const remainder = head.subarray(headerLen);
+    if (remainder.length > 0) await write(remainder);
+    for (;;) {
+      const next = await reader.next();
+      if (next.done) break;
+      await write(Buffer.from(next.value));
+    }
+    inflate.end();
+  })();
+  // Surface a feed-side error (network drop, abort) through the inflate stream
+  // so the consumer's iteration throws instead of hanging.
+  feeding.catch((err) =>
+    inflate.destroy(err instanceof Error ? err : new Error(String(err))),
+  );
+
+  try {
+    for await (const chunk of inflate) yield chunk as Buffer;
+  } finally {
+    input.destroy();
+    await feeding.catch(() => {});
+  }
+}
+
+/**
+ * Split a byte `Readable` into lines (LF / CRLF), decoding UTF-8 across chunk
+ * boundaries. No newline-terminator is required on the final line. Used to
+ * line-parse a decompressed feed without buffering the whole body.
+ */
+export async function* readLines(stream: Readable): AsyncGenerator<string> {
+  const decoder = new StringDecoder("utf8");
+  let buf = "";
+  for await (const chunk of stream) {
+    buf += decoder.write(chunk as Buffer);
+    let idx = buf.indexOf("\n");
+    while (idx !== -1) {
+      let line = buf.slice(0, idx);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      yield line;
+      buf = buf.slice(idx + 1);
+      idx = buf.indexOf("\n");
+    }
+  }
+  buf += decoder.end();
+  if (buf.length > 0) {
+    if (buf.endsWith("\r")) buf = buf.slice(0, -1);
+    yield buf;
+  }
+}
+
+/**
+ * The per-line value extractor for a streaming-decompress source's `parse` kind.
+ * Only kinds wired for streaming are supported (today the URLhaus payloads CSV);
+ * anything else is a misconfiguration and throws rather than silently importing
+ * nothing.
+ */
+function streamingLineExtractor(
+  parse: FeedParseKind,
+): (line: string) => string[] {
+  switch (parse) {
+    case "urlhaus-payloads-csv":
+      return parseUrlhausPayloadsCsvLine;
+    default:
+      throw new SelfFetchError(
+        `streaming decompress is not supported for parse kind "${parse}"`,
+      );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mode gating
@@ -651,6 +821,12 @@ export class SelfFetchFeedSource {
     source: NonNullable<ReturnType<typeof getTier1FeedSource>>,
     fetchConfig: Tier1FetchConfig,
   ): Promise<SelfFetchOutcome> {
+    // A streaming-decompress source (the URLhaus payloads ZIP) cannot be
+    // buffered via `res.text()` — route it through the streaming path.
+    if (fetchConfig.decompress) {
+      return this.runStreamingFetch(sourcePolicyId, source, fetchConfig);
+    }
+
     const now = this.now();
     const nowIso = now.toISOString();
 
@@ -748,6 +924,116 @@ export class SelfFetchFeedSource {
         rowCount,
       });
       return { status: "imported", rowCount };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "self-fetch failed";
+      await recordError(this.feedPool, sourcePolicyId, nowIso, message);
+      return { status: "error", error: message };
+    }
+  }
+
+  /**
+   * Fetch + import ONE streaming-decompress source (the URLhaus payloads ZIP,
+   * #657). Same single-flight lock (held by the caller) + hard cadence floor +
+   * conditional GET + failure→stale recording as the flat path, but the body is
+   * a ZIP archive whose single inner CSV decompresses to ~2.6 GB — past Node's
+   * max string — so it is NEVER buffered: the body is consumed as a stream
+   * (ZIP-inflate → line parse → `importFeedSnapshotStreaming`'s staging-table
+   * replace). The timeout is scoped over the WHOLE stream/body consumption (not
+   * just the header handshake) and uses the source's long per-source `timeoutMs`
+   * so a legitimately slow multi-hundred-MB fetch is not killed while a stalled
+   * stream is still bounded. The zero-row guard lives in the streaming import
+   * (data lines but zero parsed rows → fail before any DELETE), preserving
+   * failure→stale.
+   */
+  private async runStreamingFetch(
+    sourcePolicyId: string,
+    source: NonNullable<ReturnType<typeof getTier1FeedSource>>,
+    fetchConfig: Tier1FetchConfig,
+  ): Promise<SelfFetchOutcome> {
+    const now = this.now();
+    const nowIso = now.toISOString();
+
+    const state = await readFeedFetchState(this.feedPool, sourcePolicyId);
+    if (withinCadenceFloor(state, fetchConfig.cadenceFloorMs, now)) {
+      const allowed = nextFetchAllowedAt(state, fetchConfig.cadenceFloorMs);
+      return {
+        status: "too-soon",
+        nextAllowedAt: (allowed ?? now).toISOString(),
+      };
+    }
+
+    const timeoutMs = fetchConfig.timeoutMs ?? this.timeoutMs;
+    try {
+      let authKey: string | null = null;
+      if (fetchConfig.authKeyName) {
+        authKey = await this.resolveAuthKey(fetchConfig.authKeyName);
+      }
+      const urls = resolveFetchUrls(fetchConfig, authKey);
+      if (urls.length !== 1) {
+        throw new SelfFetchError(
+          "a streaming-decompress source must have exactly one URL",
+        );
+      }
+      const url = urls[0];
+      const conditional = conditionalGetHeaders(state);
+
+      // Scope the timeout over the WHOLE body consumption, not just the header
+      // handshake: the timer is cleared only after the stream is fully imported
+      // (or fails), so a stalled multi-hundred-MB download is still bounded.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        let res: FetchResponseLike;
+        try {
+          res = await this.transport(url, {
+            headers: conditional,
+            signal: controller.signal,
+          });
+        } catch (err) {
+          throw new SelfFetchError(
+            err instanceof Error ? err.message : "fetch failed",
+          );
+        }
+        if (res.status === 304) {
+          await recordNotModified(this.feedPool, sourcePolicyId, nowIso);
+          return { status: "not-modified" };
+        }
+        if (!res.ok) {
+          throw new SelfFetchError(`HTTP ${res.status}`);
+        }
+        if (!res.body) {
+          throw new SelfFetchError("Fetched response has no body stream");
+        }
+        const etag = res.headers.get("etag");
+        const lastModified = res.headers.get("last-modified");
+
+        const nodeBody = Readable.fromWeb(
+          res.body as NodeWebReadableStream<Uint8Array>,
+        );
+        const decompressed =
+          fetchConfig.decompress === "zip"
+            ? openSingleZipEntry(nodeBody)
+            : nodeBody;
+        const { rowCount } = await importFeedSnapshotStreaming(this.feedPool, {
+          sourcePolicyId,
+          entityType: source.entityType,
+          polarity: source.polarity,
+          hitType: source.hitType,
+          classification: source.classification,
+          sourceUpdatedAt: nowIso,
+          lines: readLines(decompressed),
+          extractValues: streamingLineExtractor(fetchConfig.parse),
+        });
+        await recordOk(this.feedPool, sourcePolicyId, {
+          nowIso,
+          etag,
+          lastModified,
+          rowCount,
+        });
+        return { status: "imported", rowCount };
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "self-fetch failed";
       await recordError(this.feedPool, sourcePolicyId, nowIso, message);

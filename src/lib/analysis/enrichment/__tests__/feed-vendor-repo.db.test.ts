@@ -268,6 +268,7 @@ describe.skipIf(!hasPostgres)("vendor-repo importer (DB)", () => {
           ok: status >= 200 && status < 300,
           headers: { get: () => null },
           text: async () => body,
+          body: null,
         });
         if (url.includes("/git/trees/")) return resp(200, treeBody);
         if (url.includes("/git/blobs/sha-csv")) return resp(200, blobBody);
@@ -381,6 +382,7 @@ describe.skipIf(!hasPostgres)("vendor-repo importer (DB)", () => {
           ok: status >= 200 && status < 300,
           headers: { get: () => null },
           text: async () => body,
+          body: null,
         });
         if (url.includes("/git/trees/")) return resp(200, treeBody);
         if (url.includes("/git/blobs/sha-csv")) return resp(200, blobBody);
