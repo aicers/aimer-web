@@ -324,6 +324,14 @@ describe("derived SourcePolicy[] regression for the registered sources", () => {
         floorEligible: false,
       },
       {
+        sourcePolicyId: "meta/threat-research",
+        label: "Meta Threat Research (MIT)",
+        entityTypes: ["DOMAIN", "URL", "IP", "HASH"],
+        deterministicCoverage: false,
+        maxAge: FEED_MAX_AGE_MS,
+        floorEligible: false,
+      },
+      {
         sourcePolicyId: "misp/warninglists",
         label: "MISP warninglists (CC0)",
         polarity: "negative",

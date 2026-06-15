@@ -21,6 +21,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "eset/malware-ioc",
       "huntress/threat-intel",
       "infoblox/threat-intelligence",
+      "meta/threat-research",
       "misp/warninglists",
       "phishing-database/domain",
       "phishing-database/ip",
