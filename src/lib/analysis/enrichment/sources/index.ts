@@ -19,6 +19,7 @@ import "./eset";
 import "./infoblox";
 import "./misp-warninglists";
 import "./phishing-database";
+import "./prodaft";
 import "./spamhaus-drop";
 import "./spamhaus-edrop";
 import "./unit42";

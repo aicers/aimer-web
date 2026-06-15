@@ -24,6 +24,7 @@ describe("TIER1_FEED_SOURCES", () => {
       "phishing-database/domain",
       "phishing-database/ip",
       "phishing-database/url",
+      "prodaft/malware-ioc",
       "spamhaus/drop",
       "spamhaus/edrop",
       "unit42/threat-intel",
